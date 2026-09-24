@@ -1,6 +1,6 @@
 use gravak_protocol::{
-    ActionPacket, AuthResponse, GameEvent, GameSession, NpcPacket, RegisterCharacter,
-    ServerNpcInfo, ServerPlayer, TaskDialog, authenticate,
+    ActionPacket, AuthResponse, GameEvent, GameSession, NpcDialogPacket, NpcPacket,
+    RegisterCharacter, ServerNpcInfo, ServerPlayer, TaskDialog, authenticate,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -89,6 +89,7 @@ enum NetworkCommand {
     Walk { character_id: u32, direction: u8 },
     Action { character_id: u32, action: u32 },
     NpcInteract { npc_id: u32, kind: u16 },
+    NpcDialogAnswer { option_id: u8 },
 }
 
 pub struct NetworkHandle {
@@ -165,6 +166,12 @@ impl NetworkHandle {
         let _ = self
             .commands
             .send(NetworkCommand::NpcInteract { npc_id, kind });
+    }
+
+    pub fn send_npc_dialog_answer(&self, option_id: u8) {
+        let _ = self
+            .commands
+            .send(NetworkCommand::NpcDialogAnswer { option_id });
     }
 }
 
@@ -359,6 +366,12 @@ async fn run(
                 Some(NetworkCommand::NpcInteract { npc_id, kind }) => {
                     session
                         .send(&NpcPacket::activate(npc_id, kind))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::NpcDialogAnswer { option_id }) => {
+                    session
+                        .send(&NpcDialogPacket::answer(option_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

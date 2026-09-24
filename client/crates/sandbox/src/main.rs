@@ -51,8 +51,13 @@ struct App {
     remote_actors: HashMap<u32, RemoteActor>,
     remote_models: HashMap<u32, character::Character>,
     remote_npcs: HashMap<u32, character::NpcModel>,
-    dialog: Option<Vec<String>>,
+    dialog: Option<DialogState>,
     network_status: String,
+}
+
+struct DialogState {
+    lines: Vec<String>,
+    options: Vec<(u8, String)>,
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -104,6 +109,9 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                if state == ElementState::Pressed && self.select_dialog_option() {
+                    return;
+                }
                 if self.renderer.as_mut().is_some_and(|renderer| {
                     renderer.minimap_pointer(self.cursor, state == ElementState::Pressed)
                 }) {
@@ -162,7 +170,9 @@ impl ApplicationHandler for App {
                         &self.remote_actors,
                         &self.remote_models,
                         &self.remote_npcs,
-                        self.dialog.as_deref(),
+                        self.dialog
+                            .as_ref()
+                            .map(|dialog| (dialog.lines.as_slice(), dialog.options.as_slice())),
                         self.started.elapsed().as_secs_f32(),
                     )
                 {
@@ -303,9 +313,17 @@ impl App {
                 }
             }
             NetworkEvent::NpcDialog(dialog) => {
-                self.dialog
-                    .get_or_insert_with(Vec::new)
-                    .extend(dialog.messages);
+                let state = self.dialog.get_or_insert_with(|| DialogState {
+                    lines: Vec::new(),
+                    options: Vec::new(),
+                });
+                for message in dialog.messages {
+                    if matches!(dialog.action, 2 | 3) {
+                        state.options.push((dialog.option_id, message));
+                    } else if !message.is_empty() {
+                        state.lines.push(message);
+                    }
+                }
                 self.network_status = "online: NPC dialog received".into();
             }
             NetworkEvent::RemoveActor(id) => {
@@ -427,6 +445,40 @@ impl App {
         self.network_status = format!("online: selected {kind} {label} ({id})");
         if let Some(window) = &self.window {
             window.set_title(&format!("gravak-co — {}", self.network_status));
+        }
+        true
+    }
+
+    fn select_dialog_option(&mut self) -> bool {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return false;
+        };
+        let Some(window) = &self.window else {
+            return false;
+        };
+        let viewport = window.inner_size();
+        let height = (58 + (dialog.lines.len() + dialog.options.len()) * 20).clamp(80, 260) as f32;
+        let left = ((viewport.width as f32 - 720.0) * 0.5).max(8.0);
+        let top = (viewport.height as f32 - height - 24.0).max(8.0);
+        if self.cursor[0] < left
+            || self.cursor[0] > left + 720.0
+            || self.cursor[1] < top
+            || self.cursor[1] > top + height
+        {
+            return false;
+        }
+        let first_option = top + 38.0 + dialog.lines.len() as f32 * 20.0;
+        if self.cursor[1] < first_option {
+            return true;
+        }
+        let index = ((self.cursor[1] - first_option) / 20.0).floor() as usize;
+        let Some((option_id, _)) = dialog.options.get(index).cloned() else {
+            return true;
+        };
+        if let Some(network) = &self.network {
+            network.send_npc_dialog_answer(option_id);
+            self.dialog = None;
+            self.network_status = format!("online: NPC option {option_id}");
         }
         true
     }

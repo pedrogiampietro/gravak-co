@@ -82,9 +82,9 @@ impl PacketProcess for MsgNpc {
         let npc_name = npc.entity().name();
         // For now, lets try sending a dummy dialog
         let dialog = MsgTaskDialog::builder()
-            .text(format!("Hello, My name is {npc_name} and my id is {npc_id}",))
-            .with_edit(1, "What is your name?")
-            .with_option(255, "Nice to meet you")
+            .text(format!("Hello, my name is {npc_name} and my id is {npc_id}."))
+            .with_option(1, "Who are you?")
+            .with_option(2, "Tell me about this city.")
             .and()
             .with_avatar(47)
             .build();

@@ -262,7 +262,7 @@ impl Renderer {
         remote_actors: &HashMap<u32, RemoteActor>,
         remote_models: &HashMap<u32, Character>,
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
-        dialog: Option<&[String]>,
+        dialog: Option<(&[String], &[(u8, String)])>,
         time: f32,
     ) -> Result<()> {
         let camera = self.camera(map, player);
@@ -510,13 +510,14 @@ impl Renderer {
                 });
             }
         }
-        if let Some(messages) = dialog {
+        if let Some((messages, options)) = dialog {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             messages.hash(&mut hasher);
+            options.hash(&mut hasher);
             let key = format!("@dialog-{}", hasher.finish());
             if !self.textures.contains_key(&key) {
-                self.upload(&key, crate::labels::dialog_image(messages)?);
+                self.upload(&key, crate::labels::dialog_image(messages, options)?);
             }
             if let Some(texture) = self.textures.get(&key) {
                 let size = texture.size;

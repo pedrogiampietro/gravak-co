@@ -117,7 +117,7 @@ pub fn actor_image(name: &str) -> Result<RgbaImage> {
     Ok(image)
 }
 
-pub fn dialog_image(messages: &[String]) -> Result<RgbaImage> {
+pub fn dialog_image(messages: &[String], options: &[(u8, String)]) -> Result<RgbaImage> {
     let font = font()?;
     let mut lines = Vec::new();
     for message in messages {
@@ -144,7 +144,7 @@ pub fn dialog_image(messages: &[String]) -> Result<RgbaImage> {
     if lines.is_empty() {
         lines.push("(sem texto)".to_owned());
     }
-    let height = (58 + lines.len() * 20).clamp(80, 260) as u32;
+    let height = (58 + (lines.len() + options.len()) * 20).clamp(80, 260) as u32;
     let mut image = RgbaImage::new(720, height);
     for y in 0..height {
         for x in 0..720 {
@@ -172,6 +172,15 @@ pub fn dialog_image(messages: &[String]) -> Result<RgbaImage> {
             &font,
             &[(line, [255, 255, 255])],
             [16.0, 38.0 + index as f32 * 20.0],
+        );
+    }
+    for (index, (_, option)) in options.iter().enumerate() {
+        let label = format!("{}. {option}", index + 1);
+        text(
+            &mut image,
+            &font,
+            &[(&label, [255, 220, 100])],
+            [16.0, 38.0 + (lines.len() + index) as f32 * 20.0],
         );
     }
     Ok(image)

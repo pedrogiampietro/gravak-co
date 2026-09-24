@@ -125,6 +125,28 @@ pub struct NpcPacket {
     pub kind: u16,
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2032)]
+pub struct NpcDialogPacket {
+    pub task_id: u32,
+    pub avatar: u16,
+    pub option_id: u8,
+    pub action: u8,
+    pub msgs: tq_serde::StringList,
+}
+
+impl NpcDialogPacket {
+    pub fn answer(option_id: u8) -> Self {
+        Self {
+            task_id: 0,
+            avatar: 0,
+            option_id,
+            action: 101,
+            msgs: Vec::<String>::new().into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskDialog {
     pub task_id: u32,

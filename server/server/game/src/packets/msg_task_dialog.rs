@@ -181,8 +181,26 @@ impl PacketProcess for MsgTaskDialog {
     type Error = crate::Error;
     type State = crate::State;
 
-    async fn process(&self, _state: &Self::State, _actor: &Actor<Self::ActorState>) -> Result<(), Self::Error> {
+    async fn process(&self, _state: &Self::State, actor: &Actor<Self::ActorState>) -> Result<(), Self::Error> {
         tracing::debug!(msg = ?self, "MsgTaskDialog received");
+        if self.action != DialogActionKind::Answer as u8 {
+            return Ok(());
+        }
+        let character_name = actor.entity().basic().name().to_owned();
+        let response = match self.option_id {
+            1 => format!("I am a guardian of Twin City, {character_name}."),
+            2 => "Twin City is the heart of this realm. Start by speaking with the nearby townspeople.".to_owned(),
+            _ => "Come back when you are ready to continue your adventure.".to_owned(),
+        };
+        let dialog = MsgTaskDialog::builder()
+            .text(response)
+            .with_option(255, "Thank you.")
+            .and()
+            .with_avatar(47)
+            .build();
+        for message in dialog {
+            actor.send(message).await?;
+        }
         Ok(())
     }
 }
