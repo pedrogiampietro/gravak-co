@@ -13,6 +13,7 @@ mod renderer;
 mod validation;
 use action::Action;
 use assets::{Assets, Result};
+use motion_math::direction_towards;
 use network::{NetworkConfig, NetworkEvent, NetworkHandle};
 use std::{path::PathBuf, sync::Arc, time::Instant};
 use winit::{
@@ -38,6 +39,8 @@ struct App {
     held: bool,
     queued_jump: Option<[i32; 2]>,
     network: Option<NetworkHandle>,
+    network_character_id: Option<u32>,
+    last_network_cell: Option<[i32; 2]>,
     network_status: String,
 }
 impl ApplicationHandler for App {
@@ -111,9 +114,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
+                let previous_cell = self.player.cell();
                 self.player
                     .tick(now.duration_since(self.last).as_secs_f32());
                 self.last = now;
+                self.send_network_step(previous_cell);
                 if !self.player.moving()
                     && let Some(target) = self.queued_jump.take()
                 {
@@ -199,6 +204,26 @@ impl App {
         if let Some(window) = &self.window {
             window.set_title(&format!("gravak-co — {}", self.network_status));
         }
+    }
+    fn send_network_step(&mut self, previous_cell: [i32; 2]) {
+        let Some(network) = &self.network else {
+            return;
+        };
+        let Some(character_id) = self.network_character_id else {
+            return;
+        };
+        let current_cell = self.player.cell();
+        let last_cell = self.last_network_cell.unwrap_or(previous_cell);
+        if current_cell == last_cell {
+            return;
+        }
+        let direction = direction_towards(
+            last_cell.map(|value| value as f32),
+            current_cell.map(|value| value as f32),
+        );
+        network.send_walk(character_id, direction);
+        self.last_network_cell = Some(current_cell);
+        self.network_status = format!("online: sending walk dir {direction}");
     }
 }
 fn run() -> Result<()> {
@@ -402,6 +427,8 @@ fn run() -> Result<()> {
         held: false,
         queued_jump: None,
         network,
+        network_character_id: server_ready.as_ref().map(|ready| ready.character_id),
+        last_network_cell: server_ready.as_ref().map(|ready| ready.position),
         network_status: if online {
             "online".into()
         } else {

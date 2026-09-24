@@ -6,6 +6,7 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 #[derive(Debug, Clone)]
 pub struct NetworkConfig {
@@ -32,13 +33,19 @@ pub enum NetworkEvent {
     Error(String),
 }
 
+enum NetworkCommand {
+    Walk { character_id: u32, direction: u8 },
+}
+
 pub struct NetworkHandle {
     events: Receiver<NetworkEvent>,
+    commands: UnboundedSender<NetworkCommand>,
 }
 
 impl NetworkHandle {
     pub fn start(config: NetworkConfig) -> Self {
         let (events_tx, events) = mpsc::channel();
+        let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
         thread::Builder::new()
             .name("gravak-network".into())
             .spawn(move || {
@@ -46,13 +53,15 @@ impl NetworkHandle {
                     .enable_all()
                     .build()
                     .map_err(|error| error.to_string())
-                    .and_then(|runtime| runtime.block_on(run(config, events_tx.clone())));
+                    .and_then(|runtime| {
+                        runtime.block_on(run(config, events_tx.clone(), commands_rx))
+                    });
                 if let Err(error) = result {
                     let _ = events_tx.send(NetworkEvent::Error(error));
                 }
             })
             .expect("network thread should start");
-        Self { events }
+        Self { events, commands }
     }
 
     pub fn drain(&self) -> Vec<NetworkEvent> {
@@ -73,9 +82,20 @@ impl NetworkHandle {
             }
         }
     }
+
+    pub fn send_walk(&self, character_id: u32, direction: u8) {
+        let _ = self.commands.send(NetworkCommand::Walk {
+            character_id,
+            direction,
+        });
+    }
 }
 
-async fn run(config: NetworkConfig, events: Sender<NetworkEvent>) -> Result<(), String> {
+async fn run(
+    config: NetworkConfig,
+    events: Sender<NetworkEvent>,
+    mut commands: UnboundedReceiver<NetworkCommand>,
+) -> Result<(), String> {
     send_status(&events, "authenticating");
     let server = match authenticate(
         &config.auth_address,
@@ -178,19 +198,29 @@ async fn run(config: NetworkConfig, events: Sender<NetworkEvent>) -> Result<(), 
         .map_err(|error| error.to_string())?;
     send_status(&events, "connected");
 
-    while let Some(event) = session
-        .next_event()
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        if let GameEvent::Walk(walk) = event {
-            let _ = events.send(NetworkEvent::WalkConfirmed {
-                character_id: walk.character_id,
-                direction: walk.direction,
-            });
+    loop {
+        tokio::select! {
+            event = session.next_event() => match event.map_err(|error| error.to_string())? {
+                Some(GameEvent::Walk(walk)) => {
+                    let _ = events.send(NetworkEvent::WalkConfirmed {
+                        character_id: walk.character_id,
+                        direction: walk.direction,
+                    });
+                }
+                Some(_) => {}
+                None => return Ok(()),
+            },
+            command = commands.recv() => match command {
+                Some(NetworkCommand::Walk { character_id, direction }) => {
+                    session
+                        .send(&gravak_protocol::WalkPacket::new(character_id, direction))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                None => return Ok(()),
+            },
         }
     }
-    Ok(())
 }
 
 async fn load_location(
