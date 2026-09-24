@@ -23,6 +23,15 @@ cargo run --release --locked -- --assets R:\5065
 
 Também é possível usar `client\tools\run-local.ps1`.
 
+Para abrir o cliente conectado ao servidor local:
+
+```powershell
+cd R:\gravak-co\client
+cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
+```
+
+O modo online autentica em uma thread de rede separada, carrega o personagem e usa o mapa/posição retornados pelo servidor. Sem `--online`, o sandbox permanece offline.
+
 ## Servidor
 
 O servidor exige Rust nightly; a versão está fixada em `server\rust-toolchain.toml`. Para preparar o banco local:
@@ -37,7 +46,7 @@ Os servidores usam, por padrão, as portas `9958` (auth) e `5816` (game). O banc
 
 ## Estado atual
 
-O cliente foi validado contra os assets locais 5065. A base do servidor também foi corrigida e validada com os testes do workspace e build dos binários de auth/game. O `gravak-probe` já autentica, cria um personagem de teste quando necessário, reconecta, carrega `MsgUserInfo`/`MsgMapInfo` e confirma o primeiro `MsgWalk`.
+O cliente foi validado contra os assets locais 5065. A base do servidor também foi corrigida e validada com os testes do workspace e build dos binários de auth/game. O `gravak-probe` já autentica, cria um personagem de teste quando necessário, reconecta, carrega `MsgUserInfo`/`MsgMapInfo` e confirma o primeiro `MsgWalk`. O sandbox gráfico já possui o primeiro fluxo online: autenticação, reconexão, carregamento do personagem/mapa e sincronização da posição inicial.
 
 ## Licenças e créditos
 

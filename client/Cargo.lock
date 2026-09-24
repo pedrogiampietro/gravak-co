@@ -302,10 +302,12 @@ dependencies = [
  "bytemuck",
  "fontdb",
  "fontdue",
+ "gravak-protocol",
  "image",
  "pollster",
  "rodio",
  "sandbox-data",
+ "tokio",
  "wgpu",
  "winit",
 ]

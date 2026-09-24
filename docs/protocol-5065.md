@@ -57,3 +57,13 @@ cargo run --release --locked -p gravak-probe
 ```
 
 O `gravak-probe` usa o token e o endereço retornados para abrir a conexão do game server, envia `MsgConnect` 1052, registra o personagem quando recebe `NEW_ROLE`, reconecta, lê `MsgUserInfo`/`MsgMapInfo` e envia uma caminhada `MsgWalk`.
+
+## Cliente gráfico
+
+O sandbox permanece offline por padrão. Para ativar o fluxo online, use `--online` ou informe `--auth`:
+
+```powershell
+cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
+```
+
+A rede roda em uma thread própria e entrega ao loop da janela os estados de conexão, personagem, mapa e posição inicial. O movimento visual ainda é local; a próxima etapa é transformar cada passo do `Player` em `MsgWalk` e reconciliar respostas do servidor.

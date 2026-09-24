@@ -8,10 +8,12 @@ mod map;
 mod minimap;
 mod motion_math;
 mod movement;
+mod network;
 mod renderer;
 mod validation;
 use action::Action;
 use assets::{Assets, Result};
+use network::{NetworkConfig, NetworkEvent, NetworkHandle};
 use std::{path::PathBuf, sync::Arc, time::Instant};
 use winit::{
     application::ApplicationHandler,
@@ -35,6 +37,8 @@ struct App {
     modifiers: winit::keyboard::ModifiersState,
     held: bool,
     queued_jump: Option<[i32; 2]>,
+    network: Option<NetworkHandle>,
+    network_status: String,
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -45,7 +49,7 @@ impl ApplicationHandler for App {
             let window = Arc::new(
                 event_loop.create_window(
                     Window::default_attributes()
-                        .with_title("dek — offline Twin City sandbox")
+                        .with_title("gravak-co — offline Twin City sandbox")
                         .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768)),
                 )?,
             );
@@ -138,6 +142,14 @@ impl ApplicationHandler for App {
         }
     }
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let events = self
+            .network
+            .as_ref()
+            .map(NetworkHandle::drain)
+            .unwrap_or_default();
+        for event in events {
+            self.handle_network_event(event);
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -166,11 +178,33 @@ impl App {
             }
         }
     }
+
+    fn handle_network_event(&mut self, event: NetworkEvent) {
+        match event {
+            NetworkEvent::Status(status) => self.network_status = status,
+            NetworkEvent::Ready(ready) => {
+                self.player.position = ready.position.map(|value| value as f32);
+                self.character.name = ready.character_name;
+                self.network_status =
+                    format!("online: char {} map {}", ready.character_id, ready.map_id);
+            }
+            NetworkEvent::WalkConfirmed {
+                character_id,
+                direction,
+            } => {
+                self.network_status = format!("online: walk {character_id} dir {direction}");
+            }
+            NetworkEvent::Error(error) => self.network_status = format!("network error: {error}"),
+        }
+        if let Some(window) = &self.window {
+            window.set_title(&format!("gravak-co — {}", self.network_status));
+        }
+    }
 }
 fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let mut root = None;
-    let mut map_id = 1002;
+    let mut map_id = None;
     let mut body =
         sandbox_data::ini::SectionCatalog::parse(include_bytes!("../../../character.ini"))
             .section("Character")
@@ -179,6 +213,12 @@ fn run() -> Result<()> {
             .parse::<u32>()?;
     let mut spawn = None;
     let mut check = false;
+    let mut online = false;
+    let mut auth_address = "127.0.0.1:9958".to_owned();
+    let mut username = "test1".to_owned();
+    let mut password = "123456".to_owned();
+    let mut realm = "CoEmu".to_owned();
+    let mut character_name = None;
     while let Some(arg) = args.next() {
         match arg.to_str().ok_or("Invalid argument encoding")? {
             "--assets" => {
@@ -187,12 +227,13 @@ fn run() -> Result<()> {
                 ))
             }
             "--map" => {
-                map_id = args
-                    .next()
-                    .ok_or("--map requires an ID")?
-                    .to_str()
-                    .ok_or("Invalid map")?
-                    .parse()?
+                map_id = Some(
+                    args.next()
+                        .ok_or("--map requires an ID")?
+                        .to_str()
+                        .ok_or("Invalid map")?
+                        .parse()?,
+                )
             }
             "--body" => {
                 body = args
@@ -218,25 +259,91 @@ fn run() -> Result<()> {
                 spawn = Some([x, y]);
             }
             "--check-assets" => check = true,
+            "--online" => online = true,
+            "--auth" => {
+                auth_address = args
+                    .next()
+                    .ok_or("--auth requires an address")?
+                    .to_str()
+                    .ok_or("Invalid auth address")?
+                    .to_owned();
+                online = true;
+            }
+            "--username" => {
+                username = args
+                    .next()
+                    .ok_or("--username requires a value")?
+                    .to_str()
+                    .ok_or("Invalid username")?
+                    .to_owned();
+            }
+            "--password" => {
+                password = args
+                    .next()
+                    .ok_or("--password requires a value")?
+                    .to_str()
+                    .ok_or("Invalid password")?
+                    .to_owned();
+            }
+            "--realm" => {
+                realm = args
+                    .next()
+                    .ok_or("--realm requires a value")?
+                    .to_str()
+                    .ok_or("Invalid realm")?
+                    .to_owned();
+            }
+            "--character" => {
+                character_name = Some(
+                    args.next()
+                        .ok_or("--character requires a name")?
+                        .to_str()
+                        .ok_or("Invalid character name")?
+                        .to_owned(),
+                );
+            }
             "--help" | "-h" => {
                 println!(
-                    "You must supply your own Conquer Online 5065 installation.\nconquer-sandbox --assets <installation> [--map 1002] [--spawn X Y] [--body 1..4] [--check-assets]\nOffline only. Click to run; Space stops; Escape exits. No bundled assets."
+                    "You must supply your own Conquer Online 5065 installation.\ngravak-co --assets <installation> [--online|--auth HOST:PORT] [--username USER] [--password PASS] [--realm REALM] [--character NAME] [--map ID] [--spawn X Y] [--body 1..4] [--check-assets]\nOffline by default. In online mode the client authenticates and loads the server character/map. Click to move; Space stops; Escape exits. No bundled assets."
                 );
                 return Ok(());
             }
             _ => return Err("Unknown argument; use --help".into()),
         }
     }
+    let mut network = None;
+    let mut server_ready = None;
+    if online {
+        let handle = NetworkHandle::start(NetworkConfig {
+            auth_address,
+            username,
+            password,
+            realm,
+            character_name,
+        });
+        let ready = handle.wait_ready()?;
+        if map_id.is_none() {
+            map_id = Some(ready.map_id);
+        }
+        server_ready = Some(ready);
+        network = Some(handle);
+    }
+    let map_id = map_id.unwrap_or(1002);
     let mut assets = Assets::open(
         &root.ok_or("You must supply your own 5065 installation: --assets <directory>")?,
     )?;
     let map = map::Map::load(&mut assets, map_id)?;
-    let character = character::Character::load(&mut assets, body)?;
-    let spawn = spawn.or(if map_id == 1002 {
-        Some([430, 380])
-    } else {
-        None
-    });
+    let mut character = character::Character::load(&mut assets, body)?;
+    if let Some(ready) = &server_ready {
+        character.name = ready.character_name.clone();
+    }
+    let spawn = spawn
+        .or_else(|| server_ready.as_ref().map(|ready| ready.position))
+        .or(if map_id == 1002 {
+            Some([430, 380])
+        } else {
+            None
+        });
     let player = movement::Player::new(&map, spawn)?;
     let mut audio = match audio::MovementAudio::load(&mut assets, &character) {
         Ok(audio) => Some(audio),
@@ -294,6 +401,12 @@ fn run() -> Result<()> {
         modifiers: Default::default(),
         held: false,
         queued_jump: None,
+        network,
+        network_status: if online {
+            "online".into()
+        } else {
+            "offline".into()
+        },
     };
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.error {
