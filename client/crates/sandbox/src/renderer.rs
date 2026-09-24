@@ -43,6 +43,7 @@ pub struct Renderer {
     missing: HashSet<String>,
     minimap: Option<crate::minimap::Minimap>,
     minimap_map: Option<u32>,
+    shop_signature: Option<u64>,
 }
 impl Renderer {
     pub async fn new(window: Arc<Window>) -> Result<Self> {
@@ -153,6 +154,7 @@ impl Renderer {
             missing: HashSet::new(),
             minimap: None,
             minimap_map: None,
+            shop_signature: None,
         })
     }
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -545,13 +547,15 @@ impl Renderer {
             shop.items.hash(&mut hasher);
             shop.hover.hash(&mut hasher);
             shop.selected.hash(&mut hasher);
-            let key = format!("@shop-{}", hasher.finish());
-            if !self.textures.contains_key(&key) {
-                self.upload(&key, crate::shop::panel_image(assets, shop)?);
+            let signature = hasher.finish();
+            let key = "@shop-panel";
+            if self.shop_signature != Some(signature) {
+                self.upload(key, crate::shop::panel_image(assets, shop)?);
+                self.shop_signature = Some(signature);
             }
-            if let Some(texture) = self.textures.get(&key) {
+            if let Some(texture) = self.textures.get(key) {
                 draws.push(Draw {
-                    texture: key,
+                    texture: key.into(),
                     vertices: quad(crate::shop::panel_position(viewport), texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,

@@ -15,6 +15,7 @@ pub struct ShopState {
     pub npc_id: u32,
     pub name: String,
     pub items: Vec<u32>,
+    icons: Vec<RgbaImage>,
     pub hover: Option<usize>,
     pub selected: Option<usize>,
 }
@@ -62,10 +63,23 @@ impl ShopState {
         {
             found = Some((id, name, items));
         }
-        Ok(found.map(|(npc_id, name, items)| Self {
+        let Some((npc_id, name, items)) = found else {
+            return Ok(None);
+        };
+        let animation = assets
+            .read("ani/ItemMinIcon.Ani")
+            .ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        let icons = items
+            .iter()
+            .take(20)
+            .map(|item_id| load_icon(assets, *item_id, animation.as_deref()))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some(Self {
             npc_id,
             name,
             items,
+            icons,
             hover: None,
             selected: None,
         }))
@@ -123,13 +137,15 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
         state.name.as_str()
     };
     labels::text(&mut image, &font, &[(title, [255, 232, 160])], [90.0, 8.0]);
-    for (index, item_id) in state.items.iter().take(20).enumerate() {
+    for (index, _item_id) in state.items.iter().take(20).enumerate() {
         let row = index as u32 / 5;
         let column = index as u32 % 5;
         let x = SLOT_X + column * SLOT_STEP_X + 4;
         let y = SLOT_Y + row * SLOT_STEP_Y + 4;
-        let icon = load_icon(assets, *item_id)?;
-        imageops::overlay(&mut image, &icon, x.into(), y.into());
+        let Some(icon) = state.icons.get(index) else {
+            continue;
+        };
+        imageops::overlay(&mut image, icon, x.into(), y.into());
         if state.hover == Some(index) || state.selected == Some(index) {
             let colour = if state.selected == Some(index) {
                 Rgba([255, 220, 70, 255])
@@ -181,7 +197,11 @@ pub fn tooltip_image(item_id: u32) -> Result<RgbaImage> {
     Ok(image)
 }
 
-fn load_icon(assets: &mut Assets, item_id: u32) -> Result<image::RgbaImage> {
+fn load_icon(
+    assets: &mut Assets,
+    item_id: u32,
+    animation: Option<&str>,
+) -> Result<image::RgbaImage> {
     let candidates = [
         format!("data/ItemMinIcon/{item_id}.dds"),
         format!("data/MapItemIcon/{item_id}.dds"),
@@ -189,6 +209,26 @@ fn load_icon(assets: &mut Assets, item_id: u32) -> Result<image::RgbaImage> {
     for path in candidates {
         if let Ok(icon) = assets.image(&path) {
             return Ok(imageops::resize(&icon, 36, 36, imageops::FilterType::Nearest));
+        }
+    }
+    if let Some(animation) = animation {
+        for colour in 3..=9 {
+            let section = format!("[Item{colour}{item_id}]");
+            let Some(section_start) = animation.find(&section) else {
+                continue;
+            };
+            let section = &animation[section_start..];
+            let Some(frame) = section
+                .lines()
+                .skip(1)
+                .take_while(|line| !line.starts_with('['))
+                .find_map(|line| line.strip_prefix("Frame0="))
+            else {
+                continue;
+            };
+            if let Ok(icon) = assets.image(frame.trim()) {
+                return Ok(imageops::resize(&icon, 36, 36, imageops::FilterType::Nearest));
+            }
         }
     }
     Ok(placeholder_icon(item_id)?)
@@ -207,10 +247,38 @@ fn placeholder_icon(item_id: u32) -> Result<RgbaImage> {
         image.put_pixel(0, offset, Rgba([accent[0], accent[1], accent[2], 255]));
         image.put_pixel(35, offset, Rgba([accent[0], accent[1], accent[2], 255]));
     }
-    let font = labels::font()?;
-    let short_id = format!("{:03}", item_id % 1000);
-    labels::text(&mut image, &font, &[(&short_id, [230, 220, 170])], [5.0, 13.0]);
+    let short_id = item_id % 1000;
+    let digits = [short_id / 100, (short_id / 10) % 10, short_id % 10];
+    for (index, digit) in digits.into_iter().enumerate() {
+        draw_digit(&mut image, digit as usize, 5 + index as u32 * 9, 12, accent);
+    }
     Ok(image)
+}
+
+fn draw_digit(image: &mut RgbaImage, digit: usize, left: u32, top: u32, colour: [u8; 3]) {
+    const GLYPHS: [[u8; 15]; 10] = [
+        [1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1],
+        [0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1],
+        [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1],
+        [1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1],
+        [1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1],
+        [1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1],
+        [1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+        [1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0],
+        [1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+        [1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1],
+    ];
+    for row in 0..5 {
+        for column in 0..3 {
+            if GLYPHS[digit][row * 3 + column] != 0 {
+                image.put_pixel(
+                    left + column as u32,
+                    top + row as u32,
+                    Rgba([colour[0], colour[1], colour[2], 255]),
+                );
+            }
+        }
+    }
 }
 
 fn outline(image: &mut RgbaImage, x: u32, y: u32, size: u32, colour: Rgba<u8>) {

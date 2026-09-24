@@ -348,7 +348,10 @@ impl App {
                 if self
                     .shop
                     .as_ref()
-                    .is_some_and(|shop| dialog.task_id == shop.npc_id)
+                    .is_some_and(|shop| {
+                        dialog.task_id == shop.npc_id
+                            || (dialog.action == 100 && dialog.messages.is_empty())
+                    })
                 {
                     return;
                 }
