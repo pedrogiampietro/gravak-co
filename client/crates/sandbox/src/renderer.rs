@@ -547,6 +547,7 @@ impl Renderer {
             shop.items.hash(&mut hasher);
             shop.page.hash(&mut hasher);
             shop.selected.hash(&mut hasher);
+            shop.repair_hover.hash(&mut hasher);
             let signature = hasher.finish();
             let key = "@shop-panel";
             if self.shop_signature != Some(signature) {
