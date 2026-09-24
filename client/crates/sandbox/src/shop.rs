@@ -6,8 +6,9 @@ const SHOP_HEIGHT: u32 = 270;
 const INVENTORY_HEIGHT: u32 = 512;
 const SLOT_X: u32 = 25;
 const SLOT_Y: u32 = 27;
-const SLOT_STEP: u32 = 48;
-const SLOT_SIZE: u32 = 43;
+const SLOT_STEP_X: u32 = 48;
+const SLOT_STEP_Y: u32 = 50;
+const SLOT_SIZE: u32 = 40;
 
 #[derive(Debug, Clone)]
 pub struct ShopState {
@@ -75,13 +76,13 @@ impl ShopState {
         if cursor[0] < left + SLOT_X as f32 || cursor[1] < top + SLOT_Y as f32 {
             return None;
         }
-        let column = ((cursor[0] - left - SLOT_X as f32) / SLOT_STEP as f32).floor() as u32;
-        let row = ((cursor[1] - top - SLOT_Y as f32) / SLOT_STEP as f32).floor() as u32;
+        let column = ((cursor[0] - left - SLOT_X as f32) / SLOT_STEP_X as f32).floor() as u32;
+        let row = ((cursor[1] - top - SLOT_Y as f32) / SLOT_STEP_Y as f32).floor() as u32;
         if column >= 5 || row >= 4 {
             return None;
         }
-        let x = left + SLOT_X as f32 + column as f32 * SLOT_STEP as f32;
-        let y = top + SLOT_Y as f32 + row as f32 * SLOT_STEP as f32;
+        let x = left + SLOT_X as f32 + column as f32 * SLOT_STEP_X as f32;
+        let y = top + SLOT_Y as f32 + row as f32 * SLOT_STEP_Y as f32;
         if cursor[0] > x + SLOT_SIZE as f32 || cursor[1] > y + SLOT_SIZE as f32 {
             return None;
         }
@@ -105,7 +106,12 @@ pub fn inventory_position(viewport: [f32; 2]) -> [f32; 2] {
 pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> {
     let source = assets.image("data/main/DialogMpcGoods.dds")?;
     let mut image = RgbaImage::new(PANEL_WIDTH, SHOP_HEIGHT);
-    let top = imageops::crop_imm(&source, 0, 0, PANEL_WIDTH, 222).to_image();
+    let top = imageops::resize(
+        &imageops::crop_imm(&source, 0, 0, PANEL_WIDTH, 238).to_image(),
+        PANEL_WIDTH,
+        220,
+        imageops::FilterType::Nearest,
+    );
     let footer = imageops::crop_imm(&source, 0, 460, PANEL_WIDTH, 52).to_image();
     imageops::replace(&mut image, &top, 0, 0);
     imageops::replace(&mut image, &footer, 0, 218);
@@ -120,8 +126,8 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     for (index, item_id) in state.items.iter().take(20).enumerate() {
         let row = index as u32 / 5;
         let column = index as u32 % 5;
-        let x = SLOT_X + column * SLOT_STEP + 3;
-        let y = SLOT_Y + row * SLOT_STEP + 3;
+        let x = SLOT_X + column * SLOT_STEP_X + 4;
+        let y = SLOT_Y + row * SLOT_STEP_Y + 4;
         let icon = load_icon(assets, *item_id)?;
         imageops::overlay(&mut image, &icon, x.into(), y.into());
         if state.hover == Some(index) || state.selected == Some(index) {
@@ -179,14 +185,32 @@ fn load_icon(assets: &mut Assets, item_id: u32) -> Result<image::RgbaImage> {
     let candidates = [
         format!("data/ItemMinIcon/{item_id}.dds"),
         format!("data/MapItemIcon/{item_id}.dds"),
-        "data/ItemMinIcon/130200.dds".to_owned(),
     ];
     for path in candidates {
         if let Ok(icon) = assets.image(&path) {
             return Ok(imageops::resize(&icon, 36, 36, imageops::FilterType::Nearest));
         }
     }
-    Ok(RgbaImage::from_pixel(36, 36, Rgba([22, 32, 42, 255])))
+    Ok(placeholder_icon(item_id)?)
+}
+
+fn placeholder_icon(item_id: u32) -> Result<RgbaImage> {
+    let mut image = RgbaImage::from_pixel(36, 36, Rgba([19, 28, 38, 255]));
+    let accent = [
+        90 + ((item_id >> 8) & 0x3f) as u8,
+        90 + ((item_id >> 4) & 0x3f) as u8,
+        90 + (item_id & 0x3f) as u8,
+    ];
+    for offset in 0..36 {
+        image.put_pixel(offset, 0, Rgba([accent[0], accent[1], accent[2], 255]));
+        image.put_pixel(offset, 35, Rgba([accent[0], accent[1], accent[2], 255]));
+        image.put_pixel(0, offset, Rgba([accent[0], accent[1], accent[2], 255]));
+        image.put_pixel(35, offset, Rgba([accent[0], accent[1], accent[2], 255]));
+    }
+    let font = labels::font()?;
+    let short_id = format!("{:03}", item_id % 1000);
+    labels::text(&mut image, &font, &[(&short_id, [230, 220, 170])], [5.0, 13.0]);
+    Ok(image)
 }
 
 fn outline(image: &mut RgbaImage, x: u32, y: u32, size: u32, colour: Rgba<u8>) {
