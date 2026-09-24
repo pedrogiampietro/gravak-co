@@ -349,7 +349,6 @@ impl App {
                     .messages
                     .iter()
                     .any(|message| message.contains("catalog items"));
-                let shop_npc_id = dialog.task_id;
                 let state = self.dialog.get_or_insert_with(|| DialogState {
                     task_id: dialog.task_id,
                     lines: Vec::new(),
@@ -366,6 +365,7 @@ impl App {
                     }
                 }
                 if opens_shop {
+                    let shop_npc_id = state.task_id;
                     match shop::ShopState::load(&mut self.assets, shop_npc_id) {
                         Ok(Some(shop)) => {
                             self.shop = Some(shop);
