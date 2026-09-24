@@ -2,7 +2,7 @@
 INSERT INTO realms (name, game_ip_address, game_port)
 VALUES (
     'CoEmu',
-    '192.168.0.200',
-    -- Change this to your server's IP address
+    '127.0.0.1',
+    -- Change this to the game server's address for a remote deployment
     5816
   ) ON CONFLICT(name) DO NOTHING;

@@ -1,0 +1,14 @@
+[package]
+name = "gravak-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes = "1.10"
+serde.workspace = true
+tokio = { version = "1.48", features = ["net", "rt", "macros"] }
+tokio-stream = "0.1"
+tq-crypto = { path = "../../../server/crates/crypto", features = ["std"] }
+tq-network = { path = "../../../server/crates/network", features = ["std"] }
+tq-serde = { path = "../../../server/crates/serde", features = ["std"] }
