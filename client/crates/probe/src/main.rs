@@ -176,6 +176,17 @@ async fn load_map_and_walk(
             }
             Some(GameEvent::Action(action)) => println!("Location OK: map_id={}", action.data1),
             Some(GameEvent::Talk(talk)) => println!("World talk: {}", talk.message),
+            Some(GameEvent::Player(player)) => println!(
+                "Player spawn: id={}, name={}, position=({}, {})",
+                player.character_id, player.character_name, player.x, player.y
+            ),
+            Some(GameEvent::NpcInfo(npc)) => println!(
+                "NPC spawn: id={}, name={}, position=({}, {})",
+                npc.id,
+                npc.name.as_deref().unwrap_or(""),
+                npc.x,
+                npc.y
+            ),
             Some(_) => {}
             None => {
                 return Err(gravak_protocol::ProtocolError::MalformedResponse(
@@ -196,6 +207,17 @@ async fn load_map_and_walk(
                 return Ok(());
             }
             Some(GameEvent::Talk(talk)) => println!("Movement talk: {}", talk.message),
+            Some(GameEvent::Player(player)) => println!(
+                "Player spawn: id={}, name={}, position=({}, {})",
+                player.character_id, player.character_name, player.x, player.y
+            ),
+            Some(GameEvent::NpcInfo(npc)) => println!(
+                "NPC spawn: id={}, name={}, position=({}, {})",
+                npc.id,
+                npc.name.as_deref().unwrap_or(""),
+                npc.x,
+                npc.y
+            ),
             Some(_) => {}
             None => {
                 return Err(gravak_protocol::ProtocolError::MalformedResponse(

@@ -1,5 +1,6 @@
 use gravak_protocol::{
-    ActionPacket, AuthResponse, GameEvent, GameSession, RegisterCharacter, authenticate,
+    ActionPacket, AuthResponse, GameEvent, GameSession, RegisterCharacter, ServerNpcInfo,
+    ServerPlayer, authenticate,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -39,7 +40,19 @@ pub enum NetworkEvent {
         position: [i32; 2],
         direction: u8,
     },
+    PlayerSpawn(RemoteActor),
+    NpcSpawn(RemoteActor),
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteActor {
+    pub id: u32,
+    pub name: String,
+    pub position: [f32; 2],
+    pub direction: u8,
+    pub mesh: u32,
+    pub npc: bool,
 }
 
 enum NetworkCommand {
@@ -89,7 +102,9 @@ impl NetworkHandle {
                 NetworkEvent::Error(error) => return Err(error),
                 NetworkEvent::WalkConfirmed { .. }
                 | NetworkEvent::MovementRejected(_)
-                | NetworkEvent::Reposition { .. } => {}
+                | NetworkEvent::Reposition { .. }
+                | NetworkEvent::PlayerSpawn(_)
+                | NetworkEvent::NpcSpawn(_) => {}
             }
         }
     }
@@ -228,6 +243,12 @@ async fn run(
                         direction: action.details as u8,
                     });
                 }
+                Some(GameEvent::Player(player)) => {
+                    let _ = events.send(NetworkEvent::PlayerSpawn(player_actor(player)));
+                }
+                Some(GameEvent::NpcInfo(npc)) => {
+                    let _ = events.send(NetworkEvent::NpcSpawn(npc_actor(npc)));
+                }
                 Some(_) => {}
                 None => return Ok(()),
             },
@@ -241,6 +262,28 @@ async fn run(
                 None => return Ok(()),
             },
         }
+    }
+}
+
+fn player_actor(player: ServerPlayer) -> RemoteActor {
+    RemoteActor {
+        id: player.character_id.max(0) as u32,
+        name: player.character_name,
+        position: [player.x as f32, player.y as f32],
+        direction: player.direction,
+        mesh: player.mesh.max(0) as u32,
+        npc: false,
+    }
+}
+
+fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
+    RemoteActor {
+        id: npc.id,
+        name: npc.name.unwrap_or_default(),
+        position: [npc.x as f32, npc.y as f32],
+        direction: 0,
+        mesh: npc.look as u32,
+        npc: true,
     }
 }
 

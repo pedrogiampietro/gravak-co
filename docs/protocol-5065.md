@@ -24,6 +24,8 @@ Este documento registra a primeira fatia de integração entre o cliente e o ser
 | Cliente → Game | 1001 | `MsgRegister` | implementado para personagem de teste |
 | Cliente → Game | 1010 | `MsgAction` | `SendLocation` implementado |
 | Game → Cliente | 1033 | `MsgData` | parser implementado |
+| Game → Cliente | 1014 | `MsgPlayer` | spawn de jogadores remotos implementado |
+| Game → Cliente | 2030 | `MsgNpcInfo` | spawn de NPCs implementado |
 
 ## `MsgAccount` — 1051
 
@@ -69,3 +71,5 @@ cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --a
 A rede roda em uma thread própria e entrega ao loop da janela os estados de conexão, personagem, mapa e posição inicial. Cada passo concluído pelo `Player` já é convertido para a direção 0–7 e enviado como `MsgWalk`. Ecos válidos confirmam a fila de passos; `Invalid Location` e `MsgAction::Teleport` limpam a fila e reposicionam o jogador na coordenada do servidor.
 
 O `9960` é específico do ambiente local atual, onde o auth do monorepo roda ao lado do auth legado em `9958`.
+
+Os spawns recebidos durante o carregamento da tela ficam em uma coleção de atores remotos. O renderer atual usa o modelo local como representação provisória, preservando posição e direção recebidas; a próxima evolução é selecionar mesh, aparência, animação e nome de cada entidade individualmente.

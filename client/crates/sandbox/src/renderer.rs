@@ -1,9 +1,11 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 use crate::{
+    action::Action,
     assets::{Assets, Result},
     character::Character,
     map::Map,
     movement::Player,
+    network::RemoteActor,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -257,6 +259,7 @@ impl Renderer {
         map: &Map,
         character: &Character,
         player: &Player,
+        remote_actors: &HashMap<u32, RemoteActor>,
         time: f32,
     ) -> Result<()> {
         let camera = self.camera(map, player);
@@ -359,6 +362,39 @@ impl Renderer {
                 depth_test: true,
                 sort_depth: actor_depth,
             });
+        }
+        for actor in remote_actors.values() {
+            let projected = map.project(actor.position);
+            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            let depth = actor.position[0] + actor.position[1];
+            let facing = -f32::from((actor.direction % 8) + 1) * std::f32::consts::FRAC_PI_4;
+            for part in &character.parts {
+                self.texture(assets, &part.texture);
+                let vertices = character.vertices(part, time, Action::Idle, facing, None);
+                let triangles = part
+                    .mesh
+                    .opaque_indices
+                    .iter()
+                    .chain(&part.mesh.alpha_indices)
+                    .map(|i| {
+                        let (p, uv) = vertices[*i as usize];
+                        Vertex {
+                            position: clip(
+                                [origin[0] + p[0], origin[1] + p[1]],
+                                (0.5 + p[2] * 0.0005).clamp(0.001, 0.999),
+                                viewport,
+                            ),
+                            uv,
+                        }
+                    })
+                    .collect();
+                draws.push(Draw {
+                    texture: part.texture.clone(),
+                    vertices: triangles,
+                    depth_test: true,
+                    sort_depth: depth,
+                });
+            }
         }
         if !self.textures.contains_key("@label") {
             self.upload("@label", crate::labels::image(character)?);

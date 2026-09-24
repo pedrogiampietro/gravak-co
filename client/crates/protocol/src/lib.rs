@@ -24,6 +24,8 @@ pub const MSG_ACTION: u16 = 1010;
 pub const MSG_WEATHER: u16 = 1016;
 pub const MSG_DATA: u16 = 1033;
 pub const MSG_MAP_INFO: u16 = 1110;
+pub const MSG_PLAYER: u16 = 1014;
+pub const MSG_NPC_INFO: u16 = 2030;
 
 #[derive(Debug, Serialize, PacketID)]
 #[packet(id = 1052)]
@@ -209,6 +211,59 @@ pub struct MapInfo {
     pub flags: u8,
 }
 
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct ServerPlayer {
+    pub character_id: i32,
+    pub mesh: i32,
+    pub status_flags: i64,
+    pub syndicate_id: i16,
+    pub reserved0: u8,
+    pub syndicate_member_rank: u8,
+    pub germent: i32,
+    pub helment: i32,
+    pub armor: i32,
+    pub right_hand: i32,
+    pub left_hand: i32,
+    pub reserved1: i32,
+    pub health_points: u16,
+    pub level: i16,
+    pub x: u16,
+    pub y: u16,
+    pub hair_style: i16,
+    pub direction: u8,
+    pub action: u8,
+    pub metempsychosis: i16,
+    pub level2: i16,
+    pub reserved2: i32,
+    pub nobility_rank: i32,
+    pub character_id2: i32,
+    pub nobility_position: i32,
+    pub list_count: u8,
+    pub character_name: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+struct ServerNpcInfoWire {
+    pub id: u32,
+    pub x: u16,
+    pub y: u16,
+    pub look: u16,
+    pub kind: u16,
+    pub sort: u16,
+    pub list_count: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerNpcInfo {
+    pub id: u32,
+    pub x: u16,
+    pub y: u16,
+    pub look: u16,
+    pub kind: u16,
+    pub sort: u16,
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameEvent {
     Talk(ServerTalk),
@@ -217,6 +272,8 @@ pub enum GameEvent {
     MapInfo(MapInfo),
     Action(ActionPacket),
     Walk(WalkPacket),
+    Player(ServerPlayer),
+    NpcInfo(ServerNpcInfo),
     Other(u16, Bytes),
 }
 
@@ -298,8 +355,33 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_WALK => Ok(GameEvent::Walk(
             WalkPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_PLAYER => Ok(GameEvent::Player(
+            ServerPlayer::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_NPC_INFO => Ok(GameEvent::NpcInfo(decode_npc_info(body)?)),
         _ => Ok(GameEvent::Other(id, body.clone())),
     }
+}
+
+fn decode_npc_info(body: &Bytes) -> Result<ServerNpcInfo, ProtocolError> {
+    let wire = ServerNpcInfoWire::decode(body).map_err(ProtocolError::Decode)?;
+    let name = if wire.list_count > 0 {
+        if body.len() <= 15 {
+            return Err(ProtocolError::MalformedResponse("npc info name is missing"));
+        }
+        Some(String::decode(&body.slice(15..)).map_err(ProtocolError::Decode)?)
+    } else {
+        None
+    };
+    Ok(ServerNpcInfo {
+        id: wire.id,
+        x: wire.x,
+        y: wire.y,
+        look: wire.look,
+        kind: wire.kind,
+        sort: wire.sort,
+        name,
+    })
 }
 
 #[derive(Debug)]
@@ -537,5 +619,52 @@ mod tests {
         assert_eq!(map.uid, 1010);
         assert_eq!(map.map_id, 1010);
         assert_eq!(map.flags, 0);
+    }
+
+    #[test]
+    fn decodes_player_and_npc_screen_spawns() {
+        let mut player = Vec::new();
+        player.extend_from_slice(&1000002_i32.to_le_bytes());
+        player.extend_from_slice(&241003_i32.to_le_bytes());
+        player.extend_from_slice(&0_i64.to_le_bytes());
+        player.extend_from_slice(&0_i16.to_le_bytes());
+        player.extend_from_slice(&[0, 0]);
+        player.extend_from_slice(&[0; 24]);
+        player.extend_from_slice(&100_u16.to_le_bytes());
+        player.extend_from_slice(&1_i16.to_le_bytes());
+        player.extend_from_slice(&61_u16.to_le_bytes());
+        player.extend_from_slice(&110_u16.to_le_bytes());
+        player.extend_from_slice(&311_i16.to_le_bytes());
+        player.extend_from_slice(&[0, 1]);
+        player.extend_from_slice(&[0; 2 + 2 + 4 + 4 + 4 + 4]);
+        player.push(1);
+        player.push(5);
+        player.extend_from_slice(b"Other");
+        let GameEvent::Player(player) =
+            decode_game_event(MSG_PLAYER, &Bytes::from(player)).unwrap()
+        else {
+            panic!("expected player spawn");
+        };
+        assert_eq!(player.character_id, 1000002);
+        assert_eq!(player.character_name, "Other");
+        assert_eq!((player.x, player.y), (61, 110));
+
+        let mut npc = Vec::new();
+        npc.extend_from_slice(&77_u32.to_le_bytes());
+        npc.extend_from_slice(&62_u16.to_le_bytes());
+        npc.extend_from_slice(&111_u16.to_le_bytes());
+        npc.extend_from_slice(&123_u16.to_le_bytes());
+        npc.extend_from_slice(&1_u16.to_le_bytes());
+        npc.extend_from_slice(&2_u16.to_le_bytes());
+        npc.push(1);
+        npc.push(3);
+        npc.extend_from_slice(b"Bob");
+        let GameEvent::NpcInfo(npc) = decode_game_event(MSG_NPC_INFO, &Bytes::from(npc)).unwrap()
+        else {
+            panic!("expected npc spawn");
+        };
+        assert_eq!(npc.id, 77);
+        assert_eq!((npc.x, npc.y), (62, 111));
+        assert_eq!(npc.name.as_deref(), Some("Bob"));
     }
 }

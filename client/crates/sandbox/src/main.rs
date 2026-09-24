@@ -14,8 +14,13 @@ mod validation;
 use action::Action;
 use assets::{Assets, Result};
 use motion_math::direction_towards;
-use network::{NetworkConfig, NetworkEvent, NetworkHandle};
-use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Instant};
+use network::{NetworkConfig, NetworkEvent, NetworkHandle, RemoteActor};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+    time::Instant,
+};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, WindowEvent},
@@ -42,6 +47,7 @@ struct App {
     network_character_id: Option<u32>,
     confirmed_network_cell: Option<[i32; 2]>,
     pending_network_steps: VecDeque<[i32; 2]>,
+    remote_actors: HashMap<u32, RemoteActor>,
     network_status: String,
 }
 impl ApplicationHandler for App {
@@ -137,6 +143,7 @@ impl ApplicationHandler for App {
                         &self.map,
                         &self.character,
                         &self.player,
+                        &self.remote_actors,
                         self.started.elapsed().as_secs_f32(),
                     )
                 {
@@ -224,6 +231,20 @@ impl App {
                 self.player.position = position.map(|value| value as f32);
                 self.player.stop();
                 self.network_status = format!("online: repositioned map {map_id} dir {direction}");
+            }
+            NetworkEvent::PlayerSpawn(actor) | NetworkEvent::NpcSpawn(actor) => {
+                let kind = if actor.npc { "npc" } else { "player" };
+                let id = actor.id;
+                self.remote_actors.insert(id, actor);
+                if let Some(actor) = self.remote_actors.get(&id) {
+                    self.network_status = format!(
+                        "online: {} {} mesh {} ({} actors)",
+                        kind,
+                        actor.name,
+                        actor.mesh,
+                        self.remote_actors.len()
+                    );
+                }
             }
             NetworkEvent::Error(error) => self.network_status = format!("network error: {error}"),
         }
@@ -461,6 +482,7 @@ fn run() -> Result<()> {
         network_character_id: server_ready.as_ref().map(|ready| ready.character_id),
         confirmed_network_cell: server_ready.as_ref().map(|ready| ready.position),
         pending_network_steps: VecDeque::new(),
+        remote_actors: HashMap::new(),
         network_status: if online {
             "online".into()
         } else {
