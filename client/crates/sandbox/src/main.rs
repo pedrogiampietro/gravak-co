@@ -297,6 +297,9 @@ impl App {
                         + action_duration(action, &self.character);
                 }
             }
+            NetworkEvent::NpcDialog => {
+                self.network_status = "online: NPC dialog received".into();
+            }
             NetworkEvent::RemoveActor(id) => {
                 self.remote_actors.remove(&id);
                 self.remote_models.remove(&id);
@@ -396,13 +399,16 @@ impl App {
                 within.then_some((actor.position[0] + actor.position[1], actor))
             })
             .min_by(|(left, _), (right, _)| left.total_cmp(right))
-            .map(|(_, actor)| (actor.id, actor.npc, actor.name.clone()));
-        let Some((id, npc, name)) = selected else {
+            .map(|(_, actor)| (actor.id, actor.npc, actor.npc_kind, actor.name.clone()));
+        let Some((id, npc, npc_kind, name)) = selected else {
             return false;
         };
         self.held = false;
         let kind = if npc { "npc" } else { "player" };
         let label = if name.is_empty() { "unnamed" } else { &name };
+        if npc && let Some(network) = &self.network {
+            network.send_npc_interact(id, npc_kind);
+        }
         self.network_status = format!("online: selected {kind} {label} ({id})");
         if let Some(window) = &self.window {
             window.set_title(&format!("gravak-co — {}", self.network_status));

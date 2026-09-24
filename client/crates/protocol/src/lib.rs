@@ -115,6 +115,26 @@ impl ActionPacket {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2031)]
+pub struct NpcPacket {
+    pub npc_id: u32,
+    pub data: u32,
+    pub action: u16,
+    pub kind: u16,
+}
+
+impl NpcPacket {
+    pub fn activate(npc_id: u32, kind: u16) -> Self {
+        Self {
+            npc_id,
+            data: 0,
+            action: 0,
+            kind,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
 #[packet(id = 1005)]
 pub struct WalkPacket {
     pub character_id: u32,

@@ -1,6 +1,6 @@
 use gravak_protocol::{
-    ActionPacket, AuthResponse, GameEvent, GameSession, RegisterCharacter, ServerNpcInfo,
-    ServerPlayer, authenticate,
+    ActionPacket, AuthResponse, GameEvent, GameSession, NpcPacket, RegisterCharacter,
+    ServerNpcInfo, ServerPlayer, authenticate,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -58,6 +58,7 @@ pub enum NetworkEvent {
         id: u32,
         action: u16,
     },
+    NpcDialog,
     RemoveActor(u32),
     PlayerSpawn(RemoteActor),
     NpcSpawn(RemoteActor),
@@ -87,6 +88,7 @@ pub struct RemoteActor {
 enum NetworkCommand {
     Walk { character_id: u32, direction: u8 },
     Action { character_id: u32, action: u32 },
+    NpcInteract { npc_id: u32, kind: u16 },
 }
 
 pub struct NetworkHandle {
@@ -137,6 +139,7 @@ impl NetworkHandle {
                 | NetworkEvent::RemoteFacing { .. }
                 | NetworkEvent::RemoteJump { .. }
                 | NetworkEvent::RemoteAction { .. }
+                | NetworkEvent::NpcDialog
                 | NetworkEvent::RemoveActor(_)
                 | NetworkEvent::PlayerSpawn(_)
                 | NetworkEvent::NpcSpawn(_) => {}
@@ -156,6 +159,12 @@ impl NetworkHandle {
             character_id,
             action,
         });
+    }
+
+    pub fn send_npc_interact(&self, npc_id: u32, kind: u16) {
+        let _ = self
+            .commands
+            .send(NetworkCommand::NpcInteract { npc_id, kind });
     }
 }
 
@@ -322,6 +331,9 @@ async fn run(
                         action: action.data1 as u16,
                     });
                 }
+                Some(GameEvent::Other(2032, _)) => {
+                    let _ = events.send(NetworkEvent::NpcDialog);
+                }
                 Some(GameEvent::Player(player)) => {
                     let _ = events.send(NetworkEvent::PlayerSpawn(player_actor(player)));
                 }
@@ -341,6 +353,12 @@ async fn run(
                 Some(NetworkCommand::Action { character_id, action }) => {
                     session
                         .send(&ActionPacket::change_action(character_id, action))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::NpcInteract { npc_id, kind }) => {
+                    session
+                        .send(&NpcPacket::activate(npc_id, kind))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
