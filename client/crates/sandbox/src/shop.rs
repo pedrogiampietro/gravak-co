@@ -5,7 +5,7 @@ use crate::{
 use image::{imageops, Rgba, RgbaImage};
 use std::collections::{HashMap, HashSet};
 
-const PANEL_WIDTH: u32 = 270;
+const PANEL_WIDTH: u32 = 272;
 const SHOP_HEIGHT: u32 = 250;
 const INVENTORY_HEIGHT: u32 = 512;
 const SLOT_X: u32 = 25;
@@ -15,6 +15,7 @@ const SLOT_STEP_Y: u32 = 43;
 const SLOT_SIZE: u32 = 36;
 const ICON_SIZE: u32 = 32;
 const ICON_OFFSET: u32 = 6;
+const ITEMS_PER_PAGE: usize = 20;
 
 #[derive(Debug, Clone, Default)]
 pub struct ItemInfo {
@@ -34,6 +35,7 @@ pub struct ShopState {
     pub items: Vec<u32>,
     icons: Vec<RgbaImage>,
     infos: HashMap<u32, ItemInfo>,
+    pub page: usize,
     pub hover: Option<usize>,
     pub selected: Option<usize>,
 }
@@ -90,7 +92,6 @@ impl ShopState {
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
         let icons = items
             .iter()
-            .take(20)
             .map(|item_id| load_icon(assets, *item_id, animation.as_deref()))
             .collect::<Result<Vec<_>>>()?;
         let infos = load_item_infos(assets, &items);
@@ -100,6 +101,7 @@ impl ShopState {
             items,
             icons,
             infos,
+            page: 0,
             hover: None,
             selected: None,
         }))
@@ -120,12 +122,18 @@ impl ShopState {
         if cursor[0] > x + SLOT_SIZE as f32 || cursor[1] > y + SLOT_SIZE as f32 {
             return None;
         }
-        let index = row as usize * 5 + column as usize;
+        let index = self.page * ITEMS_PER_PAGE + row as usize * 5 + column as usize;
         (index < self.items.len()).then_some(index)
     }
 
     pub fn item_info(&self, item_id: u32) -> Option<&ItemInfo> {
         self.infos.get(&item_id)
+    }
+
+    pub fn visible_slot(&self, index: usize) -> Option<usize> {
+        let start = self.page * ITEMS_PER_PAGE;
+        (index >= start && index < (start + ITEMS_PER_PAGE).min(self.items.len()))
+            .then_some(index - start)
     }
 }
 
@@ -169,17 +177,29 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     } else {
         state.name.as_str()
     };
-    labels::text(&mut image, &font, &[(title, [255, 232, 160])], [90.0, 8.0]);
-    for (index, _item_id) in state.items.iter().take(20).enumerate() {
-        let row = index as u32 / 5;
-        let column = index as u32 % 5;
+    let title_width = title
+        .chars()
+        .map(|character| font.metrics(character, 12.0).advance_width)
+        .sum::<f32>();
+    labels::text(
+        &mut image,
+        &font,
+        &[(title, [255, 232, 160])],
+        [((PANEL_WIDTH as f32 - title_width) * 0.5).max(0.0), 12.0],
+    );
+    let first_item = state.page * ITEMS_PER_PAGE;
+    for (slot, item_index) in (first_item..(first_item + ITEMS_PER_PAGE).min(state.items.len()))
+        .enumerate()
+    {
+        let row = slot as u32 / 5;
+        let column = slot as u32 % 5;
         let x = SLOT_X + column * SLOT_STEP_X + ICON_OFFSET;
         let y = SLOT_Y + row * SLOT_STEP_Y + ICON_OFFSET;
-        let Some(icon) = state.icons.get(index) else {
+        let Some(icon) = state.icons.get(item_index) else {
             continue;
         };
         imageops::overlay(&mut image, icon, x.into(), y.into());
-        if state.selected == Some(index) {
+        if state.selected == Some(item_index) {
             outline(
                 &mut image,
                 x - 3,
@@ -189,9 +209,23 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
             );
         }
     }
-    labels::text(&mut image, &font, &[("Repair", [255, 232, 160])], [27.0, 218.0]);
-    labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [135.0, 218.0]);
-    labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [194.0, 218.0]);
+    let up = imageops::resize(
+        &assets.image("data/interface/Style01/PublicBtn/PublicSelectU.dds")?,
+        16,
+        16,
+        imageops::FilterType::Nearest,
+    );
+    let down = imageops::resize(
+        &assets.image("data/interface/Style01/PublicBtn/PublicSelectD.dds")?,
+        16,
+        16,
+        imageops::FilterType::Nearest,
+    );
+    imageops::overlay(&mut image, &up, 243, 155);
+    imageops::overlay(&mut image, &down, 243, 190);
+    labels::text(&mut image, &font, &[("Repair", [255, 232, 160])], [33.0, 224.0]);
+    labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [143.0, 224.0]);
+    labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [200.0, 224.0]);
     Ok(image)
 }
 
@@ -203,10 +237,23 @@ pub fn highlight_image() -> RgbaImage {
 
 pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     let [left, top] = panel_position(viewport);
-    cursor[0] >= left + 185.0
-        && cursor[0] <= left + PANEL_WIDTH as f32
-        && cursor[1] >= top + 208.0
-        && cursor[1] <= top + SHOP_HEIGHT as f32
+    cursor[0] >= left + 200.0
+        && cursor[0] <= left + 243.0
+        && cursor[1] >= top + 224.0
+        && cursor[1] <= top + 244.0
+}
+
+pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
+    let [left, top] = panel_position(viewport);
+    let x = cursor[0] - left;
+    let y = cursor[1] - top;
+    if (243.0..259.0).contains(&x) && (155.0..171.0).contains(&y) {
+        Some(false)
+    } else if (243.0..259.0).contains(&x) && (190.0..206.0).contains(&y) {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 pub fn inventory_image(assets: &mut Assets) -> Result<RgbaImage> {

@@ -566,9 +566,22 @@ impl App {
             self.network_status = "online: shop closed".into();
             return true;
         }
+        let scroll = shop::scroll_direction_at(viewport, self.cursor);
         let Some(shop) = &mut self.shop else {
             return true;
         };
+        if let Some(scroll_down) = scroll {
+            let pages = shop.items.len().div_ceil(20);
+            if scroll_down {
+                shop.page = (shop.page + 1).min(pages.saturating_sub(1));
+            } else {
+                shop.page = shop.page.saturating_sub(1);
+            }
+            shop.hover = None;
+            shop.selected = None;
+            self.network_status = format!("online: shop page {} of {}", shop.page + 1, pages.max(1));
+            return true;
+        }
         if let Some(index) = shop.item_at(viewport, self.cursor) {
             shop.selected = Some(index);
             self.network_status = format!("online: selected shop item {}", shop.items[index]);
