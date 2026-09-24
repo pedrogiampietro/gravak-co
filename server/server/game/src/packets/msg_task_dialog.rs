@@ -212,13 +212,23 @@ impl PacketProcess for MsgTaskDialog {
         let character_name = entity.basic().name().to_owned();
         let response = match (npc.map(|npc| npc.kind()), self.option_id) {
             (Some(crate::entities::NpcKind::ShopKeeper), 1) => {
-                let item_count = _state
-                    .shop_catalog()
-                    .offer(self.task_id)
-                    .map_or(0, |offer| offer.item_ids.len());
-                format!(
-                    "This shop has {item_count} catalog items. The next step is opening the item grid and purchase flow."
-                )
+                if let Some(offer) = _state.shop_catalog().offer(self.task_id) {
+                    let preview = offer
+                        .item_ids
+                        .iter()
+                        .take(8)
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "{} has {} catalog items. Preview: {}. The next step is the item grid and purchase flow.",
+                        offer.name,
+                        offer.item_ids.len(),
+                        if preview.is_empty() { "(empty)" } else { &preview }
+                    )
+                } else {
+                    "This shop has no catalog loaded yet.".to_owned()
+                }
             },
             (Some(crate::entities::NpcKind::ShopKeeper), 2) => {
                 "You have no items to sell yet.".to_owned()
