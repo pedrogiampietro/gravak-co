@@ -335,6 +335,10 @@ impl NpcModel {
             motion_model,
             Some(9_990_000 + simple_id * 10),
             Some(9_990_000 + u32::from(look)),
+            // Some 5065 asset packs omit the individual town-NPC files while
+            // still shipping this generic NPC model. Keep the actor visible
+            // until the missing art files are restored.
+            Some(9_992_090),
         ];
         let (model_id, model_path) = model_candidates
             .into_iter()
