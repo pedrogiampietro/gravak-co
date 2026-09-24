@@ -13,6 +13,8 @@ const SLOT_Y: u32 = 28;
 const SLOT_STEP_X: u32 = 48;
 const SLOT_STEP_Y: u32 = 43;
 const SLOT_SIZE: u32 = 36;
+const ICON_SIZE: u32 = 32;
+const ICON_OFFSET: u32 = 6;
 
 #[derive(Debug, Clone, Default)]
 pub struct ItemInfo {
@@ -171,8 +173,8 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     for (index, _item_id) in state.items.iter().take(20).enumerate() {
         let row = index as u32 / 5;
         let column = index as u32 % 5;
-        let x = SLOT_X + column * SLOT_STEP_X + 4;
-        let y = SLOT_Y + row * SLOT_STEP_Y + 4;
+        let x = SLOT_X + column * SLOT_STEP_X + ICON_OFFSET;
+        let y = SLOT_Y + row * SLOT_STEP_Y + ICON_OFFSET;
         let Some(icon) = state.icons.get(index) else {
             continue;
         };
@@ -323,7 +325,12 @@ fn load_icon(
     ];
     for path in candidates {
         if let Ok(icon) = assets.image(&path) {
-            return Ok(imageops::resize(&icon, 36, 36, imageops::FilterType::Nearest));
+            return Ok(imageops::resize(
+                &icon,
+                ICON_SIZE,
+                ICON_SIZE,
+                imageops::FilterType::Nearest,
+            ));
         }
     }
     if let Some(animation) = animation {
@@ -342,7 +349,12 @@ fn load_icon(
                 continue;
             };
             if let Ok(icon) = assets.image(frame.trim()) {
-                return Ok(imageops::resize(&icon, 36, 36, imageops::FilterType::Nearest));
+                return Ok(imageops::resize(
+                    &icon,
+                    ICON_SIZE,
+                    ICON_SIZE,
+                    imageops::FilterType::Nearest,
+                ));
             }
         }
     }
@@ -350,22 +362,30 @@ fn load_icon(
 }
 
 fn placeholder_icon(item_id: u32) -> Result<RgbaImage> {
-    let mut image = RgbaImage::from_pixel(36, 36, Rgba([19, 28, 38, 255]));
+    let mut image = RgbaImage::from_pixel(ICON_SIZE, ICON_SIZE, Rgba([19, 28, 38, 255]));
     let accent = [
         90 + ((item_id >> 8) & 0x3f) as u8,
         90 + ((item_id >> 4) & 0x3f) as u8,
         90 + (item_id & 0x3f) as u8,
     ];
-    for offset in 0..36 {
+    for offset in 0..ICON_SIZE {
         image.put_pixel(offset, 0, Rgba([accent[0], accent[1], accent[2], 255]));
-        image.put_pixel(offset, 35, Rgba([accent[0], accent[1], accent[2], 255]));
+        image.put_pixel(
+            offset,
+            ICON_SIZE - 1,
+            Rgba([accent[0], accent[1], accent[2], 255]),
+        );
         image.put_pixel(0, offset, Rgba([accent[0], accent[1], accent[2], 255]));
-        image.put_pixel(35, offset, Rgba([accent[0], accent[1], accent[2], 255]));
+        image.put_pixel(
+            ICON_SIZE - 1,
+            offset,
+            Rgba([accent[0], accent[1], accent[2], 255]),
+        );
     }
     let short_id = item_id % 1000;
     let digits = [short_id / 100, (short_id / 10) % 10, short_id % 10];
     for (index, digit) in digits.into_iter().enumerate() {
-        draw_digit(&mut image, digit as usize, 5 + index as u32 * 9, 12, accent);
+        draw_digit(&mut image, digit as usize, 4 + index as u32 * 8, 11, accent);
     }
     Ok(image)
 }
