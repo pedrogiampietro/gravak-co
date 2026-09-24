@@ -13,7 +13,7 @@ mod renderer;
 mod validation;
 use action::Action;
 use assets::{Assets, Result};
-use motion_math::direction_towards;
+use motion_math::{direction_towards, walk_delta};
 use network::{NetworkConfig, NetworkEvent, NetworkHandle, RemoteActor};
 use std::{
     collections::{HashMap, VecDeque},
@@ -48,6 +48,7 @@ struct App {
     confirmed_network_cell: Option<[i32; 2]>,
     pending_network_steps: VecDeque<[i32; 2]>,
     remote_actors: HashMap<u32, RemoteActor>,
+    remote_models: HashMap<u32, character::Character>,
     network_status: String,
 }
 impl ApplicationHandler for App {
@@ -144,6 +145,7 @@ impl ApplicationHandler for App {
                         &self.character,
                         &self.player,
                         &self.remote_actors,
+                        &self.remote_models,
                         self.started.elapsed().as_secs_f32(),
                     )
                 {
@@ -232,9 +234,38 @@ impl App {
                 self.player.stop();
                 self.network_status = format!("online: repositioned map {map_id} dir {direction}");
             }
+            NetworkEvent::RemoteWalk {
+                id,
+                direction,
+                movement_type,
+            } => {
+                if let Some(actor) = self.remote_actors.get_mut(&id) {
+                    let delta = walk_delta(direction);
+                    actor.position[0] += delta[0] as f32;
+                    actor.position[1] += delta[1] as f32;
+                    actor.direction = direction;
+                    self.network_status =
+                        format!("online: actor {id} moved dir {direction} type {movement_type}");
+                }
+            }
+            NetworkEvent::RemoveActor(id) => {
+                self.remote_actors.remove(&id);
+                self.remote_models.remove(&id);
+                self.network_status = format!(
+                    "online: actor {id} left screen ({} actors)",
+                    self.remote_actors.len()
+                );
+            }
             NetworkEvent::PlayerSpawn(actor) | NetworkEvent::NpcSpawn(actor) => {
                 let kind = if actor.npc { "npc" } else { "player" };
                 let id = actor.id;
+                if !actor.npc
+                    && actor.body != 0
+                    && !self.remote_models.contains_key(&id)
+                    && let Ok(model) = character::Character::load(&mut self.assets, actor.body)
+                {
+                    self.remote_models.insert(id, model);
+                }
                 self.remote_actors.insert(id, actor);
                 if let Some(actor) = self.remote_actors.get(&id) {
                     self.network_status = format!(
@@ -483,6 +514,7 @@ fn run() -> Result<()> {
         confirmed_network_cell: server_ready.as_ref().map(|ready| ready.position),
         pending_network_steps: VecDeque::new(),
         remote_actors: HashMap::new(),
+        remote_models: HashMap::new(),
         network_status: if online {
             "online".into()
         } else {

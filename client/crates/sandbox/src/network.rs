@@ -40,6 +40,12 @@ pub enum NetworkEvent {
         position: [i32; 2],
         direction: u8,
     },
+    RemoteWalk {
+        id: u32,
+        direction: u8,
+        movement_type: u8,
+    },
+    RemoveActor(u32),
     PlayerSpawn(RemoteActor),
     NpcSpawn(RemoteActor),
     Error(String),
@@ -52,6 +58,7 @@ pub struct RemoteActor {
     pub position: [f32; 2],
     pub direction: u8,
     pub mesh: u32,
+    pub body: u32,
     pub npc: bool,
 }
 
@@ -103,6 +110,8 @@ impl NetworkHandle {
                 NetworkEvent::WalkConfirmed { .. }
                 | NetworkEvent::MovementRejected(_)
                 | NetworkEvent::Reposition { .. }
+                | NetworkEvent::RemoteWalk { .. }
+                | NetworkEvent::RemoveActor(_)
                 | NetworkEvent::PlayerSpawn(_)
                 | NetworkEvent::NpcSpawn(_) => {}
             }
@@ -224,14 +233,23 @@ async fn run(
         .map_err(|error| error.to_string())?;
     send_status(&events, "connected");
 
+    let local_character_id = user.character_id;
     loop {
         tokio::select! {
             event = session.next_event() => match event.map_err(|error| error.to_string())? {
                 Some(GameEvent::Walk(walk)) => {
-                    let _ = events.send(NetworkEvent::WalkConfirmed {
-                        character_id: walk.character_id,
-                        direction: walk.direction,
-                    });
+                    if walk.character_id == local_character_id {
+                        let _ = events.send(NetworkEvent::WalkConfirmed {
+                            character_id: walk.character_id,
+                            direction: walk.direction,
+                        });
+                    } else {
+                        let _ = events.send(NetworkEvent::RemoteWalk {
+                            id: walk.character_id,
+                            direction: walk.direction,
+                            movement_type: walk.movement_type,
+                        });
+                    }
                 }
                 Some(GameEvent::Talk(talk)) if talk.message == "Invalid Location" => {
                     let _ = events.send(NetworkEvent::MovementRejected(talk.message));
@@ -242,6 +260,9 @@ async fn run(
                         position: unpack_position(action.data2),
                         direction: action.details as u8,
                     });
+                }
+                Some(GameEvent::Action(action)) if action.action_type == 132 => {
+                    let _ = events.send(NetworkEvent::RemoveActor(action.character_id));
                 }
                 Some(GameEvent::Player(player)) => {
                     let _ = events.send(NetworkEvent::PlayerSpawn(player_actor(player)));
@@ -272,6 +293,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         position: [player.x as f32, player.y as f32],
         direction: player.direction,
         mesh: player.mesh.max(0) as u32,
+        body: body_from_mesh(player.mesh.max(0) as u32),
         npc: false,
     }
 }
@@ -283,7 +305,18 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         position: [npc.x as f32, npc.y as f32],
         direction: 0,
         mesh: npc.look as u32,
+        body: 0,
         npc: true,
+    }
+}
+
+fn body_from_mesh(mesh: u32) -> u32 {
+    match mesh % 10_000 {
+        1003 => 1,
+        1004 => 2,
+        2001 => 3,
+        2002 => 4,
+        _ => 0,
     }
 }
 

@@ -260,6 +260,7 @@ impl Renderer {
         character: &Character,
         player: &Player,
         remote_actors: &HashMap<u32, RemoteActor>,
+        remote_models: &HashMap<u32, Character>,
         time: f32,
     ) -> Result<()> {
         let camera = self.camera(map, player);
@@ -364,13 +365,14 @@ impl Renderer {
             });
         }
         for actor in remote_actors.values() {
+            let remote_character = remote_models.get(&actor.id).unwrap_or(character);
             let projected = map.project(actor.position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             let depth = actor.position[0] + actor.position[1];
             let facing = -f32::from((actor.direction % 8) + 1) * std::f32::consts::FRAC_PI_4;
-            for part in &character.parts {
+            for part in &remote_character.parts {
                 self.texture(assets, &part.texture);
-                let vertices = character.vertices(part, time, Action::Idle, facing, None);
+                let vertices = remote_character.vertices(part, time, Action::Idle, facing, None);
                 let triangles = part
                     .mesh
                     .opaque_indices
@@ -394,6 +396,27 @@ impl Renderer {
                     depth_test: true,
                     sort_depth: depth,
                 });
+            }
+            if !actor.name.is_empty() {
+                let label_key = format!("@actor-label-{}", actor.id);
+                if !self.textures.contains_key(&label_key) {
+                    self.upload(&label_key, crate::labels::actor_image(&actor.name)?);
+                }
+                if let Some(label) = self.textures.get(&label_key) {
+                    draws.push(Draw {
+                        texture: label_key,
+                        vertices: quad(
+                            [
+                                (origin[0] - label.size[0] * 0.5).round(),
+                                (origin[1] - 152.0).round(),
+                            ],
+                            label.size,
+                            viewport,
+                        ),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
             }
         }
         if !self.textures.contains_key("@label") {

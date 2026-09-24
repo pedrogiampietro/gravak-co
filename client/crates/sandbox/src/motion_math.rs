@@ -8,6 +8,9 @@ pub const MAX_JUMP_DISTANCE: f32 = 16.0;
 pub const MAX_JUMP_CLIMB: i32 = 120;
 pub const MAX_JUMP_RISE: i32 = 210;
 
+const WALK_X: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
+const WALK_Y: [i32; 8] = [1, 1, 0, -1, -1, -1, 0, 1];
+
 const WORLD_PIXELS_PER_UNIT: f32 = 32.0;
 const JUMP_ARC_SCALE: f32 = 0.6;
 
@@ -125,6 +128,12 @@ pub fn direction_towards(start: [f32; 2], target: [f32; 2]) -> u8 {
 }
 
 #[must_use]
+pub fn walk_delta(direction: u8) -> [i32; 2] {
+    let index = usize::from(direction % 8);
+    [WALK_X[index], WALK_Y[index]]
+}
+
+#[must_use]
 pub fn jump_facing(start: [f32; 2], target: [f32; 2]) -> Option<f32> {
     let delta_x = target[0] - start[0];
     let delta_y = target[1] - start[1];
@@ -164,6 +173,14 @@ mod tests {
         assert_eq!(direction_towards([10.0, 10.0], [11.0, 10.0]), 6);
         assert_eq!(direction_towards([10.0, 10.0], [20.0, 11.0]), 6);
         assert_eq!(direction_towards([10.0, 10.0], [10.0, 10.0]), 3);
+    }
+
+    #[test]
+    fn walk_delta_matches_server_wire_order() {
+        assert_eq!(walk_delta(0), [0, 1]);
+        assert_eq!(walk_delta(3), [-1, -1]);
+        assert_eq!(walk_delta(6), [1, 0]);
+        assert_eq!(walk_delta(8), [0, 1]);
     }
 
     #[test]

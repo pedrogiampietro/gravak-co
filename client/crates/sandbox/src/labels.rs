@@ -109,6 +109,14 @@ pub fn image(character: &Character) -> Result<RgbaImage> {
     Ok(image)
 }
 
+pub fn actor_image(name: &str) -> Result<RgbaImage> {
+    let font = font()?;
+    let width = width(&font, name).ceil() as u32 + 8;
+    let mut image = RgbaImage::new(width.max(16), 16);
+    text(&mut image, &font, &[(name, [255, 255, 255])], [4.0, 2.0]);
+    Ok(image)
+}
+
 pub fn build_banner() -> Result<RgbaImage> {
     let font = font()?;
     let mut image = RgbaImage::new(width(&font, BUILD_TEXT).ceil() as u32 + 2, 16);
