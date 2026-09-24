@@ -263,6 +263,8 @@ impl Renderer {
         remote_models: &HashMap<u32, Character>,
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
         dialog: Option<(&[String], &[(u8, String)])>,
+        shop: Option<&crate::shop::ShopState>,
+        cursor: [f32; 2],
         time: f32,
     ) -> Result<()> {
         let camera = self.camera(map, player);
@@ -534,6 +536,63 @@ impl Renderer {
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
+            }
+        }
+        if let Some(shop) = shop {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            shop.npc_id.hash(&mut hasher);
+            shop.items.hash(&mut hasher);
+            shop.hover.hash(&mut hasher);
+            shop.selected.hash(&mut hasher);
+            let key = format!("@shop-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, crate::shop::panel_image(assets, shop)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::shop::panel_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+            if !self.textures.contains_key("@inventory-panel") {
+                self.upload(
+                    "@inventory-panel",
+                    crate::shop::inventory_image(assets)?,
+                );
+            }
+            if let Some(texture) = self.textures.get("@inventory-panel") {
+                draws.push(Draw {
+                    texture: "@inventory-panel".into(),
+                    vertices: quad(crate::shop::inventory_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+            if let Some(index) = shop.hover.or(shop.selected) {
+                if let Some(item_id) = shop.items.get(index) {
+                    let tooltip_key = format!("@shop-tooltip-{item_id}");
+                    if !self.textures.contains_key(&tooltip_key) {
+                        self.upload(&tooltip_key, crate::shop::tooltip_image(*item_id)?);
+                    }
+                    if let Some(texture) = self.textures.get(&tooltip_key) {
+                        let mut position = [cursor[0] + 14.0, cursor[1] + 14.0];
+                        if position[0] + texture.size[0] > viewport[0] {
+                            position[0] = cursor[0] - texture.size[0] - 14.0;
+                        }
+                        if position[1] + texture.size[1] > viewport[1] {
+                            position[1] = cursor[1] - texture.size[1] - 14.0;
+                        }
+                        draws.push(Draw {
+                            texture: tooltip_key,
+                            vertices: quad(position, texture.size, viewport),
+                            depth_test: false,
+                            sort_depth: f32::INFINITY,
+                        });
+                    }
+                }
             }
         }
         draws.sort_by(|a, b| a.sort_depth.total_cmp(&b.sort_depth));

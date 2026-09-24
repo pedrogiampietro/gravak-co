@@ -8,7 +8,7 @@ const RANK_COLOUR: [u8; 3] = [145, 185, 255];
 pub const BUILD_TEXT: &str =
     "[Preservation] Skeleton test build by @digitalm1nd | Discord: _dek | discord.gg/CvKPXEHYRY";
 
-fn font() -> Result<fontdue::Font> {
+pub(crate) fn font() -> Result<fontdue::Font> {
     let mut database = fontdb::Database::new();
     database.load_system_fonts();
     let id = database
@@ -36,7 +36,12 @@ fn width(font: &fontdue::Font, text: &str) -> f32 {
         .sum()
 }
 
-fn text(image: &mut RgbaImage, font: &fontdue::Font, spans: &[(&str, [u8; 3])], origin: [f32; 2]) {
+pub(crate) fn text(
+    image: &mut RgbaImage,
+    font: &fontdue::Font,
+    spans: &[(&str, [u8; 3])],
+    origin: [f32; 2],
+) {
     for shadow in [true, false] {
         let mut cursor = origin[0].round();
         for &(text, colour) in spans {

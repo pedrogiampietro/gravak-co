@@ -10,6 +10,7 @@ mod motion_math;
 mod movement;
 mod network;
 mod renderer;
+mod shop;
 mod validation;
 use action::Action;
 use assets::{Assets, Result};
@@ -52,6 +53,7 @@ struct App {
     remote_models: HashMap<u32, character::Character>,
     remote_npcs: HashMap<u32, character::NpcModel>,
     dialog: Option<DialogState>,
+    shop: Option<shop::ShopState>,
     network_status: String,
 }
 
@@ -97,7 +99,14 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = [position.x as f32, position.y as f32]
+                self.cursor = [position.x as f32, position.y as f32];
+                if let (Some(shop), Some(window)) = (&mut self.shop, &self.window) {
+                    let size = window.inner_size();
+                    shop.hover = shop.item_at(
+                        [size.width as f32, size.height as f32],
+                        self.cursor,
+                    );
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Focused(false) => {
@@ -110,6 +119,9 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                if state == ElementState::Pressed && self.select_shop() {
+                    return;
+                }
                 if state == ElementState::Pressed && self.select_dialog_option() {
                     return;
                 }
@@ -126,6 +138,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match event.physical_key {
+                    PhysicalKey::Code(KeyCode::Escape) if self.shop.is_some() => {
+                        self.shop = None;
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.dialog.is_some() => {
                         self.dialog = None
                     }
@@ -174,6 +189,8 @@ impl ApplicationHandler for App {
                         self.dialog
                             .as_ref()
                             .map(|dialog| (dialog.lines.as_slice(), dialog.options.as_slice())),
+                        self.shop.as_ref(),
+                        self.cursor,
                         self.started.elapsed().as_secs_f32(),
                     )
                 {
@@ -328,6 +345,11 @@ impl App {
                 }
             }
             NetworkEvent::NpcDialog(dialog) => {
+                let opens_shop = dialog
+                    .messages
+                    .iter()
+                    .any(|message| message.contains("catalog items"));
+                let shop_npc_id = dialog.task_id;
                 let state = self.dialog.get_or_insert_with(|| DialogState {
                     task_id: dialog.task_id,
                     lines: Vec::new(),
@@ -343,7 +365,25 @@ impl App {
                         state.lines.push(message);
                     }
                 }
-                self.network_status = "online: NPC dialog received".into();
+                if opens_shop {
+                    match shop::ShopState::load(&mut self.assets, shop_npc_id) {
+                        Ok(Some(shop)) => {
+                            self.shop = Some(shop);
+                            self.dialog = None;
+                            self.network_status = "online: shop opened".into();
+                        }
+                        Ok(None) => {
+                            self.network_status =
+                                format!("online: shop {shop_npc_id} has no local catalog");
+                        }
+                        Err(error) => {
+                            self.network_status = format!("online: shop unavailable: {error}");
+                        }
+                    }
+                }
+                if !opens_shop {
+                    self.network_status = "online: NPC dialog received".into();
+                }
             }
             NetworkEvent::RemoveActor(id) => {
                 self.remote_actors.remove(&id);
@@ -455,6 +495,7 @@ impl App {
         self.held = false;
         if npc {
             self.dialog = None;
+            self.shop = None;
         }
         let kind = if npc { "npc" } else { "player" };
         let label = if name.is_empty() { "unnamed" } else { &name };
@@ -498,6 +539,29 @@ impl App {
             network.send_npc_dialog_answer(dialog.task_id, option_id);
             self.dialog = None;
             self.network_status = format!("online: NPC option {option_id}");
+        }
+        true
+    }
+
+    fn select_shop(&mut self) -> bool {
+        if self.shop.is_none() {
+            return false;
+        }
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let viewport = [window.inner_size().width as f32, window.inner_size().height as f32];
+        if shop::close_at(viewport, self.cursor) {
+            self.shop = None;
+            self.network_status = "online: shop closed".into();
+            return true;
+        }
+        let Some(shop) = &mut self.shop else {
+            return true;
+        };
+        if let Some(index) = shop.item_at(viewport, self.cursor) {
+            shop.selected = Some(index);
+            self.network_status = format!("online: selected shop item {}", shop.items[index]);
         }
         true
     }
@@ -767,6 +831,7 @@ fn run() -> Result<()> {
         remote_models: HashMap::new(),
         remote_npcs: HashMap::new(),
         dialog: None,
+        shop: None,
         network_status: if online {
             "online".into()
         } else {
