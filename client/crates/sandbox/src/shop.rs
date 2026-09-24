@@ -40,6 +40,7 @@ pub struct ShopState {
     pub hover: Option<usize>,
     pub selected: Option<usize>,
     pub repair_hover: bool,
+    pub scroll_hover: Option<bool>,
 }
 
 impl ShopState {
@@ -108,6 +109,7 @@ impl ShopState {
             hover: None,
             selected: None,
             repair_hover: false,
+            scroll_hover: None,
         }))
     }
 
@@ -126,7 +128,7 @@ impl ShopState {
         if cursor[0] > x + SLOT_SIZE as f32 || cursor[1] > y + SLOT_SIZE as f32 {
             return None;
         }
-        let index = self.page * ITEMS_PER_PAGE + row as usize * 5 + column as usize;
+        let index = self.page * 5 + row as usize * 5 + column as usize;
         (index < self.items.len()).then_some(index)
     }
 
@@ -142,7 +144,7 @@ impl ShopState {
     }
 
     pub fn visible_slot(&self, index: usize) -> Option<usize> {
-        let start = self.page * ITEMS_PER_PAGE;
+        let start = self.page * 5;
         (index >= start && index < (start + ITEMS_PER_PAGE).min(self.items.len()))
             .then_some(index - start)
     }
@@ -240,7 +242,7 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
         &[(title, [255, 232, 160])],
         [((PANEL_WIDTH as f32 - title_width) * 0.5).max(0.0), 12.0],
     );
-    let first_item = state.page * ITEMS_PER_PAGE;
+    let first_item = state.page * 5;
     for (slot, item_index) in
         (first_item..(first_item + ITEMS_PER_PAGE).min(state.items.len())).enumerate()
     {
@@ -262,20 +264,10 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
             );
         }
     }
-    let up = imageops::resize(
-        &assets.image("data/interface/Style01/PublicBtn/PublicSelectU.dds")?,
-        16,
-        16,
-        imageops::FilterType::Nearest,
-    );
-    let down = imageops::resize(
-        &assets.image("data/interface/Style01/PublicBtn/PublicSelectD.dds")?,
-        16,
-        16,
-        imageops::FilterType::Nearest,
-    );
-    imageops::overlay(&mut image, &up, 243, 155);
-    imageops::overlay(&mut image, &down, 243, 190);
+    let up = scroll_button_image(false, state.scroll_hover == Some(false));
+    let down = scroll_button_image(true, state.scroll_hover == Some(true));
+    imageops::overlay(&mut image, &up, 242, 154);
+    imageops::overlay(&mut image, &down, 242, 189);
     let repair_button = labelled_repair_button(&font, state.repair_hover);
     imageops::overlay(&mut image, &repair_button, 33, FOOTER_BUTTON_Y as i64);
     labels::text(
@@ -291,6 +283,54 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
         [200.0, FOOTER_BUTTON_Y],
     );
     Ok(image)
+}
+
+fn scroll_button_image(down: bool, hovered: bool) -> RgbaImage {
+    let mut image = RgbaImage::from_pixel(18, 18, Rgba([0, 0, 0, 0]));
+    rounded_rect(
+        &mut image,
+        0,
+        0,
+        18,
+        18,
+        4,
+        if hovered {
+            Rgba([250, 214, 128, 255])
+        } else {
+            Rgba([91, 125, 137, 255])
+        },
+    );
+    rounded_rect(
+        &mut image,
+        1,
+        1,
+        16,
+        16,
+        3,
+        if hovered {
+            Rgba([47, 83, 96, 255])
+        } else {
+            Rgba([16, 42, 56, 255])
+        },
+    );
+    for row in 0..6u32 {
+        let half = if down { row } else { 5 - row };
+        let y = if down { 5 + row } else { 5 + row };
+        for x in (8 - half)..=(8 + half) {
+            if x < image.width() && y < image.height() {
+                image.put_pixel(
+                    x,
+                    y,
+                    if hovered {
+                        Rgba([255, 233, 169, 255])
+                    } else {
+                        Rgba([191, 215, 221, 255])
+                    },
+                );
+            }
+        }
+    }
+    image
 }
 
 fn labelled_repair_button(font: &fontdue::Font, hovered: bool) -> RgbaImage {
@@ -404,9 +444,9 @@ pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool>
     let [left, top] = panel_position(viewport);
     let x = cursor[0] - left;
     let y = cursor[1] - top;
-    if (243.0..259.0).contains(&x) && (155.0..171.0).contains(&y) {
+    if (241.0..261.0).contains(&x) && (153.0..173.0).contains(&y) {
         Some(false)
-    } else if (243.0..259.0).contains(&x) && (190.0..206.0).contains(&y) {
+    } else if (241.0..261.0).contains(&x) && (188.0..208.0).contains(&y) {
         Some(true)
     } else {
         None

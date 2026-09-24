@@ -122,7 +122,27 @@ pub fn actor_image(name: &str) -> Result<RgbaImage> {
     Ok(image)
 }
 
-pub fn dialog_image(messages: &[String], options: &[(u8, String)]) -> Result<RgbaImage> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogHit {
+    Outside,
+    Panel,
+    Close,
+    Option(usize),
+}
+
+pub struct DialogLayout {
+    pub lines: Vec<String>,
+    pub left: f32,
+    pub top: f32,
+    pub height: u32,
+    pub option_top: f32,
+}
+
+pub fn dialog_layout(
+    messages: &[String],
+    options: &[(u8, String)],
+    viewport: [f32; 2],
+) -> Result<DialogLayout> {
     let font = font()?;
     let mut lines = Vec::new();
     for message in messages {
@@ -133,12 +153,12 @@ pub fn dialog_image(messages: &[String], options: &[(u8, String)]) -> Result<Rgb
             } else {
                 format!("{line} {word}")
             };
-            if !line.is_empty() && width(&font, &candidate) > 680.0 {
+            if !line.is_empty() && width(&font, &candidate) > 668.0 {
                 lines.push(std::mem::take(&mut line));
             }
             if line.is_empty() {
                 line = word.to_owned();
-            } else if width(&font, &candidate) <= 680.0 {
+            } else if width(&font, &candidate) <= 668.0 {
                 line = candidate;
             }
         }
@@ -149,46 +169,202 @@ pub fn dialog_image(messages: &[String], options: &[(u8, String)]) -> Result<Rgb
     if lines.is_empty() {
         lines.push("(sem texto)".to_owned());
     }
-    let height = (58 + (lines.len() + options.len()) * 20).clamp(80, 260) as u32;
-    let mut image = RgbaImage::new(720, height);
+    let height = (74 + lines.len() * 20 + options.len() * 28).clamp(104, 300) as u32;
+    let left = ((viewport[0] - 720.0) * 0.5).max(8.0);
+    let top = (viewport[1] - height as f32 - 24.0).max(8.0);
+    let option_top = top + 48.0 + lines.len() as f32 * 20.0;
+    Ok(DialogLayout {
+        lines,
+        left,
+        top,
+        height,
+        option_top,
+    })
+}
+
+pub fn dialog_hit_test(
+    viewport: [f32; 2],
+    cursor: [f32; 2],
+    messages: &[String],
+    options: &[(u8, String)],
+) -> Result<DialogHit> {
+    let layout = dialog_layout(messages, options, viewport)?;
+    if cursor[0] < layout.left
+        || cursor[0] > layout.left + 720.0
+        || cursor[1] < layout.top
+        || cursor[1] > layout.top + layout.height as f32
+    {
+        return Ok(DialogHit::Outside);
+    }
+    if cursor[0] >= layout.left + 684.0
+        && cursor[0] <= layout.left + 707.0
+        && cursor[1] >= layout.top + 9.0
+        && cursor[1] <= layout.top + 29.0
+    {
+        return Ok(DialogHit::Close);
+    }
+    if cursor[0] < layout.left + 15.0 || cursor[0] > layout.left + 705.0 {
+        return Ok(DialogHit::Panel);
+    }
+    let index = ((cursor[1] - layout.option_top) / 27.0).floor() as usize;
+    let row_offset = cursor[1] - layout.option_top - index as f32 * 27.0;
+    if cursor[1] >= layout.option_top && index < options.len() && row_offset < 24.0 {
+        return Ok(DialogHit::Option(index));
+    }
+    Ok(DialogHit::Panel)
+}
+
+pub fn dialog_image(messages: &[String], options: &[(u8, String)]) -> Result<RgbaImage> {
+    dialog_image_with_hover(messages, options, None)
+}
+
+pub fn dialog_image_with_hover(
+    messages: &[String],
+    options: &[(u8, String)],
+    hovered: Option<usize>,
+) -> Result<RgbaImage> {
+    let layout = dialog_layout(messages, options, [720.0, 360.0])?;
+    let font = font()?;
+    let height = layout.height;
+    let mut image = RgbaImage::from_pixel(720, height, Rgba([0, 0, 0, 0]));
     for y in 0..height {
         for x in 0..720 {
             let border = x < 2 || x >= 718 || y < 2 || y >= height - 2;
+            let header = (3..38).contains(&y);
+            let stripe = (y % 4) == 0;
             image.put_pixel(
                 x,
                 y,
                 if border {
-                    Rgba([220, 180, 75, 245])
+                    Rgba([224, 190, 94, 250])
+                } else if header {
+                    Rgba([22, 51, 68, 247])
                 } else {
-                    Rgba([12, 18, 30, 230])
+                    Rgba([if stripe { 15 } else { 11 }, 22, 34, 242])
                 },
             );
         }
     }
+    dialog_outline(
+        &mut image,
+        5,
+        41,
+        710,
+        height.saturating_sub(47),
+        Rgba([61, 91, 103, 255]),
+    );
     text(
         &mut image,
         &font,
-        &[("NPC DIALOG", GUILD_COLOUR)],
-        [16.0, 12.0],
+        &[("NPC DIALOG", [255, 225, 143])],
+        [18.0, 12.0],
     );
-    for (index, line) in lines.iter().enumerate() {
+    dialog_round_rect(&mut image, 685, 9, 22, 20, 4, Rgba([67, 39, 40, 255]));
+    text(&mut image, &font, &[("X", [255, 220, 205])], [692.0, 13.0]);
+    for (index, line) in layout.lines.iter().enumerate() {
         text(
             &mut image,
             &font,
             &[(line, [255, 255, 255])],
-            [16.0, 38.0 + index as f32 * 20.0],
+            [20.0, 48.0 + index as f32 * 20.0],
         );
     }
     for (index, (_, option)) in options.iter().enumerate() {
-        let label = format!("{}. {option}", index + 1);
+        let y = 48 + layout.lines.len() as u32 * 20 + index as u32 * 27;
+        let highlighted = hovered == Some(index);
+        dialog_round_rect(
+            &mut image,
+            15,
+            y,
+            690,
+            24,
+            5,
+            if highlighted {
+                Rgba([247, 210, 115, 255])
+            } else {
+                Rgba([38, 65, 78, 255])
+            },
+        );
+        dialog_round_rect(
+            &mut image,
+            16,
+            y + 1,
+            688,
+            22,
+            4,
+            if highlighted {
+                Rgba([47, 81, 91, 255])
+            } else {
+                Rgba([17, 39, 53, 255])
+            },
+        );
+        let label = format!("{}.  {option}", index + 1);
         text(
             &mut image,
             &font,
-            &[(&label, [255, 220, 100])],
-            [16.0, 38.0 + (lines.len() + index) as f32 * 20.0],
+            &[(
+                &label,
+                if highlighted {
+                    [255, 243, 190]
+                } else {
+                    [255, 222, 132]
+                },
+            )],
+            [24.0, y as f32 + 5.0],
         );
     }
+    text(
+        &mut image,
+        &font,
+        &[(
+            "Select an option or click outside to close",
+            [157, 179, 190],
+        )],
+        [20.0, height as f32 - 18.0],
+    );
     Ok(image)
+}
+
+fn dialog_round_rect(
+    image: &mut RgbaImage,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    radius: u32,
+    colour: Rgba<u8>,
+) {
+    let right = left + width - 1;
+    let bottom = top + height - 1;
+    for y in top..=bottom {
+        for x in left..=right {
+            let near_x = x.clamp(left + radius, right.saturating_sub(radius));
+            let near_y = y.clamp(top + radius, bottom.saturating_sub(radius));
+            let dx = x.abs_diff(near_x);
+            let dy = y.abs_diff(near_y);
+            if dx * dx + dy * dy <= radius * radius {
+                image.put_pixel(x, y, colour);
+            }
+        }
+    }
+}
+
+fn dialog_outline(
+    image: &mut RgbaImage,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    colour: Rgba<u8>,
+) {
+    for dx in x..(x + width).min(image.width()) {
+        image.put_pixel(dx, y.min(image.height() - 1), colour);
+        image.put_pixel(dx, (y + height - 1).min(image.height() - 1), colour);
+    }
+    for dy in y..(y + height).min(image.height()) {
+        image.put_pixel(x.min(image.width() - 1), dy, colour);
+        image.put_pixel((x + width - 1).min(image.width() - 1), dy, colour);
+    }
 }
 
 pub fn build_banner() -> Result<RgbaImage> {

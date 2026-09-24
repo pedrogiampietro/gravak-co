@@ -24,7 +24,7 @@ use std::{
 };
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
@@ -109,6 +109,16 @@ impl ApplicationHandler for App {
                     let viewport = [size.width as f32, size.height as f32];
                     shop.hover = shop.item_at(viewport, self.cursor);
                     shop.repair_hover = shop::repair_button_at(viewport, self.cursor);
+                    shop.scroll_hover = shop::scroll_direction_at(viewport, self.cursor);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, vertical) => vertical,
+                    MouseScrollDelta::PixelDelta(position) => position.y as f32,
+                };
+                if amount != 0.0 && self.scroll_shop_page(amount < 0.0) {
+                    return;
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
@@ -120,22 +130,19 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 match (button, state) {
                     (MouseButton::Right, ElementState::Pressed)
-                        if self.buy_shop_item_at_cursor() || self.sell_inventory_item_at_cursor() =>
+                        if self.buy_shop_item_at_cursor()
+                            || self.sell_inventory_item_at_cursor() =>
                     {
                         return;
                     }
-                    (MouseButton::Left, ElementState::Pressed)
-                        if self.begin_inventory_drag() =>
-                    {
+                    (MouseButton::Left, ElementState::Pressed) if self.begin_inventory_drag() => {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.select_shop() => return,
                     (MouseButton::Left, ElementState::Released) if self.finish_shop_drag() => {
                         return;
                     }
-                    (MouseButton::Left, ElementState::Released)
-                        if self.finish_inventory_drag() =>
-                    {
+                    (MouseButton::Left, ElementState::Released) if self.finish_inventory_drag() => {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.select_dialog_option() => {
@@ -562,31 +569,37 @@ impl App {
         let Some(window) = &self.window else {
             return false;
         };
-        let viewport = window.inner_size();
-        let height = (58 + (dialog.lines.len() + dialog.options.len()) * 20).clamp(80, 260) as f32;
-        let left = ((viewport.width as f32 - 720.0) * 0.5).max(8.0);
-        let top = (viewport.height as f32 - height - 24.0).max(8.0);
-        if self.cursor[0] < left
-            || self.cursor[0] > left + 720.0
-            || self.cursor[1] < top
-            || self.cursor[1] > top + height
-        {
-            return false;
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let hit = labels::dialog_hit_test(viewport, self.cursor, &dialog.lines, &dialog.options)
+            .unwrap_or(labels::DialogHit::Outside);
+        match hit {
+            labels::DialogHit::Outside => {
+                self.dialog = None;
+                self.network_status = "online: NPC dialog closed; moving".into();
+                false
+            }
+            labels::DialogHit::Panel => true,
+            labels::DialogHit::Close => {
+                self.dialog = None;
+                self.network_status = "online: NPC dialog closed".into();
+                true
+            }
+            labels::DialogHit::Option(index) => {
+                let Some(dialog) = self.dialog.as_ref() else {
+                    return true;
+                };
+                let Some((option_id, _)) = dialog.options.get(index).cloned() else {
+                    return true;
+                };
+                if let Some(network) = &self.network {
+                    network.send_npc_dialog_answer(dialog.task_id, option_id);
+                    self.dialog = None;
+                    self.network_status = format!("online: NPC option {option_id}");
+                }
+                true
+            }
         }
-        let first_option = top + 38.0 + dialog.lines.len() as f32 * 20.0;
-        if self.cursor[1] < first_option {
-            return true;
-        }
-        let index = ((self.cursor[1] - first_option) / 20.0).floor() as usize;
-        let Some((option_id, _)) = dialog.options.get(index).cloned() else {
-            return true;
-        };
-        if let Some(network) = &self.network {
-            network.send_npc_dialog_answer(dialog.task_id, option_id);
-            self.dialog = None;
-            self.network_status = format!("online: NPC option {option_id}");
-        }
-        true
     }
 
     fn select_shop(&mut self) -> bool {
@@ -606,28 +619,55 @@ impl App {
             return true;
         }
         let scroll = shop::scroll_direction_at(viewport, self.cursor);
+        if let Some(scroll_down) = scroll {
+            self.scroll_shop_page(scroll_down);
+            return true;
+        }
+        if !shop::shop_panel_at(viewport, self.cursor) {
+            self.shop = None;
+            self.network_status = "online: shop closed; moving".into();
+            return false;
+        }
         let Some(shop) = &mut self.shop else {
             return true;
         };
-        if let Some(scroll_down) = scroll {
-            let pages = shop.items.len().div_ceil(20);
-            if scroll_down {
-                shop.page = (shop.page + 1).min(pages.saturating_sub(1));
-            } else {
-                shop.page = shop.page.saturating_sub(1);
-            }
-            shop.hover = None;
-            shop.selected = None;
-            self.network_status =
-                format!("online: shop page {} of {}", shop.page + 1, pages.max(1));
-            return true;
-        }
         if let Some(index) = shop.item_at(viewport, self.cursor) {
             shop.selected = Some(index);
             let item_id = shop.items[index];
             self.dragging_shop_item = Some(item_id);
             self.network_status = format!(
                 "online: drag item {item_id} to an empty inventory slot, or right-click to buy"
+            );
+        }
+        true
+    }
+
+    fn scroll_shop_page(&mut self, scroll_down: bool) -> bool {
+        let Some(window) = &self.window else {
+            return false;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        if !shop::shop_panel_at(viewport, self.cursor) {
+            return false;
+        }
+        let Some(shop) = &mut self.shop else {
+            return false;
+        };
+        let pages = shop.items.len().div_ceil(5).saturating_sub(3).max(1);
+        let previous_page = shop.page;
+        if scroll_down {
+            shop.page = (shop.page + 1).min(pages.saturating_sub(1));
+        } else {
+            shop.page = shop.page.saturating_sub(1);
+        }
+        if shop.page != previous_page {
+            shop.hover = None;
+            shop.selected = None;
+            self.network_status = format!(
+                "online: shop scroll position {} of {}",
+                shop.page + 1,
+                pages
             );
         }
         true
@@ -714,7 +754,12 @@ impl App {
         let Some(slot) = shop::inventory_slot_at(viewport, self.cursor) else {
             return false;
         };
-        let Some(item) = self.inventory.iter().find(|item| item.position == slot).copied() else {
+        let Some(item) = self
+            .inventory
+            .iter()
+            .find(|item| item.position == slot)
+            .copied()
+        else {
             return true;
         };
         let Some(shop) = &self.shop else {

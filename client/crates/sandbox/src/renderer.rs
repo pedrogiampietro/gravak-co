@@ -525,22 +525,39 @@ impl Renderer {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             messages.hash(&mut hasher);
             options.hash(&mut hasher);
-            let key = format!("@dialog-{}", hasher.finish());
-            if !self.textures.contains_key(&key) {
-                self.upload(&key, crate::labels::dialog_image(messages, options)?);
+            let signature = hasher.finish();
+            let base_key = format!("@dialog-base-{signature}");
+            if !self.textures.contains_key(&base_key) {
+                self.upload(&base_key, crate::labels::dialog_image(messages, options)?);
             }
-            if let Some(texture) = self.textures.get(&key) {
+            if let Some(texture) = self.textures.get(&base_key) {
                 let size = texture.size;
+                let position = [
+                    ((viewport[0] - size[0]) * 0.5).max(8.0),
+                    (viewport[1] - size[1] - 24.0).max(8.0),
+                ];
+                let line_count = ((size[1] - 74.0 - options.len() as f32 * 28.0) / 20.0)
+                    .round()
+                    .max(1.0);
+                let option_top = position[1] + 48.0 + line_count * 20.0;
+                let row = ((cursor[1] - option_top) / 27.0).floor() as usize;
+                let row_offset = cursor[1] - option_top - row as f32 * 27.0;
+                let hovered = (cursor[0] >= position[0] + 15.0
+                    && cursor[0] <= position[0] + 705.0
+                    && row < options.len()
+                    && row_offset >= 0.0
+                    && row_offset < 24.0)
+                    .then_some(row);
+                let key = format!("@dialog-{signature}-{:?}", hovered);
+                if !self.textures.contains_key(&key) {
+                    self.upload(
+                        &key,
+                        crate::labels::dialog_image_with_hover(messages, options, hovered)?,
+                    );
+                }
                 draws.push(Draw {
                     texture: key,
-                    vertices: quad(
-                        [
-                            ((viewport[0] - size[0]) * 0.5).max(8.0),
-                            (viewport[1] - size[1] - 24.0).max(8.0),
-                        ],
-                        size,
-                        viewport,
-                    ),
+                    vertices: quad(position, size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
@@ -554,6 +571,7 @@ impl Renderer {
             shop.page.hash(&mut hasher);
             shop.selected.hash(&mut hasher);
             shop.repair_hover.hash(&mut hasher);
+            shop.scroll_hover.hash(&mut hasher);
             let signature = hasher.finish();
             let key = "@shop-panel";
             if self.shop_signature != Some(signature) {
@@ -563,7 +581,11 @@ impl Renderer {
             if let Some(texture) = self.textures.get(key) {
                 draws.push(Draw {
                     texture: key.into(),
-                    vertices: quad(crate::shop::panel_position(viewport), texture.size, viewport),
+                    vertices: quad(
+                        crate::shop::panel_position(viewport),
+                        texture.size,
+                        viewport,
+                    ),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
@@ -605,7 +627,11 @@ impl Renderer {
             if let Some(texture) = self.textures.get("@inventory-panel") {
                 draws.push(Draw {
                     texture: "@inventory-panel".into(),
-                    vertices: quad(crate::shop::inventory_position(viewport), texture.size, viewport),
+                    vertices: quad(
+                        crate::shop::inventory_position(viewport),
+                        texture.size,
+                        viewport,
+                    ),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
@@ -645,7 +671,10 @@ impl Renderer {
                 self.upload(&key, icon);
             }
             if let Some(texture) = self.textures.get(&key) {
-                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                let position = [
+                    cursor[0] - texture.size[0] * 0.5,
+                    cursor[1] - texture.size[1] * 0.5,
+                ];
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(position, texture.size, viewport),
@@ -660,7 +689,10 @@ impl Renderer {
                 self.upload(&key, crate::shop::item_icon_image(assets, item.item_type)?);
             }
             if let Some(texture) = self.textures.get(&key) {
-                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                let position = [
+                    cursor[0] - texture.size[0] * 0.5,
+                    cursor[1] - texture.size[1] * 0.5,
+                ];
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(position, texture.size, viewport),
