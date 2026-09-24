@@ -545,7 +545,6 @@ impl Renderer {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             shop.npc_id.hash(&mut hasher);
             shop.items.hash(&mut hasher);
-            shop.hover.hash(&mut hasher);
             shop.selected.hash(&mut hasher);
             let signature = hasher.finish();
             let key = "@shop-panel";
@@ -560,6 +559,27 @@ impl Renderer {
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
+            }
+            if let Some(index) = shop.hover
+                && shop.items.get(index).is_some()
+                && shop.selected != Some(index)
+            {
+                let key = "@shop-hover";
+                if !self.textures.contains_key(key) {
+                    self.upload(key, crate::shop::highlight_image());
+                }
+                if let Some(texture) = self.textures.get(key) {
+                    draws.push(Draw {
+                        texture: key.into(),
+                        vertices: quad(
+                            crate::shop::slot_position(viewport, index),
+                            texture.size,
+                            viewport,
+                        ),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
             }
             if !self.textures.contains_key("@inventory-panel") {
                 self.upload(

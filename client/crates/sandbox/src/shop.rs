@@ -127,6 +127,16 @@ impl ShopState {
     }
 }
 
+pub fn slot_position(viewport: [f32; 2], index: usize) -> [f32; 2] {
+    let [left, top] = panel_position(viewport);
+    let column = index as u32 % 5;
+    let row = index as u32 / 5;
+    [
+        left + SLOT_X as f32 + column as f32 * SLOT_STEP_X as f32 + 1.0,
+        top + SLOT_Y as f32 + row as f32 * SLOT_STEP_Y as f32 + 1.0,
+    ]
+}
+
 pub fn panel_position(viewport: [f32; 2]) -> [f32; 2] {
     [8.0, ((viewport[1] - SHOP_HEIGHT as f32) * 0.5).max(8.0)]
 }
@@ -167,19 +177,26 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
             continue;
         };
         imageops::overlay(&mut image, icon, x.into(), y.into());
-        if state.hover == Some(index) || state.selected == Some(index) {
-            let colour = if state.selected == Some(index) {
-                Rgba([255, 220, 70, 255])
-            } else {
-                Rgba([255, 255, 255, 255])
-            };
-            outline(&mut image, x - 3, y - 3, SLOT_SIZE + 2, colour);
+        if state.selected == Some(index) {
+            outline(
+                &mut image,
+                x - 3,
+                y - 3,
+                SLOT_SIZE + 2,
+                Rgba([255, 220, 70, 255]),
+            );
         }
     }
     labels::text(&mut image, &font, &[("Repair", [255, 232, 160])], [27.0, 238.0]);
     labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [135.0, 238.0]);
     labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [194.0, 238.0]);
     Ok(image)
+}
+
+pub fn highlight_image() -> RgbaImage {
+    let mut image = RgbaImage::from_pixel(39, 39, Rgba([0, 0, 0, 0]));
+    outline(&mut image, 0, 0, 38, Rgba([255, 255, 255, 255]));
+    image
 }
 
 pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
