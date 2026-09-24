@@ -6,12 +6,12 @@ use image::{imageops, Rgba, RgbaImage};
 use std::collections::{HashMap, HashSet};
 
 const PANEL_WIDTH: u32 = 270;
-const SHOP_HEIGHT: u32 = 270;
+const SHOP_HEIGHT: u32 = 250;
 const INVENTORY_HEIGHT: u32 = 512;
 const SLOT_X: u32 = 25;
-const SLOT_Y: u32 = 27;
+const SLOT_Y: u32 = 28;
 const SLOT_STEP_X: u32 = 48;
-const SLOT_STEP_Y: u32 = 40;
+const SLOT_STEP_Y: u32 = 43;
 const SLOT_SIZE: u32 = 36;
 
 #[derive(Debug, Clone, Default)]
@@ -152,14 +152,14 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     let source = assets.image("data/main/DialogMpcGoods.dds")?;
     let mut image = RgbaImage::new(PANEL_WIDTH, SHOP_HEIGHT);
     let top = imageops::resize(
-        &imageops::crop_imm(&source, 0, 0, PANEL_WIDTH, 238).to_image(),
+        &imageops::crop_imm(&source, 0, 0, PANEL_WIDTH, 198).to_image(),
         PANEL_WIDTH,
-        220,
+        200,
         imageops::FilterType::Nearest,
     );
     let footer = imageops::crop_imm(&source, 0, 460, PANEL_WIDTH, 52).to_image();
     imageops::replace(&mut image, &top, 0, 0);
-    imageops::replace(&mut image, &footer, 0, 218);
+    imageops::replace(&mut image, &footer, 0, 198);
 
     let font = labels::font()?;
     let title = if state.name.is_empty() {
@@ -187,9 +187,9 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
             );
         }
     }
-    labels::text(&mut image, &font, &[("Repair", [255, 232, 160])], [27.0, 238.0]);
-    labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [135.0, 238.0]);
-    labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [194.0, 238.0]);
+    labels::text(&mut image, &font, &[("Repair", [255, 232, 160])], [27.0, 218.0]);
+    labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [135.0, 218.0]);
+    labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [194.0, 218.0]);
     Ok(image)
 }
 
@@ -203,7 +203,7 @@ pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     let [left, top] = panel_position(viewport);
     cursor[0] >= left + 185.0
         && cursor[0] <= left + PANEL_WIDTH as f32
-        && cursor[1] >= top + 228.0
+        && cursor[1] >= top + 208.0
         && cursor[1] <= top + SHOP_HEIGHT as f32
 }
 
