@@ -27,10 +27,10 @@ Para abrir o cliente conectado ao servidor local:
 
 ```powershell
 cd R:\gravak-co\client
-cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
+cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9960 --username test1 --password 123456 --realm CoEmu
 ```
 
-O modo online autentica em uma thread de rede separada, carrega o personagem e usa o mapa/posição retornados pelo servidor. Sem `--online`, o sandbox permanece offline.
+O modo online autentica em uma thread de rede separada, carrega o personagem e usa o mapa/posição retornados pelo servidor. Neste ambiente, o auth do monorepo usa `9960` para coexistir com o auth legado em `9958`; em uma instalação limpa, use a porta configurada no `.env`. Sem `--online`, o sandbox permanece offline.
 
 ## Servidor
 

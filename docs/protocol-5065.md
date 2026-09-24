@@ -63,7 +63,9 @@ O `gravak-probe` usa o token e o endereço retornados para abrir a conexão do g
 O sandbox permanece offline por padrão. Para ativar o fluxo online, use `--online` ou informe `--auth`:
 
 ```powershell
-cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
+cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9960 --username test1 --password 123456 --realm CoEmu
 ```
 
 A rede roda em uma thread própria e entrega ao loop da janela os estados de conexão, personagem, mapa e posição inicial. O movimento visual ainda é local; a próxima etapa é transformar cada passo do `Player` em `MsgWalk` e reconciliar respostas do servidor.
+
+O `9960` é específico do ambiente local atual, onde o auth do monorepo roda ao lado do auth legado em `9958`.
