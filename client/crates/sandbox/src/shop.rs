@@ -1,5 +1,9 @@
-use crate::{assets::{Assets, Result}, labels};
+use crate::{
+    assets::{Assets, Result},
+    labels,
+};
 use image::{imageops, Rgba, RgbaImage};
+use std::collections::{HashMap, HashSet};
 
 const PANEL_WIDTH: u32 = 270;
 const SHOP_HEIGHT: u32 = 270;
@@ -7,8 +11,19 @@ const INVENTORY_HEIGHT: u32 = 512;
 const SLOT_X: u32 = 25;
 const SLOT_Y: u32 = 27;
 const SLOT_STEP_X: u32 = 48;
-const SLOT_STEP_Y: u32 = 50;
-const SLOT_SIZE: u32 = 40;
+const SLOT_STEP_Y: u32 = 40;
+const SLOT_SIZE: u32 = 36;
+
+#[derive(Debug, Clone, Default)]
+pub struct ItemInfo {
+    pub name: String,
+    pub level: u32,
+    pub attack_min: u32,
+    pub attack_max: u32,
+    pub defense: u32,
+    pub price: u32,
+    pub item_type: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct ShopState {
@@ -16,6 +31,7 @@ pub struct ShopState {
     pub name: String,
     pub items: Vec<u32>,
     icons: Vec<RgbaImage>,
+    infos: HashMap<u32, ItemInfo>,
     pub hover: Option<usize>,
     pub selected: Option<usize>,
 }
@@ -75,11 +91,13 @@ impl ShopState {
             .take(20)
             .map(|item_id| load_icon(assets, *item_id, animation.as_deref()))
             .collect::<Result<Vec<_>>>()?;
+        let infos = load_item_infos(assets, &items);
         Ok(Some(Self {
             npc_id,
             name,
             items,
             icons,
+            infos,
             hover: None,
             selected: None,
         }))
@@ -104,6 +122,9 @@ impl ShopState {
         (index < self.items.len()).then_some(index)
     }
 
+    pub fn item_info(&self, item_id: u32) -> Option<&ItemInfo> {
+        self.infos.get(&item_id)
+    }
 }
 
 pub fn panel_position(viewport: [f32; 2]) -> [f32; 2] {
@@ -178,9 +199,9 @@ pub fn inventory_image(assets: &mut Assets) -> Result<RgbaImage> {
     Ok(image)
 }
 
-pub fn tooltip_image(item_id: u32) -> Result<RgbaImage> {
+pub fn tooltip_image(item_id: u32, info: Option<&ItemInfo>) -> Result<RgbaImage> {
     let font = labels::font()?;
-    let mut image = RgbaImage::from_pixel(220, 126, Rgba([7, 12, 18, 238]));
+    let mut image = RgbaImage::from_pixel(260, 138, Rgba([7, 12, 18, 238]));
     for x in 0..image.width() {
         for y in 0..image.height() {
             if x < 2 || y < 2 || x >= image.width() - 2 || y >= image.height() - 2 {
@@ -188,13 +209,90 @@ pub fn tooltip_image(item_id: u32) -> Result<RgbaImage> {
             }
         }
     }
-    let id = format!("Item {item_id}");
-    labels::text(&mut image, &font, &[(&id, [255, 255, 255])], [10.0, 12.0]);
-    labels::text(&mut image, &font, &[("Level: --", [255, 70, 70])], [10.0, 34.0]);
-    labels::text(&mut image, &font, &[("Defense: --", [255, 255, 255])], [10.0, 52.0]);
-    labels::text(&mut image, &font, &[("Attack: --", [255, 255, 255])], [10.0, 70.0]);
-    labels::text(&mut image, &font, &[("Price: --", [255, 220, 70])], [10.0, 96.0]);
+    let fallback = format!("Item {item_id}");
+    let name = info.map(|item| item.name.as_str()).unwrap_or(&fallback);
+    let item_type = info
+        .map(|item| item.item_type.replace('`', "'"))
+        .filter(|value| !value.is_empty() && value != "None");
+    let title = item_type
+        .as_ref()
+        .map(|item_type| format!("{name} ({item_type})"))
+        .unwrap_or_else(|| name.to_owned());
+    let level = format!("Level: {}", info.map(|item| item.level).unwrap_or_default());
+    let defense = format!(
+        "Defense: {}",
+        info.map(|item| format!("+{}", item.defense))
+            .unwrap_or_else(|| "--".to_owned())
+    );
+    let attack = info
+        .map(|item| {
+            if item.attack_min == 0 && item.attack_max == 0 {
+                "--".to_owned()
+            } else if item.attack_min == item.attack_max {
+                item.attack_max.to_string()
+            } else {
+                format!("{}-{}", item.attack_min, item.attack_max)
+            }
+        })
+        .unwrap_or_else(|| "--".to_owned());
+    let attack = format!("Attack: {attack}");
+    let price = format!("Price: {}", info.map(|item| item.price).unwrap_or_default());
+    labels::text(&mut image, &font, &[(&title, [255, 255, 255])], [10.0, 12.0]);
+    labels::text(&mut image, &font, &[(&level, [255, 70, 70])], [10.0, 36.0]);
+    labels::text(&mut image, &font, &[(&defense, [255, 255, 255])], [10.0, 58.0]);
+    labels::text(&mut image, &font, &[(&attack, [255, 255, 255])], [10.0, 80.0]);
+    labels::text(&mut image, &font, &[(&price, [255, 220, 70])], [10.0, 104.0]);
     Ok(image)
+}
+
+fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemInfo> {
+    let requested = item_ids.iter().copied().collect::<HashSet<_>>();
+    let Ok(mut bytes) = assets.read("ini/itemtype.dat") else {
+        return HashMap::new();
+    };
+    decrypt_itemtype(&mut bytes);
+    let contents = String::from_utf8_lossy(&bytes);
+    let mut infos = HashMap::new();
+    for line in contents.lines().skip(1) {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        if fields.len() < 39 {
+            continue;
+        }
+        let Ok(id) = fields[0].parse::<u32>() else {
+            continue;
+        };
+        if !requested.contains(&id) {
+            continue;
+        }
+        let number = |index: usize| fields[index].parse::<u32>().unwrap_or_default();
+        infos.insert(
+            id,
+            ItemInfo {
+                name: fields[1].replace('~', " "),
+                level: number(4),
+                attack_max: number(14),
+                attack_min: number(15),
+                defense: number(16),
+                price: number(12),
+                item_type: fields[37].replace('~', " "),
+            },
+        );
+    }
+    infos
+}
+
+fn decrypt_itemtype(bytes: &mut [u8]) {
+    let mut seed = 9527u32;
+    let mut key = [0u8; 128];
+    for value in &mut key {
+        seed = seed
+            .wrapping_mul(0x343fdu32)
+            .wrapping_add(0x269ec3u32);
+        *value = ((seed >> 16) & 0x7fff) as u8;
+    }
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = (*byte ^ key[index % key.len()]).rotate_right((index % 8) as u32);
+    }
 }
 
 fn load_icon(

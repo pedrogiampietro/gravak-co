@@ -579,7 +579,10 @@ impl Renderer {
                 if let Some(item_id) = shop.items.get(index) {
                     let tooltip_key = format!("@shop-tooltip-{item_id}");
                     if !self.textures.contains_key(&tooltip_key) {
-                        self.upload(&tooltip_key, crate::shop::tooltip_image(*item_id)?);
+                        self.upload(
+                            &tooltip_key,
+                            crate::shop::tooltip_image(*item_id, shop.item_info(*item_id))?,
+                        );
                     }
                     if let Some(texture) = self.textures.get(&tooltip_key) {
                         let mut position = [cursor[0] + 14.0, cursor[1] + 14.0];
