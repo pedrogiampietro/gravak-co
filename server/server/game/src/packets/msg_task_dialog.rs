@@ -259,6 +259,7 @@ impl PacketProcess for MsgTaskDialog {
             .with_option(255, "Thank you.")
             .and()
             .with_avatar(47)
+            .task_id(self.task_id)
             .build();
         for message in dialog {
             actor.send(message).await?;
