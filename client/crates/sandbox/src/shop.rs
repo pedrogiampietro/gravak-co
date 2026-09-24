@@ -167,9 +167,9 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
         200,
         imageops::FilterType::Nearest,
     );
-    let footer = imageops::crop_imm(&source, 0, 460, PANEL_WIDTH, 52).to_image();
+    let footer = imageops::crop_imm(&source, 0, 440, PANEL_WIDTH, 51).to_image();
     imageops::replace(&mut image, &top, 0, 0);
-    imageops::replace(&mut image, &footer, 0, 198);
+    imageops::replace(&mut image, &footer, 0, 199);
 
     let font = labels::font()?;
     let title = if state.name.is_empty() {
@@ -232,7 +232,8 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
 
 fn labelled_repair_button(assets: &mut Assets, font: &fontdue::Font) -> Result<RgbaImage> {
     let source = assets.image("data/interface/Style01/Exercise/ExeCancel.dds")?;
-    let mut button = imageops::resize(&source, 62, 20, imageops::FilterType::Nearest);
+    let button_art = imageops::crop_imm(&source, 0, 0, 64, 32).to_image();
+    let mut button = imageops::resize(&button_art, 62, 20, imageops::FilterType::Nearest);
     let fill = imageops::resize(
         &imageops::crop_imm(&source, 8, 8, 12, 16).to_image(),
         46,
