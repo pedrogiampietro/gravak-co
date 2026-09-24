@@ -131,11 +131,7 @@ impl Npc {
 
     #[tracing::instrument(skip(self, to), fields(npc = self.entity.id()))]
     pub(super) async fn send_spawn(&self, to: &ActorHandle) -> Result<(), Error> {
-        let msg = if self.is_booth() {
-            MsgNpcInfo::from_npc_with_name(self)
-        } else {
-            MsgNpcInfo::new(self)
-        };
+        let msg = MsgNpcInfo::from_npc_with_name(self);
         to.send(msg).await?;
         tracing::trace!("sent spawn");
         Ok(())

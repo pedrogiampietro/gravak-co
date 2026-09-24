@@ -74,6 +74,13 @@ impl Player {
     pub fn stop(&mut self) {
         self.route.clear();
     }
+    pub fn reposition(&mut self, position: [i32; 2]) {
+        self.position = position.map(|value| value as f32);
+        self.height = 0.0;
+        self.route.clear();
+        self.segment = None;
+        self.action = Action::Idle;
+    }
     pub fn go(&mut self, map: &Map, target: [i32; 2]) {
         let start = self
             .segment

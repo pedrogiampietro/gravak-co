@@ -110,7 +110,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 self.held = state == ElementState::Pressed;
-                if self.held {
+                if self.held && !self.select_actor_at_cursor() {
                     self.move_cursor();
                 }
             }
@@ -230,9 +230,8 @@ impl App {
             NetworkEvent::MovementRejected(message) => {
                 self.pending_network_steps.clear();
                 if let Some(position) = self.confirmed_network_cell {
-                    self.player.position = position.map(|value| value as f32);
+                    self.player.reposition(position);
                 }
-                self.player.stop();
                 self.network_status = format!("online: movement rejected ({message})");
             }
             NetworkEvent::Reposition {
@@ -242,8 +241,7 @@ impl App {
             } => {
                 self.pending_network_steps.clear();
                 self.confirmed_network_cell = Some(position);
-                self.player.position = position.map(|value| value as f32);
-                self.player.stop();
+                self.player.reposition(position);
                 self.network_status = format!("online: repositioned map {map_id} dir {direction}");
             }
             NetworkEvent::RemoteWalk {
@@ -378,6 +376,38 @@ impl App {
         network.send_walk(character_id, direction);
         self.pending_network_steps.push_back(current_cell);
         self.network_status = format!("online: sending walk dir {direction}");
+    }
+
+    fn select_actor_at_cursor(&mut self) -> bool {
+        let Some(renderer) = &self.renderer else {
+            return false;
+        };
+        let camera = renderer.camera(&self.map, &self.player);
+        let selected = self
+            .remote_actors
+            .values()
+            .filter_map(|actor| {
+                let projected = self.map.project(actor.position);
+                let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+                let height = if actor.npc { 96.0 } else { 160.0 };
+                let within = (self.cursor[0] - origin[0]).abs() <= 48.0
+                    && self.cursor[1] >= origin[1] - height
+                    && self.cursor[1] <= origin[1] + 24.0;
+                within.then_some((actor.position[0] + actor.position[1], actor))
+            })
+            .min_by(|(left, _), (right, _)| left.total_cmp(right))
+            .map(|(_, actor)| (actor.id, actor.npc, actor.name.clone()));
+        let Some((id, npc, name)) = selected else {
+            return false;
+        };
+        self.held = false;
+        let kind = if npc { "npc" } else { "player" };
+        let label = if name.is_empty() { "unnamed" } else { &name };
+        self.network_status = format!("online: selected {kind} {label} ({id})");
+        if let Some(window) = &self.window {
+            window.set_title(&format!("gravak-co — {}", self.network_status));
+        }
+        true
     }
 
     fn send_network_action(&mut self, action: u32) {

@@ -366,7 +366,6 @@ impl Renderer {
             });
         }
         for actor in remote_actors.values() {
-            let remote_character = remote_models.get(&actor.id).unwrap_or(character);
             let action = if time < actor.animation_until {
                 remote_action(actor.action)
             } else {
@@ -402,7 +401,7 @@ impl Renderer {
                     depth_test: true,
                     sort_depth: depth,
                 });
-            } else {
+            } else if let Some(remote_character) = remote_models.get(&actor.id) {
                 for part in &remote_character.parts {
                     self.texture(assets, &part.texture);
                     let vertices = remote_character.vertices(part, time, action, facing, None);
@@ -430,6 +429,8 @@ impl Renderer {
                         sort_depth: depth,
                     });
                 }
+            } else {
+                continue;
             }
             if !actor.name.is_empty() {
                 let label_key = format!("@actor-label-{}", actor.id);
@@ -442,7 +443,7 @@ impl Renderer {
                         vertices: quad(
                             [
                                 (origin[0] - label.size[0] * 0.5).round(),
-                                (origin[1] - 152.0).round(),
+                                (origin[1] - if actor.npc { 80.0 } else { 152.0 }).round(),
                             ],
                             label.size,
                             viewport,
