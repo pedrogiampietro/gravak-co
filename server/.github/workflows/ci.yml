@@ -1,0 +1,71 @@
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - README.md
+      - CHANGELOG.md
+      - .gitignore
+      - .github/**
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, closed]
+  workflow_dispatch:
+
+name: CI
+
+env:
+  S3_ENDPOINT: https://pub-a119292fa58c4241b30d6ba460bf8231.r2.dev
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Compile and Test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-ubuntu-latest
+      cancel-in-progress: true
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install nightly toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "rust"
+
+      - name: Fixtures Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            data/GameMaps/GameMap.dat
+            data/GameMaps/map/*.DMap
+            data/GameMaps/Scene/*.scene
+            data/GameMaps/ScenePart/*.Part
+          key: fixtures-${{ hashFiles('scripts/fetch-test-fixtures.bash') }}
+          restore-keys: |
+            fixtures-
+
+      - name: Setup mold Linker
+        uses: rui314/setup-mold@v1
+
+      - name: Download Test Fixtures
+        run: bash ./scripts/fetch-test-fixtures.bash
+
+      - name: Run cargo build
+        uses: actions-rs/cargo@v1
+        env:
+          DATABASE_URL: file::memory:?cache=shared
+        with:
+          command: build
+
+      - name: Run cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test

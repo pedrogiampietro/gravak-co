@@ -1,0 +1,24 @@
+# Rust build output
+target/
+**/target/
+
+# Local configuration and runtime output
+.env
+**/.env
+logs/
+**/logs/
+
+# Local server database
+data/coemu.db
+**/data/coemu.db
+
+# Local map fixtures and junctions; game assets stay outside this repository
+server/data/GameMaps.invalid-download/
+server/data/GameMaps/map/
+server/data/GameMaps/Scene/
+server/data/GameMaps/ScenePart/
+server/data/GameMaps/GameMap.dat
+
+# Editor / OS files
+.DS_Store
+Thumbs.db

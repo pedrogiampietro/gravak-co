@@ -1,0 +1,17 @@
+[package]
+name = "tq-codec"
+version = "0.1.0"
+authors = ["Shady Khalifa <dev@shadykhalifa.me>"]
+edition.workspace = true
+
+[dependencies]
+bytes.workspace = true
+tq-crypto.workspace = true
+tracing = { workspace = true, features = ["attributes"] }
+tokio-stream = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, default-features = false, features = ["io-util"] }
+pretty-hex = { version = "0.4", default-features = false }
+
+[features]
+default = ["std"]
+std = ["bytes/std", "tq-crypto/std", "tracing/std", "pretty-hex/alloc"]

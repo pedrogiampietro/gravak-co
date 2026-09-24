@@ -1,0 +1,42 @@
+[package]
+name = "benchbot"
+version = "0.1.0"
+edition.workspace = true
+
+
+[dependencies]
+dotenvy.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+
+tq-codec.workspace = true
+tq-crypto.workspace = true
+tq-network.workspace = true
+tq-db.workspace = true
+game.workspace = true
+auth.workspace = true
+
+pretty-hex = "0.4"
+local-ip-address = "0.5"
+
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+default-features = false
+features = ["env-filter", "ansi", "fmt", "smallvec"]
+
+# Runtime
+[dependencies.tokio]
+workspace = true
+default-features = false
+features = ["rt-multi-thread", "macros", "signal"]
+
+# Database
+[dependencies.sqlx]
+workspace = true
+default-features = false
+features = ["runtime-tokio-rustls", "sqlite", "macros"]

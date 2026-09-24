@@ -1,0 +1,55 @@
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - README.md
+      - CHANGELOG.md
+      - .gitignore
+      - .github/**
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, closed]
+  workflow_dispatch:
+
+name: Nightly lints
+
+jobs:
+  combo:
+    name: Clippy + rustfmt
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-ubuntu-latest
+      cancel-in-progress: true
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install nightly toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "rust"
+
+      - name: Setup mold Linker
+        uses: rui314/setup-mold@v1
+
+      - name: Run cargo fmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - name: Run cargo clippy
+        uses: actions-rs/cargo@v1
+        env:
+          SQLX_OFFLINE: true
+        with:
+          command: clippy
+          args: -- -D warnings

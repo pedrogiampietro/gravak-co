@@ -1,0 +1,17 @@
+[alias]
+auth = "run --bin auth-server --features=server"
+game = "run --bin game-server"
+hash-pwd = "run --bin hash-pwd"
+externref = "run --bin externref-cli"
+
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = ["-Zshare-generics=y", "--cfg", "tokio_unstable"]
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold", "-Zshare-generics=y", "--cfg", "tokio_unstable"]
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+rustflags = ["-Zshare-generics=n", "--cfg", "tokio_unstable"]

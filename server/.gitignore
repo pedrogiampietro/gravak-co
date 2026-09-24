@@ -1,0 +1,6 @@
+target
+.env
+.direnv
+*.DS_Store
+logs/
+data/GameMaps.invalid-download/

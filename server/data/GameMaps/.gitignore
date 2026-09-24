@@ -1,0 +1,9 @@
+**/*.DMap
+**/*.pul
+**/*.scene
+**/*.Part
+GameMap.dat
+*.cmap
+/map/
+/Scene/
+/ScenePart/

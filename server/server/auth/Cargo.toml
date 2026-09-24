@@ -1,0 +1,87 @@
+[package]
+name = "auth"
+version = "0.1.0"
+authors = ["Shady Khalifa <dev@shadykhalifa.me>"]
+edition.workspace = true
+
+[[bin]]
+name = "auth-server"
+path = "src/main.rs"
+required-features = ["server"]
+
+[lib]
+name = "auth"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+bytes.workspace = true
+tq-db = { workspace = true, features = ["sqlx"] }
+tq-network.workspace = true
+tq-serde.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+dotenvy.workspace = true
+tokio-stream.workspace = true
+num_enum.workspace = true
+futures.workspace = true
+rand.workspace = true
+rkyv = { workspace = true, default-features = false, features = ["alloc", "size_32"] }
+
+
+# Packets
+msg-account.workspace = true
+msg-connect.workspace = true
+msg-transfer.workspace = true
+
+
+[dependencies.tq-server]
+workspace = true
+optional = true
+
+[dependencies.wasmtime]
+workspace = true
+default-features = false
+features = ["async", "cranelift", "coredump", "cache", "pooling-allocator"]
+
+[dependencies.tracing-subscriber]
+workspace = true
+optional = true
+default-features = false
+features = ["env-filter", "ansi", "fmt", "smallvec"]
+
+# Runtime
+[dependencies.tokio]
+workspace = true
+default-features = false
+features = []
+
+# Database
+[dependencies.sqlx]
+workspace = true
+default-features = false
+features = ["sqlite"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio", "migrate"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
+
+msg-connect-ex.workspace = true
+
+[features]
+default = []
+server = [
+  "tq-network/std",
+  "tq-serde/std",
+  "msg-account/std",
+  "msg-connect/std",
+  "msg-transfer/std",
+  "tokio/rt-multi-thread",
+  "tokio/macros",
+  "tokio/signal",
+  "dep:tq-server",
+  "sqlx/runtime-tokio",
+  "dep:tracing-subscriber",
+]

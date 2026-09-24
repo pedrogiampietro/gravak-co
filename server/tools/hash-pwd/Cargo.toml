@@ -1,0 +1,8 @@
+[package]
+name = "hash-pwd"
+version = "0.1.0"
+authors = ["Shady Khalifa <dev@shadykhalifa.me>"]
+edition.workspace = true
+
+[dependencies]
+bcrypt.workspace = true
