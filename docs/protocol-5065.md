@@ -18,9 +18,12 @@ Este documento registra a primeira fatia de integração entre o cliente e o ser
 | Auth → Cliente | 1055 | `MsgConnectEx` | parser implementado |
 | Cliente → Game | 1052 | `MsgConnect` | implementado no gravak-protocol |
 | Game → Cliente | 1004 | `MsgTalk` | implementado no gravak-protocol |
-| Game → Cliente | 1006 | `MsgUserInfo` | próximo passo |
-| Game → Cliente | 1110 | `MsgMapInfo` | próximo passo |
-| Cliente ↔ Game | 1005 | `MsgWalk` | próximo passo |
+| Game → Cliente | 1006 | `MsgUserInfo` | implementado no `gravak-protocol` |
+| Game → Cliente | 1110 | `MsgMapInfo` | implementado; `flags` ocupa 1 byte neste wire |
+| Cliente ↔ Game | 1005 | `MsgWalk` | implementado no probe |
+| Cliente → Game | 1001 | `MsgRegister` | implementado para personagem de teste |
+| Cliente → Game | 1010 | `MsgAction` | `SendLocation` implementado |
+| Game → Cliente | 1033 | `MsgData` | parser implementado |
 
 ## `MsgAccount` — 1051
 
@@ -53,4 +56,4 @@ cd R:\gravak-co\client
 cargo run --release --locked -p gravak-probe
 ```
 
-O gravak-probe já usa o token e o endereço retornados para abrir a conexão do game server, envia MsgConnect 1052 e lê a primeira resposta MsgTalk 1004.
+O `gravak-probe` usa o token e o endereço retornados para abrir a conexão do game server, envia `MsgConnect` 1052, registra o personagem quando recebe `NEW_ROLE`, reconecta, lê `MsgUserInfo`/`MsgMapInfo` e envia uma caminhada `MsgWalk`.

@@ -10,5 +10,6 @@ serde.workspace = true
 tokio = { version = "1.48", features = ["net", "rt", "macros"] }
 tokio-stream = "0.1"
 tq-crypto = { path = "../../../server/crates/crypto", features = ["std"] }
+tq-codec = { path = "../../../server/crates/codec", features = ["std"] }
 tq-network = { path = "../../../server/crates/network", features = ["std"] }
 tq-serde = { path = "../../../server/crates/serde", features = ["std"] }
