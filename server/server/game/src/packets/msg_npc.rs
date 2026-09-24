@@ -69,9 +69,15 @@ impl PacketProcess for MsgNpc {
         }
         let npc_id = npc.id();
         let npc_name = npc.entity().name();
+        let shop_items = state
+            .shop_catalog()
+            .offer(npc_id)
+            .map_or(0, |offer| offer.item_ids.len());
         let dialog = match npc.kind() {
             NpcKind::ShopKeeper => MsgTaskDialog::builder()
-                .text(format!("Welcome to {npc_name}'s shop. What would you like to do?"))
+                .text(format!(
+                    "Welcome to {npc_name}'s shop. {shop_items} items are available."
+                ))
                 .with_option(1, "Buy items.")
                 .with_option(2, "Sell items.")
                 .with_option(255, "Leave.")

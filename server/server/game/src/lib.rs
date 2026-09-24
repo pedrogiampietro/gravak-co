@@ -16,3 +16,4 @@ pub mod error;
 pub use error::Error;
 
 pub mod packets;
+pub mod shop;

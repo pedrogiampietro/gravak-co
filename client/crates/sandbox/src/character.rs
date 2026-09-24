@@ -317,30 +317,45 @@ impl NpcModel {
         // a compatibility fallback for custom/terrain NPCs, but prefer the
         // appearance key derived from `look`.
         let appearance_type = u32::from(look) / 10;
-        let simple_id = npc_catalog
+        let section = npc_catalog
             .section(&format!("NpcType{appearance_type}"))
-            .or_else(|| npc_catalog.section(&format!("NpcType{kind}")))
+            .or_else(|| npc_catalog.section(&format!("NpcType{kind}")));
+        let simple_id = section
             .and_then(|section| section.first("SimpleObjID"))
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or_else(|| u32::from(look / 10));
         let models = IdPathCatalog::parse(&assets.read("ini/3dobj.ini")?);
-        let model_id = 9_990_000 + simple_id * 10;
-        let model_path = models
-            .get(model_id)
-            .or_else(|| models.get(9_990_000 + u32::from(look)))
+        let motion_model = section
+            .and_then(|section| section.first("StandByMotion"))
+            .and_then(|value| value.parse::<u32>().ok())
+            // NPC motion IDs append an action/frame suffix to the model ID.
+            // For example 999009100 -> model 9990090.
+            .and_then(|motion| (motion / 100).checked_sub(1));
+        let model_candidates = [
+            motion_model,
+            Some(9_990_000 + simple_id * 10),
+            Some(9_990_000 + u32::from(look)),
+        ];
+        let (model_id, model_path) = model_candidates
+            .into_iter()
+            .flatten()
+            .find_map(|id| models.get(id).map(|path| (id, path)))
             .ok_or("NPC model missing")?;
         let document = C3Document::parse(&assets.read(model_path.as_str())?)?;
         let mesh = document.meshes.first().ok_or("NPC mesh missing")?.clone();
         let textures = IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?);
-        let texture_id = mesh
-            .texture_name
-            .trim_end_matches(".dds")
-            .parse::<u32>()
-            .ok()
-            .or(Some(model_id))
-            .ok_or("NPC texture id missing")?;
-        let texture = textures
-            .get(texture_id)
+        let texture_candidates = [
+            mesh.texture_name
+                .trim_end_matches(".dds")
+                .parse::<u32>()
+                .ok(),
+            Some(model_id),
+            Some(model_id / 10),
+        ];
+        let texture = texture_candidates
+            .into_iter()
+            .flatten()
+            .find_map(|id| textures.get(id))
             .ok_or("NPC texture missing")?
             .as_str()
             .to_owned();

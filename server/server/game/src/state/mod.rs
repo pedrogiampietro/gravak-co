@@ -1,5 +1,6 @@
 use crate::entities::GameEntity;
 use crate::world::Map;
+use crate::shop::ShopCatalog;
 use crate::Error;
 use parking_lot::{Mutex, RwLock};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
@@ -23,6 +24,7 @@ pub struct State {
     creation_tokens: CreationTokens,
     entities: Entites,
     maps: Maps,
+    shop_catalog: ShopCatalog,
     pool: SqlitePool,
 }
 
@@ -60,6 +62,7 @@ impl State {
             creation_tokens: Default::default(),
             entities: Default::default(),
             maps,
+            shop_catalog: ShopCatalog::from_environment(),
             pool,
         };
         Ok(state)
@@ -68,6 +71,10 @@ impl State {
     /// Get access to the database pool
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    pub fn shop_catalog(&self) -> &ShopCatalog {
+        &self.shop_catalog
     }
 
     pub fn maps(&self) -> &Maps {
