@@ -102,10 +102,9 @@ impl ApplicationHandler for App {
                 self.cursor = [position.x as f32, position.y as f32];
                 if let (Some(shop), Some(window)) = (&mut self.shop, &self.window) {
                     let size = window.inner_size();
-                    shop.hover = shop.item_at(
-                        [size.width as f32, size.height as f32],
-                        self.cursor,
-                    );
+                    let viewport = [size.width as f32, size.height as f32];
+                    shop.hover = shop.item_at(viewport, self.cursor);
+                    shop.repair_hover = shop::repair_button_at(viewport, self.cursor);
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),

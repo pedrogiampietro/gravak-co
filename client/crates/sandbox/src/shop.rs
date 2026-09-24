@@ -39,6 +39,7 @@ pub struct ShopState {
     pub page: usize,
     pub hover: Option<usize>,
     pub selected: Option<usize>,
+    pub repair_hover: bool,
 }
 
 impl ShopState {
@@ -105,6 +106,7 @@ impl ShopState {
             page: 0,
             hover: None,
             selected: None,
+            repair_hover: false,
         }))
     }
 
@@ -224,7 +226,7 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     );
     imageops::overlay(&mut image, &up, 243, 155);
     imageops::overlay(&mut image, &down, 243, 190);
-    let repair_button = labelled_repair_button(&font);
+    let repair_button = labelled_repair_button(&font, state.repair_hover);
     imageops::overlay(&mut image, &repair_button, 33, FOOTER_BUTTON_Y as i64);
     labels::text(
         &mut image,
@@ -241,14 +243,44 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     Ok(image)
 }
 
-fn labelled_repair_button(font: &fontdue::Font) -> RgbaImage {
+fn labelled_repair_button(font: &fontdue::Font, hovered: bool) -> RgbaImage {
     let mut button = RgbaImage::from_pixel(62, 20, Rgba([0, 0, 0, 0]));
     rounded_rect(&mut button, 0, 1, 62, 18, 4, Rgba([5, 12, 17, 255]));
-    rounded_rect(&mut button, 1, 1, 60, 17, 4, Rgba([197, 161, 77, 255]));
-    rounded_rect(&mut button, 2, 2, 58, 15, 3, Rgba([12, 29, 39, 255]));
-    rounded_rect(&mut button, 3, 3, 56, 13, 2, Rgba([17, 45, 59, 255]));
+    let frame = if hovered {
+        Rgba([248, 211, 111, 255])
+    } else {
+        Rgba([197, 161, 77, 255])
+    };
+    let inset = if hovered {
+        Rgba([22, 47, 58, 255])
+    } else {
+        Rgba([12, 29, 39, 255])
+    };
+    rounded_rect(&mut button, 1, 1, 60, 17, 4, frame);
+    rounded_rect(&mut button, 2, 2, 58, 15, 3, inset);
+    rounded_rect(
+        &mut button,
+        3,
+        3,
+        56,
+        13,
+        2,
+        if hovered {
+            Rgba([27, 63, 78, 255])
+        } else {
+            Rgba([17, 45, 59, 255])
+        },
+    );
     for x in 5..57 {
-        button.put_pixel(x, 3, Rgba([55, 82, 92, 255]));
+        button.put_pixel(
+            x,
+            3,
+            if hovered {
+                Rgba([98, 133, 142, 255])
+            } else {
+                Rgba([55, 82, 92, 255])
+            },
+        );
         button.put_pixel(x, 15, Rgba([9, 24, 32, 255]));
     }
     let text_width = "Repair"
@@ -258,8 +290,8 @@ fn labelled_repair_button(font: &fontdue::Font) -> RgbaImage {
     labels::text(
         &mut button,
         font,
-        &[("Repair", [255, 232, 160])],
-        [(62.0 - text_width) * 0.5, 4.0],
+        &[("Repair", if hovered { [255, 245, 193] } else { [255, 232, 160] })],
+        [(62.0 - text_width) * 0.5, 2.0],
     );
     button
 }
@@ -301,6 +333,14 @@ pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
         && cursor[0] <= left + 243.0
         && cursor[1] >= top + FOOTER_BUTTON_Y
         && cursor[1] <= top + FOOTER_BUTTON_Y + 20.0
+}
+
+pub fn repair_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [left, top] = panel_position(viewport);
+    cursor[0] >= left + 33.0
+        && cursor[0] < left + 95.0
+        && cursor[1] >= top + FOOTER_BUTTON_Y
+        && cursor[1] < top + FOOTER_BUTTON_Y + 20.0
 }
 
 pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
