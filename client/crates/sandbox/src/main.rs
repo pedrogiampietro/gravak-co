@@ -264,6 +264,24 @@ impl App {
                         format!("online: actor {id} moved dir {direction} type {movement_type}");
                 }
             }
+            NetworkEvent::RemoteFacing { id, direction } => {
+                if let Some(actor) = self.remote_actors.get_mut(&id) {
+                    actor.direction = direction;
+                }
+            }
+            NetworkEvent::RemoteJump {
+                id,
+                position,
+                direction,
+            } => {
+                if let Some(actor) = self.remote_actors.get_mut(&id) {
+                    actor.position = position.map(|value| value as f32);
+                    actor.direction = direction;
+                    actor.action = 130;
+                    actor.animation_until = self.started.elapsed().as_secs_f32()
+                        + self.character.duration(Action::Jump).as_secs_f32();
+                }
+            }
             NetworkEvent::RemoveActor(id) => {
                 self.remote_actors.remove(&id);
                 self.remote_models.remove(&id);

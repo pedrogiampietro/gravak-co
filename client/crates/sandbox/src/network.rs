@@ -45,6 +45,15 @@ pub enum NetworkEvent {
         direction: u8,
         movement_type: u8,
     },
+    RemoteFacing {
+        id: u32,
+        direction: u8,
+    },
+    RemoteJump {
+        id: u32,
+        position: [i32; 2],
+        direction: u8,
+    },
     RemoveActor(u32),
     PlayerSpawn(RemoteActor),
     NpcSpawn(RemoteActor),
@@ -120,6 +129,8 @@ impl NetworkHandle {
                 | NetworkEvent::MovementRejected(_)
                 | NetworkEvent::Reposition { .. }
                 | NetworkEvent::RemoteWalk { .. }
+                | NetworkEvent::RemoteFacing { .. }
+                | NetworkEvent::RemoteJump { .. }
                 | NetworkEvent::RemoveActor(_)
                 | NetworkEvent::PlayerSpawn(_)
                 | NetworkEvent::NpcSpawn(_) => {}
@@ -272,6 +283,23 @@ async fn run(
                 }
                 Some(GameEvent::Action(action)) if action.action_type == 132 => {
                     let _ = events.send(NetworkEvent::RemoveActor(action.character_id));
+                }
+                Some(GameEvent::Action(action))
+                    if action.action_type == 79 && action.character_id != local_character_id =>
+                {
+                    let _ = events.send(NetworkEvent::RemoteFacing {
+                        id: action.character_id,
+                        direction: action.details as u8,
+                    });
+                }
+                Some(GameEvent::Action(action))
+                    if action.action_type == 133 && action.character_id != local_character_id =>
+                {
+                    let _ = events.send(NetworkEvent::RemoteJump {
+                        id: action.character_id,
+                        position: unpack_position(action.data1),
+                        direction: action.details as u8,
+                    });
                 }
                 Some(GameEvent::Player(player)) => {
                     let _ = events.send(NetworkEvent::PlayerSpawn(player_actor(player)));
