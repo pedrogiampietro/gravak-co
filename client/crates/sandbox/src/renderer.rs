@@ -261,6 +261,7 @@ impl Renderer {
         player: &Player,
         remote_actors: &HashMap<u32, RemoteActor>,
         remote_models: &HashMap<u32, Character>,
+        remote_npcs: &HashMap<u32, crate::character::NpcModel>,
         time: f32,
     ) -> Result<()> {
         let camera = self.camera(map, player);
@@ -366,19 +367,23 @@ impl Renderer {
         }
         for actor in remote_actors.values() {
             let remote_character = remote_models.get(&actor.id).unwrap_or(character);
-            let action = remote_action(actor.action);
+            let action = if time < actor.animation_until {
+                remote_action(actor.action)
+            } else {
+                Action::Idle
+            };
             let projected = map.project(actor.position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             let depth = actor.position[0] + actor.position[1];
             let facing = -f32::from((actor.direction % 8) + 1) * std::f32::consts::FRAC_PI_4;
-            for part in &remote_character.parts {
-                self.texture(assets, &part.texture);
-                let vertices = remote_character.vertices(part, time, action, facing, None);
-                let triangles = part
+            if let Some(npc) = remote_npcs.get(&actor.id) {
+                self.texture(assets, &npc.texture);
+                let vertices = npc.vertices(time, facing);
+                let triangles = npc
                     .mesh
                     .opaque_indices
                     .iter()
-                    .chain(&part.mesh.alpha_indices)
+                    .chain(&npc.mesh.alpha_indices)
                     .map(|i| {
                         let (p, uv) = vertices[*i as usize];
                         Vertex {
@@ -392,11 +397,39 @@ impl Renderer {
                     })
                     .collect();
                 draws.push(Draw {
-                    texture: part.texture.clone(),
+                    texture: npc.texture.clone(),
                     vertices: triangles,
                     depth_test: true,
                     sort_depth: depth,
                 });
+            } else {
+                for part in &remote_character.parts {
+                    self.texture(assets, &part.texture);
+                    let vertices = remote_character.vertices(part, time, action, facing, None);
+                    let triangles = part
+                        .mesh
+                        .opaque_indices
+                        .iter()
+                        .chain(&part.mesh.alpha_indices)
+                        .map(|i| {
+                            let (p, uv) = vertices[*i as usize];
+                            Vertex {
+                                position: clip(
+                                    [origin[0] + p[0], origin[1] + p[1]],
+                                    (0.5 + p[2] * 0.0005).clamp(0.001, 0.999),
+                                    viewport,
+                                ),
+                                uv,
+                            }
+                        })
+                        .collect();
+                    draws.push(Draw {
+                        texture: part.texture.clone(),
+                        vertices: triangles,
+                        depth_test: true,
+                        sort_depth: depth,
+                    });
+                }
             }
             if !actor.name.is_empty() {
                 let label_key = format!("@actor-label-{}", actor.id);

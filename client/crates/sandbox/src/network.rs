@@ -65,6 +65,9 @@ pub struct RemoteActor {
     pub left_weapon: u32,
     pub action: u8,
     pub health: u16,
+    pub npc_kind: u16,
+    pub animation_until: f32,
+    pub step_right: bool,
     pub npc: bool,
 }
 
@@ -306,6 +309,9 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         left_weapon: player.left_hand.max(0) as u32,
         action: player.action,
         health: player.health_points,
+        npc_kind: 0,
+        animation_until: 0.0,
+        step_right: false,
         npc: false,
     }
 }
@@ -324,6 +330,9 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         left_weapon: 0,
         action: 0,
         health: 0,
+        npc_kind: npc.kind,
+        animation_until: 0.0,
+        step_right: false,
         npc: true,
     }
 }

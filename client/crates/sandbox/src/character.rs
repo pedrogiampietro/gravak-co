@@ -24,6 +24,13 @@ pub struct Character {
     pub health: u32,
     pub maximum_health: u32,
 }
+
+pub struct NpcModel {
+    pub mesh: C3Mesh,
+    pub texture: String,
+    motion: Option<C3Motion>,
+}
+
 impl Character {
     pub fn load(assets: &mut Assets, body: u32) -> Result<Self> {
         if !(1..=4).contains(&body) {
@@ -289,6 +296,86 @@ impl Character {
                         (rotated.y * tc - rotated.z * ts) * 0.75,
                     ],
                     [v.texture_coordinate.x, v.texture_coordinate.y],
+                )
+            })
+            .collect()
+    }
+}
+
+impl NpcModel {
+    pub fn load(assets: &mut Assets, kind: u16, look: u16) -> Result<Self> {
+        let npc_catalog = SectionCatalog::parse(&assets.read("ini/npc.ini")?);
+        let simple_id = npc_catalog
+            .section(&format!("NpcType{kind}"))
+            .and_then(|section| section.first("SimpleObjID"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or_else(|| u32::from(look / 10));
+        let models = IdPathCatalog::parse(&assets.read("ini/3dobj.ini")?);
+        let model_id = 9_990_000 + simple_id * 10;
+        let model_path = models
+            .get(model_id)
+            .or_else(|| models.get(9_990_000 + u32::from(look)))
+            .ok_or("NPC model missing")?;
+        let document = C3Document::parse(&assets.read(model_path.as_str())?)?;
+        let mesh = document.meshes.first().ok_or("NPC mesh missing")?.clone();
+        let textures = IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?);
+        let texture_id = mesh
+            .texture_name
+            .trim_end_matches(".dds")
+            .parse::<u32>()
+            .ok()
+            .or(Some(model_id))
+            .ok_or("NPC texture id missing")?;
+        let texture = textures
+            .get(texture_id)
+            .ok_or("NPC texture missing")?
+            .as_str()
+            .to_owned();
+        Ok(Self {
+            mesh,
+            texture,
+            motion: document.motions.first().cloned(),
+        })
+    }
+
+    pub fn vertices(&self, seconds: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        let frame = self.motion.as_ref().map_or(0.0, |motion| {
+            (seconds * 30.0) % motion.frame_count.max(1) as f32
+        });
+        let (s, c) = facing.sin_cos();
+        let (ts, tc) = (-std::f32::consts::FRAC_PI_4).sin_cos();
+        self.mesh
+            .vertices
+            .iter()
+            .map(|vertex| {
+                let transform = self
+                    .motion
+                    .as_ref()
+                    .and_then(|motion| {
+                        (0..2)
+                            .find(|i| vertex.bone_weights[*i] > 0.0)
+                            .and_then(|i| {
+                                Some(
+                                    self.mesh
+                                        .initial_matrix
+                                        .multiply(motion.matrix_at(vertex.bone_indices[i], frame)),
+                                )
+                            })
+                    })
+                    .unwrap_or(self.mesh.initial_matrix);
+                let p = transform.transform_point(vertex.position);
+                let rotated = Vector3 {
+                    x: p.x * c - p.y * s,
+                    y: p.x * s + p.y * c,
+                    z: p.z,
+                };
+                (
+                    [
+                        rotated.x * 0.75,
+                        (rotated.y * ts + rotated.z * tc) * 0.75,
+                        (rotated.y * tc - rotated.z * ts) * 0.75,
+                    ],
+                    [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
                 )
             })
             .collect()

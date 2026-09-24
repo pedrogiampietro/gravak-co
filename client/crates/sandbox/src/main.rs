@@ -49,6 +49,7 @@ struct App {
     pending_network_steps: VecDeque<[i32; 2]>,
     remote_actors: HashMap<u32, RemoteActor>,
     remote_models: HashMap<u32, character::Character>,
+    remote_npcs: HashMap<u32, character::NpcModel>,
     network_status: String,
 }
 impl ApplicationHandler for App {
@@ -146,6 +147,7 @@ impl ApplicationHandler for App {
                         &self.player,
                         &self.remote_actors,
                         &self.remote_models,
+                        &self.remote_npcs,
                         self.started.elapsed().as_secs_f32(),
                     )
                 {
@@ -244,6 +246,20 @@ impl App {
                     actor.position[0] += delta[0] as f32;
                     actor.position[1] += delta[1] as f32;
                     actor.direction = direction;
+                    actor.action = if movement_type == 1 {
+                        if actor.step_right { 121 } else { 120 }
+                    } else if actor.step_right {
+                        111
+                    } else {
+                        110
+                    };
+                    actor.step_right = !actor.step_right;
+                    actor.animation_until = self.started.elapsed().as_secs_f32()
+                        + if movement_type == 1 {
+                            1.0 / 6.0
+                        } else {
+                            1.0 / 3.0
+                        };
                     self.network_status =
                         format!("online: actor {id} moved dir {direction} type {movement_type}");
                 }
@@ -251,6 +267,7 @@ impl App {
             NetworkEvent::RemoveActor(id) => {
                 self.remote_actors.remove(&id);
                 self.remote_models.remove(&id);
+                self.remote_npcs.remove(&id);
                 self.network_status = format!(
                     "online: actor {id} left screen ({} actors)",
                     self.remote_actors.len()
@@ -274,6 +291,16 @@ impl App {
                     )
                 {
                     self.remote_models.insert(id, model);
+                }
+                if actor.npc
+                    && !self.remote_npcs.contains_key(&id)
+                    && let Ok(model) = character::NpcModel::load(
+                        &mut self.assets,
+                        actor.npc_kind,
+                        actor.mesh as u16,
+                    )
+                {
+                    self.remote_npcs.insert(id, model);
                 }
                 self.remote_actors.insert(id, actor);
                 if let Some(actor) = self.remote_actors.get(&id) {
@@ -490,6 +517,8 @@ fn run() -> Result<()> {
         for part in &remote_preview.parts {
             assets.image(&part.texture)?;
         }
+        let npc_preview = character::NpcModel::load(&mut assets, 2, 2610)?;
+        assets.image(&npc_preview.texture)?;
         validation::movement(&map, &character, player.cell())?;
         if let Some(minimap) = minimap::Minimap::load(&mut assets, map.id)? {
             let center = map.project(player.position);
@@ -505,7 +534,7 @@ fn run() -> Result<()> {
             println!("Minimap OK: original assets, projected hero, crop and controls");
         }
         println!(
-            "Assets OK: map {map_id}, {}x{}, {} sprites; local and remote appearances; character dek at {:?}",
+            "Assets OK: map {map_id}, {}x{}, {} sprites; local, remote and NPC appearances; character dek at {:?}",
             map.data.width,
             map.data.height,
             map.sprites.len(),
@@ -537,6 +566,7 @@ fn run() -> Result<()> {
         pending_network_steps: VecDeque::new(),
         remote_actors: HashMap::new(),
         remote_models: HashMap::new(),
+        remote_npcs: HashMap::new(),
         network_status: if online {
             "online".into()
         } else {
