@@ -29,7 +29,16 @@ pub struct ReadyState {
 pub enum NetworkEvent {
     Status(String),
     Ready(ReadyState),
-    WalkConfirmed { character_id: u32, direction: u8 },
+    WalkConfirmed {
+        character_id: u32,
+        direction: u8,
+    },
+    MovementRejected(String),
+    Reposition {
+        map_id: u32,
+        position: [i32; 2],
+        direction: u8,
+    },
     Error(String),
 }
 
@@ -78,7 +87,9 @@ impl NetworkHandle {
                 NetworkEvent::Status(message) => println!("Network: {message}"),
                 NetworkEvent::Ready(ready) => return Ok(ready),
                 NetworkEvent::Error(error) => return Err(error),
-                NetworkEvent::WalkConfirmed { .. } => {}
+                NetworkEvent::WalkConfirmed { .. }
+                | NetworkEvent::MovementRejected(_)
+                | NetworkEvent::Reposition { .. } => {}
             }
         }
     }
@@ -207,6 +218,16 @@ async fn run(
                         direction: walk.direction,
                     });
                 }
+                Some(GameEvent::Talk(talk)) if talk.message == "Invalid Location" => {
+                    let _ = events.send(NetworkEvent::MovementRejected(talk.message));
+                }
+                Some(GameEvent::Action(action)) if action.action_type == 86 => {
+                    let _ = events.send(NetworkEvent::Reposition {
+                        map_id: action.data1,
+                        position: unpack_position(action.data2),
+                        direction: action.details as u8,
+                    });
+                }
                 Some(_) => {}
                 None => return Ok(()),
             },
@@ -223,6 +244,10 @@ async fn run(
     }
 }
 
+fn unpack_position(value: u32) -> [i32; 2] {
+    [(value & 0xffff) as i32, (value >> 16) as i32]
+}
+
 async fn load_location(
     session: &mut GameSession,
     _character_id: u32,
@@ -231,7 +256,7 @@ async fn load_location(
     let map_id = loop {
         match session.next_event().await? {
             Some(GameEvent::Action(action)) => {
-                location = Some([(action.data2 & 0xffff) as i32, (action.data2 >> 16) as i32]);
+                location = Some(unpack_position(action.data2));
             }
             Some(GameEvent::MapInfo(info)) => break info.map_id,
             Some(_) => {}

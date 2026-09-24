@@ -15,7 +15,7 @@ use action::Action;
 use assets::{Assets, Result};
 use motion_math::direction_towards;
 use network::{NetworkConfig, NetworkEvent, NetworkHandle};
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc, time::Instant};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, WindowEvent},
@@ -40,7 +40,8 @@ struct App {
     queued_jump: Option<[i32; 2]>,
     network: Option<NetworkHandle>,
     network_character_id: Option<u32>,
-    last_network_cell: Option<[i32; 2]>,
+    confirmed_network_cell: Option<[i32; 2]>,
+    pending_network_steps: VecDeque<[i32; 2]>,
     network_status: String,
 }
 impl ApplicationHandler for App {
@@ -190,6 +191,8 @@ impl App {
             NetworkEvent::Ready(ready) => {
                 self.player.position = ready.position.map(|value| value as f32);
                 self.character.name = ready.character_name;
+                self.confirmed_network_cell = Some(ready.position);
+                self.pending_network_steps.clear();
                 self.network_status =
                     format!("online: char {} map {}", ready.character_id, ready.map_id);
             }
@@ -197,7 +200,30 @@ impl App {
                 character_id,
                 direction,
             } => {
-                self.network_status = format!("online: walk {character_id} dir {direction}");
+                if let Some(position) = self.pending_network_steps.pop_front() {
+                    self.confirmed_network_cell = Some(position);
+                }
+                self.network_status =
+                    format!("online: walk confirmed {character_id} dir {direction}");
+            }
+            NetworkEvent::MovementRejected(message) => {
+                self.pending_network_steps.clear();
+                if let Some(position) = self.confirmed_network_cell {
+                    self.player.position = position.map(|value| value as f32);
+                }
+                self.player.stop();
+                self.network_status = format!("online: movement rejected ({message})");
+            }
+            NetworkEvent::Reposition {
+                map_id,
+                position,
+                direction,
+            } => {
+                self.pending_network_steps.clear();
+                self.confirmed_network_cell = Some(position);
+                self.player.position = position.map(|value| value as f32);
+                self.player.stop();
+                self.network_status = format!("online: repositioned map {map_id} dir {direction}");
             }
             NetworkEvent::Error(error) => self.network_status = format!("network error: {error}"),
         }
@@ -213,16 +239,21 @@ impl App {
             return;
         };
         let current_cell = self.player.cell();
-        let last_cell = self.last_network_cell.unwrap_or(previous_cell);
-        if current_cell == last_cell {
+        let previous_predicted = self
+            .pending_network_steps
+            .back()
+            .copied()
+            .or(self.confirmed_network_cell)
+            .unwrap_or(previous_cell);
+        if current_cell == previous_predicted {
             return;
         }
         let direction = direction_towards(
-            last_cell.map(|value| value as f32),
+            previous_predicted.map(|value| value as f32),
             current_cell.map(|value| value as f32),
         );
         network.send_walk(character_id, direction);
-        self.last_network_cell = Some(current_cell);
+        self.pending_network_steps.push_back(current_cell);
         self.network_status = format!("online: sending walk dir {direction}");
     }
 }
@@ -428,7 +459,8 @@ fn run() -> Result<()> {
         queued_jump: None,
         network,
         network_character_id: server_ready.as_ref().map(|ready| ready.character_id),
-        last_network_cell: server_ready.as_ref().map(|ready| ready.position),
+        confirmed_network_cell: server_ready.as_ref().map(|ready| ready.position),
+        pending_network_steps: VecDeque::new(),
         network_status: if online {
             "online".into()
         } else {

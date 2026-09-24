@@ -66,6 +66,6 @@ O sandbox permanece offline por padrão. Para ativar o fluxo online, use `--onli
 cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9960 --username test1 --password 123456 --realm CoEmu
 ```
 
-A rede roda em uma thread própria e entrega ao loop da janela os estados de conexão, personagem, mapa e posição inicial. Cada passo concluído pelo `Player` já é convertido para a direção 0–7 e enviado como `MsgWalk`; a próxima etapa é reconciliar rejeições e correções autoritativas do servidor.
+A rede roda em uma thread própria e entrega ao loop da janela os estados de conexão, personagem, mapa e posição inicial. Cada passo concluído pelo `Player` já é convertido para a direção 0–7 e enviado como `MsgWalk`. Ecos válidos confirmam a fila de passos; `Invalid Location` e `MsgAction::Teleport` limpam a fila e reposicionam o jogador na coordenada do servidor.
 
 O `9960` é específico do ambiente local atual, onde o auth do monorepo roda ao lado do auth legado em `9958`.

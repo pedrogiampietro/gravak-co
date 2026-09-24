@@ -46,7 +46,7 @@ Os servidores usam, por padrão, as portas `9958` (auth) e `5816` (game). O banc
 
 ## Estado atual
 
-O cliente foi validado contra os assets locais 5065. A base do servidor também foi corrigida e validada com os testes do workspace e build dos binários de auth/game. O `gravak-probe` já autentica, cria um personagem de teste quando necessário, reconecta, carrega `MsgUserInfo`/`MsgMapInfo` e confirma o primeiro `MsgWalk`. O sandbox gráfico já possui o fluxo online inicial e envia `MsgWalk` quando o jogador conclui cada passo visual.
+O cliente foi validado contra os assets locais 5065. A base do servidor também foi corrigida e validada com os testes do workspace e build dos binários de auth/game. O `gravak-probe` já autentica, cria um personagem de teste quando necessário, reconecta, carrega `MsgUserInfo`/`MsgMapInfo` e confirma o primeiro `MsgWalk`. O sandbox gráfico já possui o fluxo online inicial, envia `MsgWalk` a cada passo concluído e reconcilia rejeições/reposicionamentos enviados pelo servidor.
 
 ## Licenças e créditos
 
