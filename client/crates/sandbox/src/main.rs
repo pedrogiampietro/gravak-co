@@ -56,6 +56,7 @@ struct App {
 }
 
 struct DialogState {
+    task_id: u32,
     lines: Vec<String>,
     options: Vec<(u8, String)>,
 }
@@ -314,9 +315,13 @@ impl App {
             }
             NetworkEvent::NpcDialog(dialog) => {
                 let state = self.dialog.get_or_insert_with(|| DialogState {
+                    task_id: dialog.task_id,
                     lines: Vec::new(),
                     options: Vec::new(),
                 });
+                if dialog.task_id != 0 {
+                    state.task_id = dialog.task_id;
+                }
                 for message in dialog.messages {
                     if matches!(dialog.action, 2 | 3) {
                         state.options.push((dialog.option_id, message));
@@ -476,7 +481,7 @@ impl App {
             return true;
         };
         if let Some(network) = &self.network {
-            network.send_npc_dialog_answer(option_id);
+            network.send_npc_dialog_answer(dialog.task_id, option_id);
             self.dialog = None;
             self.network_status = format!("online: NPC option {option_id}");
         }

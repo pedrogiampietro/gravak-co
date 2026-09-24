@@ -80,14 +80,40 @@ impl PacketProcess for MsgNpc {
         }
         let npc_id = npc.id();
         let npc_name = npc.entity().name();
-        // For now, lets try sending a dummy dialog
-        let dialog = MsgTaskDialog::builder()
-            .text(format!("Hello, my name is {npc_name} and my id is {npc_id}."))
-            .with_option(1, "Who are you?")
-            .with_option(2, "Tell me about this city.")
-            .and()
-            .with_avatar(47)
-            .build();
+        let dialog = match npc_name {
+            "OldGeneralYang" => MsgTaskDialog::builder()
+                .text("I train the young heroes of Twin City.")
+                .with_option(1, "How can I become stronger?")
+                .with_option(2, "I will return later.")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+            "KnowItAll" => MsgTaskDialog::builder()
+                .text("Knowledge is the first step on every adventure.")
+                .with_option(1, "Tell me about Twin City.")
+                .with_option(2, "Do you know any secrets?")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+            "Mr.Nosy" => MsgTaskDialog::builder()
+                .text("Psst... I hear everything that happens around here.")
+                .with_option(1, "What did you hear?")
+                .with_option(2, "Never mind.")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+            _ => MsgTaskDialog::builder()
+                .text(format!("Hello, my name is {npc_name} and my id is {npc_id}."))
+                .with_option(1, "Who are you?")
+                .with_option(2, "Tell me about this city.")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+        };
         actor.send_all(dialog).await?;
         Ok(())
     }

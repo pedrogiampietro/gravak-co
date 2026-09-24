@@ -136,9 +136,9 @@ pub struct NpcDialogPacket {
 }
 
 impl NpcDialogPacket {
-    pub fn answer(option_id: u8) -> Self {
+    pub fn answer(task_id: u32, option_id: u8) -> Self {
         Self {
-            task_id: 0,
+            task_id,
             avatar: 0,
             option_id,
             action: 101,

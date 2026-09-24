@@ -89,7 +89,7 @@ enum NetworkCommand {
     Walk { character_id: u32, direction: u8 },
     Action { character_id: u32, action: u32 },
     NpcInteract { npc_id: u32, kind: u16 },
-    NpcDialogAnswer { option_id: u8 },
+    NpcDialogAnswer { task_id: u32, option_id: u8 },
 }
 
 pub struct NetworkHandle {
@@ -168,10 +168,10 @@ impl NetworkHandle {
             .send(NetworkCommand::NpcInteract { npc_id, kind });
     }
 
-    pub fn send_npc_dialog_answer(&self, option_id: u8) {
+    pub fn send_npc_dialog_answer(&self, task_id: u32, option_id: u8) {
         let _ = self
             .commands
-            .send(NetworkCommand::NpcDialogAnswer { option_id });
+            .send(NetworkCommand::NpcDialogAnswer { task_id, option_id });
     }
 }
 
@@ -369,9 +369,9 @@ async fn run(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
-                Some(NetworkCommand::NpcDialogAnswer { option_id }) => {
+                Some(NetworkCommand::NpcDialogAnswer { task_id, option_id }) => {
                     session
-                        .send(&NpcDialogPacket::answer(option_id))
+                        .send(&NpcDialogPacket::answer(task_id, option_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

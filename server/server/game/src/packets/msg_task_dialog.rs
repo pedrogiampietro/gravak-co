@@ -61,6 +61,13 @@ pub struct AddingAvatar;
 pub struct Ready;
 
 impl MultiTaskDialogBuilder<Ready> {
+    pub fn task_id(mut self, task_id: u32) -> Self {
+        for task in &mut self.tasks {
+            task.task_id = task_id;
+        }
+        self
+    }
+
     /// Builds the list of tasks and returns it.
     pub fn build(mut self) -> Vec<MsgTaskDialog> {
         // Push the last task
@@ -187,9 +194,13 @@ impl PacketProcess for MsgTaskDialog {
             return Ok(());
         }
         let character_name = actor.entity().basic().name().to_owned();
-        let response = match self.option_id {
-            1 => format!("I am a guardian of Twin City, {character_name}."),
-            2 => "Twin City is the heart of this realm. Start by speaking with the nearby townspeople.".to_owned(),
+        let response = match (self.task_id, self.option_id) {
+            (425, 1) => format!("Training every day will make you stronger, {character_name}."),
+            (10010, 1) => "Twin City is the heart of this realm.".to_owned(),
+            (10010, 2) => "Many secrets are hidden beyond the city gates.".to_owned(),
+            (10009, 1) => "I heard that brave adventurers are needed near the gates.".to_owned(),
+            (_, 1) => format!("I am a guardian of Twin City, {character_name}."),
+            (_, 2) => "Start by speaking with the nearby townspeople.".to_owned(),
             _ => "Come back when you are ready to continue your adventure.".to_owned(),
         };
         let dialog = MsgTaskDialog::builder()
