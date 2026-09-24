@@ -46,7 +46,7 @@ Os servidores usam, por padrão, as portas `9958` (auth) e `5816` (game). O banc
 
 ## Estado atual
 
-O cliente foi validado contra os assets locais 5065. A base do servidor também foi corrigida e validada com os testes do workspace e build dos binários de auth/game. O `gravak-probe` já autentica, cria um personagem de teste quando necessário, reconecta, carrega `MsgUserInfo`/`MsgMapInfo` e confirma o primeiro `MsgWalk`. O sandbox gráfico já possui o fluxo online inicial, envia `MsgWalk` a cada passo concluído, reconcilia correções do servidor, acompanha movimento/saída, direção e salto de atores remotos e desenha jogadores com seus nomes, corpos, cabelos e equipamentos básicos; NPCs usam os modelos e texturas próprios dos catálogos 5065.
+O cliente foi validado contra os assets locais 5065. A base do servidor também foi corrigida e validada com build dos binários de auth/game. O `gravak-probe` já autentica, cria um personagem de teste quando necessário, reconecta, carrega `MsgUserInfo`/`MsgMapInfo` e confirma o primeiro `MsgWalk`. O sandbox gráfico já possui o fluxo online inicial, envia `MsgWalk` a cada passo concluído, reconcilia correções do servidor, acompanha movimento/saída, direção, salto e `ChangeAction` de atores remotos e desenha jogadores com seus nomes, corpos, cabelos e equipamentos básicos; NPCs usam os modelos e texturas próprios dos catálogos 5065. A tecla `C` envia uma ação de teste (`RunLeft`) quando o cliente está conectado. O fluxo de combate ainda não calcula alvo, dano, skill ou efeitos: por enquanto sincroniza apenas o estado de ação/animação.
 
 ## Licenças e créditos
 

@@ -54,6 +54,10 @@ pub enum NetworkEvent {
         position: [i32; 2],
         direction: u8,
     },
+    RemoteAction {
+        id: u32,
+        action: u16,
+    },
     RemoveActor(u32),
     PlayerSpawn(RemoteActor),
     NpcSpawn(RemoteActor),
@@ -82,6 +86,7 @@ pub struct RemoteActor {
 
 enum NetworkCommand {
     Walk { character_id: u32, direction: u8 },
+    Action { character_id: u32, action: u32 },
 }
 
 pub struct NetworkHandle {
@@ -131,6 +136,7 @@ impl NetworkHandle {
                 | NetworkEvent::RemoteWalk { .. }
                 | NetworkEvent::RemoteFacing { .. }
                 | NetworkEvent::RemoteJump { .. }
+                | NetworkEvent::RemoteAction { .. }
                 | NetworkEvent::RemoveActor(_)
                 | NetworkEvent::PlayerSpawn(_)
                 | NetworkEvent::NpcSpawn(_) => {}
@@ -142,6 +148,13 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Walk {
             character_id,
             direction,
+        });
+    }
+
+    pub fn send_action(&self, character_id: u32, action: u32) {
+        let _ = self.commands.send(NetworkCommand::Action {
+            character_id,
+            action,
         });
     }
 }
@@ -301,6 +314,14 @@ async fn run(
                         direction: action.details as u8,
                     });
                 }
+                Some(GameEvent::Action(action))
+                    if action.action_type == 81 && action.character_id != local_character_id =>
+                {
+                    let _ = events.send(NetworkEvent::RemoteAction {
+                        id: action.character_id,
+                        action: action.data1 as u16,
+                    });
+                }
                 Some(GameEvent::Player(player)) => {
                     let _ = events.send(NetworkEvent::PlayerSpawn(player_actor(player)));
                 }
@@ -314,6 +335,12 @@ async fn run(
                 Some(NetworkCommand::Walk { character_id, direction }) => {
                     session
                         .send(&gravak_protocol::WalkPacket::new(character_id, direction))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Action { character_id, action }) => {
+                    session
+                        .send(&ActionPacket::change_action(character_id, action))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

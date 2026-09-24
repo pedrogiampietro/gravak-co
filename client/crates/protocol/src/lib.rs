@@ -101,6 +101,17 @@ impl ActionPacket {
             action_type: 74,
         }
     }
+
+    pub fn change_action(character_id: u32, action: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: action,
+            data2: 0,
+            details: 0,
+            action_type: 81,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]

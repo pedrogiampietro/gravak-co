@@ -267,6 +267,20 @@ impl MsgAction {
     }
 
     #[tracing::instrument(skip_all)]
+    async fn handle_change_action(&self, actor: &Actor<ActorState>) -> Result<(), Error> {
+        let entity = actor.try_entity()?;
+        let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        if self.character_id != me.id() {
+            me.kick_back().await?;
+            return Ok(());
+        }
+        me.entity().set_action(self.data1 as u16);
+        actor.send(self.clone()).await?;
+        actor.screen().send_message(self.clone()).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn handle_query_entity(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
         let entity = actor.try_entity()?;
         let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
@@ -382,6 +396,7 @@ impl PacketProcess for MsgAction {
             ActionType::LoginCompeleted => self.handle_login_completed(state, actor).await,
             ActionType::Jump => self.handle_jump(state, actor).await,
             ActionType::ChangeFacing => self.handle_change_facing(actor).await,
+            ActionType::ChangeAction => self.handle_change_action(actor).await,
             ActionType::QueryEntity => self.handle_query_entity(state, actor).await,
             ActionType::ChangeMap => self.handle_change_map(state, actor).await,
             _ => {

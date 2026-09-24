@@ -22,7 +22,7 @@ Este documento registra a primeira fatia de integração entre o cliente e o ser
 | Game → Cliente | 1110 | `MsgMapInfo` | implementado; `flags` ocupa 1 byte neste wire |
 | Cliente ↔ Game | 1005 | `MsgWalk` | implementado no probe |
 | Cliente → Game | 1001 | `MsgRegister` | implementado para personagem de teste |
-| Cliente → Game | 1010 | `MsgAction` | `SendLocation` implementado |
+| Cliente ↔ Game | 1010 | `MsgAction` | `SendLocation` e `ChangeAction` implementados |
 | Game → Cliente | 1033 | `MsgData` | parser implementado |
 | Game → Cliente | 1014 | `MsgPlayer` | spawn de jogadores remotos implementado |
 | Game → Cliente | 2030 | `MsgNpcInfo` | spawn de NPCs implementado |
@@ -72,4 +72,4 @@ A rede roda em uma thread própria e entrega ao loop da janela os estados de con
 
 O `9960` é específico do ambiente local atual, onde o auth do monorepo roda ao lado do auth legado em `9958`.
 
-Os spawns recebidos durante o carregamento da tela ficam em uma coleção de atores remotos. O cliente acompanha `MsgWalk` de outros personagens, `MsgAction::ChangeFacing`, `MsgAction::Jump` e remove personagens quando recebe `MsgAction::LeaveMap`. Jogadores usam o modelo corporal correspondente ao mesh conhecido e tentam carregar armor, cabelo e armas pelos catálogos locais. NPCs consultam `NpcType`/`SimpleObjID` em `ini/npc.ini` e carregam seus próprios C3/textures. Os nomes dos atores são desenhados acima deles; passos e saltos remotos ativam a animação durante suas janelas de duração. A próxima evolução é sincronizar ações de combate quando o servidor passar a distribuí-las aos observadores.
+Os spawns recebidos durante o carregamento da tela ficam em uma coleção de atores remotos. O cliente acompanha `MsgWalk` de outros personagens, `MsgAction::ChangeFacing`, `MsgAction::Jump`, `MsgAction::ChangeAction` e remove personagens quando recebe `MsgAction::LeaveMap`. O servidor valida que `ChangeAction` pertence ao personagem conectado, atualiza o estado da entidade e encaminha o pacote para o próprio jogador e para os observadores da tela. Jogadores usam o modelo corporal correspondente ao mesh conhecido e tentam carregar armor, cabelo e armas pelos catálogos locais. NPCs consultam `NpcType`/`SimpleObjID` em `ini/npc.ini` e carregam seus próprios C3/textures. Os nomes dos atores são desenhados acima deles; passos, saltos e ações remotas ativam a animação durante suas janelas de duração. A tecla `C` do sandbox envia a ação 120 (`RunLeft`) como teste. O próximo passo de combate é definir os pacotes de ataque/skill, regras de alvo, dano e efeitos.

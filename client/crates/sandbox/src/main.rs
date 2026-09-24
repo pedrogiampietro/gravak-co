@@ -118,6 +118,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
                     PhysicalKey::Code(KeyCode::Space) => self.player.stop(),
                     PhysicalKey::Code(KeyCode::Slash) => self.player.running = !self.player.running,
+                    PhysicalKey::Code(KeyCode::KeyC) => self.send_network_action(120),
                     _ => {}
                 }
             }
@@ -282,6 +283,13 @@ impl App {
                         + self.character.duration(Action::Jump).as_secs_f32();
                 }
             }
+            NetworkEvent::RemoteAction { id, action } => {
+                if let Some(actor) = self.remote_actors.get_mut(&id) {
+                    actor.action = action as u8;
+                    actor.animation_until = self.started.elapsed().as_secs_f32()
+                        + action_duration(action, &self.character);
+                }
+            }
             NetworkEvent::RemoveActor(id) => {
                 self.remote_actors.remove(&id);
                 self.remote_models.remove(&id);
@@ -361,6 +369,26 @@ impl App {
         network.send_walk(character_id, direction);
         self.pending_network_steps.push_back(current_cell);
         self.network_status = format!("online: sending walk dir {direction}");
+    }
+
+    fn send_network_action(&mut self, action: u32) {
+        let Some(network) = &self.network else {
+            return;
+        };
+        let Some(character_id) = self.network_character_id else {
+            return;
+        };
+        network.send_action(character_id, action);
+        self.network_status = format!("online: sending action {action}");
+    }
+}
+
+fn action_duration(action: u16, character: &character::Character) -> f32 {
+    match action {
+        110 | 111 => 1.0 / 3.0,
+        120 | 121 => 1.0 / 6.0,
+        130 => character.duration(Action::Jump).as_secs_f32(),
+        _ => 0.5,
     }
 }
 fn run() -> Result<()> {
