@@ -366,8 +366,11 @@ impl PacketProcess for MsgAction {
             ActionType::SetKillMode => self.handle_set_kill_mode(state, actor).await,
             ActionType::LeaveBooth => self.handle_leave_booth(state, actor).await,
             ActionType::SendItems => {
-                // TODO: send MsgItemInfo
-                actor.send(self.clone()).await?;
+                let entity = actor.entity();
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                for item in character.inventory_items() {
+                    actor.send(super::MsgItemInfo::inventory_item(item)).await?;
+                }
                 Ok(())
             },
             ActionType::SendAssociates => {

@@ -1,10 +1,12 @@
+use crate::Error;
 use crate::entities::{Entity, GameEntity};
 use crate::packets::{ActionType, MsgAction, MsgMapInfo, MsgPlayer, MsgWeather};
 use crate::systems::Screen;
 use crate::utils::LoHi;
-use crate::Error;
 use arc_swap::ArcSwapWeak;
-use std::sync::atomic::{AtomicU16, Ordering};
+use parking_lot::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use tq_network::ActorHandle;
 
@@ -19,17 +21,40 @@ pub struct Character {
     entity: Entity,
     owner: ActorHandle,
     elevation: AtomicU16,
+    silver: AtomicU64,
+    active_shop_id: AtomicU32,
+    inventory: Mutex<Vec<InventoryItem>>,
     screen: ArcSwapWeak<Screen>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InventoryItem {
+    pub uid: u32,
+    pub item_type: u32,
+    pub position: u8,
+    pub durability: u16,
+    pub max_durability: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PurchaseOutcome {
+    Bought(InventoryItem),
+    InsufficientSilver,
+    InventoryFull,
 }
 
 impl Character {
     pub fn new(owner: ActorHandle, inner: tq_db::character::Character) -> Self {
         let entity = Entity::from(&inner);
+        let silver = inner.silver.max(0) as u64;
         Self {
             entity,
             owner,
             inner,
             elevation: Default::default(),
+            silver: AtomicU64::new(silver),
+            active_shop_id: AtomicU32::new(0),
+            inventory: Mutex::new(Vec::new()),
             screen: Default::default(),
         }
     }
@@ -74,7 +99,101 @@ impl Character {
     }
 
     pub fn silver(&self) -> u64 {
-        self.inner.silver as u64
+        self.silver.load(Ordering::Relaxed)
+    }
+
+    pub fn set_active_shop_id(&self, shop_id: u32) {
+        self.active_shop_id.store(shop_id, Ordering::Relaxed);
+    }
+
+    pub fn active_shop_id(&self) -> u32 {
+        self.active_shop_id.load(Ordering::Relaxed)
+    }
+
+    pub async fn load_inventory(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            "SELECT item_uid, item_type, position, durability, max_durability \
+             FROM inventory_items WHERE character_id = ? ORDER BY position",
+        )
+        .bind(self.inner.character_id)
+        .fetch_all(pool)
+        .await?;
+        let mut inventory = self.inventory.lock();
+        *inventory = rows
+            .into_iter()
+            .filter_map(|(uid, item_type, position, durability, max_durability)| {
+                Some(InventoryItem {
+                    uid: u32::try_from(uid).ok()?,
+                    item_type: u32::try_from(item_type).ok()?,
+                    position: u8::try_from(position).ok()?,
+                    durability: u16::try_from(durability).ok()?,
+                    max_durability: u16::try_from(max_durability).ok()?,
+                })
+            })
+            .collect();
+        Ok(())
+    }
+
+    pub fn inventory_items(&self) -> Vec<InventoryItem> {
+        self.inventory.lock().clone()
+    }
+
+    pub async fn purchase_item(
+        &self,
+        pool: &sqlx::SqlitePool,
+        item_type: u32,
+        position: u8,
+        price: u32,
+        durability: u16,
+        max_durability: u16,
+    ) -> Result<PurchaseOutcome, Error> {
+        if position >= 40 {
+            return Ok(PurchaseOutcome::InventoryFull);
+        }
+        {
+            let inventory = self.inventory.lock();
+            if inventory.len() >= 40 || inventory.iter().any(|item| item.position == position) {
+                return Ok(PurchaseOutcome::InventoryFull);
+            }
+        }
+        let mut transaction = pool.begin().await?;
+        let updated = sqlx::query(
+            "UPDATE characters SET silver = silver - ? \
+             WHERE character_id = ? AND silver >= ?",
+        )
+        .bind(i64::from(price))
+        .bind(self.inner.character_id)
+        .bind(i64::from(price))
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(PurchaseOutcome::InsufficientSilver);
+        }
+        let uid: i64 = sqlx::query_scalar(
+            "INSERT INTO inventory_items \
+             (character_id, item_type, position, durability, max_durability) \
+             VALUES (?, ?, ?, ?, ?) RETURNING item_uid",
+        )
+        .bind(self.inner.character_id)
+        .bind(i64::from(item_type))
+        .bind(i64::from(position))
+        .bind(i64::from(durability))
+        .bind(i64::from(max_durability))
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+
+        self.silver.fetch_sub(u64::from(price), Ordering::Relaxed);
+        let item = InventoryItem {
+            uid: u32::try_from(uid).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
+            item_type,
+            position,
+            durability,
+            max_durability,
+        };
+        self.inventory.lock().push(item);
+        Ok(PurchaseOutcome::Bought(item))
     }
 
     pub fn cps(&self) -> u64 {

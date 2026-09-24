@@ -1,6 +1,6 @@
 use gravak_protocol::{
-    ActionPacket, AuthResponse, GameEvent, GameSession, NpcDialogPacket, NpcPacket,
-    RegisterCharacter, ServerNpcInfo, ServerPlayer, TaskDialog, authenticate,
+    ActionPacket, AuthResponse, GameEvent, GameSession, ItemActionPacket, NpcDialogPacket,
+    NpcPacket, RegisterCharacter, ServerNpcInfo, ServerPlayer, TaskDialog, authenticate,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -24,12 +24,25 @@ pub struct ReadyState {
     pub character_name: String,
     pub map_id: u32,
     pub position: [i32; 2],
+    pub silver: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OwnedItem {
+    pub uid: u32,
+    pub item_type: u32,
+    pub position: u8,
+    pub durability: u16,
+    pub max_durability: u16,
 }
 
 #[derive(Debug)]
 pub enum NetworkEvent {
     Status(String),
     Ready(ReadyState),
+    Silver(u32),
+    InventoryItem(OwnedItem),
+    Notice(String),
     WalkConfirmed {
         character_id: u32,
         direction: u8,
@@ -86,10 +99,27 @@ pub struct RemoteActor {
 }
 
 enum NetworkCommand {
-    Walk { character_id: u32, direction: u8 },
-    Action { character_id: u32, action: u32 },
-    NpcInteract { npc_id: u32, kind: u16 },
-    NpcDialogAnswer { task_id: u32, option_id: u8 },
+    Walk {
+        character_id: u32,
+        direction: u8,
+    },
+    Action {
+        character_id: u32,
+        action: u32,
+    },
+    NpcInteract {
+        npc_id: u32,
+        kind: u16,
+    },
+    NpcDialogAnswer {
+        task_id: u32,
+        option_id: u8,
+    },
+    BuyItem {
+        character_id: u32,
+        item_id: u32,
+        inventory_slot: u8,
+    },
 }
 
 pub struct NetworkHandle {
@@ -144,6 +174,9 @@ impl NetworkHandle {
                 | NetworkEvent::RemoveActor(_)
                 | NetworkEvent::PlayerSpawn(_)
                 | NetworkEvent::NpcSpawn(_) => {}
+                NetworkEvent::Silver(_)
+                | NetworkEvent::InventoryItem(_)
+                | NetworkEvent::Notice(_) => {}
             }
         }
     }
@@ -172,6 +205,14 @@ impl NetworkHandle {
         let _ = self
             .commands
             .send(NetworkCommand::NpcDialogAnswer { task_id, option_id });
+    }
+
+    pub fn buy_item(&self, character_id: u32, item_id: u32, inventory_slot: u8) {
+        let _ = self.commands.send(NetworkCommand::BuyItem {
+            character_id,
+            item_id,
+            inventory_slot,
+        });
     }
 }
 
@@ -272,17 +313,24 @@ async fn run(
     let (map_id, position) = load_location(&mut session, user.character_id)
         .await
         .map_err(|error| error.to_string())?;
+    let local_character_id = user.character_id;
+    let silver = user.silver;
     events
         .send(NetworkEvent::Ready(ReadyState {
-            character_id: user.character_id,
+            character_id: local_character_id,
             character_name: user.character_name,
             map_id,
             position,
+            silver,
         }))
         .map_err(|error| error.to_string())?;
     send_status(&events, "connected");
 
-    let local_character_id = user.character_id;
+    session
+        .send(&ActionPacket::request_items(local_character_id))
+        .await
+        .map_err(|error| error.to_string())?;
+
     loop {
         tokio::select! {
             event = session.next_event() => match event.map_err(|error| error.to_string())? {
@@ -302,6 +350,21 @@ async fn run(
                 }
                 Some(GameEvent::Talk(talk)) if talk.message == "Invalid Location" => {
                     let _ = events.send(NetworkEvent::MovementRejected(talk.message));
+                }
+                Some(GameEvent::Talk(talk)) => {
+                    let _ = events.send(NetworkEvent::Notice(talk.message));
+                }
+                Some(GameEvent::UserInfo(info)) if info.character_id == local_character_id => {
+                    let _ = events.send(NetworkEvent::Silver(info.silver));
+                }
+                Some(GameEvent::ItemInfo(info)) if info.action == 1 => {
+                    let _ = events.send(NetworkEvent::InventoryItem(OwnedItem {
+                        uid: info.item_uid,
+                        item_type: info.item_type,
+                        position: info.position,
+                        durability: info.durability,
+                        max_durability: info.max_durability,
+                    }));
                 }
                 Some(GameEvent::Action(action)) if action.action_type == 86 => {
                     let _ = events.send(NetworkEvent::Reposition {
@@ -372,6 +435,12 @@ async fn run(
                 Some(NetworkCommand::NpcDialogAnswer { task_id, option_id }) => {
                     session
                         .send(&NpcDialogPacket::answer(task_id, option_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::BuyItem { character_id, item_id, inventory_slot }) => {
+                    session
+                        .send(&ItemActionPacket::buy(character_id, item_id, inventory_slot))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

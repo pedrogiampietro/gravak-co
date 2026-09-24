@@ -20,6 +20,8 @@ pub const MSG_TALK: u16 = 1004;
 pub const MSG_REGISTER: u16 = 1001;
 pub const MSG_WALK: u16 = 1005;
 pub const MSG_USER_INFO: u16 = 1006;
+pub const MSG_ITEM_INFO: u16 = 1008;
+pub const MSG_ITEM: u16 = 1009;
 pub const MSG_ACTION: u16 = 1010;
 pub const MSG_WEATHER: u16 = 1016;
 pub const MSG_DATA: u16 = 1033;
@@ -114,6 +116,65 @@ impl ActionPacket {
             action_type: 81,
         }
     }
+
+    pub fn request_items(character_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: 0,
+            details: 0,
+            action_type: 75,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PacketID)]
+#[packet(id = 1009)]
+pub struct ItemActionPacket {
+    pub character_id: u32,
+    pub item_id: u32,
+    pub action_type: u32,
+    pub client_timestamp: u32,
+    pub amount: u32,
+    pub data2: u32,
+}
+
+impl ItemActionPacket {
+    pub fn buy(character_id: u32, item_id: u32, inventory_slot: u8) -> Self {
+        Self {
+            character_id,
+            item_id,
+            action_type: 1,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: u32::from(inventory_slot),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct ItemInfoPacket {
+    pub item_uid: u32,
+    pub item_type: u32,
+    pub durability: u16,
+    pub max_durability: u16,
+    pub action: u8,
+    pub ident: u8,
+    pub position: u8,
+    pub reserved0: u8,
+    pub reserved1: u32,
+    pub gem_one: u8,
+    pub gem_two: u8,
+    pub reborn_effect: u8,
+    pub magic: u8,
+    pub plus: u8,
+    pub bless: u8,
+    pub enchant: u8,
+    pub reserved2: u8,
+    pub restrain: u32,
+    pub reserved3: u32,
+    pub reserved4: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
@@ -332,6 +393,7 @@ pub struct ServerNpcInfo {
 pub enum GameEvent {
     Talk(ServerTalk),
     UserInfo(UserInfo),
+    ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
     Action(ActionPacket),
@@ -407,6 +469,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_USER_INFO => Ok(GameEvent::UserInfo(
             UserInfo::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
+            ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_DATA => Ok(GameEvent::Data(
             ServerData::decode(body).map_err(ProtocolError::Decode)?,

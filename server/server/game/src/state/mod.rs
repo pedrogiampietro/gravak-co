@@ -40,6 +40,10 @@ impl State {
             .min_connections(4)
             .connect(&db_url)
             .await?;
+        sqlx::migrate!("../../migrations")
+            .run(&pool)
+            .await
+            .map_err(|error| Error::Other(error.to_string()))?;
         Self::with_pool(pool).await
     }
 

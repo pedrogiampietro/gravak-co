@@ -47,6 +47,9 @@ struct App {
     local_action: Option<(Action, f32)>,
     network: Option<NetworkHandle>,
     network_character_id: Option<u32>,
+    inventory: Vec<network::OwnedItem>,
+    silver: u32,
+    dragging_shop_item: Option<u32>,
     confirmed_network_cell: Option<[i32; 2]>,
     pending_network_steps: VecDeque<[i32; 2]>,
     remote_actors: HashMap<u32, RemoteActor>,
@@ -113,15 +116,24 @@ impl ApplicationHandler for App {
                 self.queued_jump = None;
                 self.player.stop();
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if state == ElementState::Pressed && self.select_shop() {
-                    return;
+            WindowEvent::MouseInput { state, button, .. } => {
+                match (button, state) {
+                    (MouseButton::Right, ElementState::Pressed)
+                        if self.buy_shop_item_at_cursor() =>
+                    {
+                        return;
+                    }
+                    (MouseButton::Left, ElementState::Pressed) if self.select_shop() => return,
+                    (MouseButton::Left, ElementState::Released) if self.finish_shop_drag() => {
+                        return;
+                    }
+                    (MouseButton::Left, ElementState::Pressed) if self.select_dialog_option() => {
+                        return;
+                    }
+                    (MouseButton::Left, _) => {}
+                    _ => return,
                 }
-                if state == ElementState::Pressed && self.select_dialog_option() {
+                if state == ElementState::Released {
                     return;
                 }
                 if self.renderer.as_mut().is_some_and(|renderer| {
@@ -189,6 +201,9 @@ impl ApplicationHandler for App {
                             .as_ref()
                             .map(|dialog| (dialog.lines.as_slice(), dialog.options.as_slice())),
                         self.shop.as_ref(),
+                        &self.inventory,
+                        self.silver,
+                        self.dragging_shop_item,
                         self.cursor,
                         self.started.elapsed().as_secs_f32(),
                     )
@@ -244,10 +259,21 @@ impl App {
             NetworkEvent::Ready(ready) => {
                 self.player.position = ready.position.map(|value| value as f32);
                 self.character.name = ready.character_name;
+                self.silver = ready.silver;
                 self.confirmed_network_cell = Some(ready.position);
                 self.pending_network_steps.clear();
                 self.network_status =
                     format!("online: char {} map {}", ready.character_id, ready.map_id);
+            }
+            NetworkEvent::Silver(silver) => self.silver = silver,
+            NetworkEvent::InventoryItem(item) => {
+                self.inventory
+                    .retain(|owned| owned.position != item.position);
+                self.inventory.push(item);
+                self.inventory.sort_by_key(|owned| owned.position);
+            }
+            NetworkEvent::Notice(message) => {
+                self.network_status = format!("online: {message}");
             }
             NetworkEvent::WalkConfirmed {
                 character_id,
@@ -344,14 +370,10 @@ impl App {
                 }
             }
             NetworkEvent::NpcDialog(dialog) => {
-                if self
-                    .shop
-                    .as_ref()
-                    .is_some_and(|shop| {
-                        dialog.task_id == shop.npc_id
-                            || (dialog.action == 100 && dialog.messages.is_empty())
-                    })
-                {
+                if self.shop.as_ref().is_some_and(|shop| {
+                    dialog.task_id == shop.npc_id
+                        || (dialog.action == 100 && dialog.messages.is_empty())
+                }) {
                     return;
                 }
                 let opens_shop = dialog
@@ -559,7 +581,10 @@ impl App {
         let Some(window) = &self.window else {
             return true;
         };
-        let viewport = [window.inner_size().width as f32, window.inner_size().height as f32];
+        let viewport = [
+            window.inner_size().width as f32,
+            window.inner_size().height as f32,
+        ];
         if shop::close_at(viewport, self.cursor) {
             self.shop = None;
             self.network_status = "online: shop closed".into();
@@ -578,14 +603,75 @@ impl App {
             }
             shop.hover = None;
             shop.selected = None;
-            self.network_status = format!("online: shop page {} of {}", shop.page + 1, pages.max(1));
+            self.network_status =
+                format!("online: shop page {} of {}", shop.page + 1, pages.max(1));
             return true;
         }
         if let Some(index) = shop.item_at(viewport, self.cursor) {
             shop.selected = Some(index);
-            self.network_status = format!("online: selected shop item {}", shop.items[index]);
+            let item_id = shop.items[index];
+            self.dragging_shop_item = Some(item_id);
+            self.network_status = format!(
+                "online: drag item {item_id} to an empty inventory slot, or right-click to buy"
+            );
         }
         true
+    }
+
+    fn finish_shop_drag(&mut self) -> bool {
+        let Some(item_id) = self.dragging_shop_item.take() else {
+            return false;
+        };
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let Some(slot) = shop::inventory_slot_at(viewport, self.cursor) else {
+            self.network_status = "online: drop the item inside an inventory slot".into();
+            return true;
+        };
+        if self.inventory.iter().any(|item| item.position == slot) {
+            self.network_status = format!("online: inventory slot {} is occupied", slot + 1);
+            return true;
+        }
+        self.request_shop_purchase(item_id, slot);
+        true
+    }
+
+    fn buy_shop_item_at_cursor(&mut self) -> bool {
+        let Some(current_shop) = &self.shop else {
+            return false;
+        };
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let Some(index) = current_shop.item_at(viewport, self.cursor) else {
+            return false;
+        };
+        let item_id = current_shop.items[index];
+        let occupied: std::collections::HashSet<u8> =
+            self.inventory.iter().map(|item| item.position).collect();
+        let Some(slot) = (0u8..40).find(|slot| !occupied.contains(slot)) else {
+            self.network_status = "online: inventory is full".into();
+            return true;
+        };
+        self.request_shop_purchase(item_id, slot);
+        true
+    }
+
+    fn request_shop_purchase(&mut self, item_id: u32, slot: u8) {
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.buy_item(character_id, item_id, slot);
+            self.network_status = format!(
+                "online: buying item {item_id} into inventory slot {}",
+                slot + 1
+            );
+        } else {
+            self.network_status = "Shop purchases require online mode".into();
+        }
     }
 
     fn send_network_action(&mut self, action: u32) {
@@ -847,6 +933,12 @@ fn run() -> Result<()> {
         local_action: None,
         network,
         network_character_id: server_ready.as_ref().map(|ready| ready.character_id),
+        inventory: Vec::new(),
+        silver: server_ready
+            .as_ref()
+            .map(|ready| ready.silver)
+            .unwrap_or_default(),
+        dragging_shop_item: None,
         confirmed_network_cell: server_ready.as_ref().map(|ready| ready.position),
         pending_network_steps: VecDeque::new(),
         remote_actors: HashMap::new(),

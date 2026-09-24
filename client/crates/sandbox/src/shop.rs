@@ -2,7 +2,7 @@ use crate::{
     assets::{Assets, Result},
     labels,
 };
-use image::{imageops, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage, imageops};
 use std::collections::{HashMap, HashSet};
 
 const PANEL_WIDTH: u32 = 272;
@@ -71,7 +71,8 @@ impl ShopState {
                 "Name" => *name = value.trim().to_owned(),
                 key if key.strip_prefix("Item").is_some_and(|index| {
                     !index.is_empty() && index.chars().all(|c| c.is_ascii_digit())
-                }) => {
+                }) =>
+                {
                     if let Ok(item_id) = value.trim().parse() {
                         items.push(item_id);
                     }
@@ -133,6 +134,13 @@ impl ShopState {
         self.infos.get(&item_id)
     }
 
+    pub fn icon_image(&self, item_id: u32) -> Option<&RgbaImage> {
+        self.items
+            .iter()
+            .position(|candidate| *candidate == item_id)
+            .and_then(|index| self.icons.get(index))
+    }
+
     pub fn visible_slot(&self, index: usize) -> Option<usize> {
         let start = self.page * ITEMS_PER_PAGE;
         (index >= start && index < (start + ITEMS_PER_PAGE).min(self.items.len()))
@@ -159,6 +167,24 @@ pub fn inventory_position(viewport: [f32; 2]) -> [f32; 2] {
         (viewport[0] - PANEL_WIDTH as f32 - 8.0).max(8.0),
         ((viewport[1] - INVENTORY_HEIGHT as f32) * 0.5).max(8.0),
     ]
+}
+
+pub fn inventory_slot_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
+    let [left, top] = inventory_position(viewport);
+    if cursor[0] < left + SLOT_X as f32 || cursor[1] < top + SLOT_Y as f32 {
+        return None;
+    }
+    let column = ((cursor[0] - left - SLOT_X as f32) / SLOT_STEP_X as f32).floor() as u32;
+    let row = ((cursor[1] - top - SLOT_Y as f32) / SLOT_STEP_Y as f32).floor() as u32;
+    if column >= 5 || row >= 8 {
+        return None;
+    }
+    let x = left + SLOT_X as f32 + column as f32 * SLOT_STEP_X as f32;
+    let y = top + SLOT_Y as f32 + row as f32 * SLOT_STEP_Y as f32;
+    if cursor[0] > x + SLOT_SIZE as f32 || cursor[1] > y + SLOT_SIZE as f32 {
+        return None;
+    }
+    Some((row * 5 + column) as u8)
 }
 
 pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> {
@@ -191,8 +217,8 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
         [((PANEL_WIDTH as f32 - title_width) * 0.5).max(0.0), 12.0],
     );
     let first_item = state.page * ITEMS_PER_PAGE;
-    for (slot, item_index) in (first_item..(first_item + ITEMS_PER_PAGE).min(state.items.len()))
-        .enumerate()
+    for (slot, item_index) in
+        (first_item..(first_item + ITEMS_PER_PAGE).min(state.items.len())).enumerate()
     {
         let row = slot as u32 / 5;
         let column = slot as u32 % 5;
@@ -290,7 +316,14 @@ fn labelled_repair_button(font: &fontdue::Font, hovered: bool) -> RgbaImage {
     labels::text(
         &mut button,
         font,
-        &[("Repair", if hovered { [255, 245, 193] } else { [255, 232, 160] })],
+        &[(
+            "Repair",
+            if hovered {
+                [255, 245, 193]
+            } else {
+                [255, 232, 160]
+            },
+        )],
         [(62.0 - text_width) * 0.5, 2.0],
     );
     button
@@ -356,13 +389,61 @@ pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool>
     }
 }
 
-pub fn inventory_image(assets: &mut Assets) -> Result<RgbaImage> {
+pub fn inventory_image(
+    assets: &mut Assets,
+    inventory: &[crate::network::OwnedItem],
+    silver: u32,
+) -> Result<RgbaImage> {
     let source = assets.image("data/main/DialogMpcGoods.dds")?;
     let mut image = imageops::crop_imm(&source, 0, 0, PANEL_WIDTH, INVENTORY_HEIGHT).to_image();
     let font = labels::font()?;
-    labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [168.0, 488.0]);
-    labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [218.0, 488.0]);
+    let animation = assets
+        .read("ani/ItemMinIcon.Ani")
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    for item in inventory.iter().filter(|item| item.position < 40) {
+        let row = u32::from(item.position) / 5;
+        let column = u32::from(item.position) % 5;
+        let icon = load_icon(assets, item.item_type, animation.as_deref())?;
+        imageops::overlay(
+            &mut image,
+            &icon,
+            (SLOT_X + column * SLOT_STEP_X + ICON_OFFSET).into(),
+            (SLOT_Y + row * SLOT_STEP_Y + ICON_OFFSET).into(),
+        );
+    }
+    let silver = format_silver(silver);
+    labels::text(
+        &mut image,
+        &font,
+        &[(&silver, [255, 232, 160])],
+        [126.0, 389.0],
+    );
+    labels::text(
+        &mut image,
+        &font,
+        &[("Help", [255, 232, 160])],
+        [168.0, 488.0],
+    );
+    labels::text(
+        &mut image,
+        &font,
+        &[("Close", [255, 232, 160])],
+        [218.0, 488.0],
+    );
     Ok(image)
+}
+
+fn format_silver(silver: u32) -> String {
+    let digits = silver.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index != 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
 }
 
 pub fn tooltip_image(item_id: u32, info: Option<&ItemInfo>) -> Result<RgbaImage> {
@@ -403,11 +484,31 @@ pub fn tooltip_image(item_id: u32, info: Option<&ItemInfo>) -> Result<RgbaImage>
         .unwrap_or_else(|| "--".to_owned());
     let attack = format!("Attack: {attack}");
     let price = format!("Price: {}", info.map(|item| item.price).unwrap_or_default());
-    labels::text(&mut image, &font, &[(&title, [255, 255, 255])], [10.0, 12.0]);
+    labels::text(
+        &mut image,
+        &font,
+        &[(&title, [255, 255, 255])],
+        [10.0, 12.0],
+    );
     labels::text(&mut image, &font, &[(&level, [255, 70, 70])], [10.0, 36.0]);
-    labels::text(&mut image, &font, &[(&defense, [255, 255, 255])], [10.0, 58.0]);
-    labels::text(&mut image, &font, &[(&attack, [255, 255, 255])], [10.0, 80.0]);
-    labels::text(&mut image, &font, &[(&price, [255, 220, 70])], [10.0, 104.0]);
+    labels::text(
+        &mut image,
+        &font,
+        &[(&defense, [255, 255, 255])],
+        [10.0, 58.0],
+    );
+    labels::text(
+        &mut image,
+        &font,
+        &[(&attack, [255, 255, 255])],
+        [10.0, 80.0],
+    );
+    labels::text(
+        &mut image,
+        &font,
+        &[(&price, [255, 220, 70])],
+        [10.0, 104.0],
+    );
     Ok(image)
 }
 
@@ -451,9 +552,7 @@ fn decrypt_itemtype(bytes: &mut [u8]) {
     let mut seed = 9527u32;
     let mut key = [0u8; 128];
     for value in &mut key {
-        seed = seed
-            .wrapping_mul(0x343fdu32)
-            .wrapping_add(0x269ec3u32);
+        seed = seed.wrapping_mul(0x343fdu32).wrapping_add(0x269ec3u32);
         *value = ((seed >> 16) & 0x7fff) as u8;
     }
     for (index, byte) in bytes.iter_mut().enumerate() {

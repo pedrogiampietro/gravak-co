@@ -12,6 +12,14 @@ pub struct ShopOffer {
 #[derive(Debug, Clone, Default)]
 pub struct ShopCatalog {
     offers: HashMap<u32, ShopOffer>,
+    items: HashMap<u32, ItemTemplate>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ItemTemplate {
+    pub price: u32,
+    pub durability: u16,
+    pub max_durability: u16,
 }
 
 impl ShopCatalog {
@@ -29,6 +37,19 @@ impl ShopCatalog {
         match fs::read_to_string(path) {
             Ok(contents) => match Self::parse(&contents) {
                 Ok(catalog) => {
+                    let mut catalog = catalog;
+                    if let Some(itemtype_path) = std::env::var_os("ITEMTYPE_DATA") {
+                        match fs::read(&itemtype_path) {
+                            Ok(mut bytes) => {
+                                decrypt_itemtype(&mut bytes);
+                                catalog.items = parse_item_templates(&bytes);
+                                tracing::info!(items = catalog.items.len(), path = ?itemtype_path, "Loaded item prices");
+                            }
+                            Err(error) => tracing::error!(%error, path = ?itemtype_path, "Failed to load item prices"),
+                        }
+                    } else {
+                        tracing::warn!("ITEMTYPE_DATA is not configured; purchases will be disabled");
+                    }
                     tracing::info!(shops = catalog.offers.len(), path = ?path, "Loaded shop catalog");
                     catalog
                 },
@@ -102,6 +123,49 @@ impl ShopCatalog {
     pub fn offer(&self, npc_id: u32) -> Option<&ShopOffer> {
         self.offers.get(&npc_id)
     }
+
+    pub fn item(&self, item_id: u32) -> Option<ItemTemplate> {
+        self.items.get(&item_id).copied().filter(|item| item.price > 0)
+    }
+}
+
+fn decrypt_itemtype(bytes: &mut [u8]) {
+    let mut seed = 9527u32;
+    let mut key = [0u8; 128];
+    for value in &mut key {
+        seed = seed.wrapping_mul(0x343fdu32).wrapping_add(0x269ec3u32);
+        *value = ((seed >> 16) & 0x7fff) as u8;
+    }
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = (*byte ^ key[index % key.len()]).rotate_right((index % 8) as u32);
+    }
+}
+
+fn parse_item_templates(bytes: &[u8]) -> HashMap<u32, ItemTemplate> {
+    let mut items = HashMap::new();
+    let contents = String::from_utf8_lossy(bytes);
+    for line in contents.lines().skip(1) {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        if fields.len() < 13 {
+            continue;
+        }
+        let (Ok(item_id), Ok(price)) = (fields[0].parse::<u32>(), fields[12].parse::<i64>()) else {
+            continue;
+        };
+        if price > 0 {
+            if let Ok(price) = u32::try_from(price) {
+                items.insert(
+                    item_id,
+                    ItemTemplate {
+                        price,
+                        durability: fields.get(21).and_then(|value| value.parse().ok()).unwrap_or(100),
+                        max_durability: fields.get(22).and_then(|value| value.parse().ok()).unwrap_or(100),
+                    },
+                );
+            }
+        }
+    }
+    items
 }
 
 #[cfg(test)]

@@ -209,6 +209,9 @@ impl PacketProcess for MsgTaskDialog {
             .try_map(character.entity().map_id())
             .ok()
             .and_then(|map| map.npc(self.task_id));
+        if self.option_id == 1 && npc.is_some_and(|npc| npc.kind() == crate::entities::NpcKind::ShopKeeper) {
+            character.set_active_shop_id(self.task_id);
+        }
         let character_name = entity.basic().name().to_owned();
         let response = match (npc.map(|npc| npc.kind()), self.option_id) {
             (Some(crate::entities::NpcKind::ShopKeeper), 1) => {
@@ -230,9 +233,7 @@ impl PacketProcess for MsgTaskDialog {
                     "This shop has no catalog loaded yet.".to_owned()
                 }
             },
-            (Some(crate::entities::NpcKind::ShopKeeper), 2) => {
-                "You have no items to sell yet.".to_owned()
-            },
+            (Some(crate::entities::NpcKind::ShopKeeper), 2) => "You have no items to sell yet.".to_owned(),
             (Some(crate::entities::NpcKind::Storage), 1) => {
                 "Warehouse storage is not enabled yet, but this NPC is now using its proper flow.".to_owned()
             },
@@ -247,9 +248,7 @@ impl PacketProcess for MsgTaskDialog {
             },
             (_, 1) if self.task_id == 10010 => "Twin City is the heart of this realm.".to_owned(),
             (_, 2) if self.task_id == 10010 => "Many secrets are hidden beyond the city gates.".to_owned(),
-            (_, 1) if self.task_id == 10009 => {
-                "I heard that brave adventurers are needed near the gates.".to_owned()
-            },
+            (_, 1) if self.task_id == 10009 => "I heard that brave adventurers are needed near the gates.".to_owned(),
             (_, 1) => format!("I am a guardian of Twin City, {character_name}."),
             (_, 2) => "Start by speaking with the nearby townspeople.".to_owned(),
             _ => "Come back when you are ready to continue your adventure.".to_owned(),

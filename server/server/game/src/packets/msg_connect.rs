@@ -36,6 +36,7 @@ impl PacketProcess for MsgConnect {
         match maybe_character {
             Some(character) => {
                 let me = Character::new(actor.handle(), character);
+                me.load_inventory(state.pool()).await?;
                 let mymap_id = me.entity().map_id();
                 let screen = Screen::new(actor.handle());
                 let msg = MsgUserInfo::from(&me);

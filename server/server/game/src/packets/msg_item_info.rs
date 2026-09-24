@@ -40,3 +40,17 @@ pub struct MsgItemInfo {
     reserved3: u32,
     reserved4: u32,
 }
+
+impl MsgItemInfo {
+    pub fn inventory_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            durability: item.durability,
+            max_durability: item.max_durability,
+            action: ItemInfoAction::AddItem as u8,
+            position: item.position,
+            ..Self::default()
+        }
+    }
+}

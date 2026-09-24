@@ -44,6 +44,7 @@ pub struct Renderer {
     minimap: Option<crate::minimap::Minimap>,
     minimap_map: Option<u32>,
     shop_signature: Option<u64>,
+    inventory_signature: Option<u64>,
 }
 impl Renderer {
     pub async fn new(window: Arc<Window>) -> Result<Self> {
@@ -155,6 +156,7 @@ impl Renderer {
             minimap: None,
             minimap_map: None,
             shop_signature: None,
+            inventory_signature: None,
         })
     }
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -266,6 +268,9 @@ impl Renderer {
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
         dialog: Option<(&[String], &[(u8, String)])>,
         shop: Option<&crate::shop::ShopState>,
+        inventory: &[crate::network::OwnedItem],
+        silver: u32,
+        dragging_shop_item: Option<u32>,
         cursor: [f32; 2],
         time: f32,
     ) -> Result<()> {
@@ -585,11 +590,16 @@ impl Renderer {
                     }
                 }
             }
-            if !self.textures.contains_key("@inventory-panel") {
+            let mut inventory_hasher = std::collections::hash_map::DefaultHasher::new();
+            inventory.hash(&mut inventory_hasher);
+            silver.hash(&mut inventory_hasher);
+            let inventory_signature = inventory_hasher.finish();
+            if self.inventory_signature != Some(inventory_signature) {
                 self.upload(
                     "@inventory-panel",
-                    crate::shop::inventory_image(assets)?,
+                    crate::shop::inventory_image(assets, inventory, silver)?,
                 );
+                self.inventory_signature = Some(inventory_signature);
             }
             if let Some(texture) = self.textures.get("@inventory-panel") {
                 draws.push(Draw {
@@ -624,6 +634,23 @@ impl Renderer {
                         });
                     }
                 }
+            }
+        }
+        if let (Some(item_id), Some(shop)) = (dragging_shop_item, shop) {
+            let key = format!("@shop-drag-item-{item_id}");
+            if !self.textures.contains_key(&key)
+                && let Some(icon) = shop.icon_image(item_id).cloned()
+            {
+                self.upload(&key, icon);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
             }
         }
         draws.sort_by(|a, b| a.sort_depth.total_cmp(&b.sort_depth));

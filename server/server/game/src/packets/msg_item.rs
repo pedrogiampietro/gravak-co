@@ -1,6 +1,7 @@
-use super::{MsgTalk, TalkChannel};
-use crate::state::State;
+use super::{MsgItemInfo, MsgTalk, MsgUserInfo, TalkChannel};
 use crate::ActorState;
+use crate::entities::{NpcKind, PurchaseOutcome};
+use crate::state::State;
 use async_trait::async_trait;
 use num_enum::{FromPrimitive, IntoPrimitive};
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,7 @@ pub struct MsgItem {
     param0: u32,
     action_type: u32,
     client_timestamp: u32,
+    amount: u32,
     param1: u32,
 }
 
@@ -66,7 +68,7 @@ impl PacketProcess for MsgItem {
     type Error = crate::Error;
     type State = State;
 
-    async fn process(&self, _state: &Self::State, actor: &Actor<Self::ActorState>) -> Result<(), Self::Error> {
+    async fn process(&self, state: &Self::State, actor: &Actor<Self::ActorState>) -> Result<(), Self::Error> {
         let action = self.action_type.into();
         match action {
             ItemActionType::Ping => {
@@ -81,6 +83,7 @@ impl PacketProcess for MsgItem {
                     param0: self.param0,
                     action_type: self.action_type,
                     client_timestamp: self.client_timestamp + 30,
+                    amount: self.amount,
                     param1: self.param1,
                 };
                 // LMFAO, this is so bad. it actually made the ping appear
@@ -88,6 +91,95 @@ impl PacketProcess for MsgItem {
                 // or if it's a bug in the server. I'm going to remove this
                 // later, but I'm going to leave it here for now.
                 actor.send(msg).await?;
+            },
+            ItemActionType::Buy => {
+                let entity = actor.entity();
+                let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+                let reject = |message: &str| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, message);
+                if self.character_id != character.id() {
+                    actor
+                        .send(reject("Shop purchase rejected: character mismatch."))
+                        .await?;
+                    return Ok(());
+                }
+                if self.amount != 1 {
+                    actor
+                        .send(reject("Shop purchase rejected: buy one item at a time."))
+                        .await?;
+                    return Ok(());
+                }
+                let map = state.try_map(character.entity().map_id())?;
+                let shop_id = character.active_shop_id();
+                let Some(npc) = map.npc(shop_id) else {
+                    actor
+                        .send(reject("Shop purchase rejected: shop is not nearby."))
+                        .await?;
+                    return Ok(());
+                };
+                let player_location = character.entity().location();
+                let npc_location = npc.entity().location();
+                if npc.kind() != NpcKind::ShopKeeper
+                    || player_location.x.abs_diff(npc_location.x) > 12
+                    || player_location.y.abs_diff(npc_location.y) > 12
+                {
+                    actor
+                        .send(reject("Shop purchase rejected: shop is not nearby."))
+                        .await?;
+                    return Ok(());
+                }
+                let Some(offer) = state.shop_catalog().offer(npc.id()) else {
+                    actor
+                        .send(reject("Shop purchase rejected: no catalog for this shop."))
+                        .await?;
+                    return Ok(());
+                };
+                if !offer.item_ids.contains(&self.param0) {
+                    actor
+                        .send(reject("Shop purchase rejected: item is not sold here."))
+                        .await?;
+                    return Ok(());
+                }
+                let Some(template) = state.shop_catalog().item(self.param0) else {
+                    actor
+                        .send(reject("Shop purchase rejected: item price is unavailable."))
+                        .await?;
+                    return Ok(());
+                };
+                let Ok(inventory_slot) = u8::try_from(self.param1) else {
+                    actor
+                        .send(reject("Shop purchase rejected: invalid inventory slot."))
+                        .await?;
+                    return Ok(());
+                };
+                match character
+                    .purchase_item(
+                        state.pool(),
+                        self.param0,
+                        inventory_slot,
+                        template.price,
+                        template.durability,
+                        template.max_durability,
+                    )
+                    .await?
+                {
+                    PurchaseOutcome::Bought(item) => {
+                        actor.send(MsgItemInfo::inventory_item(item)).await?;
+                        actor.send(MsgUserInfo::from(character)).await?;
+                        actor
+                            .send(MsgTalk::from_system(
+                                character.id(),
+                                TalkChannel::TopLeft,
+                                format!("Purchased item {} for {} silver.", self.param0, template.price),
+                            ))
+                            .await?;
+                    },
+                    PurchaseOutcome::InsufficientSilver => {
+                        actor.send(reject("Not enough silver to buy this item.")).await?;
+                    },
+                    PurchaseOutcome::InventoryFull => {
+                        actor.send(reject("Inventory is full.")).await?;
+                    },
+                }
             },
             _ => {
                 actor.send(self.clone()).await?;

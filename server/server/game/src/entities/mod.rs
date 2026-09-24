@@ -8,7 +8,7 @@ mod basic;
 pub use basic::Entity;
 
 mod character;
-pub use character::Character;
+pub use character::{Character, InventoryItem, PurchaseOutcome};
 
 mod npc;
 pub use npc::{Npc, NpcBase, NpcKind, NpcSort};
