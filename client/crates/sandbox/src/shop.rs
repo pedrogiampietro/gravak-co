@@ -223,10 +223,34 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     );
     imageops::overlay(&mut image, &up, 243, 155);
     imageops::overlay(&mut image, &down, 243, 190);
-    labels::text(&mut image, &font, &[("Repair", [255, 232, 160])], [33.0, 224.0]);
+    let repair_button = labelled_repair_button(assets, &font)?;
+    imageops::overlay(&mut image, &repair_button, 33, 224);
     labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [143.0, 224.0]);
     labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [200.0, 224.0]);
     Ok(image)
+}
+
+fn labelled_repair_button(assets: &mut Assets, font: &fontdue::Font) -> Result<RgbaImage> {
+    let source = assets.image("data/interface/Style01/Exercise/ExeCancel.dds")?;
+    let mut button = imageops::resize(&source, 62, 20, imageops::FilterType::Nearest);
+    let fill = imageops::resize(
+        &imageops::crop_imm(&source, 8, 8, 12, 16).to_image(),
+        46,
+        12,
+        imageops::FilterType::Nearest,
+    );
+    imageops::replace(&mut button, &fill, 8, 4);
+    let text_width = "Repair"
+        .chars()
+        .map(|character| font.metrics(character, 12.0).advance_width)
+        .sum::<f32>();
+    labels::text(
+        &mut button,
+        font,
+        &[("Repair", [255, 232, 160])],
+        [(62.0 - text_width) * 0.5, 3.0],
+    );
+    Ok(button)
 }
 
 pub fn highlight_image() -> RgbaImage {
