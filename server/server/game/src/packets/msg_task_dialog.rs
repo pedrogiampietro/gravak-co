@@ -193,7 +193,19 @@ impl PacketProcess for MsgTaskDialog {
         if self.action != DialogActionKind::Answer as u8 {
             return Ok(());
         }
-        let character_name = actor.entity().basic().name().to_owned();
+        if self.option_id == u8::MAX {
+            return Ok(());
+        }
+        let entity = actor.entity();
+        let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+        if self.option_id == 3 {
+            let new_map = _state.try_map(1002)?;
+            character.teleport(_state, 1002, (430, 378)).await?;
+            new_map.insert_entity(entity.clone()).await?;
+            character.try_screen()?.load_surroundings(_state).await?;
+            return Ok(());
+        }
+        let character_name = entity.basic().name().to_owned();
         let response = match (self.task_id, self.option_id) {
             (425, 1) => format!("Training every day will make you stronger, {character_name}."),
             (10010, 1) => "Twin City is the heart of this realm.".to_owned(),

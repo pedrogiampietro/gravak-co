@@ -257,6 +257,20 @@ impl App {
             } => {
                 self.pending_network_steps.clear();
                 self.confirmed_network_cell = Some(position);
+                if self.map.id != map_id {
+                    match map::Map::load(&mut self.assets, map_id) {
+                        Ok(map) => {
+                            self.map = map;
+                            self.remote_actors.clear();
+                            self.remote_models.clear();
+                            self.remote_npcs.clear();
+                        }
+                        Err(error) => {
+                            self.network_status =
+                                format!("online: map {map_id} unavailable after teleport: {error}");
+                        }
+                    }
+                }
                 self.player.reposition(position);
                 self.network_status = format!("online: repositioned map {map_id} dir {direction}");
             }
