@@ -345,6 +345,13 @@ impl App {
                 }
             }
             NetworkEvent::NpcDialog(dialog) => {
+                if self
+                    .shop
+                    .as_ref()
+                    .is_some_and(|shop| dialog.task_id == shop.npc_id)
+                {
+                    return;
+                }
                 let opens_shop = dialog
                     .messages
                     .iter()
