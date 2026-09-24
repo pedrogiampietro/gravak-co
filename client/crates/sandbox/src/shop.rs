@@ -16,6 +16,7 @@ const SLOT_SIZE: u32 = 36;
 const ICON_SIZE: u32 = 32;
 const ICON_OFFSET: u32 = 6;
 const ITEMS_PER_PAGE: usize = 20;
+const FOOTER_BUTTON_Y: f32 = 210.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct ItemInfo {
@@ -224,9 +225,19 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     imageops::overlay(&mut image, &up, 243, 155);
     imageops::overlay(&mut image, &down, 243, 190);
     let repair_button = labelled_repair_button(assets, &font)?;
-    imageops::overlay(&mut image, &repair_button, 33, 224);
-    labels::text(&mut image, &font, &[("Help", [255, 232, 160])], [143.0, 224.0]);
-    labels::text(&mut image, &font, &[("Close", [255, 232, 160])], [200.0, 224.0]);
+    imageops::overlay(&mut image, &repair_button, 33, FOOTER_BUTTON_Y as i64);
+    labels::text(
+        &mut image,
+        &font,
+        &[("Help", [255, 232, 160])],
+        [143.0, FOOTER_BUTTON_Y],
+    );
+    labels::text(
+        &mut image,
+        &font,
+        &[("Close", [255, 232, 160])],
+        [200.0, FOOTER_BUTTON_Y],
+    );
     Ok(image)
 }
 
@@ -234,13 +245,6 @@ fn labelled_repair_button(assets: &mut Assets, font: &fontdue::Font) -> Result<R
     let source = assets.image("data/interface/Style01/Exercise/ExeCancel.dds")?;
     let button_art = imageops::crop_imm(&source, 0, 0, 64, 32).to_image();
     let mut button = imageops::resize(&button_art, 62, 20, imageops::FilterType::Nearest);
-    let fill = imageops::resize(
-        &imageops::crop_imm(&source, 8, 8, 12, 16).to_image(),
-        46,
-        12,
-        imageops::FilterType::Nearest,
-    );
-    imageops::replace(&mut button, &fill, 8, 4);
     let text_width = "Repair"
         .chars()
         .map(|character| font.metrics(character, 12.0).advance_width)
@@ -264,8 +268,8 @@ pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     let [left, top] = panel_position(viewport);
     cursor[0] >= left + 200.0
         && cursor[0] <= left + 243.0
-        && cursor[1] >= top + 224.0
-        && cursor[1] <= top + 244.0
+        && cursor[1] >= top + FOOTER_BUTTON_Y
+        && cursor[1] <= top + FOOTER_BUTTON_Y + 20.0
 }
 
 pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
