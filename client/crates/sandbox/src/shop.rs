@@ -245,6 +245,13 @@ fn labelled_repair_button(assets: &mut Assets, font: &fontdue::Font) -> Result<R
     let source = assets.image("data/interface/Style01/Exercise/ExeCancel.dds")?;
     let button_art = imageops::crop_imm(&source, 0, 0, 64, 32).to_image();
     let mut button = imageops::resize(&button_art, 62, 20, imageops::FilterType::Nearest);
+    for y in 4..16 {
+        let shade = (y - 4) as u8;
+        let face = Rgba([28 - shade, 48 - shade, 60 - shade, 255]);
+        for x in 4..58 {
+            button.put_pixel(x, y, face);
+        }
+    }
     let text_width = "Repair"
         .chars()
         .map(|character| font.metrics(character, 12.0).advance_width)
