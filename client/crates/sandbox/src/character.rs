@@ -39,9 +39,65 @@ impl Character {
                 .ok_or_else(|| format!("Missing profile {key}"))?
                 .parse()?)
         };
+        Self::load_appearance(
+            assets,
+            body,
+            number("Armor")?,
+            number("Hair")?,
+            number("RightWeapon")?,
+            number("LeftWeapon")?,
+            profile.first("Name").unwrap_or("dek").to_owned(),
+            profile.first("Guild").unwrap_or("").to_owned(),
+            profile.first("GuildRank").unwrap_or("").to_owned(),
+            number("Health")?,
+            number("MaximumHealth")?,
+        )
+    }
+
+    pub fn load_remote(
+        assets: &mut Assets,
+        body: u32,
+        armor: u32,
+        hair: u16,
+        right_weapon: u32,
+        left_weapon: u32,
+        name: String,
+        health: u16,
+    ) -> Result<Self> {
+        if !(1..=4).contains(&body) {
+            return Err("remote mesh has an unknown body type".into());
+        }
+        Self::load_appearance(
+            assets,
+            body,
+            if armor == 0 { 130109 } else { armor },
+            u32::from(hair),
+            right_weapon,
+            left_weapon,
+            name,
+            String::new(),
+            String::new(),
+            u32::from(health),
+            u32::from(health).max(1),
+        )
+    }
+
+    fn load_appearance(
+        assets: &mut Assets,
+        body: u32,
+        armor_id: u32,
+        hair: u32,
+        right: u32,
+        left: u32,
+        name: String,
+        guild: String,
+        guild_rank: String,
+        health: u32,
+        maximum_health: u32,
+    ) -> Result<Self> {
         let armor = SectionCatalog::parse(&assets.read("ini/armor.ini")?);
         let entry = armor
-            .section(&(body * 1_000_000 + number("Armor")? / 10 * 10).to_string())
+            .section(&(body * 1_000_000 + armor_id / 10 * 10).to_string())
             .ok_or("Missing armor in armor.ini")?;
         let models = IdPathCatalog::parse(&assets.read("ini/3dobj.ini")?);
         let textures = IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?);
@@ -57,10 +113,10 @@ impl Character {
             .position(|m| m.name == "v_body")
             .ok_or("Body mesh missing")?;
         let mesh = doc.meshes[index].clone();
-        let right = number("RightWeapon")?;
-        let left = number("LeftWeapon")?;
-        let weapon_action =
-            sandbox_data::weapon_action::resolve_weapon_action(Some(right), Some(left));
+        let weapon_action = sandbox_data::weapon_action::resolve_weapon_action(
+            (right != 0).then_some(right),
+            (left != 0).then_some(left),
+        );
         let mut motion = |action: Action| -> Result<C3Document> {
             let path = std::iter::once(action)
                 .chain(action.paired_action())
@@ -91,42 +147,35 @@ impl Character {
             local: None,
             track: index,
         }];
-        for (catalog, key, attachment) in [
-            (
+
+        if hair != 0 {
+            if let Ok(part) = load_attachment(
+                assets,
+                &models,
+                &textures,
+                &doc,
                 "ini/armet.ini",
-                body * 1_000_000 + 119_000 + number("Hair")?,
+                body * 1_000_000 + 119_000 + hair,
                 "v_armet",
-            ),
-            ("ini/weapon.ini", right, "v_r_weapon"),
-            ("ini/weapon.ini", left, "v_l_weapon"),
-        ] {
-            let definition = SectionCatalog::parse(&assets.read(catalog)?);
-            let entry = definition
-                .section(&key.to_string())
-                .ok_or_else(|| format!("Missing part {key} in {catalog}"))?;
-            let model = entry.first("Mesh0").ok_or("Part Mesh0 missing")?.parse()?;
-            let texture = entry
-                .first("Texture0")
-                .ok_or("Part Texture0 missing")?
-                .parse()?;
-            let part = C3Document::parse(
-                &assets.read(models.get(model).ok_or("Part model missing")?.as_str())?,
-            )?;
-            let track = doc
-                .meshes
-                .iter()
-                .position(|m| m.name == attachment)
-                .ok_or("Attachment missing")?;
-            parts.push(Part {
-                mesh: part.meshes.first().ok_or("Empty part")?.clone(),
-                texture: textures
-                    .get(texture)
-                    .ok_or("Part texture missing")?
-                    .as_str()
-                    .to_owned(),
-                local: Some(part.motions.first().ok_or("Part motion missing")?.clone()),
-                track,
-            });
+            ) {
+                parts.push(part);
+            }
+        }
+        for (weapon, attachment) in [(right, "v_r_weapon"), (left, "v_l_weapon")] {
+            if weapon == 0 {
+                continue;
+            }
+            if let Ok(part) = load_attachment(
+                assets,
+                &models,
+                &textures,
+                &doc,
+                "ini/weapon.ini",
+                weapon,
+                attachment,
+            ) {
+                parts.push(part);
+            }
         }
         let timing = assets.read("ini/Action.dat")?;
         let read = |offset: usize| -> Option<u32> {
@@ -139,24 +188,21 @@ impl Character {
             return Err("Action.dat truncated".into());
         }
         let intervals = Action::ALL.map(|action| {
-            std::iter::once(action)
-                .chain(action.paired_action())
-                .flat_map(|action| {
-                    let action = action.catalog_id();
-                    [
-                        body * 1_000_000 + weapon_action * 1000 + action,
-                        999_000_000 + weapon_action * 1000 + action,
-                        body * 1_000_000 + 999_000 + action,
-                        999_999_000 + action,
-                    ]
-                })
-                .find_map(|key| {
-                    (0..count)
-                        .find(|i| read(4 + i * 20 + 4) == Some(key))
-                        .and_then(|i| read(4 + i * 20 + 12))
-                })
-                .unwrap_or(33)
-                .max(5) as f32
+            let action = action.catalog_id();
+            [
+                body * 1_000_000 + weapon_action * 1000 + action,
+                999_000_000 + weapon_action * 1000 + action,
+                body * 1_000_000 + 999_000 + action,
+                999_999_000 + action,
+            ]
+            .into_iter()
+            .find_map(|key| {
+                (0..count)
+                    .find(|i| read(4 + i * 20 + 4) == Some(key))
+                    .and_then(|i| read(4 + i * 20 + 12))
+            })
+            .unwrap_or(33)
+            .max(5) as f32
         });
         for action in &actions {
             for part in &parts {
@@ -171,13 +217,14 @@ impl Character {
             intervals,
             body_id: body,
             weapon_action,
-            name: profile.first("Name").unwrap_or("dek").to_owned(),
-            guild: profile.first("Guild").unwrap_or("").to_owned(),
-            guild_rank: profile.first("GuildRank").unwrap_or("").to_owned(),
-            health: number("Health")?,
-            maximum_health: number("MaximumHealth")?,
+            name,
+            guild,
+            guild_rank,
+            health,
+            maximum_health,
         })
     }
+
     pub fn duration(&self, action: Action) -> std::time::Duration {
         let action = action.index();
         std::time::Duration::from_secs_f32(
@@ -246,4 +293,41 @@ impl Character {
             })
             .collect()
     }
+}
+
+fn load_attachment(
+    assets: &mut Assets,
+    models: &IdPathCatalog,
+    textures: &IdPathCatalog,
+    body: &C3Document,
+    catalog: &str,
+    key: u32,
+    attachment: &str,
+) -> Result<Part> {
+    let definition = SectionCatalog::parse(&assets.read(catalog)?);
+    let entry = definition
+        .section(&key.to_string())
+        .ok_or_else(|| format!("Missing part {key} in {catalog}"))?;
+    let model = entry.first("Mesh0").ok_or("Part Mesh0 missing")?.parse()?;
+    let texture = entry
+        .first("Texture0")
+        .ok_or("Part Texture0 missing")?
+        .parse()?;
+    let part =
+        C3Document::parse(&assets.read(models.get(model).ok_or("Part model missing")?.as_str())?)?;
+    let track = body
+        .meshes
+        .iter()
+        .position(|m| m.name == attachment)
+        .ok_or("Attachment missing")?;
+    Ok(Part {
+        mesh: part.meshes.first().ok_or("Empty part")?.clone(),
+        texture: textures
+            .get(texture)
+            .ok_or("Part texture missing")?
+            .as_str()
+            .to_owned(),
+        local: Some(part.motions.first().ok_or("Part motion missing")?.clone()),
+        track,
+    })
 }

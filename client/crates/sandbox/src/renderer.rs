@@ -366,13 +366,14 @@ impl Renderer {
         }
         for actor in remote_actors.values() {
             let remote_character = remote_models.get(&actor.id).unwrap_or(character);
+            let action = remote_action(actor.action);
             let projected = map.project(actor.position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             let depth = actor.position[0] + actor.position[1];
             let facing = -f32::from((actor.direction % 8) + 1) * std::f32::consts::FRAC_PI_4;
             for part in &remote_character.parts {
                 self.texture(assets, &part.texture);
-                let vertices = remote_character.vertices(part, time, Action::Idle, facing, None);
+                let vertices = remote_character.vertices(part, time, action, facing, None);
                 let triangles = part
                     .mesh
                     .opaque_indices
@@ -545,6 +546,17 @@ impl Renderer {
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
         Ok(())
+    }
+}
+
+fn remote_action(value: u8) -> Action {
+    match value {
+        110 => Action::WalkLeft,
+        111 => Action::WalkRight,
+        120 => Action::RunLeft,
+        121 => Action::RunRight,
+        130 => Action::Jump,
+        _ => Action::Idle,
     }
 }
 fn clip(p: [f32; 2], z: f32, viewport: [f32; 2]) -> [f32; 3] {

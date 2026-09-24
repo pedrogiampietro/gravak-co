@@ -59,6 +59,12 @@ pub struct RemoteActor {
     pub direction: u8,
     pub mesh: u32,
     pub body: u32,
+    pub armor: u32,
+    pub hair_style: u16,
+    pub right_weapon: u32,
+    pub left_weapon: u32,
+    pub action: u8,
+    pub health: u16,
     pub npc: bool,
 }
 
@@ -294,6 +300,12 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         direction: player.direction,
         mesh: player.mesh.max(0) as u32,
         body: body_from_mesh(player.mesh.max(0) as u32),
+        armor: player.armor.max(0) as u32,
+        hair_style: player.hair_style.max(0) as u16,
+        right_weapon: player.right_hand.max(0) as u32,
+        left_weapon: player.left_hand.max(0) as u32,
+        action: player.action,
+        health: player.health_points,
         npc: false,
     }
 }
@@ -306,6 +318,12 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         direction: 0,
         mesh: npc.look as u32,
         body: 0,
+        armor: 0,
+        hair_style: 0,
+        right_weapon: 0,
+        left_weapon: 0,
+        action: 0,
+        health: 0,
         npc: true,
     }
 }

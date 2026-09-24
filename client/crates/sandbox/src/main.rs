@@ -262,7 +262,16 @@ impl App {
                 if !actor.npc
                     && actor.body != 0
                     && !self.remote_models.contains_key(&id)
-                    && let Ok(model) = character::Character::load(&mut self.assets, actor.body)
+                    && let Ok(model) = character::Character::load_remote(
+                        &mut self.assets,
+                        actor.body,
+                        actor.armor,
+                        actor.hair_style,
+                        actor.right_weapon,
+                        actor.left_weapon,
+                        actor.name.clone(),
+                        actor.health,
+                    )
                 {
                     self.remote_models.insert(id, model);
                 }
@@ -468,6 +477,19 @@ fn run() -> Result<()> {
         for part in &character.parts {
             assets.image(&part.texture)?;
         }
+        let remote_preview = character::Character::load_remote(
+            &mut assets,
+            1,
+            130109,
+            311,
+            410339,
+            410339,
+            "RemotePreview".into(),
+            100,
+        )?;
+        for part in &remote_preview.parts {
+            assets.image(&part.texture)?;
+        }
         validation::movement(&map, &character, player.cell())?;
         if let Some(minimap) = minimap::Minimap::load(&mut assets, map.id)? {
             let center = map.project(player.position);
@@ -483,7 +505,7 @@ fn run() -> Result<()> {
             println!("Minimap OK: original assets, projected hero, crop and controls");
         }
         println!(
-            "Assets OK: map {map_id}, {}x{}, {} sprites; character dek at {:?}",
+            "Assets OK: map {map_id}, {}x{}, {} sprites; local and remote appearances; character dek at {:?}",
             map.data.width,
             map.data.height,
             map.sprites.len(),
