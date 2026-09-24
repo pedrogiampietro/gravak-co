@@ -224,7 +224,7 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     );
     imageops::overlay(&mut image, &up, 243, 155);
     imageops::overlay(&mut image, &down, 243, 190);
-    let repair_button = labelled_repair_button(assets, &font)?;
+    let repair_button = labelled_repair_button(&font);
     imageops::overlay(&mut image, &repair_button, 33, FOOTER_BUTTON_Y as i64);
     labels::text(
         &mut image,
@@ -241,16 +241,15 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     Ok(image)
 }
 
-fn labelled_repair_button(assets: &mut Assets, font: &fontdue::Font) -> Result<RgbaImage> {
-    let source = assets.image("data/interface/Style01/Exercise/ExeCancel.dds")?;
-    let button_art = imageops::crop_imm(&source, 0, 0, 64, 32).to_image();
-    let mut button = imageops::resize(&button_art, 62, 20, imageops::FilterType::Nearest);
-    for y in 5..15 {
-        let shade = (y - 5) as u8;
-        let face = Rgba([28 - shade, 48 - shade, 60 - shade, 255]);
-        for x in 6..56 {
-            button.put_pixel(x, y, face);
-        }
+fn labelled_repair_button(font: &fontdue::Font) -> RgbaImage {
+    let mut button = RgbaImage::from_pixel(62, 20, Rgba([0, 0, 0, 0]));
+    rounded_rect(&mut button, 0, 1, 62, 18, 4, Rgba([5, 12, 17, 255]));
+    rounded_rect(&mut button, 1, 1, 60, 17, 4, Rgba([197, 161, 77, 255]));
+    rounded_rect(&mut button, 2, 2, 58, 15, 3, Rgba([12, 29, 39, 255]));
+    rounded_rect(&mut button, 3, 3, 56, 13, 2, Rgba([17, 45, 59, 255]));
+    for x in 5..57 {
+        button.put_pixel(x, 3, Rgba([55, 82, 92, 255]));
+        button.put_pixel(x, 15, Rgba([9, 24, 32, 255]));
     }
     let text_width = "Repair"
         .chars()
@@ -260,9 +259,34 @@ fn labelled_repair_button(assets: &mut Assets, font: &fontdue::Font) -> Result<R
         &mut button,
         font,
         &[("Repair", [255, 232, 160])],
-        [(62.0 - text_width) * 0.5, 3.0],
+        [(62.0 - text_width) * 0.5, 4.0],
     );
-    Ok(button)
+    button
+}
+
+fn rounded_rect(
+    image: &mut RgbaImage,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    radius: u32,
+    colour: Rgba<u8>,
+) {
+    let right = left + width - 1;
+    let bottom = top + height - 1;
+    let radius = radius.min(width / 2).min(height / 2);
+    for y in top..=bottom {
+        for x in left..=right {
+            let nearest_x = x.clamp(left + radius, right.saturating_sub(radius));
+            let nearest_y = y.clamp(top + radius, bottom.saturating_sub(radius));
+            let dx = x.abs_diff(nearest_x);
+            let dy = y.abs_diff(nearest_y);
+            if dx * dx + dy * dy <= radius * radius {
+                image.put_pixel(x, y, colour);
+            }
+        }
+    }
 }
 
 pub fn highlight_image() -> RgbaImage {
