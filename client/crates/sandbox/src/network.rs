@@ -1,6 +1,6 @@
 use gravak_protocol::{
     ActionPacket, AuthResponse, GameEvent, GameSession, NpcPacket, RegisterCharacter,
-    ServerNpcInfo, ServerPlayer, authenticate,
+    ServerNpcInfo, ServerPlayer, TaskDialog, authenticate,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -58,7 +58,7 @@ pub enum NetworkEvent {
         id: u32,
         action: u16,
     },
-    NpcDialog,
+    NpcDialog(TaskDialog),
     RemoveActor(u32),
     PlayerSpawn(RemoteActor),
     NpcSpawn(RemoteActor),
@@ -139,7 +139,7 @@ impl NetworkHandle {
                 | NetworkEvent::RemoteFacing { .. }
                 | NetworkEvent::RemoteJump { .. }
                 | NetworkEvent::RemoteAction { .. }
-                | NetworkEvent::NpcDialog
+                | NetworkEvent::NpcDialog(_)
                 | NetworkEvent::RemoveActor(_)
                 | NetworkEvent::PlayerSpawn(_)
                 | NetworkEvent::NpcSpawn(_) => {}
@@ -331,8 +331,8 @@ async fn run(
                         action: action.data1 as u16,
                     });
                 }
-                Some(GameEvent::Other(2032, _)) => {
-                    let _ = events.send(NetworkEvent::NpcDialog);
+                Some(GameEvent::TaskDialog(dialog)) => {
+                    let _ = events.send(NetworkEvent::NpcDialog(dialog));
                 }
                 Some(GameEvent::Player(player)) => {
                     let _ = events.send(NetworkEvent::PlayerSpawn(player_actor(player)));

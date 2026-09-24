@@ -117,6 +117,66 @@ pub fn actor_image(name: &str) -> Result<RgbaImage> {
     Ok(image)
 }
 
+pub fn dialog_image(messages: &[String]) -> Result<RgbaImage> {
+    let font = font()?;
+    let mut lines = Vec::new();
+    for message in messages {
+        let mut line = String::new();
+        for word in message.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if !line.is_empty() && width(&font, &candidate) > 680.0 {
+                lines.push(std::mem::take(&mut line));
+            }
+            if line.is_empty() {
+                line = word.to_owned();
+            } else if width(&font, &candidate) <= 680.0 {
+                line = candidate;
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    if lines.is_empty() {
+        lines.push("(sem texto)".to_owned());
+    }
+    let height = (58 + lines.len() * 20).clamp(80, 260) as u32;
+    let mut image = RgbaImage::new(720, height);
+    for y in 0..height {
+        for x in 0..720 {
+            let border = x < 2 || x >= 718 || y < 2 || y >= height - 2;
+            image.put_pixel(
+                x,
+                y,
+                if border {
+                    Rgba([220, 180, 75, 245])
+                } else {
+                    Rgba([12, 18, 30, 230])
+                },
+            );
+        }
+    }
+    text(
+        &mut image,
+        &font,
+        &[("NPC DIALOG", GUILD_COLOUR)],
+        [16.0, 12.0],
+    );
+    for (index, line) in lines.iter().enumerate() {
+        text(
+            &mut image,
+            &font,
+            &[(line, [255, 255, 255])],
+            [16.0, 38.0 + index as f32 * 20.0],
+        );
+    }
+    Ok(image)
+}
+
 pub fn build_banner() -> Result<RgbaImage> {
     let font = font()?;
     let mut image = RgbaImage::new(width(&font, BUILD_TEXT).ceil() as u32 + 2, 16);

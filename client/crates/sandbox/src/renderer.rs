@@ -262,6 +262,7 @@ impl Renderer {
         remote_actors: &HashMap<u32, RemoteActor>,
         remote_models: &HashMap<u32, Character>,
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
+        dialog: Option<&[String]>,
         time: f32,
     ) -> Result<()> {
         let camera = self.camera(map, player);
@@ -429,8 +430,6 @@ impl Renderer {
                         sort_depth: depth,
                     });
                 }
-            } else {
-                continue;
             }
             if !actor.name.is_empty() {
                 let label_key = format!("@actor-label-{}", actor.id);
@@ -506,6 +505,31 @@ impl Renderer {
                 draws.push(Draw {
                     texture: item.texture.into(),
                     vertices,
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(messages) = dialog {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            messages.hash(&mut hasher);
+            let key = format!("@dialog-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, crate::labels::dialog_image(messages)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let size = texture.size;
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(
+                        [
+                            ((viewport[0] - size[0]) * 0.5).max(8.0),
+                            (viewport[1] - size[1] - 24.0).max(8.0),
+                        ],
+                        size,
+                        viewport,
+                    ),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });

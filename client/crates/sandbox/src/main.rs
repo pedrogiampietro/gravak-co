@@ -51,6 +51,7 @@ struct App {
     remote_actors: HashMap<u32, RemoteActor>,
     remote_models: HashMap<u32, character::Character>,
     remote_npcs: HashMap<u32, character::NpcModel>,
+    dialog: Option<Vec<String>>,
     network_status: String,
 }
 impl ApplicationHandler for App {
@@ -116,6 +117,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match event.physical_key {
+                    PhysicalKey::Code(KeyCode::Escape) if self.dialog.is_some() => {
+                        self.dialog = None
+                    }
                     PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
                     PhysicalKey::Code(KeyCode::Space) => self.player.stop(),
                     PhysicalKey::Code(KeyCode::Slash) => self.player.running = !self.player.running,
@@ -158,6 +162,7 @@ impl ApplicationHandler for App {
                         &self.remote_actors,
                         &self.remote_models,
                         &self.remote_npcs,
+                        self.dialog.as_deref(),
                         self.started.elapsed().as_secs_f32(),
                     )
                 {
@@ -297,7 +302,10 @@ impl App {
                         + action_duration(action, &self.character);
                 }
             }
-            NetworkEvent::NpcDialog => {
+            NetworkEvent::NpcDialog(dialog) => {
+                self.dialog
+                    .get_or_insert_with(Vec::new)
+                    .extend(dialog.messages);
                 self.network_status = "online: NPC dialog received".into();
             }
             NetworkEvent::RemoveActor(id) => {
@@ -328,15 +336,19 @@ impl App {
                 {
                     self.remote_models.insert(id, model);
                 }
-                if actor.npc
-                    && !self.remote_npcs.contains_key(&id)
-                    && let Ok(model) = character::NpcModel::load(
+                if actor.npc && !self.remote_npcs.contains_key(&id) {
+                    match character::NpcModel::load(
                         &mut self.assets,
                         actor.npc_kind,
                         actor.mesh as u16,
-                    )
-                {
-                    self.remote_npcs.insert(id, model);
+                    ) {
+                        Ok(model) => {
+                            self.remote_npcs.insert(id, model);
+                        }
+                        Err(error) => {
+                            eprintln!("NPC {} model unavailable: {error}", actor.name);
+                        }
+                    }
                 }
                 self.remote_actors.insert(id, actor);
                 if let Some(actor) = self.remote_actors.get(&id) {
@@ -404,6 +416,9 @@ impl App {
             return false;
         };
         self.held = false;
+        if npc {
+            self.dialog = None;
+        }
         let kind = if npc { "npc" } else { "player" };
         let label = if name.is_empty() { "unnamed" } else { &name };
         if npc && let Some(network) = &self.network {
@@ -680,6 +695,7 @@ fn run() -> Result<()> {
         remote_actors: HashMap::new(),
         remote_models: HashMap::new(),
         remote_npcs: HashMap::new(),
+        dialog: None,
         network_status: if online {
             "online".into()
         } else {

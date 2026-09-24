@@ -26,6 +26,8 @@ pub const MSG_DATA: u16 = 1033;
 pub const MSG_MAP_INFO: u16 = 1110;
 pub const MSG_PLAYER: u16 = 1014;
 pub const MSG_NPC_INFO: u16 = 2030;
+pub const MSG_NPC: u16 = 2031;
+pub const MSG_TASK_DIALOG: u16 = 2032;
 
 #[derive(Debug, Serialize, PacketID)]
 #[packet(id = 1052)]
@@ -121,6 +123,15 @@ pub struct NpcPacket {
     pub data: u32,
     pub action: u16,
     pub kind: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskDialog {
+    pub task_id: u32,
+    pub avatar: u16,
+    pub option_id: u8,
+    pub action: u8,
+    pub messages: Vec<String>,
 }
 
 impl NpcPacket {
@@ -305,6 +316,7 @@ pub enum GameEvent {
     Walk(WalkPacket),
     Player(ServerPlayer),
     NpcInfo(ServerNpcInfo),
+    TaskDialog(TaskDialog),
     Other(u16, Bytes),
 }
 
@@ -390,8 +402,50 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
             ServerPlayer::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_NPC_INFO => Ok(GameEvent::NpcInfo(decode_npc_info(body)?)),
+        MSG_TASK_DIALOG => Ok(GameEvent::TaskDialog(decode_task_dialog(body)?)),
         _ => Ok(GameEvent::Other(id, body.clone())),
     }
+}
+
+fn decode_task_dialog(body: &Bytes) -> Result<TaskDialog, ProtocolError> {
+    if body.len() < 8 {
+        return Err(ProtocolError::MalformedResponse(
+            "task dialog header is missing",
+        ));
+    }
+    let task_id = u32::from_le_bytes(body[0..4].try_into().unwrap());
+    let avatar = u16::from_le_bytes(body[4..6].try_into().unwrap());
+    let option_id = body[6];
+    let action = body[7];
+    let mut offset = 8;
+    let mut messages = Vec::new();
+    if offset < body.len() {
+        let count = body[offset] as usize;
+        offset += 1;
+        for _ in 0..count {
+            if offset >= body.len() {
+                return Err(ProtocolError::MalformedResponse(
+                    "task dialog message length is missing",
+                ));
+            }
+            let length = body[offset] as usize;
+            offset += 1;
+            if offset + length > body.len() {
+                return Err(ProtocolError::MalformedResponse(
+                    "task dialog message is truncated",
+                ));
+            }
+            messages.push(String::from_utf8_lossy(&body[offset..offset + length]).into_owned());
+            offset += length;
+        }
+    }
+    Ok(TaskDialog {
+        task_id,
+        avatar,
+        option_id,
+        action,
+        messages,
+    })
 }
 
 fn decode_npc_info(body: &Bytes) -> Result<ServerNpcInfo, ProtocolError> {
@@ -697,5 +751,27 @@ mod tests {
         assert_eq!(npc.id, 77);
         assert_eq!((npc.x, npc.y), (62, 111));
         assert_eq!(npc.name.as_deref(), Some("Bob"));
+    }
+
+    #[test]
+    fn decodes_task_dialog_messages() {
+        let mut dialog = Vec::new();
+        dialog.extend_from_slice(&42_u32.to_le_bytes());
+        dialog.extend_from_slice(&47_u16.to_le_bytes());
+        dialog.extend_from_slice(&255_u8.to_le_bytes());
+        dialog.extend_from_slice(&0_u8.to_le_bytes());
+        dialog.push(2);
+        dialog.push(5);
+        dialog.extend_from_slice(b"Hello");
+        dialog.push(3);
+        dialog.extend_from_slice(b"NPC");
+        let GameEvent::TaskDialog(dialog) =
+            decode_game_event(MSG_TASK_DIALOG, &Bytes::from(dialog)).unwrap()
+        else {
+            panic!("expected task dialog");
+        };
+        assert_eq!(dialog.task_id, 42);
+        assert_eq!(dialog.avatar, 47);
+        assert_eq!(dialog.messages, ["Hello", "NPC"]);
     }
 }
