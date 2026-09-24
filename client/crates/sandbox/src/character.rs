@@ -305,8 +305,21 @@ impl Character {
 impl NpcModel {
     pub fn load(assets: &mut Assets, kind: u16, look: u16) -> Result<Self> {
         let npc_catalog = SectionCatalog::parse(&assets.read("ini/npc.ini")?);
+        // The 2030 packet has two different concepts here:
+        //
+        // * `kind` is the interaction category (shopkeeper, task NPC,
+        //   storage, ...); many visually different NPCs share it.
+        // * `look` identifies the concrete NPC appearance.  The 5065 asset
+        //   catalog indexes most of those appearances by `look / 10`.
+        //
+        // Using `kind` as the catalog key made Pharmacists, Pedlars and
+        // several quest NPCs look for a non-existent C3 file.  Keep `kind` as
+        // a compatibility fallback for custom/terrain NPCs, but prefer the
+        // appearance key derived from `look`.
+        let appearance_type = u32::from(look) / 10;
         let simple_id = npc_catalog
-            .section(&format!("NpcType{kind}"))
+            .section(&format!("NpcType{appearance_type}"))
+            .or_else(|| npc_catalog.section(&format!("NpcType{kind}")))
             .and_then(|section| section.first("SimpleObjID"))
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or_else(|| u32::from(look / 10));

@@ -198,19 +198,42 @@ impl PacketProcess for MsgTaskDialog {
         }
         let entity = actor.entity();
         let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
-        if self.option_id == 3 {
+        if self.task_id == 10010 && self.option_id == 3 {
             let new_map = _state.try_map(1002)?;
             character.teleport(_state, 1002, (430, 378)).await?;
             new_map.insert_entity(entity.clone()).await?;
             character.try_screen()?.load_surroundings(_state).await?;
             return Ok(());
         }
+        let npc = _state
+            .try_map(character.entity().map_id())
+            .ok()
+            .and_then(|map| map.npc(self.task_id));
         let character_name = entity.basic().name().to_owned();
-        let response = match (self.task_id, self.option_id) {
-            (425, 1) => format!("Training every day will make you stronger, {character_name}."),
-            (10010, 1) => "Twin City is the heart of this realm.".to_owned(),
-            (10010, 2) => "Many secrets are hidden beyond the city gates.".to_owned(),
-            (10009, 1) => "I heard that brave adventurers are needed near the gates.".to_owned(),
+        let response = match (npc.map(|npc| npc.kind()), self.option_id) {
+            (Some(crate::entities::NpcKind::ShopKeeper), 1) => {
+                "The item catalog is the next shop integration step. Buy flow is not enabled yet.".to_owned()
+            },
+            (Some(crate::entities::NpcKind::ShopKeeper), 2) => {
+                "You have no items to sell yet.".to_owned()
+            },
+            (Some(crate::entities::NpcKind::Storage), 1) => {
+                "Warehouse storage is not enabled yet, but this NPC is now using its proper flow.".to_owned()
+            },
+            (Some(crate::entities::NpcKind::Forge), 1) => {
+                "Forge services will be connected after the item catalog.".to_owned()
+            },
+            (Some(crate::entities::NpcKind::Face), 1) => {
+                "Appearance services will be connected after the character editor.".to_owned()
+            },
+            (_, 1) if self.task_id == 425 => {
+                format!("Training every day will make you stronger, {character_name}.")
+            },
+            (_, 1) if self.task_id == 10010 => "Twin City is the heart of this realm.".to_owned(),
+            (_, 2) if self.task_id == 10010 => "Many secrets are hidden beyond the city gates.".to_owned(),
+            (_, 1) if self.task_id == 10009 => {
+                "I heard that brave adventurers are needed near the gates.".to_owned()
+            },
             (_, 1) => format!("I am a guardian of Twin City, {character_name}."),
             (_, 2) => "Start by speaking with the nearby townspeople.".to_owned(),
             _ => "Come back when you are ready to continue your adventure.".to_owned(),

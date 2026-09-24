@@ -3,7 +3,7 @@ use serde::Deserialize;
 use tq_network::{Actor, PacketID, PacketProcess};
 
 use crate::entities::NpcKind;
-use crate::packets::{MsgAction, MsgTalk, MsgTaskDialog};
+use crate::packets::{MsgTalk, MsgTaskDialog};
 
 #[derive(Default, Debug, Clone, Copy, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
@@ -44,7 +44,7 @@ impl PacketProcess for MsgNpc {
             "MsgNpc received"
         );
         let me = actor.entity();
-        let mycharacter = me.as_character().ok_or(crate::Error::CharacterNotFound)?;
+        me.as_character().ok_or(crate::Error::CharacterNotFound)?;
         let mymap = state.try_map(me.basic().map_id())?;
         let npc = match mymap.npc(self.npc_id) {
             Some(npc) => npc,
@@ -67,30 +67,52 @@ impl PacketProcess for MsgNpc {
             // that are not in the screen.
             return Ok(());
         }
-        // Storage NPCs
-        if npc.is_storage() {
-            actor
-                .send(MsgAction::from_character(
-                    mycharacter,
-                    4, // WHAT IS THIS?
-                    super::ActionType::OpenDialog,
-                ))
-                .await?;
-            return Ok(());
-        }
         let npc_id = npc.id();
         let npc_name = npc.entity().name();
-        let dialog = match npc_name {
-            "OldGeneralYang" => MsgTaskDialog::builder()
-                .text("I train the young heroes of Twin City.")
-                .with_option(1, "How can I become stronger?")
-                .with_option(2, "I will return later.")
-                .with_option(3, "Teleport me to Twin City.")
+        let dialog = match npc.kind() {
+            NpcKind::ShopKeeper => MsgTaskDialog::builder()
+                .text(format!("Welcome to {npc_name}'s shop. What would you like to do?"))
+                .with_option(1, "Buy items.")
+                .with_option(2, "Sell items.")
+                .with_option(255, "Leave.")
                 .and()
                 .with_avatar(47)
                 .task_id(npc_id)
                 .build(),
-            "KnowItAll" => MsgTaskDialog::builder()
+            NpcKind::Storage => MsgTaskDialog::builder()
+                .text(format!("{npc_name} can keep your belongings safe."))
+                .with_option(1, "Open warehouse.")
+                .with_option(255, "Leave.")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+            NpcKind::Forge => MsgTaskDialog::builder()
+                .text(format!("{npc_name} can help improve your equipment."))
+                .with_option(1, "Show forge services.")
+                .with_option(255, "Leave.")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+            NpcKind::Face => MsgTaskDialog::builder()
+                .text(format!("{npc_name} can change your appearance."))
+                .with_option(1, "Show appearance options.")
+                .with_option(255, "Leave.")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+            _ => match npc_name {
+                "OldGeneralYang" => MsgTaskDialog::builder()
+                .text("I train the young heroes of Twin City.")
+                .with_option(1, "How can I become stronger?")
+                .with_option(2, "I will return later.")
+                .and()
+                .with_avatar(47)
+                .task_id(npc_id)
+                .build(),
+                "KnowItAll" => MsgTaskDialog::builder()
                 .text("Knowledge is the first step on every adventure.")
                 .with_option(1, "Tell me about Twin City.")
                 .with_option(2, "Do you know any secrets?")
@@ -99,24 +121,23 @@ impl PacketProcess for MsgNpc {
                 .with_avatar(47)
                 .task_id(npc_id)
                 .build(),
-            "Mr.Nosy" => MsgTaskDialog::builder()
+                "Mr.Nosy" => MsgTaskDialog::builder()
                 .text("Psst... I hear everything that happens around here.")
                 .with_option(1, "What did you hear?")
                 .with_option(2, "Never mind.")
-                .with_option(3, "Teleport me to Twin City.")
                 .and()
                 .with_avatar(47)
                 .task_id(npc_id)
                 .build(),
-            _ => MsgTaskDialog::builder()
+                _ => MsgTaskDialog::builder()
                 .text(format!("Hello, my name is {npc_name} and my id is {npc_id}."))
                 .with_option(1, "Who are you?")
                 .with_option(2, "Tell me about this city.")
-                .with_option(3, "Teleport me to Twin City.")
                 .and()
                 .with_avatar(47)
                 .task_id(npc_id)
                 .build(),
+            },
         };
         actor.send_all(dialog).await?;
         Ok(())
