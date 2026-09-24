@@ -43,6 +43,7 @@ struct App {
     modifiers: winit::keyboard::ModifiersState,
     held: bool,
     queued_jump: Option<[i32; 2]>,
+    local_action: Option<(Action, f32)>,
     network: Option<NetworkHandle>,
     network_character_id: Option<u32>,
     confirmed_network_cell: Option<[i32; 2]>,
@@ -128,6 +129,14 @@ impl ApplicationHandler for App {
                 self.player
                     .tick(now.duration_since(self.last).as_secs_f32());
                 self.last = now;
+                let elapsed = self.started.elapsed().as_secs_f32();
+                if let Some((action, until)) = self.local_action {
+                    if elapsed < until && !self.player.moving() {
+                        self.player.action = action;
+                    } else if elapsed >= until {
+                        self.local_action = None;
+                    }
+                }
                 self.send_network_step(previous_cell);
                 if !self.player.moving()
                     && let Some(target) = self.queued_jump.take()
@@ -372,6 +381,10 @@ impl App {
     }
 
     fn send_network_action(&mut self, action: u32) {
+        let Some(local_action) = wire_action(action) else {
+            self.network_status = format!("online: unsupported action {action}");
+            return;
+        };
         let Some(network) = &self.network else {
             return;
         };
@@ -379,8 +392,25 @@ impl App {
             return;
         };
         network.send_action(character_id, action);
+        self.player.action = local_action;
+        self.player.action_instance = self.player.action_instance.wrapping_add(1);
+        self.local_action = Some((
+            local_action,
+            self.started.elapsed().as_secs_f32() + action_duration(action as u16, &self.character),
+        ));
         self.network_status = format!("online: sending action {action}");
     }
+}
+
+fn wire_action(action: u32) -> Option<Action> {
+    Some(match action {
+        110 => Action::WalkLeft,
+        111 => Action::WalkRight,
+        120 => Action::RunLeft,
+        121 => Action::RunRight,
+        130 => Action::Jump,
+        _ => return None,
+    })
 }
 
 fn action_duration(action: u16, character: &character::Character) -> f32 {
@@ -606,6 +636,7 @@ fn run() -> Result<()> {
         modifiers: Default::default(),
         held: false,
         queued_jump: None,
+        local_action: None,
         network,
         network_character_id: server_ready.as_ref().map(|ready| ready.character_id),
         confirmed_network_cell: server_ready.as_ref().map(|ready| ready.position),
