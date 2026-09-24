@@ -50,6 +50,7 @@ struct App {
     inventory: Vec<network::OwnedItem>,
     silver: u32,
     dragging_shop_item: Option<u32>,
+    dragging_inventory_item: Option<network::OwnedItem>,
     confirmed_network_cell: Option<[i32; 2]>,
     pending_network_steps: VecDeque<[i32; 2]>,
     remote_actors: HashMap<u32, RemoteActor>,
@@ -119,12 +120,22 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 match (button, state) {
                     (MouseButton::Right, ElementState::Pressed)
-                        if self.buy_shop_item_at_cursor() =>
+                        if self.buy_shop_item_at_cursor() || self.sell_inventory_item_at_cursor() =>
+                    {
+                        return;
+                    }
+                    (MouseButton::Left, ElementState::Pressed)
+                        if self.begin_inventory_drag() =>
                     {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.select_shop() => return,
                     (MouseButton::Left, ElementState::Released) if self.finish_shop_drag() => {
+                        return;
+                    }
+                    (MouseButton::Left, ElementState::Released)
+                        if self.finish_inventory_drag() =>
+                    {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.select_dialog_option() => {
@@ -204,6 +215,7 @@ impl ApplicationHandler for App {
                         &self.inventory,
                         self.silver,
                         self.dragging_shop_item,
+                        self.dragging_inventory_item,
                         self.cursor,
                         self.started.elapsed().as_secs_f32(),
                     )
@@ -271,6 +283,9 @@ impl App {
                     .retain(|owned| owned.position != item.position);
                 self.inventory.push(item);
                 self.inventory.sort_by_key(|owned| owned.position);
+            }
+            NetworkEvent::InventoryItemRemoved(uid) => {
+                self.inventory.retain(|item| item.uid != uid);
             }
             NetworkEvent::Notice(message) => {
                 self.network_status = format!("online: {message}");
@@ -639,6 +654,85 @@ impl App {
         true
     }
 
+    fn begin_inventory_drag(&mut self) -> bool {
+        if self.shop.is_none() {
+            return false;
+        }
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        if !shop::inventory_panel_at(viewport, self.cursor) {
+            return false;
+        }
+        if let Some(slot) = shop::inventory_slot_at(viewport, self.cursor) {
+            self.dragging_inventory_item = self
+                .inventory
+                .iter()
+                .find(|item| item.position == slot)
+                .copied();
+            if let Some(item) = self.dragging_inventory_item {
+                self.network_status = format!(
+                    "online: drag item {} to the shop to sell, or right-click to sell",
+                    item.item_type
+                );
+            }
+        }
+        true
+    }
+
+    fn finish_inventory_drag(&mut self) -> bool {
+        let Some(item) = self.dragging_inventory_item.take() else {
+            return false;
+        };
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        if !shop::shop_panel_at(viewport, self.cursor) {
+            self.network_status = "online: drop the item inside the open shop to sell".into();
+            return true;
+        }
+        let Some(shop) = &self.shop else {
+            return true;
+        };
+        self.request_shop_sale(item.uid, shop.npc_id);
+        true
+    }
+
+    fn sell_inventory_item_at_cursor(&mut self) -> bool {
+        if self.shop.is_none() {
+            return false;
+        }
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let Some(slot) = shop::inventory_slot_at(viewport, self.cursor) else {
+            return false;
+        };
+        let Some(item) = self.inventory.iter().find(|item| item.position == slot).copied() else {
+            return true;
+        };
+        let Some(shop) = &self.shop else {
+            return true;
+        };
+        self.request_shop_sale(item.uid, shop.npc_id);
+        true
+    }
+
+    fn request_shop_sale(&mut self, item_uid: u32, shop_id: u32) {
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.sell_item(character_id, item_uid, shop_id);
+            self.network_status = format!("online: sale requested for item {item_uid}");
+        } else {
+            self.network_status = "Shop sales require online mode".into();
+        }
+    }
+
     fn buy_shop_item_at_cursor(&mut self) -> bool {
         let Some(current_shop) = &self.shop else {
             return false;
@@ -939,6 +1033,7 @@ fn run() -> Result<()> {
             .map(|ready| ready.silver)
             .unwrap_or_default(),
         dragging_shop_item: None,
+        dragging_inventory_item: None,
         confirmed_network_cell: server_ready.as_ref().map(|ready| ready.position),
         pending_network_steps: VecDeque::new(),
         remote_actors: HashMap::new(),

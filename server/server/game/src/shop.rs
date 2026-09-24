@@ -127,6 +127,19 @@ impl ShopCatalog {
     pub fn item(&self, item_id: u32) -> Option<ItemTemplate> {
         self.items.get(&item_id).copied().filter(|item| item.price > 0)
     }
+
+    pub fn sell_price(&self, item_id: u32, durability: u16, max_durability: u16) -> Option<u32> {
+        let base_price = self.item(item_id)?.price;
+        let price = if max_durability == 0 {
+            u64::from(base_price) / 3
+        } else {
+            u64::from(base_price)
+                .saturating_mul(u64::from(durability))
+                / u64::from(max_durability)
+                / 3
+        };
+        u32::try_from(price).ok().filter(|price| *price > 0)
+    }
 }
 
 fn decrypt_itemtype(bytes: &mut [u8]) {

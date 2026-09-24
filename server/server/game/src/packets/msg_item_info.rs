@@ -53,4 +53,14 @@ impl MsgItemInfo {
             ..Self::default()
         }
     }
+
+    pub fn remove_inventory_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            action: 5,
+            position: item.position,
+            ..Self::default()
+        }
+    }
 }

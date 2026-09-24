@@ -271,6 +271,7 @@ impl Renderer {
         inventory: &[crate::network::OwnedItem],
         silver: u32,
         dragging_shop_item: Option<u32>,
+        dragging_inventory_item: Option<crate::network::OwnedItem>,
         cursor: [f32; 2],
         time: f32,
     ) -> Result<()> {
@@ -642,6 +643,21 @@ impl Renderer {
                 && let Some(icon) = shop.icon_image(item_id).cloned()
             {
                 self.upload(&key, icon);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(item) = dragging_inventory_item {
+            let key = format!("@inventory-drag-item-{}", item.uid);
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, crate::shop::item_icon_image(assets, item.item_type)?);
             }
             if let Some(texture) = self.textures.get(&key) {
                 let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];

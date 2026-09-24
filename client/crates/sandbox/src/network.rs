@@ -42,6 +42,7 @@ pub enum NetworkEvent {
     Ready(ReadyState),
     Silver(u32),
     InventoryItem(OwnedItem),
+    InventoryItemRemoved(u32),
     Notice(String),
     WalkConfirmed {
         character_id: u32,
@@ -120,6 +121,11 @@ enum NetworkCommand {
         item_id: u32,
         inventory_slot: u8,
     },
+    SellItem {
+        character_id: u32,
+        item_uid: u32,
+        shop_id: u32,
+    },
 }
 
 pub struct NetworkHandle {
@@ -176,6 +182,7 @@ impl NetworkHandle {
                 | NetworkEvent::NpcSpawn(_) => {}
                 NetworkEvent::Silver(_)
                 | NetworkEvent::InventoryItem(_)
+                | NetworkEvent::InventoryItemRemoved(_)
                 | NetworkEvent::Notice(_) => {}
             }
         }
@@ -212,6 +219,14 @@ impl NetworkHandle {
             character_id,
             item_id,
             inventory_slot,
+        });
+    }
+
+    pub fn sell_item(&self, character_id: u32, item_uid: u32, shop_id: u32) {
+        let _ = self.commands.send(NetworkCommand::SellItem {
+            character_id,
+            item_uid,
+            shop_id,
         });
     }
 }
@@ -366,6 +381,9 @@ async fn run(
                         max_durability: info.max_durability,
                     }));
                 }
+                Some(GameEvent::ItemInfo(info)) if info.action == 5 => {
+                    let _ = events.send(NetworkEvent::InventoryItemRemoved(info.item_uid));
+                }
                 Some(GameEvent::Action(action)) if action.action_type == 86 => {
                     let _ = events.send(NetworkEvent::Reposition {
                         map_id: action.data1,
@@ -441,6 +459,12 @@ async fn run(
                 Some(NetworkCommand::BuyItem { character_id, item_id, inventory_slot }) => {
                     session
                         .send(&ItemActionPacket::buy(character_id, item_id, inventory_slot))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::SellItem { character_id, item_uid, shop_id }) => {
+                    session
+                        .send(&ItemActionPacket::sell(character_id, item_uid, shop_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

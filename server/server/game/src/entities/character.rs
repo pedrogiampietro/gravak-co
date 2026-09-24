@@ -43,6 +43,14 @@ pub enum PurchaseOutcome {
     InventoryFull,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaleOutcome {
+    Sold { item: InventoryItem, silver: u32 },
+    ItemNotFound,
+    NoValue,
+    SilverLimit,
+}
+
 impl Character {
     pub fn new(owner: ActorHandle, inner: tq_db::character::Character) -> Self {
         let entity = Entity::from(&inner);
@@ -136,6 +144,54 @@ impl Character {
 
     pub fn inventory_items(&self) -> Vec<InventoryItem> {
         self.inventory.lock().clone()
+    }
+
+    pub async fn sell_item(
+        &self,
+        pool: &sqlx::SqlitePool,
+        item_uid: u32,
+        silver: u32,
+    ) -> Result<SaleOutcome, Error> {
+        let mut transaction = pool.begin().await?;
+        let item = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            "DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40 \
+             RETURNING item_uid, item_type, position, durability, max_durability",
+        )
+        .bind(i64::from(item_uid))
+        .bind(self.inner.character_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((uid, item_type, position, durability, max_durability)) = item else {
+            return Ok(SaleOutcome::ItemNotFound);
+        };
+        if silver == 0 {
+            return Ok(SaleOutcome::NoValue);
+        }
+        let balance_limit = i64::from(u32::MAX - silver);
+        let updated = sqlx::query(
+            "UPDATE characters SET silver = silver + ? \
+             WHERE character_id = ? AND silver <= ?",
+        )
+        .bind(i64::from(silver))
+        .bind(self.inner.character_id)
+        .bind(balance_limit)
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Ok(SaleOutcome::SilverLimit);
+        }
+        transaction.commit().await?;
+
+        let item = InventoryItem {
+            uid: u32::try_from(uid).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
+            item_type: u32::try_from(item_type).map_err(|_| Error::Other("item type exceeds protocol range".into()))?,
+            position: u8::try_from(position).map_err(|_| Error::Other("item position exceeds protocol range".into()))?,
+            durability: u16::try_from(durability).map_err(|_| Error::Other("item durability exceeds protocol range".into()))?,
+            max_durability: u16::try_from(max_durability).map_err(|_| Error::Other("item durability exceeds protocol range".into()))?,
+        };
+        self.silver.fetch_add(u64::from(silver), Ordering::Relaxed);
+        self.inventory.lock().retain(|owned| owned.uid != item.uid);
+        Ok(SaleOutcome::Sold { item, silver })
     }
 
     pub async fn purchase_item(

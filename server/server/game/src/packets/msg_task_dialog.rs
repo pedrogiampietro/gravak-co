@@ -209,31 +209,24 @@ impl PacketProcess for MsgTaskDialog {
             .try_map(character.entity().map_id())
             .ok()
             .and_then(|map| map.npc(self.task_id));
-        if self.option_id == 1 && npc.is_some_and(|npc| npc.kind() == crate::entities::NpcKind::ShopKeeper) {
+        if matches!(self.option_id, 1 | 2)
+            && npc.is_some_and(|npc| npc.kind() == crate::entities::NpcKind::ShopKeeper)
+        {
             character.set_active_shop_id(self.task_id);
         }
         let character_name = entity.basic().name().to_owned();
         let response = match (npc.map(|npc| npc.kind()), self.option_id) {
-            (Some(crate::entities::NpcKind::ShopKeeper), 1) => {
+            (Some(crate::entities::NpcKind::ShopKeeper), 1 | 2) => {
                 if let Some(offer) = _state.shop_catalog().offer(self.task_id) {
-                    let preview = offer
-                        .item_ids
-                        .iter()
-                        .take(8)
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ");
                     format!(
-                        "{} has {} catalog items. Preview: {}. The next step is the item grid and purchase flow.",
+                        "{} has {} catalog items. Drag an item to an empty inventory slot or right-click to buy; drag an inventory item here or right-click it to sell.",
                         offer.name,
                         offer.item_ids.len(),
-                        if preview.is_empty() { "(empty)" } else { &preview }
                     )
                 } else {
                     "This shop has no catalog loaded yet.".to_owned()
                 }
             },
-            (Some(crate::entities::NpcKind::ShopKeeper), 2) => "You have no items to sell yet.".to_owned(),
             (Some(crate::entities::NpcKind::Storage), 1) => {
                 "Warehouse storage is not enabled yet, but this NPC is now using its proper flow.".to_owned()
             },

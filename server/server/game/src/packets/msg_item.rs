@@ -1,6 +1,6 @@
 use super::{MsgItemInfo, MsgTalk, MsgUserInfo, TalkChannel};
 use crate::ActorState;
-use crate::entities::{NpcKind, PurchaseOutcome};
+use crate::entities::{NpcKind, PurchaseOutcome, SaleOutcome};
 use crate::state::State;
 use async_trait::async_trait;
 use num_enum::{FromPrimitive, IntoPrimitive};
@@ -181,6 +181,71 @@ impl PacketProcess for MsgItem {
                     },
                 }
             },
+            ItemActionType::Sell => {
+                let entity = actor.entity();
+                let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+                let reject = |message: &str| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, message);
+                if self.character_id != character.id() || self.amount != 1 {
+                    actor.send(reject("Shop sale rejected: invalid character or amount.")).await?;
+                    return Ok(());
+                }
+                let shop_id = character.active_shop_id();
+                if self.param1 != shop_id {
+                    actor.send(reject("Shop sale rejected: open a shop before selling.")).await?;
+                    return Ok(());
+                }
+                let map = state.try_map(character.entity().map_id())?;
+                let Some(npc) = map.npc(shop_id) else {
+                    actor.send(reject("Shop sale rejected: shop is not nearby.")).await?;
+                    return Ok(());
+                };
+                let player_location = character.entity().location();
+                let npc_location = npc.entity().location();
+                if npc.kind() != NpcKind::ShopKeeper
+                    || player_location.x.abs_diff(npc_location.x) > 12
+                    || player_location.y.abs_diff(npc_location.y) > 12
+                {
+                    actor.send(reject("Shop sale rejected: shop is not nearby.")).await?;
+                    return Ok(());
+                }
+                let Some(item) = character
+                    .inventory_items()
+                    .into_iter()
+                    .find(|item| item.uid == self.param0)
+                else {
+                    actor.send(reject("Shop sale rejected: item is not in your inventory.")).await?;
+                    return Ok(());
+                };
+                let Some(silver) = state
+                    .shop_catalog()
+                    .sell_price(item.item_type, item.durability, item.max_durability)
+                else {
+                    actor.send(reject("This item has no resale value.")).await?;
+                    return Ok(());
+                };
+                match character.sell_item(state.pool(), item.uid, silver).await? {
+                    SaleOutcome::Sold { item, silver } => {
+                        actor.send(MsgItemInfo::remove_inventory_item(item)).await?;
+                        actor.send(MsgUserInfo::from(character)).await?;
+                        actor
+                            .send(MsgTalk::from_system(
+                                character.id(),
+                                TalkChannel::TopLeft,
+                                format!("Sold item {} for {} silver.", item.item_type, silver),
+                            ))
+                            .await?;
+                    }
+                    SaleOutcome::ItemNotFound => {
+                        actor.send(reject("Shop sale rejected: item is no longer available.")).await?;
+                    }
+                    SaleOutcome::NoValue => {
+                        actor.send(reject("This item has no resale value.")).await?;
+                    }
+                    SaleOutcome::SilverLimit => {
+                        actor.send(reject("Your silver balance is at the maximum limit.")).await?;
+                    }
+                }
+            }
             _ => {
                 actor.send(self.clone()).await?;
                 let p = MsgTalk::from_system(

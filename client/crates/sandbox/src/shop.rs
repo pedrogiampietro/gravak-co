@@ -187,6 +187,30 @@ pub fn inventory_slot_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
     Some((row * 5 + column) as u8)
 }
 
+pub fn inventory_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [left, top] = inventory_position(viewport);
+    cursor[0] >= left
+        && cursor[0] < left + PANEL_WIDTH as f32
+        && cursor[1] >= top
+        && cursor[1] < top + INVENTORY_HEIGHT as f32
+}
+
+pub fn shop_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [left, top] = panel_position(viewport);
+    cursor[0] >= left
+        && cursor[0] < left + PANEL_WIDTH as f32
+        && cursor[1] >= top
+        && cursor[1] < top + SHOP_HEIGHT as f32
+}
+
+pub fn item_icon_image(assets: &mut Assets, item_id: u32) -> Result<RgbaImage> {
+    let animation = assets
+        .read("ani/ItemMinIcon.Ani")
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    load_icon(assets, item_id, animation.as_deref())
+}
+
 pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> {
     let source = assets.image("data/main/DialogMpcGoods.dds")?;
     let mut image = RgbaImage::new(PANEL_WIDTH, SHOP_HEIGHT);

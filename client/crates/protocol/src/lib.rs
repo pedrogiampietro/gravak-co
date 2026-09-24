@@ -151,6 +151,17 @@ impl ItemActionPacket {
             data2: u32::from(inventory_slot),
         }
     }
+
+    pub fn sell(character_id: u32, item_uid: u32, shop_id: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 2,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: shop_id,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
