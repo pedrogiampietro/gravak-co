@@ -26,6 +26,33 @@ pub struct Player {
     route: VecDeque<[i32; 2]>,
     segment: Option<Segment>,
 }
+
+/// Finds a nearby local walkable cell for a server-provided position.
+///
+/// The client and server can temporarily disagree about collision data while
+/// a map catalog is being updated. Keeping the correction local lets the
+/// client render and accept input instead of failing during startup; an
+/// explicitly requested `--spawn` still remains strict.
+pub fn nearest_walkable_spawn(map: &Map, origin: [i32; 2], max_radius: i32) -> Option<[i32; 2]> {
+    if map.walkable(origin) {
+        return Some(origin);
+    }
+    for radius in 1..=max_radius.max(0) {
+        let mut candidates = (-(radius)..=radius).flat_map(|offset| {
+            [
+                [origin[0] + offset, origin[1] - radius],
+                [origin[0] + offset, origin[1] + radius],
+                [origin[0] - radius, origin[1] + offset],
+                [origin[0] + radius, origin[1] + offset],
+            ]
+        });
+        if let Some(candidate) = candidates.find(|candidate| map.walkable(*candidate)) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 impl Player {
     pub fn new(map: &Map, spawn: Option<[i32; 2]>) -> Result<Self, String> {
         let spawn = spawn
@@ -90,9 +117,14 @@ impl Player {
             self.route = route.into();
         }
     }
-    pub fn jump(&mut self, map: &Map, requested: [i32; 2], animation: std::time::Duration) {
+    pub fn jump(
+        &mut self,
+        map: &Map,
+        requested: [i32; 2],
+        animation: std::time::Duration,
+    ) -> Option<[i32; 2]> {
         if self.segment.is_some() {
-            return;
+            return None;
         }
         let start = self.cell();
         let clamped =
@@ -102,7 +134,7 @@ impl Player {
             .skip(1)
             .rfind(|p| jump_allowed(map, start, *p))
         else {
-            return;
+            return None;
         };
         let target = target.map(|v| v as f32);
         let motion = jump_motion(self.position, target, animation);
@@ -118,6 +150,7 @@ impl Player {
             peak: motion.peak_screen_pixels,
             jump: true,
         });
+        Some(target.map(|v| v as i32))
     }
     pub fn face(&mut self, target: [i32; 2]) {
         if !self.moving() {

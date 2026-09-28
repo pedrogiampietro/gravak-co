@@ -134,6 +134,9 @@ impl PacketProcess for MsgRegister {
         let character = tq_db::character::Character::by_id(state.pool(), character_id).await?;
         let map_id = character.map_id;
         let me = Character::new(actor.handle(), character);
+        me.load_skills(state.pool(), state.skill_catalog()).await?;
+        me.load_weapon_proficiencies(state.pool()).await?;
+        let skills = me.skills();
         let screen = Screen::new(actor.handle());
         actor.update(me, screen);
         state.insert_entity(actor.entity());
@@ -151,6 +154,9 @@ impl PacketProcess for MsgRegister {
             self.character_name
         );
         actor.send(MsgTalk::register_ok()).await?;
+        for skill in skills {
+            actor.send(super::MsgSkill::from(skill)).await?;
+        }
         Ok(())
     }
 }

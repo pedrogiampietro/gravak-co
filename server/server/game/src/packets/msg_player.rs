@@ -1,4 +1,4 @@
-use crate::entities::Character;
+use crate::entities::{Character, Monster};
 use serde::{Deserialize, Serialize};
 use tq_network::PacketID;
 
@@ -59,6 +59,33 @@ impl From<&Character> for MsgPlayer {
             character_name: c.entity().name().to_owned(),
             status_flags: c.entity().flags().bits() as i64,
             action: c.entity().action() as u8,
+            germent: c.equipment_item(9).map_or(0, |item| item.item_type as i32),
+            helment: c.equipment_item(1).map_or(0, |item| item.item_type as i32),
+            armor: c.equipment_item(3).map_or(0, |item| item.item_type as i32),
+            right_hand: c.equipment_item(4).map_or(0, |item| item.item_type as i32),
+            left_hand: c.equipment_item(5).map_or(0, |item| item.item_type as i32),
+            ..Default::default()
+        }
+    }
+}
+
+impl MsgPlayer {
+    pub fn from_monster(monster: &Monster) -> Self {
+        let loc = monster.entity().location();
+        Self {
+            character_id: monster.id() as i32,
+            character_id2: monster.id() as i32,
+            mesh: monster.entity().mesh() as i32,
+            status_flags: monster.entity().flags().bits() as i64,
+            health_points: monster.entity().hp().current(),
+            level: monster.entity().level() as i16,
+            level2: monster.entity().level() as i16,
+            x: loc.x,
+            y: loc.y,
+            direction: loc.direction,
+            action: monster.entity().action() as u8,
+            list_count: 1,
+            character_name: monster.entity().name().to_owned(),
             ..Default::default()
         }
     }

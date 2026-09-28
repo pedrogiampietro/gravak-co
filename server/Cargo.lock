@@ -69,6 +69,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34ac096ce696dc2fcabef30516bb13c0a68a11d30131d3df6f04711467681b04"
 
 [[package]]
+name = "apply_sql"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dotenvy",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -287,6 +297,30 @@ dependencies = [
  "getrandom 0.2.15",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "benchbot"
+version = "0.1.0"
+dependencies = [
+ "dotenvy",
+ "futures",
+ "game",
+ "local-ip-address",
+ "msg-transfer",
+ "parking_lot",
+ "pretty-hex",
+ "rand",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tq-codec",
+ "tq-crypto",
+ "tq-db",
+ "tq-network",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1587,6 +1621,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "import_monsters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "import_npcs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "serde",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1718,6 +1768,18 @@ name = "litemap"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ee93343901ab17bd981295f2cf0026d4ad018c7c31ba84549a4ddbb47a45104"
+
+[[package]]
+name = "local-ip-address"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "612ed4ea9ce5acfb5d26339302528a5e1e59dfed95e9e11af3c083236ff1d15d"
+dependencies = [
+ "libc",
+ "neli",
+ "thiserror",
+ "windows-sys 0.48.0",
+]
 
 [[package]]
 name = "lock_api"
@@ -1884,6 +1946,31 @@ dependencies = [
  "tq-serde",
  "tq-wasm-builder",
  "tracing",
+]
+
+[[package]]
+name = "neli"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93062a0dce6da2517ea35f301dfc88184ce18d3601ec786a727a87bf535deca9"
+dependencies = [
+ "byteorder",
+ "libc",
+ "log",
+ "neli-proc-macros",
+]
+
+[[package]]
+name = "neli-proc-macros"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c8034b7fbb6f9455b2a96c19e6edf8dc9fc34c70449938d8ee3b4df363f61fe"
+dependencies = [
+ "either",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 1.0.109",
 ]
 
 [[package]]

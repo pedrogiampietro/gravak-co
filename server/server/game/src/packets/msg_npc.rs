@@ -73,79 +73,262 @@ impl PacketProcess for MsgNpc {
             .shop_catalog()
             .offer(npc_id)
             .map_or(0, |offer| offer.item_ids.len());
-        let dialog = match npc.kind() {
-            NpcKind::ShopKeeper => MsgTaskDialog::builder()
-                .text(format!(
-                    "Welcome to {npc_name}'s shop. {shop_items} items are available."
-                ))
-                .with_option(1, "Buy items.")
-                .with_option(2, "Sell items.")
-                .with_option(255, "Leave.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-            NpcKind::Storage => MsgTaskDialog::builder()
-                .text(format!("{npc_name} can keep your belongings safe."))
-                .with_option(1, "Open warehouse.")
-                .with_option(255, "Leave.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-            NpcKind::Forge => MsgTaskDialog::builder()
-                .text(format!("{npc_name} can help improve your equipment."))
-                .with_option(1, "Show forge services.")
-                .with_option(255, "Leave.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-            NpcKind::Face => MsgTaskDialog::builder()
-                .text(format!("{npc_name} can change your appearance."))
-                .with_option(1, "Show appearance options.")
-                .with_option(255, "Leave.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-            _ => match npc_name {
-                "OldGeneralYang" => MsgTaskDialog::builder()
-                .text("I train the young heroes of Twin City.")
-                .with_option(1, "How can I become stronger?")
-                .with_option(2, "I will return later.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-                "KnowItAll" => MsgTaskDialog::builder()
-                .text("Knowledge is the first step on every adventure.")
-                .with_option(1, "Tell me about Twin City.")
-                .with_option(2, "Do you know any secrets?")
-                .with_option(3, "Teleport me to Twin City.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-                "Mr.Nosy" => MsgTaskDialog::builder()
-                .text("Psst... I hear everything that happens around here.")
-                .with_option(1, "What did you hear?")
-                .with_option(2, "Never mind.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-                _ => MsgTaskDialog::builder()
-                .text(format!("Hello, my name is {npc_name} and my id is {npc_id}."))
-                .with_option(1, "Who are you?")
-                .with_option(2, "Tell me about this city.")
-                .and()
-                .with_avatar(47)
-                .task_id(npc_id)
-                .build(),
-            },
-        };
+        let (text, options, avatar) = npc_script(npc_name, npc.kind(), shop_items);
+        let mut builder = MsgTaskDialog::builder().text(text);
+        for (option_id, option_text) in options {
+            builder = builder.with_option(option_id, option_text);
+        }
+        let dialog = builder
+            .with_option(255, "Leave.")
+            .and()
+            .with_avatar(avatar)
+            .task_id(npc_id)
+            .build();
         actor.send_all(dialog).await?;
         Ok(())
+    }
+}
+
+/// Select the first interaction for an NPC.  `kind` describes the service
+/// category, while the name identifies the quest or town NPC within that
+/// category.  Keeping this dispatch in one place prevents every unknown NPC
+/// from falling through to the same placeholder conversation.
+fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> (String, Vec<(u8, String)>, u16) {
+    let lower = name.to_ascii_lowercase();
+    if kind == NpcKind::ShopKeeper {
+        if lower.contains("pharmac") {
+            return (
+                format!("{name}: medicines and antidotes for every journey. {shop_items} items are available."),
+                vec![(1, "Buy medicine.".into()), (2, "Sell items.".into())],
+                30,
+            );
+        }
+        if lower.contains("blacksmith") || lower.contains("armorer") || lower.contains("weapon") {
+            return (
+                format!("{name}: I repair and sell dependable equipment. {shop_items} items are available."),
+                vec![
+                    (1, "Buy equipment.".into()),
+                    (2, "Sell equipment.".into()),
+                    (3, "Repair equipment.".into()),
+                ],
+                40,
+            );
+        }
+        if lower.contains("barber") {
+            return (
+                format!("{name}: a new style can make any hero feel ready for adventure."),
+                vec![(1, "Change my appearance.".into())],
+                50,
+            );
+        }
+        return (
+            format!("Welcome to {name}'s shop. {shop_items} items are available."),
+            vec![(1, "Buy items.".into()), (2, "Sell items.".into())],
+            47,
+        );
+    }
+    if kind == NpcKind::Storage || lower.contains("warehouse") || lower.contains("whsguardian") {
+        return (
+            format!("{name}: I will keep your belongings safe while you travel."),
+            vec![(1, "Open warehouse.".into())],
+            47,
+        );
+    }
+    if lower.contains("jewel") {
+        return (
+            format!("{name}: I can compose gems into higher qualities."),
+            vec![(1, "Compose normal gems.".into()), (2, "Compose refined gems.".into())],
+            47,
+        );
+    }
+    if kind == NpcKind::Forge || lower.contains("artisan") || lower.contains("master") {
+        return (
+            format!("{name}: I can improve the quality of your equipment."),
+            vec![
+                (1, "Improve item level with a Meteor.".into()),
+                (2, "Improve item quality with a DragonBall.".into()),
+            ],
+            47,
+        );
+    }
+    if kind == NpcKind::Face || lower.contains("barber") {
+        return (
+            format!("{name}: your appearance can be changed here."),
+            vec![(1, "Show appearance options.".into())],
+            50,
+        );
+    }
+    if lower == "oldgeneralyang" {
+        return (
+            "I train the young heroes of Twin City.".into(),
+            vec![
+                (1, "How can I become stronger?".into()),
+                (2, "I will return later.".into()),
+                (3, "Teach me a skill.".into()),
+                (4, "Accept a Pheasant Hunt quest.".into()),
+            ],
+            47,
+        );
+    }
+    if lower.contains("conductress")
+        || lower.contains("gatekeeper")
+        || lower.contains("warden")
+        || lower.contains("captain")
+    {
+        return (
+            format!("{name}: the roads are open to those who are prepared."),
+            vec![
+                (1, "Teleport to Twin City.".into()),
+                (2, "Teleport to Market.".into()),
+                (3, "Teleport to the Job Center.".into()),
+            ],
+            47,
+        );
+    }
+    if lower.contains("guild") {
+        return (
+            format!("{name}: guilds give adventurers a place to work together."),
+            vec![(1, "Tell me about guilds.".into()), (2, "I will return later.".into())],
+            47,
+        );
+    }
+    if lower.contains("trainer") || lower.contains("star") || lower.contains("god") || lower.contains("general") {
+        return (
+            format!("{name}: practice every day and your strength will follow."),
+            vec![
+                (1, "How can I become stronger?".into()),
+                (2, "Show me your advice.".into()),
+                (3, "Teach me a skill.".into()),
+            ],
+            47,
+        );
+    }
+    match name {
+        "KnowItAll" => (
+            "Knowledge is the first step on every adventure.".into(),
+            vec![
+                (1, "Tell me about Twin City.".into()),
+                (2, "Do you know any secrets?".into()),
+                (3, "Teleport me to Twin City.".into()),
+            ],
+            47,
+        ),
+        "Mr.Nosy" => (
+            "Psst... I hear everything that happens around here.".into(),
+            vec![(1, "What did you hear?".into()), (2, "Never mind.".into())],
+            47,
+        ),
+        "OldGeneralYang" => (
+            "I train the young heroes of Twin City.".into(),
+            vec![
+                (1, "How can I become stronger?".into()),
+                (2, "I will return later.".into()),
+                (3, "Teach me a skill.".into()),
+                (4, "Accept a Pheasant Hunt quest.".into()),
+            ],
+            47,
+        ),
+        _ if lower.contains("scarecrow")
+            || lower.contains("stake")
+            || lower.contains("shopflag")
+            || lower.contains("furniture") =>
+        {
+            (format!("{name} is part of the training grounds."), Vec::new(), 47)
+        },
+        _ => (
+            format!("{name}: welcome to Twin City. Ask around to discover what I can do."),
+            vec![
+                (1, "What can you tell me?".into()),
+                (2, "Tell me about this city.".into()),
+            ],
+            47,
+        ),
+    }
+}
+
+/// Resolves the small, safe set of city-service destinations exposed by the
+/// conductress/gatekeeper NPCs. The destination is selected on the server;
+/// the client only sends the dialog option chosen by the player.
+pub(crate) fn city_service_destination(
+    task_id: u32,
+    npc_name: &str,
+    option_id: u8,
+) -> Option<(u32, (u16, u16), &'static str)> {
+    let lower = npc_name.to_ascii_lowercase();
+    if task_id == 10010 && option_id == 3 {
+        return Some((1002, (430, 380), "Twin City"));
+    }
+    if !(lower.contains("conductress")
+        || lower.contains("gatekeeper")
+        || lower.contains("warden")
+        || lower.contains("captain"))
+    {
+        return None;
+    }
+    match option_id {
+        1 => Some((1002, (430, 380), "Twin City")),
+        2 => Some((1000, (85, 323), "Market")),
+        3 => Some((1010, (111, 98), "the Job Center")),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{city_service_destination, npc_script};
+    use crate::entities::NpcKind;
+
+    #[test]
+    fn trainer_dialog_exposes_skill_training_option() {
+        let (_, options, _) = npc_script("OldGeneralYang", NpcKind::Task, 0);
+        assert!(options.iter().any(|(id, _)| *id == 3));
+        assert!(options.iter().any(|(id, _)| *id == 4));
+    }
+
+    #[test]
+    fn blacksmith_dialog_exposes_repair_option() {
+        let (_, options, _) = npc_script("Blacksmith", NpcKind::ShopKeeper, 4);
+        assert!(options.iter().any(|(id, _)| *id == 3));
+    }
+
+    #[test]
+    fn artisan_dialog_exposes_upgrade_option() {
+        let (_, options, _) = npc_script("ArtisanWind", NpcKind::Forge, 0);
+        assert!(options.iter().any(|(id, _)| *id == 1));
+        assert!(options.iter().any(|(id, _)| *id == 2));
+    }
+
+    #[test]
+    fn jeweler_dialog_exposes_gem_tiers() {
+        let (_, options, _) = npc_script("JewelerLau", NpcKind::Task, 0);
+        assert!(options.iter().any(|(id, _)| *id == 1));
+        assert!(options.iter().any(|(id, _)| *id == 2));
+    }
+
+    #[test]
+    fn city_service_dialog_exposes_server_resolved_destinations() {
+        let (_, options, _) = npc_script("Conductress", NpcKind::Task, 0);
+        assert_eq!(options.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn city_service_destinations_are_not_client_supplied() {
+        assert_eq!(
+            city_service_destination(1, "Conductress", 1),
+            Some((1002, (430, 380), "Twin City"))
+        );
+        assert_eq!(
+            city_service_destination(1, "Gatekeeper", 2),
+            Some((1000, (85, 323), "Market"))
+        );
+        assert_eq!(
+            city_service_destination(1, "Captain", 3),
+            Some((1010, (111, 98), "the Job Center"))
+        );
+        assert_eq!(city_service_destination(1, "Blacksmith", 1), None);
+        assert_eq!(
+            city_service_destination(10010, "KnowItAll", 3),
+            Some((1002, (430, 380), "Twin City"))
+        );
     }
 }

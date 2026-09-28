@@ -20,16 +20,37 @@ pub const MSG_TALK: u16 = 1004;
 pub const MSG_REGISTER: u16 = 1001;
 pub const MSG_WALK: u16 = 1005;
 pub const MSG_USER_INFO: u16 = 1006;
+pub const MSG_NOBILITY: u16 = 2064;
+pub const MSG_NOBILITY_RANKING: u16 = 2065;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
+pub const MSG_ASSIGN_ATTRIBUTES: u16 = 1024;
+pub const MSG_SOCKET_GEM: u16 = 1027;
+pub const MSG_REFINERY: u16 = 2076;
+pub const MSG_REFINERY_INFO: u16 = 2077;
+pub const MSG_ITEM_RARITY: u16 = 2078;
+pub const MSG_ITEM_RARITY_REROLL: u16 = 2079;
 pub const MSG_ACTION: u16 = 1010;
 pub const MSG_WEATHER: u16 = 1016;
 pub const MSG_DATA: u16 = 1033;
 pub const MSG_MAP_INFO: u16 = 1110;
 pub const MSG_PLAYER: u16 = 1014;
+pub const MSG_INTERACT: u16 = 1022;
+pub const MSG_TEAM: u16 = 1023;
+pub const MSG_TEAM_MEMBER: u16 = 1026;
+pub const MSG_FRIEND: u16 = 1019;
+pub const MSG_GROUND_ITEM: u16 = 1101;
+pub const MSG_SKILL_EFFECT: u16 = 1105;
+pub const MSG_SKILL: u16 = 1103;
 pub const MSG_NPC_INFO: u16 = 2030;
 pub const MSG_NPC: u16 = 2031;
 pub const MSG_TASK_DIALOG: u16 = 2032;
+pub const MSG_WAREHOUSE_ACTION: u16 = 2033;
+pub const MSG_GUILD_WAREHOUSE: u16 = 2034;
+pub const MSG_TRADE: u16 = 1056;
+pub const MSG_VENDOR_ITEM: u16 = 1108;
+pub const MSG_GUILD: u16 = 1107;
+pub const MSG_GUILD_MEMBER: u16 = 2102;
 
 #[derive(Debug, Serialize, PacketID)]
 #[packet(id = 1052)]
@@ -94,6 +115,245 @@ pub struct ActionPacket {
     pub action_type: u16,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1022)]
+pub struct InteractionPacket {
+    pub timestamp: u32,
+    pub character_id: u32,
+    pub target_id: u32,
+    pub x: u16,
+    pub y: u16,
+    pub action: u32,
+    pub value: u32,
+    pub reserved: [u8; 12],
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1023)]
+pub struct TeamActionPacket {
+    pub action: u32,
+    pub target_id: u32,
+    pub reserved: u32,
+}
+
+impl TeamActionPacket {
+    pub fn new(action: u32, target_id: u32) -> Self {
+        Self {
+            action,
+            target_id,
+            reserved: 0,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1026)]
+pub struct TeamMemberPacket {
+    pub reserved: u8,
+    pub reserved_header: [u8; 3],
+    pub name: String16,
+    pub member_id: u32,
+    pub mesh: u32,
+    pub max_health: u16,
+    pub health: u16,
+    pub action: u8,
+    pub reserved_tail: [u8; 7],
+}
+
+/// Classic 5065 trade packet. `target` carries the peer or item UID and
+/// `data` carries an amount for money/confirmation extensions.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1056)]
+pub struct TradePacket {
+    pub target: u32,
+    pub subtype: u32,
+    pub data: u32,
+}
+
+impl TradePacket {
+    pub fn new(target: u32, subtype: u32, data: u32) -> Self {
+        Self {
+            target,
+            subtype,
+            data,
+        }
+    }
+}
+
+/// Classic 5065 friend request/update packet.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1019)]
+pub struct FriendPacket {
+    pub friend_id: u32,
+    pub action: u8,
+    pub online_flag: u8,
+    pub reserved: u16,
+    pub reserved12: u32,
+    pub reserved16: u32,
+    pub name: String16,
+    pub reserved36: u32,
+}
+
+impl FriendPacket {
+    pub fn new(action: u8, friend_id: u32, name: &str, online: bool) -> Self {
+        Self {
+            friend_id,
+            action,
+            online_flag: u8::from(online),
+            reserved: 0,
+            reserved12: 0,
+            reserved16: 0,
+            name: name.into(),
+            reserved36: 0,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1101)]
+pub struct GroundItemPacket {
+    pub uid: u32,
+    pub item_id: u32,
+    pub x: u16,
+    pub y: u16,
+    pub unknown: u16,
+    pub drop_type: u16,
+    pub reserved: [u8; 8],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillEffect {
+    pub attacker_id: u32,
+    pub data: u32,
+    pub skill_id: u16,
+    pub level: u16,
+    pub targets: Vec<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefineryInfoRecord {
+    pub item_id: u32,
+    pub action: u32,
+    pub refinery_type: u32,
+    pub level: u32,
+    pub effect: i32,
+    pub time: u32,
+    pub unknown: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefineryInfoPacket {
+    pub records: Vec<RefineryInfoRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1103)]
+pub struct SkillPacket {
+    pub experience: u32,
+    pub skill_id: u16,
+    pub level: u16,
+    pub reserved: [u8; 10],
+}
+
+impl GroundItemPacket {
+    pub fn pickup(uid: u32, item_id: u32, x: u16, y: u16) -> Self {
+        Self {
+            uid,
+            item_id,
+            x,
+            y,
+            // The classic client leaves this field zero in the pickup
+            // request. Servers fill it when broadcasting the result.
+            unknown: 0,
+            drop_type: 3,
+            reserved: [0; 8],
+        }
+    }
+}
+
+impl InteractionPacket {
+    pub fn attack(character_id: u32, target_id: u32, x: u16, y: u16) -> Self {
+        Self {
+            timestamp: unix_timestamp(),
+            character_id,
+            target_id,
+            x,
+            y,
+            action: 2,
+            value: 0,
+            reserved: [0; 12],
+        }
+    }
+
+    pub fn magic_attack(character_id: u32, target_id: u32, x: u16, y: u16, skill_id: u32) -> Self {
+        Self {
+            timestamp: unix_timestamp(),
+            character_id,
+            target_id,
+            x,
+            y,
+            action: 21,
+            value: skill_id,
+            reserved: [0; 12],
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PacketID, Clone)]
+#[packet(id = 1004)]
+pub struct TalkPacket {
+    pub color: u32,
+    pub channel: u16,
+    pub style: u16,
+    pub character_id: u32,
+    pub recipient_mesh: u32,
+    pub sender_mesh: u32,
+    pub list_count: u8,
+    pub sender_name: String,
+    pub recipient_name: String,
+    pub suffix: String,
+    pub message: String,
+}
+
+impl TalkPacket {
+    pub fn public(character_id: u32, sender_name: &str, message: &str) -> Self {
+        Self {
+            color: 0x00FF_FFFF,
+            channel: 2000,
+            style: 0,
+            character_id,
+            recipient_mesh: 0,
+            sender_mesh: 0,
+            list_count: 4,
+            sender_name: sender_name.to_owned(),
+            recipient_name: "ALLUSERS".to_owned(),
+            suffix: String::new(),
+            message: message.to_owned(),
+        }
+    }
+
+    pub fn whisper(
+        character_id: u32,
+        sender_name: &str,
+        recipient_name: &str,
+        message: &str,
+    ) -> Self {
+        Self {
+            color: 0x00FF_FFFF,
+            channel: 2001,
+            style: 0,
+            character_id,
+            recipient_mesh: 0,
+            sender_mesh: 0,
+            list_count: 4,
+            sender_name: sender_name.to_owned(),
+            recipient_name: recipient_name.to_owned(),
+            suffix: String::new(),
+            message: message.to_owned(),
+        }
+    }
+}
+
 impl ActionPacket {
     pub fn send_location(character_id: u32) -> Self {
         Self {
@@ -117,6 +377,17 @@ impl ActionPacket {
         }
     }
 
+    pub fn jump(character_id: u32, target: [i32; 2], current: [i32; 2]) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: pack_position(target),
+            data2: pack_position(current),
+            details: 0,
+            action_type: 133,
+        }
+    }
+
     pub fn request_items(character_id: u32) -> Self {
         Self {
             client_timestamp: unix_timestamp(),
@@ -127,6 +398,55 @@ impl ActionPacket {
             action_type: 75,
         }
     }
+
+    pub fn set_kill_mode(character_id: u32, mode: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: mode,
+            data2: 0,
+            details: 0,
+            action_type: 96,
+        }
+    }
+
+    pub fn reborn(character_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: 0,
+            details: 0,
+            action_type: 94,
+        }
+    }
+
+    pub fn create_booth(character_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: 0,
+            details: 0,
+            action_type: 111,
+        }
+    }
+
+    pub fn leave_booth(character_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: 0,
+            details: 0,
+            action_type: 114,
+        }
+    }
+}
+
+fn pack_position(position: [i32; 2]) -> u32 {
+    (position[0].clamp(0, i32::from(u16::MAX)) as u32)
+        | ((position[1].clamp(0, i32::from(u16::MAX)) as u32) << 16)
 }
 
 #[derive(Debug, Serialize, PacketID)]
@@ -138,6 +458,49 @@ pub struct ItemActionPacket {
     pub client_timestamp: u32,
     pub amount: u32,
     pub data2: u32,
+}
+
+/// Classic 5065 attribute-allocation request. The actor identity comes from
+/// the authenticated game session; each field contains the amount to spend.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1024)]
+pub struct AssignAttributesPacket {
+    pub strength: u8,
+    pub agility: u8,
+    pub vitality: u8,
+    pub spirit: u8,
+}
+
+impl AssignAttributesPacket {
+    pub fn one(attribute: &str) -> Option<Self> {
+        Some(match attribute {
+            "strength" => Self {
+                strength: 1,
+                agility: 0,
+                vitality: 0,
+                spirit: 0,
+            },
+            "agility" => Self {
+                strength: 0,
+                agility: 1,
+                vitality: 0,
+                spirit: 0,
+            },
+            "vitality" => Self {
+                strength: 0,
+                agility: 0,
+                vitality: 1,
+                spirit: 0,
+            },
+            "spirit" => Self {
+                strength: 0,
+                agility: 0,
+                vitality: 0,
+                spirit: 1,
+            },
+            _ => return None,
+        })
+    }
 }
 
 impl ItemActionPacket {
@@ -161,6 +524,224 @@ impl ItemActionPacket {
             amount: 1,
             data2: shop_id,
         }
+    }
+
+    pub fn drop(character_id: u32, item_uid: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 3,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
+    pub fn use_item(character_id: u32, item_uid: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 4,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
+    pub fn move_inventory(character_id: u32, item_uid: u32, inventory_slot: u8) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 30,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: u32::from(inventory_slot),
+        }
+    }
+
+    pub fn equip(character_id: u32, item_uid: u32, equipment_slot: u8) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 5,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: u32::from(equipment_slot),
+        }
+    }
+
+    pub fn unequip(character_id: u32, item_uid: u32, inventory_slot: u8) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 6,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: u32::from(inventory_slot),
+        }
+    }
+
+    pub fn upgrade(character_id: u32, item_uid: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 20,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
+    pub fn improve_quality(character_id: u32, item_uid: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 19,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
+    pub fn open_socket(character_id: u32, item_uid: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 43,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
+    pub fn booth_add(character_id: u32, item_uid: u32, price: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 22,
+            client_timestamp: unix_timestamp(),
+            amount: price,
+            data2: 0,
+        }
+    }
+
+    pub fn booth_remove(character_id: u32, item_uid: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 23,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
+    pub fn booth_query(character_id: u32, owner_id: u32) -> Self {
+        Self {
+            character_id,
+            item_id: owner_id,
+            action_type: 21,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: owner_id,
+        }
+    }
+
+    pub fn booth_buy(character_id: u32, item_uid: u32, owner_id: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 24,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: owner_id,
+        }
+    }
+}
+
+/// Classic 5065 packet 1027 for inserting/removing a gem from an open socket.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1027)]
+pub struct SocketGemPacket {
+    pub item_id: u32,
+    pub gem_id: u32,
+    pub socket: u16,
+    pub subtype: u8,
+}
+
+impl SocketGemPacket {
+    pub fn insert(item_id: u32, gem_id: u32, socket: u8) -> Self {
+        Self {
+            item_id,
+            gem_id,
+            socket: u16::from(socket),
+            subtype: 0,
+        }
+    }
+
+    pub fn remove(item_id: u32, socket: u8) -> Self {
+        Self {
+            item_id,
+            gem_id: 0,
+            socket: u16::from(socket),
+            subtype: 1,
+        }
+    }
+}
+
+/// Classic 5065 packet 2076. Action 0 applies an inventory refinery material
+/// to an equipped item; the server remains authoritative for compatibility.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2076)]
+pub struct RefineryPacket {
+    pub action: u32,
+    pub item_id: u32,
+    pub material_id: u32,
+}
+
+impl RefineryPacket {
+    pub fn apply(item_id: u32, material_id: u32) -> Self {
+        Self {
+            action: 0,
+            item_id,
+            material_id,
+        }
+    }
+
+    pub fn apply_artifact(item_id: u32, material_id: u32) -> Self {
+        Self {
+            action: 1,
+            item_id,
+            material_id,
+        }
+    }
+}
+
+/// Custom item-rarity request used by the sandbox UI. The classic item
+/// quality suffix and the +level remain independent from this field.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2078)]
+pub struct ItemRarityPacket {
+    pub item_id: u32,
+    pub rarity: u8,
+}
+
+impl ItemRarityPacket {
+    pub fn set(item_id: u32, rarity: u8) -> Self {
+        Self { item_id, rarity }
+    }
+}
+
+/// Requests a new random bonus roll for an already rare-or-better item.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2079)]
+pub struct ItemRarityRerollPacket {
+    pub item_id: u32,
+}
+
+impl ItemRarityRerollPacket {
+    pub fn new(item_id: u32) -> Self {
+        Self { item_id }
     }
 }
 
@@ -186,6 +767,65 @@ pub struct ItemInfoPacket {
     pub restrain: u32,
     pub reserved3: u32,
     pub reserved4: u32,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct VendorItemPacket {
+    pub item_uid: u32,
+    pub owner_id: u32,
+    pub price: u32,
+    pub item_type: u32,
+    pub durability: u16,
+    pub max_durability: u16,
+    pub view_type: u16,
+    pub position: u8,
+    pub gem_one: u8,
+    pub gem_two: u8,
+    pub plus: u8,
+    pub reserved: u8,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1107)]
+pub struct GuildPacket {
+    pub action: u32,
+    pub data: u32,
+    pub required_level: i32,
+    pub required_rebirth: i32,
+    pub required_profession: i32,
+    pub strings: tq_serde::StringList,
+}
+
+impl GuildPacket {
+    pub fn new(action: u32, data: u32) -> Self {
+        Self {
+            action,
+            data,
+            required_level: 0,
+            required_rebirth: 0,
+            required_profession: 0,
+            strings: Vec::<String>::new().into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2102)]
+pub struct GuildMemberPacket {
+    pub reserved: u32,
+    pub start_index: i32,
+    pub amount: i32,
+    pub name: String16,
+    pub reserved16: u32,
+    pub reserved20: u32,
+    pub level: u32,
+    pub rank: u16,
+    pub reserved30: u16,
+    pub reserved32: u32,
+    pub donation: i32,
+    pub online: u8,
+    pub reserved41: [u8; 3],
+    pub reserved44: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
@@ -235,6 +875,96 @@ impl NpcPacket {
             data: 0,
             action: 0,
             kind,
+        }
+    }
+}
+
+/// Custom client-to-server request for moving one item across the warehouse boundary.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2033)]
+pub struct WarehouseActionPacket {
+    pub character_id: u32,
+    pub npc_id: u32,
+    pub action: u8,
+    pub item_uid: u32,
+    pub position: u8,
+    pub amount: u32,
+}
+
+impl WarehouseActionPacket {
+    pub fn deposit(character_id: u32, npc_id: u32, item_uid: u32, position: u8) -> Self {
+        Self {
+            character_id,
+            npc_id,
+            action: 1,
+            item_uid,
+            position,
+            amount: 0,
+        }
+    }
+
+    pub fn withdraw(character_id: u32, npc_id: u32, item_uid: u32, position: u8) -> Self {
+        Self {
+            character_id,
+            npc_id,
+            action: 2,
+            item_uid,
+            position,
+            amount: 0,
+        }
+    }
+
+    pub fn silver(character_id: u32, npc_id: u32, amount: u32, deposit: bool) -> Self {
+        Self {
+            character_id,
+            npc_id,
+            action: if deposit { 3 } else { 4 },
+            item_uid: 0,
+            position: 0,
+            amount,
+        }
+    }
+}
+
+/// Client-to-server request for the Guild item warehouse.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2034)]
+pub struct GuildWarehouseActionPacket {
+    pub character_id: u32,
+    pub guild_id: u32,
+    pub action: u8,
+    pub item_uid: u32,
+    pub position: u8,
+}
+
+impl GuildWarehouseActionPacket {
+    pub fn open(character_id: u32, guild_id: u32) -> Self {
+        Self {
+            character_id,
+            guild_id,
+            action: 0,
+            item_uid: 0,
+            position: 0,
+        }
+    }
+
+    pub fn deposit(character_id: u32, guild_id: u32, item_uid: u32, position: u8) -> Self {
+        Self {
+            character_id,
+            guild_id,
+            action: 1,
+            item_uid,
+            position,
+        }
+    }
+
+    pub fn withdraw(character_id: u32, guild_id: u32, item_uid: u32, position: u8) -> Self {
+        Self {
+            character_id,
+            guild_id,
+            action: 2,
+            item_uid,
+            position,
         }
     }
 }
@@ -330,6 +1060,27 @@ pub struct UserInfo {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct NobilityInfo {
+    pub action: u32,
+    pub character_id: u32,
+    pub donation: u64,
+    pub rank: u32,
+    pub remaining: u64,
+    pub title_id: u32,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct NobilityRankingInfo {
+    pub action: u32,
+    pub position: u32,
+    pub character_id: u32,
+    pub donation: u64,
+    pub rank: u32,
+    pub list_count: u8,
+    pub character_name: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct ServerData {
     pub action: u32,
     pub year: i32,
@@ -404,12 +1155,26 @@ pub struct ServerNpcInfo {
 pub enum GameEvent {
     Talk(ServerTalk),
     UserInfo(UserInfo),
+    Nobility(NobilityInfo),
+    NobilityRanking(NobilityRankingInfo),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
     Action(ActionPacket),
     Walk(WalkPacket),
     Player(ServerPlayer),
+    Interaction(InteractionPacket),
+    Team(TeamActionPacket),
+    TeamMember(TeamMemberPacket),
+    Trade(TradePacket),
+    VendorItem(VendorItemPacket),
+    Guild(GuildPacket),
+    GuildMember(GuildMemberPacket),
+    Friend(FriendPacket),
+    GroundItem(GroundItemPacket),
+    SkillEffect(SkillEffect),
+    Skill(SkillPacket),
+    RefineryInfo(RefineryInfoPacket),
     NpcInfo(ServerNpcInfo),
     TaskDialog(TaskDialog),
     Other(u16, Bytes),
@@ -481,6 +1246,12 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_USER_INFO => Ok(GameEvent::UserInfo(
             UserInfo::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_NOBILITY => Ok(GameEvent::Nobility(
+            NobilityInfo::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_NOBILITY_RANKING => Ok(GameEvent::NobilityRanking(
+            NobilityRankingInfo::decode(body).map_err(ProtocolError::Decode)?,
+        )),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
@@ -499,10 +1270,105 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_PLAYER => Ok(GameEvent::Player(
             ServerPlayer::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_INTERACT => Ok(GameEvent::Interaction(
+            InteractionPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_TEAM => Ok(GameEvent::Team(
+            TeamActionPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_TEAM_MEMBER => Ok(GameEvent::TeamMember(
+            TeamMemberPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_TRADE => Ok(GameEvent::Trade(
+            TradePacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_VENDOR_ITEM => Ok(GameEvent::VendorItem(
+            VendorItemPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_GUILD => Ok(GameEvent::Guild(
+            GuildPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_GUILD_MEMBER => Ok(GameEvent::GuildMember(
+            GuildMemberPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_FRIEND => Ok(GameEvent::Friend(
+            FriendPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_GROUND_ITEM => Ok(GameEvent::GroundItem(
+            GroundItemPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_SKILL_EFFECT => Ok(GameEvent::SkillEffect(decode_skill_effect(body)?)),
+        MSG_SKILL => Ok(GameEvent::Skill(
+            SkillPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_REFINERY_INFO => Ok(GameEvent::RefineryInfo(decode_refinery_info(body)?)),
         MSG_NPC_INFO => Ok(GameEvent::NpcInfo(decode_npc_info(body)?)),
         MSG_TASK_DIALOG => Ok(GameEvent::TaskDialog(decode_task_dialog(body)?)),
         _ => Ok(GameEvent::Other(id, body.clone())),
     }
+}
+
+fn decode_skill_effect(body: &Bytes) -> Result<SkillEffect, ProtocolError> {
+    if body.len() < 16 {
+        return Err(ProtocolError::MalformedResponse(
+            "skill effect header is missing",
+        ));
+    }
+    let attacker_id = u32::from_le_bytes(body[0..4].try_into().unwrap());
+    let target_x = u16::from_le_bytes(body[4..6].try_into().unwrap());
+    let target_y = u16::from_le_bytes(body[6..8].try_into().unwrap());
+    let skill_id = u16::from_le_bytes(body[8..10].try_into().unwrap());
+    let level = u16::from_le_bytes(body[10..12].try_into().unwrap());
+    let count = u32::from_le_bytes(body[12..16].try_into().unwrap()) as usize;
+    let required = 16usize.saturating_add(count.saturating_mul(32));
+    if body.len() < required {
+        return Err(ProtocolError::MalformedResponse(
+            "skill effect targets are truncated",
+        ));
+    }
+    let mut targets = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = 16 + index * 32;
+        let target_id = u32::from_le_bytes(body[offset..offset + 4].try_into().unwrap());
+        let damage = u32::from_le_bytes(body[offset + 4..offset + 8].try_into().unwrap());
+        targets.push((target_id, damage));
+    }
+    Ok(SkillEffect {
+        attacker_id,
+        data: u32::from(target_x) | (u32::from(target_y) << 16),
+        skill_id,
+        level,
+        targets,
+    })
+}
+
+fn decode_refinery_info(body: &Bytes) -> Result<RefineryInfoPacket, ProtocolError> {
+    if body.len() < 4 {
+        return Err(ProtocolError::MalformedResponse(
+            "refinery info header is missing",
+        ));
+    }
+    let count = u32::from_le_bytes(body[0..4].try_into().unwrap()) as usize;
+    let required = 4usize.saturating_add(count.saturating_mul(28));
+    if body.len() < required {
+        return Err(ProtocolError::MalformedResponse(
+            "refinery info records are truncated",
+        ));
+    }
+    let mut records = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = 4 + index * 28;
+        records.push(RefineryInfoRecord {
+            item_id: u32::from_le_bytes(body[offset..offset + 4].try_into().unwrap()),
+            action: u32::from_le_bytes(body[offset + 4..offset + 8].try_into().unwrap()),
+            refinery_type: u32::from_le_bytes(body[offset + 8..offset + 12].try_into().unwrap()),
+            level: u32::from_le_bytes(body[offset + 12..offset + 16].try_into().unwrap()),
+            effect: i32::from_le_bytes(body[offset + 16..offset + 20].try_into().unwrap()),
+            time: u32::from_le_bytes(body[offset + 20..offset + 24].try_into().unwrap()),
+            unknown: u32::from_le_bytes(body[offset + 24..offset + 28].try_into().unwrap()),
+        });
+    }
+    Ok(RefineryInfoPacket { records })
 }
 
 fn decode_task_dialog(body: &Bytes) -> Result<TaskDialog, ProtocolError> {
@@ -712,7 +1578,9 @@ fn unix_timestamp() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Serialize;
     use tq_network::TQCipher;
+    use tq_network::{PacketEncode, PacketID};
 
     #[test]
     fn account_login_matches_server_wire_shape() {
@@ -785,11 +1653,305 @@ mod tests {
         assert_eq!(action.0, MSG_ACTION);
         assert_eq!(action.1.len(), 20);
 
+        let jump = ActionPacket::jump(1000001, [321, 654], [320, 653])
+            .encode()
+            .expect("jump packet should encode");
+        assert_eq!(jump.0, MSG_ACTION);
+        assert_eq!(
+            u32::from_le_bytes(jump.1[8..12].try_into().unwrap()),
+            654 << 16 | 321
+        );
+        assert_eq!(
+            u32::from_le_bytes(jump.1[12..16].try_into().unwrap()),
+            653 << 16 | 320
+        );
+        assert_eq!(u16::from_le_bytes(jump.1[18..20].try_into().unwrap()), 133);
+
         let walk = WalkPacket::new(1000001, 0)
             .encode()
             .expect("walk packet should encode");
         assert_eq!(walk.0, MSG_WALK);
         assert_eq!(walk.1.len(), 6);
+    }
+
+    #[test]
+    fn core_game_request_fixtures_keep_packet_ids_and_lengths_stable() {
+        let talk = TalkPacket::public(1_000_001, "Tester", "hello")
+            .encode()
+            .expect("talk packet should encode");
+        assert_eq!(talk.0, MSG_TALK);
+        assert!(talk.1.len() >= 32);
+
+        let whisper = TalkPacket::whisper(1_000_001, "Tester", "Target", "hello")
+            .encode()
+            .expect("whisper packet should encode");
+        assert_eq!(whisper.0, MSG_TALK);
+        let whisper_packet = TalkPacket::whisper(1_000_001, "Tester", "Target", "hello");
+        assert_eq!(whisper_packet.channel, 2001);
+        assert_eq!(whisper_packet.recipient_name, "Target");
+
+        let use_item = ItemActionPacket::use_item(1_000_001, 77)
+            .encode()
+            .expect("item use packet should encode");
+        assert_eq!(use_item.0, MSG_ITEM);
+        assert_eq!(use_item.1.len(), 24);
+        assert_eq!(u32::from_le_bytes(use_item.1[8..12].try_into().unwrap()), 4);
+
+        let upgrade = ItemActionPacket::upgrade(1_000_001, 77)
+            .encode()
+            .expect("item upgrade packet should encode");
+        assert_eq!(upgrade.0, MSG_ITEM);
+        assert_eq!(u32::from_le_bytes(upgrade.1[8..12].try_into().unwrap()), 20);
+
+        let quality = ItemActionPacket::improve_quality(1_000_001, 77)
+            .encode()
+            .expect("quality upgrade packet should encode");
+        assert_eq!(quality.0, MSG_ITEM);
+        assert_eq!(u32::from_le_bytes(quality.1[8..12].try_into().unwrap()), 19);
+
+        let socket = SocketGemPacket::insert(77, 88, 1)
+            .encode()
+            .expect("socket packet should encode");
+        assert_eq!(socket.0, MSG_SOCKET_GEM);
+        assert_eq!(socket.1.len(), 11);
+        assert_eq!(u32::from_le_bytes(socket.1[0..4].try_into().unwrap()), 77);
+        assert_eq!(socket.1[10], 0);
+
+        let refinery = RefineryPacket::apply(77, 88)
+            .encode()
+            .expect("refinery packet should encode");
+        assert_eq!(refinery.0, MSG_REFINERY);
+        assert_eq!(refinery.1.len(), 12);
+        assert_eq!(u32::from_le_bytes(refinery.1[0..4].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(refinery.1[4..8].try_into().unwrap()), 77);
+        assert_eq!(
+            u32::from_le_bytes(refinery.1[8..12].try_into().unwrap()),
+            88
+        );
+
+        let artifact = RefineryPacket::apply_artifact(99, 100)
+            .encode()
+            .expect("artifact packet should encode");
+        assert_eq!(artifact.0, MSG_REFINERY);
+        assert_eq!(artifact.1.len(), 12);
+        assert_eq!(u32::from_le_bytes(artifact.1[0..4].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(artifact.1[4..8].try_into().unwrap()), 99);
+        assert_eq!(
+            u32::from_le_bytes(artifact.1[8..12].try_into().unwrap()),
+            100
+        );
+
+        let action = ActionPacket::change_action(1_000_001, 140)
+            .encode()
+            .expect("action packet should encode");
+        assert_eq!(action.0, MSG_ACTION);
+        assert_eq!(action.1.len(), 20);
+
+        let kill_mode = ActionPacket::set_kill_mode(1_000_001, 0)
+            .encode()
+            .expect("kill mode packet should encode");
+        assert_eq!(kill_mode.0, MSG_ACTION);
+        assert_eq!(
+            u32::from_le_bytes(kill_mode.1[8..12].try_into().unwrap()),
+            0
+        );
+        assert_eq!(
+            u16::from_le_bytes(kill_mode.1[18..20].try_into().unwrap()),
+            96
+        );
+
+        let reborn = ActionPacket::reborn(1_000_001)
+            .encode()
+            .expect("reborn packet should encode");
+        assert_eq!(reborn.0, MSG_ACTION);
+        assert_eq!(u16::from_le_bytes(reborn.1[18..20].try_into().unwrap()), 94);
+
+        let interaction = InteractionPacket::attack(1_000_001, 400_001, 61, 110)
+            .encode()
+            .expect("interaction packet should encode");
+        assert_eq!(interaction.0, MSG_INTERACT);
+        assert_eq!(interaction.1.len(), 36);
+
+        let magic = InteractionPacket::magic_attack(1_000_001, 400_001, 61, 110, 1_000)
+            .encode()
+            .expect("magic interaction packet should encode");
+        assert_eq!(magic.0, MSG_INTERACT);
+        assert_eq!(magic.1.len(), 36);
+        assert_eq!(u32::from_le_bytes(magic.1[16..20].try_into().unwrap()), 21);
+        assert_eq!(
+            u32::from_le_bytes(magic.1[20..24].try_into().unwrap()),
+            1_000
+        );
+        assert_eq!(
+            u32::from_le_bytes(interaction.1[16..20].try_into().unwrap()),
+            2
+        );
+
+        let npc = NpcPacket::activate(123, 10)
+            .encode()
+            .expect("npc packet should encode");
+        assert_eq!(npc.0, MSG_NPC);
+        assert_eq!(npc.1.len(), 12);
+    }
+
+    #[test]
+    fn team_packets_match_classic_1023_and_1026_shapes() {
+        let action = TeamActionPacket::new(4, 1_000_002)
+            .encode()
+            .expect("team action should encode");
+        assert_eq!(action.0, MSG_TEAM);
+        assert_eq!(action.1.len(), 12);
+        assert_eq!(
+            TeamActionPacket::decode(&action.1).unwrap().target_id,
+            1_000_002
+        );
+
+        let member = TeamMemberPacket {
+            reserved: 0,
+            reserved_header: [0; 3],
+            name: "Gravak".into(),
+            member_id: 1_000_002,
+            mesh: 311_003,
+            max_health: 318,
+            health: 318,
+            action: 0,
+            reserved_tail: [0; 7],
+        }
+        .encode()
+        .expect("team member should encode");
+        assert_eq!(member.0, MSG_TEAM_MEMBER);
+        assert_eq!(member.1.len(), 40);
+        assert_eq!(
+            TeamMemberPacket::decode(&member.1).unwrap().member_id,
+            1_000_002
+        );
+    }
+
+    #[test]
+    fn guild_packet_matches_classic_1107_shape() {
+        let mut packet = GuildPacket::new(2, 1_000_002);
+        packet.strings = vec!["Knights".to_owned()].into();
+        let encoded = packet.encode().expect("guild packet should encode");
+        assert_eq!(encoded.0, MSG_GUILD);
+        assert!(encoded.1.len() >= 24);
+        let decoded = GuildPacket::decode(&encoded.1).expect("guild packet should decode");
+        assert_eq!(decoded.action, 2);
+        assert_eq!(decoded.data, 1_000_002);
+        assert_eq!(Vec::<String>::from(decoded.strings), vec!["Knights"]);
+    }
+
+    #[test]
+    fn guild_member_packet_matches_classic_2102_record_shape() {
+        let packet = GuildMemberPacket {
+            reserved: 0,
+            start_index: 0,
+            amount: 1,
+            name: "Leader".into(),
+            reserved16: 1_000_001,
+            reserved20: 1003,
+            level: 13,
+            rank: 1000,
+            reserved30: 0,
+            reserved32: 0,
+            donation: 0,
+            online: 1,
+            reserved41: [0; 3],
+            reserved44: 0,
+        };
+        let encoded = packet.encode().expect("guild member packet should encode");
+        assert_eq!(encoded.0, MSG_GUILD_MEMBER);
+        assert_eq!(encoded.1.len(), 60);
+        let decoded =
+            GuildMemberPacket::decode(&encoded.1).expect("guild member packet should decode");
+        assert_eq!(decoded.name, "Leader".into());
+        assert_eq!(decoded.rank, 1000);
+        assert_eq!(decoded.online, 1);
+    }
+
+    #[test]
+    fn decodes_nobility_ranking_record_with_name() {
+        #[derive(Debug, Serialize, PacketID)]
+        #[packet(id = 2065)]
+        struct RankingWire {
+            action: u32,
+            position: u32,
+            character_id: u32,
+            donation: u64,
+            rank: u32,
+            list_count: u8,
+            character_name: String,
+        }
+
+        let encoded = RankingWire {
+            action: 1,
+            position: 1,
+            character_id: 1_000_001,
+            donation: 30_000_000,
+            rank: 1,
+            list_count: 1,
+            character_name: "Gravak".to_owned(),
+        }
+        .encode()
+        .expect("nobility ranking record should encode");
+        assert_eq!(encoded.0, MSG_NOBILITY_RANKING);
+        let decoded =
+            NobilityRankingInfo::decode(&encoded.1).expect("nobility ranking record should decode");
+        assert_eq!(decoded.position, 1);
+        assert_eq!(decoded.character_id, 1_000_001);
+        assert_eq!(decoded.character_name, "Gravak");
+    }
+
+    #[test]
+    fn guild_warehouse_packet_round_trip_uses_dedicated_2034_shape() {
+        let packet = GuildWarehouseActionPacket::deposit(1_000_001, 7, 42, 12)
+            .encode()
+            .expect("guild warehouse packet should encode");
+        assert_eq!(packet.0, MSG_GUILD_WAREHOUSE);
+        let decoded = GuildWarehouseActionPacket::decode(&packet.1)
+            .expect("guild warehouse packet should decode");
+        assert_eq!(decoded.character_id, 1_000_001);
+        assert_eq!(decoded.guild_id, 7);
+        assert_eq!(decoded.action, 1);
+        assert_eq!(decoded.item_uid, 42);
+        assert_eq!(decoded.position, 12);
+    }
+
+    #[test]
+    fn trade_packet_matches_classic_1056_shape() {
+        let packet = TradePacket::new(1_000_002, 6, 42)
+            .encode()
+            .expect("trade packet should encode");
+        assert_eq!(packet.0, MSG_TRADE);
+        assert_eq!(packet.1.len(), 12);
+        let decoded = TradePacket::decode(&packet.1).expect("trade packet should decode");
+        assert_eq!(decoded.target, 1_000_002);
+        assert_eq!(decoded.subtype, 6);
+        assert_eq!(decoded.data, 42);
+    }
+
+    #[test]
+    fn friend_packet_matches_classic_1019_shape() {
+        let packet = FriendPacket::new(15, 1_000_002, "Target", true)
+            .encode()
+            .expect("friend packet should encode");
+        assert_eq!(packet.0, MSG_FRIEND);
+        assert_eq!(packet.1.len(), 36);
+        assert_eq!(
+            FriendPacket::decode(&packet.1).unwrap().friend_id,
+            1_000_002
+        );
+        assert_eq!(FriendPacket::decode(&packet.1).unwrap().action, 15);
+    }
+
+    #[test]
+    fn assign_attributes_matches_classic_1024_shape() {
+        let packet = AssignAttributesPacket::one("vitality")
+            .expect("vitality should be a supported attribute")
+            .encode()
+            .expect("attribute packet should encode");
+        assert_eq!(packet.0, MSG_ASSIGN_ATTRIBUTES);
+        assert_eq!(packet.1, vec![0, 0, 1, 0]);
+        assert!(AssignAttributesPacket::one("unknown").is_none());
     }
 
     #[test]
@@ -802,6 +1964,96 @@ mod tests {
         assert_eq!(map.uid, 1010);
         assert_eq!(map.map_id, 1010);
         assert_eq!(map.flags, 0);
+    }
+
+    #[test]
+    fn decodes_single_target_skill_effect() {
+        let mut body = vec![0_u8; 88];
+        body[0..4].copy_from_slice(&1_000_001_u32.to_le_bytes());
+        body[4..6].copy_from_slice(&430_u16.to_le_bytes());
+        body[6..8].copy_from_slice(&378_u16.to_le_bytes());
+        body[8..10].copy_from_slice(&1_000_u16.to_le_bytes());
+        body[10..12].copy_from_slice(&1_u16.to_le_bytes());
+        body[12..16].copy_from_slice(&1_u32.to_le_bytes());
+        body[16..20].copy_from_slice(&400_001_u32.to_le_bytes());
+        body[20..24].copy_from_slice(&37_u32.to_le_bytes());
+
+        let event = decode_game_event(MSG_SKILL_EFFECT, &Bytes::from(body))
+            .expect("skill effect should decode");
+        assert_eq!(
+            event,
+            GameEvent::SkillEffect(SkillEffect {
+                attacker_id: 1_000_001,
+                data: 378_u32 << 16 | 430,
+                skill_id: 1_000,
+                level: 1,
+                targets: vec![(400_001, 37)],
+            })
+        );
+    }
+
+    #[test]
+    fn decodes_refinery_info_record() {
+        let mut body = vec![0_u8; 4 + 28];
+        body[0..4].copy_from_slice(&1_u32.to_le_bytes());
+        body[4..8].copy_from_slice(&77_u32.to_le_bytes());
+        body[8..12].copy_from_slice(&6_u32.to_le_bytes());
+        body[12..16].copy_from_slice(&820_001_u32.to_le_bytes());
+        body[16..20].copy_from_slice(&1_u32.to_le_bytes());
+        body[20..24].copy_from_slice(&25_i32.to_le_bytes());
+        body[24..28].copy_from_slice(&604_800_u32.to_le_bytes());
+
+        let event = decode_game_event(MSG_REFINERY_INFO, &Bytes::from(body))
+            .expect("refinery info should decode");
+        assert_eq!(
+            event,
+            GameEvent::RefineryInfo(RefineryInfoPacket {
+                records: vec![RefineryInfoRecord {
+                    item_id: 77,
+                    action: 6,
+                    refinery_type: 820_001,
+                    level: 1,
+                    effect: 25,
+                    time: 604_800,
+                    unknown: 0,
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn decodes_multiple_skill_effect_targets() {
+        let mut body = vec![0_u8; 16 + 32 * 2];
+        body[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        body[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        body[16..20].copy_from_slice(&101_u32.to_le_bytes());
+        body[20..24].copy_from_slice(&11_u32.to_le_bytes());
+        body[48..52].copy_from_slice(&202_u32.to_le_bytes());
+        body[52..56].copy_from_slice(&22_u32.to_le_bytes());
+
+        let GameEvent::SkillEffect(effect) =
+            decode_game_event(MSG_SKILL_EFFECT, &Bytes::from(body)).unwrap()
+        else {
+            panic!("expected skill effect");
+        };
+        assert_eq!(effect.targets, vec![(101, 11), (202, 22)]);
+    }
+
+    #[test]
+    fn decodes_learned_skill_update() {
+        let mut body = vec![0_u8; 18];
+        body[0..4].copy_from_slice(&123_u32.to_le_bytes());
+        body[4..6].copy_from_slice(&1_000_u16.to_le_bytes());
+        body[6..8].copy_from_slice(&2_u16.to_le_bytes());
+        assert_eq!(
+            decode_game_event(MSG_SKILL, &Bytes::from(body)).unwrap(),
+            GameEvent::Skill(SkillPacket {
+                experience: 123,
+                skill_id: 1_000,
+                level: 2,
+                reserved: [0; 10],
+            })
+        );
     }
 
     #[test]
@@ -871,5 +2123,21 @@ mod tests {
         assert_eq!(dialog.task_id, 42);
         assert_eq!(dialog.avatar, 47);
         assert_eq!(dialog.messages, ["Hello", "NPC"]);
+    }
+
+    #[test]
+    fn rejects_truncated_server_fixtures() {
+        assert!(ActionPacket::decode(&Bytes::from(vec![0_u8; 19])).is_err());
+        assert!(InteractionPacket::decode(&Bytes::from(vec![0_u8; 35])).is_err());
+        assert!(MapInfo::decode(&Bytes::from(vec![0_u8; 8])).is_err());
+        assert!(decode_game_event(MSG_SKILL_EFFECT, &Bytes::from(vec![0_u8; 15])).is_err());
+        assert!(
+            decode_game_event(
+                MSG_REFINERY_INFO,
+                &Bytes::from(1_u32.to_le_bytes().to_vec())
+            )
+            .is_err()
+        );
+        assert!(decode_game_event(MSG_TASK_DIALOG, &Bytes::from(vec![0_u8; 7])).is_err());
     }
 }

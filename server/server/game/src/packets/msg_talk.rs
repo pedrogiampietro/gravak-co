@@ -1,10 +1,11 @@
-use crate::constants::{ALL_USERS, SYSTEM};
+use crate::constants::{ALL_USERS, CHARACTER_ID_MIN, SYSTEM};
 use crate::state::State;
 use crate::systems::commands;
 use crate::ActorState;
 use async_trait::async_trait;
 use num_enum::{FromPrimitive, IntoPrimitive};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tq_network::{Actor, PacketID, PacketProcess};
 
 /// Enumeration for defining the channel text is printed to. Can also print to
@@ -127,6 +128,128 @@ impl MsgTalk {
     }
 }
 
+fn character_named(state: &State, name: &str) -> Option<Arc<crate::entities::GameEntity>> {
+    state.entities().into_iter().find(|entity| {
+        entity
+            .as_character()
+            .is_some_and(|character| character.entity().name().eq_ignore_ascii_case(name))
+    })
+}
+
+async fn deliver_whisper(state: &State, actor: &Actor<ActorState>, message: &MsgTalk) -> Result<(), crate::Error> {
+    let recipient_name = message.recipient_name.trim();
+    let Some(recipient) = character_named(state, recipient_name) else {
+        actor
+            .send(MsgTalk::from_system(
+                actor.entity().id(),
+                TalkChannel::Whisper,
+                format!("Character {recipient_name} was not found."),
+            ))
+            .await?;
+        return Ok(());
+    };
+    if crate::packets::msg_friend::is_ignored(state, recipient.id(), actor.entity().id()).await? {
+        actor
+            .send(MsgTalk::from_system(
+                actor.entity().id(),
+                TalkChannel::Whisper,
+                format!("Character {recipient_name} is ignoring you."),
+            ))
+            .await?;
+        return Ok(());
+    }
+    let mut outgoing = message.clone();
+    outgoing.channel = TalkChannel::Whisper.into();
+    outgoing.recipient_name = recipient_name.to_owned();
+    recipient
+        .owner()
+        .ok_or(crate::Error::CharacterNotFound)?
+        .send(outgoing.clone())
+        .await?;
+    if recipient.id() != actor.entity().id() {
+        actor.send(outgoing.clone()).await?;
+    }
+    persist_chat_for_owners(state, &[actor.entity().id(), recipient.id()], &outgoing).await?;
+    Ok(())
+}
+
+fn database_id(character_id: u32) -> i64 {
+    character_id.saturating_sub(CHARACTER_ID_MIN) as i64
+}
+
+fn persists_channel(channel: u16) -> bool {
+    channel == TalkChannel::Talk as u16 || channel == TalkChannel::World as u16
+}
+
+async fn persist_chat_for_owners(state: &State, owner_ids: &[u32], message: &MsgTalk) -> Result<(), crate::Error> {
+    if !persists_channel(message.channel) && message.channel != TalkChannel::Whisper as u16 {
+        return Ok(());
+    }
+    let mut transaction = state.pool().begin().await?;
+    let mut owners = owner_ids.iter().copied().map(database_id).collect::<Vec<_>>();
+    owners.sort_unstable();
+    owners.dedup();
+    for owner_id in owners {
+        sqlx::query(
+            "INSERT INTO character_chat_history (character_id, channel, sender_name, recipient_name, message) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(owner_id)
+        .bind(i64::from(message.channel))
+        .bind(&message.sender_name)
+        .bind(&message.recipient_name)
+        .bind(&message.message)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "DELETE FROM character_chat_history WHERE character_id = ? AND id NOT IN (SELECT id FROM character_chat_history WHERE character_id = ? ORDER BY id DESC LIMIT 40)",
+        )
+        .bind(owner_id)
+        .bind(owner_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn persist_public_chat(state: &State, recipient_ids: &[u32], message: &MsgTalk) -> Result<(), crate::Error> {
+    persist_chat_for_owners(state, recipient_ids, message).await
+}
+
+pub async fn send_chat_history(
+    state: &State,
+    actor: &Actor<ActorState>,
+    character_id: u32,
+) -> Result<(), crate::Error> {
+    let rows = sqlx::query_as::<_, (u16, String, String, String, i64)>(
+        "SELECT channel, sender_name, recipient_name, message, created_at FROM character_chat_history WHERE character_id = ? AND channel IN (?, ?, ?) ORDER BY id ASC LIMIT 40",
+    )
+    .bind(database_id(character_id))
+    .bind(i64::from(TalkChannel::Talk as u16))
+    .bind(i64::from(TalkChannel::Whisper as u16))
+    .bind(i64::from(TalkChannel::World as u16))
+    .fetch_all(state.pool())
+    .await?;
+    for (channel, sender_name, recipient_name, message, _) in rows {
+        actor
+            .send(MsgTalk {
+                color: 0x00FF_FFFF,
+                channel,
+                style: TalkStyle::Normal.into(),
+                character_id,
+                recipient_mesh: 0,
+                sender_mesh: 0,
+                list_count: 4,
+                sender_name,
+                recipient_name,
+                suffix: String::new(),
+                message,
+            })
+            .await?;
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl PacketProcess for MsgTalk {
     type ActorState = ActorState;
@@ -134,7 +257,11 @@ impl PacketProcess for MsgTalk {
     type State = State;
 
     async fn process(&self, state: &Self::State, actor: &Actor<Self::ActorState>) -> Result<(), Self::Error> {
-        if self.message.starts_with('$') {
+        if self.channel == TalkChannel::Whisper.into() {
+            return deliver_whisper(state, actor, self).await;
+        }
+        let is_command = self.message.starts_with('$');
+        if is_command {
             // Command Message.
             let (_, command) = self.message.split_at(1);
             let args: Vec<_> = command.split_whitespace().collect();
@@ -146,6 +273,16 @@ impl PacketProcess for MsgTalk {
         let loc = actor.entity().basic().location();
         let mymap = state.try_map(map_id)?;
         let myregion = mymap.region(loc.x, loc.y).ok_or(crate::Error::MapRegionNotFound)?;
+        let recipient_ids = myregion.with_entities(|entities| {
+            entities
+                .values()
+                .filter_map(|entity| entity.upgrade())
+                .filter_map(|entity| entity.as_character().map(|character| character.id()))
+                .collect::<Vec<_>>()
+        });
+        if !is_command {
+            persist_public_chat(state, &recipient_ids, self).await?;
+        }
         myregion.broadcast(self.clone()).await?;
         Ok(())
     }

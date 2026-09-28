@@ -33,6 +33,16 @@ pub struct MsgWalk {
     movement_type: u8,
 }
 
+impl MsgWalk {
+    pub fn new(character_id: u32, direction: u8) -> Self {
+        Self {
+            character_id,
+            direction: direction % 8,
+            movement_type: MovementType::Walk as u8,
+        }
+    }
+}
+
 #[async_trait]
 impl PacketProcess for MsgWalk {
     type ActorState = ActorState;
@@ -47,6 +57,18 @@ impl PacketProcess for MsgWalk {
         let direction = (self.direction % 8) as usize;
         let entity = actor.entity();
         let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        if me.has_status(crate::entities::StatusEffect::Stunned) {
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    "You are stunned and cannot move.",
+                ))
+                .await?;
+            return Ok(());
+        }
+        me.set_active_shop_id(0);
+        me.set_active_storage_id(0);
         let current_location = me.entity().location();
         let offset = ((WALK_XCOORDS[direction] as u16), (WALK_YCOORDS[direction] as u16));
         let x = current_location.x.wrapping_add(offset.0);

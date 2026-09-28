@@ -8,16 +8,24 @@ pub enum Action {
     RunLeft,
     RunRight,
     Jump,
+    Attack,
+    Hit,
+    /// Conquer's action 220 (Kneel), used by the original client while
+    /// collecting an item from the ground.
+    Pickup,
 }
 
 impl Action {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::Idle,
         Self::WalkLeft,
         Self::WalkRight,
         Self::RunLeft,
         Self::RunRight,
         Self::Jump,
+        Self::Attack,
+        Self::Hit,
+        Self::Pickup,
     ];
 
     pub const fn index(self) -> usize {
@@ -28,6 +36,9 @@ impl Action {
             Self::RunLeft => 3,
             Self::RunRight => 4,
             Self::Jump => 5,
+            Self::Attack => 6,
+            Self::Hit => 7,
+            Self::Pickup => 8,
         }
     }
 
@@ -39,6 +50,14 @@ impl Action {
             Self::RunLeft => 120,
             Self::RunRight => 121,
             Self::Jump => 130,
+            Self::Attack => 140,
+            // Conquer's 150/160/170/180 entries are emotes (laugh, angry,
+            // sad, excited), not a damage reaction. Keep the hit state on
+            // the neutral motion until a dedicated hurt asset is available.
+            Self::Hit => 100,
+            // Action.dat/3dmotion.ini in the original 5065 client names this
+            // motion Kneel (220); it is the pickup pose.
+            Self::Pickup => 220,
         }
     }
 
@@ -57,10 +76,10 @@ mod tests {
 
     #[test]
     fn actions_keep_their_catalog_and_storage_order() {
-        assert_eq!(Action::ALL.map(Action::index), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(Action::ALL.map(Action::index), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(
             Action::ALL.map(Action::catalog_id),
-            [100, 110, 111, 120, 121, 130]
+            [100, 110, 111, 120, 121, 130, 140, 100, 220]
         );
     }
 }

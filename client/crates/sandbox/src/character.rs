@@ -3,32 +3,81 @@ use crate::action::Action;
 use crate::assets::{Assets, Result};
 use sandbox_data::{
     c3::{C3Document, C3Mesh, C3Motion, Matrix4, Vector3},
-    ini::{IdPathCatalog, SectionCatalog},
+    ini::{IdPathCatalog, IniSection, SectionCatalog},
 };
 
+#[derive(Clone)]
 pub struct Part {
     pub mesh: C3Mesh,
     pub texture: String,
     local: Option<C3Motion>,
     track: usize,
 }
+#[derive(Clone)]
 pub struct Character {
     pub parts: Vec<Part>,
     actions: Vec<C3Document>,
-    intervals: [f32; 6],
+    intervals: [f32; 9],
     pub body_id: u32,
+    pub armor_id: u32,
+    pub helmet_id: u32,
+    pub hair_id: u32,
+    pub right_weapon_id: u32,
+    pub left_weapon_id: u32,
     pub weapon_action: u32,
     pub name: String,
     pub guild: String,
     pub guild_rank: String,
     pub health: u32,
     pub maximum_health: u32,
+    pub strength: u16,
+    pub agility: u16,
+    pub vitality: u16,
+    pub spirit: u16,
+    pub attribute_points: u16,
+    pub current_class: u8,
+    pub previous_class: u8,
+    pub rebirths: u8,
 }
 
+#[derive(Clone)]
 pub struct NpcModel {
     pub mesh: C3Mesh,
     pub texture: String,
+    model_id: u32,
     motion: Option<C3Motion>,
+    walk_motion: Option<C3Motion>,
+    attack_motion: Option<C3Motion>,
+    death_motion: Option<C3Motion>,
+}
+
+#[derive(Clone)]
+pub struct NpcCatalog {
+    appearances: SectionCatalog,
+    models: IdPathCatalog,
+    motions: IdPathCatalog,
+    textures: IdPathCatalog,
+}
+
+impl NpcCatalog {
+    pub fn load(assets: &mut Assets) -> Result<Self> {
+        Ok(Self {
+            appearances: SectionCatalog::parse(&assets.read("ini/npc.ini")?),
+            models: IdPathCatalog::parse(&assets.read("ini/3dobj.ini")?),
+            motions: IdPathCatalog::parse(&assets.read("ini/3dmotion.ini")?),
+            textures: IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?),
+        })
+    }
+
+    pub fn appearance_sections(&self) -> &[IniSection] {
+        self.appearances.sections()
+    }
+
+    fn texture_for_model_path(&self, path: &str) -> Option<&str> {
+        self.models
+            .ids_for_path(path)
+            .find_map(|id| self.textures.get(id).map(|texture| texture.as_str()))
+    }
 }
 
 impl Character {
@@ -50,6 +99,10 @@ impl Character {
             assets,
             body,
             number("Armor")?,
+            profile
+                .first("Helmet")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
             number("Hair")?,
             number("RightWeapon")?,
             number("LeftWeapon")?,
@@ -65,6 +118,7 @@ impl Character {
         assets: &mut Assets,
         body: u32,
         armor: u32,
+        helmet: u32,
         hair: u16,
         right_weapon: u32,
         left_weapon: u32,
@@ -77,7 +131,12 @@ impl Character {
         Self::load_appearance(
             assets,
             body,
-            if armor == 0 { 130109 } else { armor },
+            // Zero is the protocol value for an empty armor slot.  Keep it
+            // intact so the default body model (body * 1_000_000) is loaded
+            // after an armor item is unequipped instead of silently putting
+            // the sample armor back on the character.
+            armor,
+            helmet,
             u32::from(hair),
             right_weapon,
             left_weapon,
@@ -93,6 +152,7 @@ impl Character {
         assets: &mut Assets,
         body: u32,
         armor_id: u32,
+        helmet_id: u32,
         hair: u32,
         right: u32,
         left: u32,
@@ -168,6 +228,19 @@ impl Character {
                 parts.push(part);
             }
         }
+        if helmet_id != 0 {
+            if let Ok(part) = load_attachment(
+                assets,
+                &models,
+                &textures,
+                &doc,
+                "ini/armet.ini",
+                body * 1_000_000 + helmet_id / 10 * 10,
+                "v_armet",
+            ) {
+                parts.push(part);
+            }
+        }
         for (weapon, attachment) in [(right, "v_r_weapon"), (left, "v_l_weapon")] {
             if weapon == 0 {
                 continue;
@@ -223,12 +296,25 @@ impl Character {
             actions,
             intervals,
             body_id: body,
+            armor_id,
+            helmet_id,
+            hair_id: hair,
+            right_weapon_id: right,
+            left_weapon_id: left,
             weapon_action,
             name,
             guild,
             guild_rank,
             health,
             maximum_health,
+            strength: 0,
+            agility: 0,
+            vitality: 0,
+            spirit: 0,
+            attribute_points: 0,
+            current_class: 0,
+            previous_class: 0,
+            rebirths: 0,
         })
     }
 
@@ -300,11 +386,117 @@ impl Character {
             })
             .collect()
     }
+
+    pub fn vertices_idle(
+        &self,
+        part_index: usize,
+        facing: f32,
+    ) -> Option<Vec<([f32; 3], [f32; 2])>> {
+        self.parts
+            .get(part_index)
+            .map(|part| self.vertices(part, 0.0, Action::Idle, facing, None))
+    }
 }
 
 impl NpcModel {
-    pub fn load(assets: &mut Assets, kind: u16, look: u16) -> Result<Self> {
-        let npc_catalog = SectionCatalog::parse(&assets.read("ini/npc.ini")?);
+    /// Stable key for geometry that does not depend on animation time.
+    /// Idle monsters reuse the same model and facing for many frames, so the
+    /// renderer can keep their transformed vertices instead of rebuilding
+    /// them on every redraw.
+    pub fn static_vertices_key(&self, facing: f32) -> (u32, i8) {
+        (
+            self.model_id,
+            (facing / std::f32::consts::FRAC_PI_4).round() as i8,
+        )
+    }
+
+    pub fn vertices_static(&self, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        self.vertices(0.0, facing)
+    }
+
+    pub fn load_monster(assets: &mut Assets, catalog: &NpcCatalog, look: u32) -> Result<Self> {
+        let model_candidates = [
+            format!("c3/monster/{look}N/{look:03}000000.c3"),
+            format!("c3/monster/{look}n/{look:03}000000.c3"),
+        ];
+        let Some((model_path, bytes)) = model_candidates
+            .into_iter()
+            .find_map(|path| assets.read(&path).ok().map(|bytes| (path, bytes)))
+        else {
+            // The 5065 fixture uses look 900/910 for the server's guard
+            // fixtures, but some client asset packs omit the corresponding
+            // c3/monster directory while retaining the NPC appearance and
+            // motion catalog. Keep those actors visible with their cataloged
+            // NPC model instead of repeatedly leaving a spawned monster
+            // without geometry. Other missing monster looks remain errors so
+            // content omissions are not silently hidden.
+            if matches!(look, 900 | 910) {
+                let npc_look = look.saturating_mul(10).min(u16::MAX as u32) as u16;
+                return Self::load(assets, catalog, look as u16, npc_look);
+            }
+            return Err(format!("Monster model missing for look {look}").into());
+        };
+        let document = C3Document::parse(&bytes)?;
+        // Monster model files contain the mesh, while their neutral pose is
+        // defined by the dedicated 100 motion in 3dmotion.ini. Using the
+        // model's first embedded motion leaves Pheasant with its wings spread.
+        let mut load_motion = |name: &str| {
+            [
+                format!("c3/monster/{look}N/{name}.c3"),
+                format!("c3/monster/{look}n/{name}.c3"),
+            ]
+            .into_iter()
+            .find_map(|path| {
+                assets
+                    .read(&path)
+                    .ok()
+                    .and_then(|bytes| C3Document::parse(&bytes).ok())
+                    .and_then(|document| document.motions.into_iter().next())
+            })
+        };
+        let idle_motion = load_motion("100");
+        // 101 is a legacy stand-by loop for some monsters. Pheasant's
+        // movement actions map to 110/120 in 3dmotion.ini.
+        let walk_motion = load_motion("110").or_else(|| load_motion("101"));
+        let attack_motion = load_motion("401");
+        let death_motion = load_motion("101");
+        let mesh = document
+            .meshes
+            .first()
+            .ok_or("Monster mesh missing")?
+            .clone();
+        let model_id = catalog.models.ids_for_path(model_path.as_str()).next();
+        let texture = mesh
+            .texture_name
+            .trim_end_matches(".dds")
+            .parse::<u32>()
+            .ok()
+            .and_then(|id| catalog.textures.get(id))
+            .or_else(|| model_id.and_then(|id| catalog.textures.get(id)))
+            .or_else(|| model_id.and_then(|id| catalog.textures.get(id / 10)))
+            .map(|path| path.as_str().to_owned())
+            .or_else(|| {
+                catalog
+                    .texture_for_model_path(model_path.as_str())
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                let path = mesh.texture_name.replace('\\', "/");
+                assets.read(&path).ok().map(|_| path)
+            })
+            .ok_or_else(|| format!("Monster texture missing for look {look} ({model_path})"))?;
+        Ok(Self {
+            mesh,
+            texture,
+            model_id: look,
+            motion: idle_motion.or_else(|| document.motions.first().cloned()),
+            walk_motion,
+            attack_motion,
+            death_motion,
+        })
+    }
+
+    pub fn load(assets: &mut Assets, catalog: &NpcCatalog, kind: u16, look: u16) -> Result<Self> {
         // The 2030 packet has two different concepts here:
         //
         // * `kind` is the interaction category (shopkeeper, task NPC,
@@ -317,21 +509,28 @@ impl NpcModel {
         // a compatibility fallback for custom/terrain NPCs, but prefer the
         // appearance key derived from `look`.
         let appearance_type = u32::from(look) / 10;
-        let section = npc_catalog
+        let section = catalog
+            .appearances
             .section(&format!("NpcType{appearance_type}"))
-            .or_else(|| npc_catalog.section(&format!("NpcType{kind}")));
+            .or_else(|| catalog.appearances.section(&format!("NpcType{kind}")));
         let simple_id = section
             .and_then(|section| section.first("SimpleObjID"))
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or_else(|| u32::from(look / 10));
-        let models = IdPathCatalog::parse(&assets.read("ini/3dobj.ini")?);
+        let standby_motion_id = section
+            .and_then(|section| section.first("StandByMotion"))
+            .and_then(|value| value.parse::<u32>().ok());
+        let model_from_motion_path = standby_motion_id
+            .and_then(|id| catalog.motions.get(id))
+            .and_then(|path| catalog.models.id_for_path(path.as_str()));
         let motion_model = section
             .and_then(|section| section.first("StandByMotion"))
             .and_then(|value| value.parse::<u32>().ok())
-            // NPC motion IDs append an action/frame suffix to the model ID.
-            // For example 999009100 -> model 9990090.
+            // The standby ID can also help locate legacy NPC model files.
+            // The actual animation is loaded from 3dmotion.ini below.
             .and_then(|motion| (motion / 100).checked_sub(1));
         let model_candidates = [
+            model_from_motion_path,
             motion_model,
             Some(9_990_000 + simple_id * 10),
             Some(9_990_000 + u32::from(look)),
@@ -343,11 +542,15 @@ impl NpcModel {
         let (model_id, model_path) = model_candidates
             .into_iter()
             .flatten()
-            .find_map(|id| models.get(id).map(|path| (id, path)))
+            .find_map(|id| catalog.models.get(id).map(|path| (id, path)))
             .ok_or("NPC model missing")?;
         let document = C3Document::parse(&assets.read(model_path.as_str())?)?;
         let mesh = document.meshes.first().ok_or("NPC mesh missing")?.clone();
-        let textures = IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?);
+        let standby_motion = standby_motion_id
+            .and_then(|id| catalog.motions.get(id))
+            .and_then(|path| assets.read(path.as_str()).ok())
+            .and_then(|bytes| C3Document::parse(&bytes).ok())
+            .and_then(|document| document.motions.into_iter().next());
         let texture_candidates = [
             mesh.texture_name
                 .trim_end_matches(".dds")
@@ -359,19 +562,87 @@ impl NpcModel {
         let texture = texture_candidates
             .into_iter()
             .flatten()
-            .find_map(|id| textures.get(id))
-            .ok_or("NPC texture missing")?
-            .as_str()
-            .to_owned();
+            .find_map(|id| catalog.textures.get(id))
+            .map(|path| path.as_str().to_owned())
+            .or_else(|| {
+                catalog
+                    .texture_for_model_path(model_path.as_str())
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                let path = mesh.texture_name.replace('\\', "/");
+                assets.read(&path).ok().map(|_| path)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "NPC texture missing for model {model_id} (mesh texture {:?})",
+                    mesh.texture_name
+                )
+            })?;
         Ok(Self {
             mesh,
             texture,
-            motion: document.motions.first().cloned(),
+            model_id,
+            motion: standby_motion.or_else(|| document.motions.first().cloned()),
+            walk_motion: None,
+            attack_motion: None,
+            death_motion: None,
+        })
+    }
+
+    pub fn uses_generic_fallback(&self) -> bool {
+        self.model_id == 9_992_090
+    }
+
+    pub fn has_motion(&self) -> bool {
+        self.motion.is_some()
+    }
+
+    pub fn has_animated_motion(&self) -> bool {
+        self.motion.as_ref().is_some_and(|motion| {
+            motion.frame_count > 1
+                && motion
+                    .keys
+                    .windows(2)
+                    .any(|keys| keys[0].bone_matrices != keys[1].bone_matrices)
         })
     }
 
     pub fn vertices(&self, seconds: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
-        let frame = self.motion.as_ref().map_or(0.0, |motion| {
+        self.vertices_with_motion(self.motion.as_ref(), seconds, facing)
+    }
+
+    pub fn vertices_walk(&self, seconds: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        self.vertices_with_motion(
+            self.walk_motion.as_ref().or(self.motion.as_ref()),
+            seconds,
+            facing,
+        )
+    }
+
+    pub fn vertices_attack(&self, seconds: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        self.vertices_with_motion(
+            self.attack_motion.as_ref().or(self.motion.as_ref()),
+            seconds,
+            facing,
+        )
+    }
+
+    pub fn vertices_death(&self, seconds: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        self.vertices_with_motion(
+            self.death_motion.as_ref().or(self.motion.as_ref()),
+            seconds,
+            facing,
+        )
+    }
+
+    fn vertices_with_motion(
+        &self,
+        motion: Option<&C3Motion>,
+        seconds: f32,
+        facing: f32,
+    ) -> Vec<([f32; 3], [f32; 2])> {
+        let frame = motion.map_or(0.0, |motion| {
             (seconds * 30.0) % motion.frame_count.max(1) as f32
         });
         let (s, c) = facing.sin_cos();
@@ -380,9 +651,7 @@ impl NpcModel {
             .vertices
             .iter()
             .map(|vertex| {
-                let transform = self
-                    .motion
-                    .as_ref()
+                let transform = motion
                     .and_then(|motion| {
                         (0..2)
                             .find(|i| vertex.bone_weights[*i] > 0.0)

@@ -17,6 +17,119 @@ pub struct Assets {
     archives: Vec<(File, WdfDirectory)>,
     resolved: HashMap<String, PathBuf>,
 }
+
+#[cfg(test)]
+mod preview {
+    #[test]
+    #[ignore = "Exports installed status artwork for visual inspection"]
+    fn export_status_art() -> super::Result<()> {
+        let mut assets = super::Assets::open(std::path::Path::new("R:/5065"))?;
+        let out = std::path::Path::new("R:/gravak-co/docs/ui-preview");
+        std::fs::create_dir_all(out)?;
+        for name in [
+            "DialogQuery",
+            "DialogQuery_Role",
+            "DialogQuery_Role_More",
+            "DialogQuery_Weapon",
+            "DialogQuery_Mission",
+            "DialogNpcEquip",
+            "DialogMpcGoods",
+            "DialogDepot",
+            "CloseBtnS",
+            "CloseBtnSclick",
+            "ad_MainBG",
+            "hotkeysee",
+            "hotkeyseeClick",
+            "hotkeyseeUNClick",
+            "TalkBtnAct",
+            "TalkBtnActClick",
+            "MpcGoodsMoneyBtn",
+            "PublicBtnMoney",
+            "PublicBtnMoney01",
+            "GeneralBG",
+            "GeneralShuxingBG",
+            "RoleBtnBase",
+            "RoleBtnMore",
+            "RoleBtnI",
+            "BattleBtn",
+        ] {
+            match assets.image(&format!("data/main/{name}.dds")) {
+                Ok(img) => {
+                    println!("{name}: {:?}", img.dimensions());
+                    img.save(out.join(format!("{name}.png")))?;
+                }
+                Err(err) => println!("{name}: {err}"),
+            }
+        }
+        let shell = crate::original_ui::component(
+            &mut assets,
+            crate::original_ui::CharacterComponent::Shell,
+        )?;
+        let role = crate::original_ui::component(
+            &mut assets,
+            crate::original_ui::CharacterComponent::Role,
+        )?;
+        let weapon = crate::original_ui::component(
+            &mut assets,
+            crate::original_ui::CharacterComponent::Weapon,
+        )?;
+        let equipment = crate::original_ui::component(
+            &mut assets,
+            crate::original_ui::CharacterComponent::Equipment,
+        )?;
+        let mut role_screen = image::RgbaImage::from_pixel(
+            crate::original_ui::CHARACTER_RECT[2],
+            crate::original_ui::CHARACTER_RECT[3] + 29,
+            image::Rgba([0, 0, 0, 0]),
+        );
+        image::imageops::overlay(&mut role_screen, &shell, 0, 0);
+        // GUI.ini [131-132] places the role component inside the shell.
+        image::imageops::overlay(&mut role_screen, &role, 40, 55);
+        role_screen.save(out.join("original-character-role.png"))?;
+
+        let mut weapon_screen = role_screen.clone();
+        image::imageops::overlay(&mut weapon_screen, &weapon, 40, 55);
+        weapon_screen.save(out.join("original-character-weapon.png"))?;
+
+        let mut equipment_screen = image::RgbaImage::from_pixel(
+            crate::original_ui::CHARACTER_RECT[2],
+            equipment.height(),
+            image::Rgba([0, 0, 0, 0]),
+        );
+        image::imageops::overlay(&mut equipment_screen, &equipment, 0, 0);
+        equipment_screen.save(out.join("original-character-equipment.png"))?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "Catalogues the installed 5065 main UI assets"]
+    fn catalog_main_ui_assets() -> super::Result<()> {
+        let mut assets = super::Assets::open(std::path::Path::new("R:/5065"))?;
+        let root = assets.root_path().join("data/main");
+        let mut names = std::fs::read_dir(root)?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().is_some_and(|extension| {
+                    extension.to_string_lossy().eq_ignore_ascii_case("dds")
+                }) {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        for name in names {
+            match assets.image(&format!("data/main/{name}.dds")) {
+                Ok(image) => println!("{name}: {}x{}", image.width(), image.height()),
+                Err(error) => println!("{name}: {error}"),
+            }
+        }
+        Ok(())
+    }
+}
 impl Assets {
     pub fn open(root: &Path) -> Result<Self> {
         let root = root.canonicalize()?;
@@ -48,6 +161,9 @@ impl Assets {
             }
         }
         Ok(assets)
+    }
+    pub fn root_path(&self) -> &Path {
+        &self.root
     }
     fn loose(&mut self, name: &str) -> Result<Option<PathBuf>> {
         let virtual_path = VirtualPath::try_from(name)?;

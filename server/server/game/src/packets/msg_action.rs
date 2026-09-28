@@ -1,6 +1,6 @@
 use super::{MsgTalk, TalkChannel};
 use crate::entities::Character;
-use crate::packets::{MsgMapInfo, MsgWeather};
+use crate::packets::{MapFlags, MsgMapInfo, MsgPlayer, MsgUserInfo, MsgWeather};
 use crate::state::State;
 use crate::systems::TileType;
 use crate::{utils, ActorState, Error};
@@ -60,6 +60,8 @@ pub enum ActionType {
     OpenDialog = 126,
     // FlashStatus = 127,
     LoginCompeleted = 130,
+    /// Client-side monster resurrection effect.
+    SpawnEffect = 131,
     LeaveMap = 132,
     Jump = 133,
     Ghost = 137,
@@ -180,10 +182,68 @@ impl MsgAction {
 
     #[tracing::instrument(skip_all)]
     async fn handle_leave_booth(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
+        let entity = actor.try_entity()?;
+        let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        state.player_shop_manager().close(character.id());
         // Remove Player from Booth.
         let myscreen = actor.screen();
         myscreen.clear()?;
         myscreen.load_surroundings(state).await?;
+        actor
+            .send(MsgTalk::from_system(
+                character.id(),
+                TalkChannel::System,
+                "Player shop closed.",
+            ))
+            .await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn handle_create_booth(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
+        let entity = actor.try_entity()?;
+        let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        if self.character_id != character.id() {
+            return Ok(());
+        }
+        let map = state.try_map(character.entity().map_id())?;
+        if !map.flags().contains(MapFlags::BOOTH_ENABLED) {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::System,
+                    "Player shops are not available on this map.",
+                ))
+                .await?;
+            return Ok(());
+        }
+        match state
+            .player_shop_manager()
+            .open(character.id(), character.entity().map_id())
+        {
+            Ok(_) => {
+                let mut response = self.clone();
+                response.data1 = character.id();
+                actor.send(response.clone()).await?;
+                actor.screen().send_message(response).await?;
+                actor
+                    .send(MsgTalk::from_system(
+                        character.id(),
+                        TalkChannel::System,
+                        "Player shop opened. Add items with BoothAdd.",
+                    ))
+                    .await?;
+            },
+            Err(error) => {
+                actor
+                    .send(MsgTalk::from_system(
+                        character.id(),
+                        TalkChannel::System,
+                        error.message(),
+                    ))
+                    .await?;
+            },
+        }
         Ok(())
     }
 
@@ -334,9 +394,31 @@ impl MsgAction {
 
     #[tracing::instrument(skip_all)]
     async fn handle_set_kill_mode(&self, _state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
-        let kill_mode = KillMode::from(self.data1 as u16);
-        // TODO: Update player kill mode.
-        // TODO: handle i18n
+        let kill_mode = match self.data1 as u16 {
+            0 => KillMode::Free,
+            1 => KillMode::Safe,
+            2 => KillMode::Team,
+            3 => KillMode::Arrestment,
+            _ => {
+                tracing::debug!(
+                    character_id = self.character_id,
+                    mode = self.data1,
+                    "Rejected invalid kill mode"
+                );
+                return Ok(());
+            },
+        };
+        let entity = actor.try_entity()?;
+        let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        if self.character_id != character.id() {
+            tracing::warn!(
+                packet_character_id = self.character_id,
+                actor_character_id = character.id(),
+                "Rejected kill mode update from another character"
+            );
+            return Ok(());
+        }
+        character.set_kill_mode(kill_mode as u16);
         let notice = match kill_mode {
             KillMode::Free => "In free mode, you can attack everybody.",
             KillMode::Safe => "In safe mode, you can only attack monsters.",
@@ -348,6 +430,37 @@ impl MsgAction {
         actor.send(self.clone()).await?;
         let msg = super::MsgTalk::from_system(actor.entity().id(), TalkChannel::System, notice);
         actor.send(msg).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn handle_reborn(&self, _state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
+        let entity = actor.try_entity()?;
+        let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        if self.character_id != character.id() {
+            tracing::warn!(
+                packet_character_id = self.character_id,
+                actor_character_id = character.id(),
+                "Rejected reborn request from another character"
+            );
+            return Ok(());
+        }
+        if character.entity().is_alive() {
+            tracing::debug!(
+                character_id = character.id(),
+                "Rejected reborn request from living character"
+            );
+            return Ok(());
+        }
+
+        character.entity().restore_health();
+        let reborn = MsgAction::from_character(character, 0, ActionType::Reborn);
+        let player = MsgPlayer::from(character);
+        actor.send(MsgUserInfo::from(character)).await?;
+        actor.send(reborn.clone()).await?;
+        actor.send(player.clone()).await?;
+        actor.screen().send_message(reborn).await?;
+        actor.screen().send_message(player).await?;
         Ok(())
     }
 }
@@ -365,14 +478,19 @@ impl PacketProcess for MsgAction {
             ActionType::MapARGB => self.handle_map_argb(state, actor).await,
             ActionType::SetKillMode => self.handle_set_kill_mode(state, actor).await,
             ActionType::LeaveBooth => self.handle_leave_booth(state, actor).await,
+            ActionType::CreateBooth => self.handle_create_booth(state, actor).await,
             ActionType::SendItems => {
                 let entity = actor.entity();
                 let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                for item in character.equipment_items() {
+                    actor.send(super::MsgItemInfo::equipment_item(item)).await?;
+                }
                 for item in character.inventory_items() {
                     actor.send(super::MsgItemInfo::inventory_item(item)).await?;
                 }
                 Ok(())
             },
+            ActionType::Reborn => self.handle_reborn(state, actor).await,
             ActionType::SendAssociates => {
                 // Friends.
                 // TODO: send MsgFriend

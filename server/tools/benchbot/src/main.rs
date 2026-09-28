@@ -9,6 +9,7 @@ use futures::stream::FuturesUnordered;
 use game::packets::{self, ActionType, TalkChannel, TalkStyle};
 use game::utils::LoHi;
 use game::{constants, utils};
+use msg_transfer::MsgTransfer;
 use rand::{Rng, SeedableRng};
 use tokio::net::TcpStream;
 use tokio_stream::StreamExt;
@@ -21,6 +22,12 @@ use tq_network::{PacketDecode, PacketEncode, PacketID};
 const NUM_OF_BOTS: i64 = 1200;
 const MAX_ACTION_DELAY: Duration = Duration::from_millis(300);
 
+#[derive(Clone, Copy)]
+struct BenchTarget {
+    map_id: u32,
+    position: Option<(u16, u16)>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     dotenvy::dotenv()?;
@@ -29,7 +36,41 @@ async fn main() -> Result<(), Error> {
         .unwrap_or(2);
     setup_logger(log_verbosity)?;
     let state = state::State::init().await?;
-    let accounts = create_or_get_accounts(&state).await?;
+    let bot_count = env::var("GRAVAK_BENCHBOT_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(NUM_OF_BOTS)
+        .clamp(1, NUM_OF_BOTS);
+    let reconnect_rounds = env::var("GRAVAK_BENCHBOT_RECONNECT_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0)
+        .min(10);
+    let target = BenchTarget {
+        map_id: env::var("GRAVAK_BENCHBOT_MAP")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1005),
+        position: match (
+            env::var("GRAVAK_BENCHBOT_X")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok()),
+            env::var("GRAVAK_BENCHBOT_Y")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok()),
+        ) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        },
+    };
+    tracing::info!(
+        bot_count,
+        reconnect_rounds,
+        target_map = target.map_id,
+        ?target.position,
+        "Starting benchbot load"
+    );
+    let accounts = create_or_get_accounts(&state, bot_count).await?;
     let maybe_realm = Realm::by_name(state.pool(), "CoEmu").await?;
     let local_ip = local_ip_address::local_ip().expect("local ip");
     // Check if there is a realm with that name
@@ -44,139 +85,152 @@ async fn main() -> Result<(), Error> {
         let realm = realm.clone();
         let state = state.clone();
         let task = tokio::spawn(async move {
-            // Try to connect to that realm's RPC first.
-            // let ip = realm.game_ip_address.as_str();
-            let port = realm.game_port;
-            let stream = TcpStream::connect(format!("{local_ip}:{port}")).await;
-            let stream = match stream {
-                Ok(s) => s,
-                Err(e) => {
-                    return Err(e.into());
-                },
-            };
-            let cipher = CQCipher::new();
-            let (mut encoder, mut decoder) =
-                TQCodec::new(stream, cipher).split();
-            let transfer = auth::packets::MsgTransfer {
-                account_id: account.account_id as u32,
-                realm_id: realm.realm_id as u32,
-                ..Default::default()
-            };
-
-            let transfer = transfer.encode()?;
-            encoder.send(transfer).await?;
-            let res = decoder.next().await;
-            let res = match res {
-                Some(Ok((_, bytes))) => {
-                    auth::packets::MsgTransfer::decode(&bytes)?
-                },
-                Some(Err(e)) => return Err(e.into()),
-                None => {
-                    return Err(Error::ServerTimedOut);
-                },
-            };
-            // Close the connection and connect to the new realm.
-            encoder.close().await?;
-            tracing::info!(?account.name, ?realm.name, "Connected to realm");
-            let port = realm.game_port;
-            let stream =
-                TcpStream::connect(format!("127.0.0.1:{port}")).await?;
-            let cipher = CQCipher::new();
-            let (mut encoder, mut decoder) =
-                TQCodec::new(stream, cipher.clone()).split();
-            encoder
-                .send(
-                    packets::MsgConnect {
-                        token: res.token,
-                        build_version: 123,
-                        language: String::from("En").into(),
-                        file_contents: 10,
+            let mut completed_reconnects = 0;
+            loop {
+                // Try to connect to the realm's transfer endpoint first.
+                let stream = TcpStream::connect(format!("{local_ip}:{}", realm.game_port)).await?;
+                let cipher = CQCipher::new();
+                let (mut transfer_encoder, mut transfer_decoder) = TQCodec::new(stream, cipher).split();
+                let transfer = MsgTransfer {
+                    account_id: account.account_id as u32,
+                    realm_id: realm.realm_id as u32,
+                    ..Default::default()
+                };
+                transfer_encoder.send(transfer.encode()?).await?;
+                let token = match transfer_decoder.next().await {
+                    Some(Ok((_, bytes))) => MsgTransfer::decode(&bytes)?.token,
+                    Some(Err(e)) => return Err(e.into()),
+                    None => return Err(Error::ServerTimedOut),
+                };
+                transfer_encoder.close().await?;
+                tracing::info!(?account.name, ?realm.name, "Connected to realm");
+                let stream = TcpStream::connect(format!("127.0.0.1:{}", realm.game_port)).await?;
+                let cipher = CQCipher::new();
+                let (mut encoder, mut decoder) = TQCodec::new(stream, cipher.clone()).split();
+                encoder
+                    .send(
+                        packets::MsgConnect {
+                            token,
+                            build_version: 123,
+                            language: String::from("En").into(),
+                            file_contents: 10,
+                        }
+                        .encode()?,
+                    )
+                    .await?;
+                state.tokens().write().insert(account.account_id, token);
+                cipher.generate_keys(token);
+                let mut reconnect = false;
+                while let Some(packet) = decoder.next().await {
+                    let (id, bytes) = packet?;
+                    match id {
+                        packets::MsgTalk::PACKET_ID => {
+                            reconnect =
+                                handle_msg_talk(&state, &account, &mut encoder, packets::MsgTalk::decode(&bytes)?)
+                                    .await?;
+                            if reconnect {
+                                break;
+                            }
+                        },
+                        packets::MsgAction::PACKET_ID => {
+                            let msg = packets::MsgAction::decode(&bytes)?;
+                            do_random_stuff(&state, &account, &mut encoder, msg, target).await?;
+                        },
+                        packets::MsgUserInfo::PACKET_ID => {
+                            let msg = packets::MsgUserInfo::decode(&bytes)?;
+                            tracing::trace!(?msg, "Received MsgUserInfo packet");
+                            let msg_leave_booth = packets::MsgAction {
+                                client_timestamp: utils::current_ts(),
+                                character_id: msg.character_id as _,
+                                data1: 0,
+                                data2: 0,
+                                details: 0,
+                                action_type: ActionType::LeaveBooth.into(),
+                            };
+                            encoder.send(msg_leave_booth.encode()?).await?;
+                            let msg_setlocation = packets::MsgAction {
+                                client_timestamp: utils::current_ts(),
+                                character_id: msg.character_id as _,
+                                data1: 0,
+                                data2: 0,
+                                details: 0,
+                                action_type: ActionType::SendLocation.into(),
+                            };
+                            encoder.send(msg_setlocation.encode()?).await?;
+                            do_random_stuff(&state, &account, &mut encoder, msg_setlocation, target).await?;
+                            if completed_reconnects < reconnect_rounds {
+                                completed_reconnects += 1;
+                                reconnect = true;
+                                tracing::info!(
+                                    ?account.name,
+                                    round = completed_reconnects,
+                                    total = reconnect_rounds,
+                                    "Completed world login; reconnecting bot"
+                                );
+                                break;
+                            }
+                            if reconnect_rounds > 0 {
+                                tracing::info!(
+                                    ?account.name,
+                                    rounds = completed_reconnects,
+                                    "Reconnect smoke completed"
+                                );
+                                break;
+                            }
+                        },
+                        packets::MsgPlayer::PACKET_ID => {
+                            let msg = packets::MsgPlayer::decode(&bytes)?;
+                            tracing::trace!(%msg.character_name, "We now see other players");
+                        },
+                        _ => {
+                            tracing::trace!(%id, "Received unknown packet");
+                        },
                     }
-                    .encode()?,
-                )
-                .await?;
-            state.tokens().write().insert(account.account_id, res.token);
-            cipher.generate_keys(res.token);
-            while let Some(packet) = decoder.next().await {
-                let (id, bytes) = packet?;
-                match id {
-                    packets::MsgTalk::PACKET_ID => {
-                        handle_msg_talk(
-                            &state,
-                            &account,
-                            &mut encoder,
-                            packets::MsgTalk::decode(&bytes)?,
-                        )
-                        .await?;
-                    },
-                    packets::MsgAction::PACKET_ID => {
-                        let msg = packets::MsgAction::decode(&bytes)?;
-                        do_random_stuff(&state, &account, &mut encoder, msg)
-                            .await?;
-                    },
-                    packets::MsgUserInfo::PACKET_ID => {
-                        let msg = packets::MsgUserInfo::decode(&bytes)?;
-                        tracing::trace!(?msg, "Received MsgUserInfo packet");
-                        let msg_leave_booth = packets::MsgAction {
-                            client_timestamp: utils::current_ts(),
-                            character_id: msg.character_id as _,
-                            data1: 0,
-                            data2: 0,
-                            details: 0,
-                            action_type: ActionType::LeaveBooth.into(),
-                        };
-                        encoder.send(msg_leave_booth.encode()?).await?;
-                        let msg_setlocation = packets::MsgAction {
-                            client_timestamp: utils::current_ts(),
-                            character_id: msg.character_id as _,
-                            data1: 0,
-                            data2: 0,
-                            details: 0,
-                            action_type: ActionType::SendLocation.into(),
-                        };
-                        encoder.send(msg_setlocation.encode()?).await?;
-                        do_random_stuff(
-                            &state,
-                            &account,
-                            &mut encoder,
-                            msg_setlocation,
-                        )
-                        .await?;
-                    },
-                    packets::MsgPlayer::PACKET_ID => {
-                        let msg = packets::MsgPlayer::decode(&bytes)?;
-                        tracing::trace!(%msg.character_name, "We now see other players");
-                    },
-                    _ => {
-                        tracing::trace!(%id, "Received unknown packet");
-                    },
                 }
+                encoder.close().await?;
+                if reconnect {
+                    tracing::info!(?account.name, "Character created; reconnecting bot");
+                    continue;
+                }
+                tracing::debug!(?account.name, ?realm.name, "Disconnected");
+                break;
             }
-            tracing::debug!(?account.name, ?realm.name, "Disconnected");
-            encoder.close().await?;
             Ok(())
         });
         tasks.push(task);
     }
     let ctrl_c = tokio::signal::ctrl_c();
-    let all_tasks = futures::future::join_all(tasks);
-    tokio::select! {
+    let task_results = tokio::select! {
         _ = ctrl_c => {
             tracing::info!("Ctrl-C received, shutting down");
+            return Ok(());
         },
-        _ = all_tasks => {
-            tracing::info!("All tasks finished, shutting down");
-        },
+        results = futures::future::join_all(tasks) => results,
+    };
+    let mut failures = 0;
+    for result in task_results {
+        match result {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => {
+                failures += 1;
+                tracing::error!(%error, "Benchbot task failed");
+            },
+            Err(error) => {
+                failures += 1;
+                tracing::error!(%error, "Benchbot task panicked or was cancelled");
+            },
+        }
     }
+    if failures > 0 {
+        return Err(Error::TasksFailed { failures });
+    }
+    tracing::info!("All tasks finished, shutting down");
     Ok(())
 }
 
-async fn create_or_get_accounts(
-    state: &state::State,
-) -> Result<Vec<Account>, Error> {
-    let mut accounts =
-        Account::all(state.pool(), Some(NUM_OF_BOTS), Some(2)).await?;
-    while accounts.len() < NUM_OF_BOTS as usize {
+async fn create_or_get_accounts(state: &state::State, bot_count: i64) -> Result<Vec<Account>, Error> {
+    let mut accounts = Account::all(state.pool(), Some(bot_count), Some(2)).await?;
+    while accounts.len() < bot_count as usize {
         let account = Account {
             username: format!("bot{}", accounts.len() + 1),
             password: "123456".into(),
@@ -195,7 +249,7 @@ async fn handle_msg_talk(
     account: &Account,
     encoder: &mut TQEncoder<TcpStream, CQCipher>,
     msg: packets::MsgTalk,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     tracing::trace!(?msg, "Received MsgTalk packet");
     match msg.channel.into() {
         TalkChannel::Login if msg.message.contains("Invalid") => {
@@ -230,12 +284,13 @@ async fn handle_msg_talk(
         },
         TalkChannel::Register if msg.message.eq(constants::ANSWER_OK) => {
             tracing::info!(?account.name, "Account created");
+            return Ok(true);
         },
         _ => {
             tracing::trace!(?account.name, ?msg, "Unhandled message");
         },
     }
-    Ok(())
+    Ok(false)
 }
 
 async fn do_random_stuff(
@@ -243,20 +298,20 @@ async fn do_random_stuff(
     account: &Account,
     encoder: &mut TQEncoder<TcpStream, CQCipher>,
     msg: packets::MsgAction,
+    target: BenchTarget,
 ) -> Result<(), Error> {
     let (w, h) = (70, 70);
-    let target_map_id = 1005;
     match msg.action_type.into() {
         ActionType::SendLocation => {
-            let mut rng =
-                rand::rngs::StdRng::seed_from_u64(msg.character_id as _);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(msg.character_id as _);
             // Move to map 1005 (arena) if we are not there already
             let map_id = msg.data1;
-            if map_id == target_map_id {
+            if map_id == target.map_id {
                 return Ok(());
             }
-            let x = rng.gen_range(35..60);
-            let y = rng.gen_range(35..60);
+            let (x, y) = target
+                .position
+                .unwrap_or_else(|| (rng.gen_range(35..60), rng.gen_range(35..60)));
             let msg_cmd = packets::MsgTalk {
                 color: 0x00FF_FFFF,
                 channel: TalkChannel::Talk.into(),
@@ -268,7 +323,7 @@ async fn do_random_stuff(
                 sender_name: String::new(),
                 recipient_name: constants::ALL_USERS.to_string(),
                 suffix: String::new(),
-                message: format!("$tele {target_map_id} {x} {y}"),
+                message: format!("$tele {} {x} {y}", target.map_id),
             };
             encoder.send(msg_cmd.encode()?).await?;
         },

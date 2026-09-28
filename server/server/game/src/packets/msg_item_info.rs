@@ -42,6 +42,18 @@ pub struct MsgItemInfo {
 }
 
 impl MsgItemInfo {
+    /// The 5065 wire format uses 0 for a closed socket, 255 for an open empty
+    /// socket, and the gem code for an occupied socket.
+    fn gem_wire(socket: u8, gem: u8) -> u8 {
+        if gem != 0 {
+            gem
+        } else if socket != 0 {
+            255
+        } else {
+            0
+        }
+    }
+
     pub fn inventory_item(item: crate::entities::InventoryItem) -> Self {
         Self {
             character_id: item.uid,
@@ -50,6 +62,40 @@ impl MsgItemInfo {
             max_durability: item.max_durability,
             action: ItemInfoAction::AddItem as u8,
             position: item.position,
+            gem_one: Self::gem_wire(item.socket_one, item.gem_one),
+            gem_two: Self::gem_wire(item.socket_two, item.gem_two),
+            plus: item.plus,
+            blees: item.rarity,
+            enchant: item.rarity_roll,
+            ..Self::default()
+        }
+    }
+
+    pub fn equipment_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            durability: item.durability,
+            max_durability: item.max_durability,
+            // The current client uses action 8 for the explicit equipment
+            // stream so inventory positions 1..9 remain unambiguous.
+            action: 8,
+            position: item.position,
+            gem_one: Self::gem_wire(item.socket_one, item.gem_one),
+            gem_two: Self::gem_wire(item.socket_two, item.gem_two),
+            plus: item.plus,
+            blees: item.rarity,
+            enchant: item.rarity_roll,
+            ..Self::default()
+        }
+    }
+
+    pub fn remove_equipment_item(item: crate::entities::InventoryItem, equipment_slot: u8) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            action: 9,
+            position: equipment_slot,
             ..Self::default()
         }
     }
@@ -60,6 +106,105 @@ impl MsgItemInfo {
             item_id: item.item_type,
             action: 5,
             position: item.position,
+            ..Self::default()
+        }
+    }
+
+    pub fn trade_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            durability: item.durability,
+            max_durability: item.max_durability,
+            action: ItemInfoAction::Trade as u8,
+            position: item.position,
+            gem_one: Self::gem_wire(item.socket_one, item.gem_one),
+            gem_two: Self::gem_wire(item.socket_two, item.gem_two),
+            plus: item.plus,
+            blees: item.rarity,
+            enchant: item.rarity_roll,
+            ..Self::default()
+        }
+    }
+
+    pub fn warehouse_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            durability: item.durability,
+            max_durability: item.max_durability,
+            action: ItemInfoAction::AddItem as u8,
+            position: 40 + item.position,
+            gem_one: Self::gem_wire(item.socket_one, item.gem_one),
+            gem_two: Self::gem_wire(item.socket_two, item.gem_two),
+            plus: item.plus,
+            blees: item.rarity,
+            enchant: item.rarity_roll,
+            ..Self::default()
+        }
+    }
+
+    pub fn remove_warehouse_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            action: 5,
+            position: 40 + item.position,
+            ..Self::default()
+        }
+    }
+
+    pub fn guild_warehouse_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            durability: item.durability,
+            max_durability: item.max_durability,
+            action: ItemInfoAction::AddItem as u8,
+            position: 80 + item.position,
+            gem_one: Self::gem_wire(item.socket_one, item.gem_one),
+            gem_two: Self::gem_wire(item.socket_two, item.gem_two),
+            plus: item.plus,
+            blees: item.rarity,
+            enchant: item.rarity_roll,
+            ..Self::default()
+        }
+    }
+
+    pub fn remove_guild_warehouse_item(item: crate::entities::InventoryItem) -> Self {
+        Self {
+            character_id: item.uid,
+            item_id: item.item_type,
+            action: 5,
+            position: 80 + item.position,
+            ..Self::default()
+        }
+    }
+
+    pub fn clear_guild_warehouse(guild_id: u32) -> Self {
+        Self {
+            character_id: guild_id,
+            action: 6,
+            position: 80,
+            ..Self::default()
+        }
+    }
+
+    pub fn clear_warehouse(npc_id: u32) -> Self {
+        Self {
+            character_id: npc_id,
+            action: 6,
+            position: 40,
+            ..Self::default()
+        }
+    }
+
+    pub fn warehouse_balance(npc_id: u32, silver: u32) -> Self {
+        Self {
+            character_id: npc_id,
+            action: 7,
+            position: 40,
+            reserved1: silver,
             ..Self::default()
         }
     }

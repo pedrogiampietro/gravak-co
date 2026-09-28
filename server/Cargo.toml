@@ -15,9 +15,8 @@ members = [
   # Utils
   "macros/*",
   # Cli Tools
-  "tools/*",
+  "tools/*", "apply_sql", "import_monsters", "import_npcs",
 ]
-exclude = ["tools/benchbot"]
 
 [workspace.dependencies]
 # Local Dependencies

@@ -1,8 +1,6 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Auth(#[from] auth::Error),
-    #[error(transparent)]
     Network(#[from] tq_network::Error),
     #[error(transparent)]
     IO(#[from] std::io::Error),
@@ -24,4 +22,6 @@ pub enum Error {
     CharacterNameAlreadyTaken,
     #[error("Token not found")]
     AccountTokenNotFound,
+    #[error("{failures} benchbot task(s) failed")]
+    TasksFailed { failures: usize },
 }

@@ -1,14 +1,19 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 use crate::{assets::Result, character::Character};
 use image::{Pixel, Rgba, RgbaImage};
+use std::sync::{Arc, OnceLock};
 
 const FONT_SIZE: f32 = 12.0;
 const GUILD_COLOUR: [u8; 3] = [255, 255, 0];
 const RANK_COLOUR: [u8; 3] = [145, 185, 255];
 pub const BUILD_TEXT: &str =
     "[Preservation] Skeleton test build by @digitalm1nd | Discord: _dek | discord.gg/CvKPXEHYRY";
+const CINZEL_DECORATIVE: &[u8] = include_bytes!("ui_assets/CinzelDecorative-Regular.ttf");
 
-pub(crate) fn font() -> Result<fontdue::Font> {
+static UI_FONT: OnceLock<std::result::Result<Arc<fontdue::Font>, String>> = OnceLock::new();
+static DECORATIVE_FONT: OnceLock<std::result::Result<Arc<fontdue::Font>, String>> = OnceLock::new();
+
+fn load_ui_font() -> Result<fontdue::Font> {
     let mut database = fontdb::Database::new();
     database.load_system_fonts();
     let id = database
@@ -30,6 +35,58 @@ pub(crate) fn font() -> Result<fontdue::Font> {
         .ok_or("Font unavailable")??)
 }
 
+pub(crate) fn font() -> Result<Arc<fontdue::Font>> {
+    UI_FONT
+        .get_or_init(|| {
+            load_ui_font()
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map(Arc::clone)
+        .map_err(|error| std::io::Error::other(error.clone()).into())
+}
+
+pub(crate) fn decorative_font() -> Result<Arc<fontdue::Font>> {
+    DECORATIVE_FONT
+        .get_or_init(|| {
+            fontdue::Font::from_bytes(CINZEL_DECORATIVE, fontdue::FontSettings::default())
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map(Arc::clone)
+        .map_err(|error| std::io::Error::other(error.clone()).into())
+}
+
+fn damage_font() -> Result<fontdue::Font> {
+    let mut database = fontdb::Database::new();
+    database.load_system_fonts();
+    let id = database
+        .query(&fontdb::Query {
+            families: &[
+                fontdb::Family::Name("Times New Roman"),
+                fontdb::Family::Name("Georgia"),
+                fontdb::Family::Serif,
+            ],
+            weight: fontdb::Weight::BOLD,
+            style: fontdb::Style::Italic,
+            ..Default::default()
+        })
+        .ok_or("No damage font available")?;
+    Ok(database
+        .with_face_data(id, |bytes, index| {
+            fontdue::Font::from_bytes(
+                bytes,
+                fontdue::FontSettings {
+                    collection_index: index,
+                    ..Default::default()
+                },
+            )
+        })
+        .ok_or("Damage font unavailable")??)
+}
+
 fn width(font: &fontdue::Font, text: &str) -> f32 {
     text.chars()
         .map(|c| font.metrics(c, FONT_SIZE).advance_width)
@@ -42,20 +99,31 @@ pub(crate) fn text(
     spans: &[(&str, [u8; 3])],
     origin: [f32; 2],
 ) {
+    text_sized(image, font, spans, origin, FONT_SIZE);
+}
+
+pub(crate) fn text_sized(
+    image: &mut RgbaImage,
+    font: &fontdue::Font,
+    spans: &[(&str, [u8; 3])],
+    origin: [f32; 2],
+    font_size: f32,
+) {
     for shadow in [true, false] {
         let mut cursor = origin[0].round();
         for &(text, colour) in spans {
             let colour = if shadow { [0, 0, 0] } else { colour };
             let offset = i32::from(shadow);
             for character in text.chars() {
-                let (metrics, bitmap) = font.rasterize(character, FONT_SIZE);
+                let (metrics, bitmap) = font.rasterize(character, font_size);
                 for row in 0..metrics.height {
                     for column in 0..metrics.width {
                         let x = cursor.round() as i32 + metrics.xmin + column as i32 + offset;
-                        let y =
-                            origin[1].round() as i32 + 12 - metrics.ymin - metrics.height as i32
-                                + row as i32
-                                + offset;
+                        let y = origin[1].round() as i32 + font_size.round() as i32
+                            - metrics.ymin
+                            - metrics.height as i32
+                            + row as i32
+                            + offset;
                         if x < 0 || y < 0 || x >= image.width() as i32 || y >= image.height() as i32
                         {
                             continue;
@@ -119,6 +187,241 @@ pub fn actor_image(name: &str) -> Result<RgbaImage> {
     let width = width(&font, name).ceil() as u32 + 8;
     let mut image = RgbaImage::new(width.max(16), 16);
     text(&mut image, &font, &[(name, [255, 255, 255])], [4.0, 2.0]);
+    Ok(image)
+}
+
+/// Compact monster nameplate: the name followed by a small health bar.
+pub fn monster_image(name: &str, health: u16, maximum_health: u16) -> Result<RgbaImage> {
+    let font = font()?;
+    let text_width = width(&font, name).ceil() as u32 + 8;
+    let image_width = text_width.max(36);
+    let mut image = RgbaImage::new(image_width, 28);
+    text(
+        &mut image,
+        &font,
+        &[(name, [255, 255, 255])],
+        [
+            ((image_width as f32 - width(&font, name)) * 0.5).max(2.0),
+            1.0,
+        ],
+    );
+    let bar_width = image_width.saturating_sub(8).max(24);
+    for y in 18..24 {
+        for x in 4..4 + bar_width {
+            image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    let fraction = health as f32 / maximum_health.max(health).max(1) as f32;
+    let filled_width = (bar_width as f32 * fraction).round() as u32;
+    for y in 19..23 {
+        for x in 5..5 + filled_width.saturating_sub(1) {
+            image.put_pixel(x, y, Rgba([54, 203, 70, 255]));
+        }
+    }
+    Ok(image)
+}
+
+pub fn damage_image(value: u32) -> Result<RgbaImage> {
+    let font = damage_font()?;
+    let text_value = value.to_string();
+    let size = 46.0;
+    let text_width: f32 = text_value
+        .chars()
+        .map(|character| font.metrics(character, size).advance_width)
+        .sum();
+    let mut image = RgbaImage::new(text_width.ceil() as u32 + 24, 58);
+    for (outline, colour) in [(true, [20, 12, 65]), (false, [224, 216, 255])] {
+        let mut cursor = ((image.width() as f32 - text_width) * 0.5).round();
+        for character in text_value.chars() {
+            let (metrics, bitmap) = font.rasterize(character, size);
+            for row in 0..metrics.height {
+                for column in 0..metrics.width {
+                    let offset = if outline { 3 } else { 0 };
+                    let x = cursor as i32 + metrics.xmin + column as i32 + offset;
+                    let y = 48 - metrics.ymin - metrics.height as i32 + row as i32 + offset;
+                    if x < 0 || y < 0 || x >= image.width() as i32 || y >= image.height() as i32 {
+                        continue;
+                    }
+                    let alpha = bitmap[row * metrics.width + column];
+                    image.put_pixel(
+                        x as u32,
+                        y as u32,
+                        Rgba([colour[0], colour[1], colour[2], alpha]),
+                    );
+                }
+            }
+            cursor += metrics.advance_width;
+        }
+    }
+    Ok(image)
+}
+
+pub fn loot_image(value: u32) -> Result<RgbaImage> {
+    let font = font()?;
+    let label = format!("Silver {value}");
+    let size = 13.0;
+    let width = label
+        .chars()
+        .map(|ch| font.metrics(ch, size).advance_width)
+        .sum::<f32>()
+        .ceil() as u32;
+    let mut image = RgbaImage::new(width + 8, 18);
+    text(
+        &mut image,
+        &font,
+        &[(label.as_str(), [255, 225, 120])],
+        [4.0, 1.0],
+    );
+    Ok(image)
+}
+
+pub fn loot_name_image(name: &str) -> Result<RgbaImage> {
+    let font = font()?;
+    let width = width(&font, name).ceil() as u32 + 8;
+    let mut image = RgbaImage::new(width.max(24), 18);
+    text(&mut image, &font, &[(name, [255, 236, 150])], [4.0, 2.0]);
+    Ok(image)
+}
+
+/// Compact, readable status banner used for important client/server feedback.
+/// The banner deliberately owns its background so it remains legible over any
+/// map texture and does not depend on the chat panel being open.
+pub fn status_image(message: &str) -> Result<RgbaImage> {
+    let font = font()?;
+    let mut visible = message.trim().to_owned();
+    if visible.len() > 96 {
+        visible = visible.chars().take(95).collect();
+        visible.push('…');
+    }
+    let size = 16.0;
+    let text_width = visible
+        .chars()
+        .map(|character| font.metrics(character, size).advance_width)
+        .sum::<f32>();
+    let width = (text_width.ceil() as u32 + 28).clamp(220, 760);
+    let height = 34;
+    let is_error = ["error", "rejected", "falha", "indisponível", "inválido"]
+        .iter()
+        .any(|marker| visible.to_lowercase().contains(marker));
+    let border = if is_error {
+        [214, 91, 68, 255]
+    } else {
+        [219, 174, 81, 255]
+    };
+    let fill = if is_error {
+        [50, 22, 24, 242]
+    } else {
+        [13, 29, 38, 242]
+    };
+    let mut image = RgbaImage::from_pixel(width, height, Rgba(fill));
+    for x in 0..width {
+        image.put_pixel(x, 0, Rgba(border));
+        image.put_pixel(x, height - 1, Rgba(border));
+    }
+    for y in 0..height {
+        image.put_pixel(0, y, Rgba(border));
+        image.put_pixel(width - 1, y, Rgba(border));
+    }
+    text(
+        &mut image,
+        &font,
+        &[(
+            &visible,
+            if is_error {
+                [255, 190, 170]
+            } else {
+                [246, 222, 164]
+            },
+        )],
+        [14.0, 8.0],
+    );
+    Ok(image)
+}
+
+/// Compact diagnostics panel shown by the F11 performance overlay.
+pub fn performance_image(
+    frame_ms: f64,
+    draws: usize,
+    vertices: usize,
+    textures: usize,
+) -> Result<RgbaImage> {
+    let font = font()?;
+    let fps = if frame_ms > 0.0 {
+        1_000.0 / frame_ms
+    } else {
+        0.0
+    };
+    let mut image = RgbaImage::from_pixel(232, 94, Rgba([5, 14, 21, 238]));
+    for x in 0..image.width() {
+        image.put_pixel(x, 0, Rgba([213, 163, 58, 255]));
+        image.put_pixel(x, image.height() - 1, Rgba([91, 59, 27, 255]));
+    }
+    for y in 0..image.height() {
+        image.put_pixel(0, y, Rgba([213, 163, 58, 255]));
+        image.put_pixel(image.width() - 1, y, Rgba([91, 59, 27, 255]));
+    }
+    text_sized(
+        &mut image,
+        &font,
+        &[("PERFORMANCE", [255, 224, 146])],
+        [10.0, 7.0],
+        12.0,
+    );
+    let lines = [
+        format!("Frame: {frame_ms:.2} ms  FPS: {fps:.0}"),
+        format!("Draws: {draws}  Vertices: {vertices}"),
+        format!("Textures: {textures}"),
+    ];
+    for (index, line) in lines.iter().enumerate() {
+        text_sized(
+            &mut image,
+            &font,
+            &[(line.as_str(), [214, 222, 213])],
+            [10.0, 27.0 + index as f32 * 15.0],
+            10.0,
+        );
+    }
+    Ok(image)
+}
+
+pub fn hit_flash_image() -> Result<RgbaImage> {
+    let mut image = RgbaImage::new(64, 64);
+    let center = 31.5_f32;
+    for y in 0..64 {
+        for x in 0..64 {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let alpha = if (20.0..=30.0).contains(&distance) {
+                ((30.0 - distance) * 22.0).clamp(0.0, 210.0) as u8
+            } else {
+                0
+            };
+            image.put_pixel(x, y, Rgba([255, 235, 120, alpha]));
+        }
+    }
+    Ok(image)
+}
+
+pub fn skill_effect_image(_skill_id: u16) -> Result<RgbaImage> {
+    let mut image = RgbaImage::new(96, 96);
+    let center = 48.0_f32;
+    for y in 0..96 {
+        for x in 0..96 {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let ring = (distance - 32.0).abs();
+            let alpha = if ring < 4.0 {
+                ((4.0 - ring) * 48.0).clamp(0.0, 180.0) as u8
+            } else if distance < 16.0 {
+                ((16.0 - distance) * 3.0).clamp(0.0, 42.0) as u8
+            } else {
+                0
+            };
+            image.put_pixel(x, y, Rgba([88, 190, 255, alpha]));
+        }
+    }
     Ok(image)
 }
 
@@ -390,5 +693,14 @@ mod tests {
     fn guild_and_rank_use_different_client_colours() {
         assert_eq!(GUILD_COLOUR, [255, 255, 0]);
         assert_eq!(RANK_COLOUR, [145, 185, 255]);
+    }
+
+    #[test]
+    fn status_banner_has_a_bounded_size_for_long_feedback() {
+        let short = status_image("online: item equipped").expect("status image");
+        let long = status_image(&"x".repeat(400)).expect("status image");
+        assert!(short.width() >= 220);
+        assert!(long.width() <= 760);
+        assert_eq!(short.height(), 34);
     }
 }

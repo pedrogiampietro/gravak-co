@@ -215,6 +215,19 @@ impl IdPathCatalog {
     }
 
     #[must_use]
+    pub fn id_for_path(&self, path: &str) -> Option<u32> {
+        self.entries
+            .iter()
+            .find_map(|(id, candidate)| (candidate.as_str() == path).then_some(*id))
+    }
+
+    pub fn ids_for_path<'a>(&'a self, path: &'a str) -> impl Iterator<Item = u32> + 'a {
+        self.entries
+            .iter()
+            .filter_map(move |(id, candidate)| (candidate.as_str() == path).then_some(*id))
+    }
+
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }

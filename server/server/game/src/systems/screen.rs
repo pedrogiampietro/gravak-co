@@ -100,6 +100,10 @@ impl Screen {
                 debug!(npc = o.id(), "Added Npc to Screen");
                 Ok(true)
             },
+            GameEntity::Monster(o) => {
+                debug!(monster = o.id(), "Added Monster to Screen");
+                Ok(true)
+            },
         }
     }
 
@@ -121,6 +125,10 @@ impl Screen {
             },
             GameEntity::Npc(o) => {
                 debug!(npc = o.id(), "Removed Npc from Screen");
+                Ok(true)
+            },
+            GameEntity::Monster(o) => {
+                debug!(monster = o.id(), "Removed Monster from Screen");
                 Ok(true)
             },
         }
@@ -170,6 +178,10 @@ impl Screen {
                         // Npc's don't need to be removed from the screen.
                         // They are removed when the npc is removed from the
                         // map.
+                        continue;
+                    },
+                    GameEntity::Monster(_) => {
+                        tracing::trace!(monster = o.id(), "Found Monster Observer");
                         continue;
                     },
                 }
@@ -244,6 +256,21 @@ impl Screen {
                                     return Ok(());
                                 }
                                 tracing::trace!(npc = o.id(), "Loaded Into Screen");
+                                o.send_spawn(&me).await?;
+                                Result::<_, Error>::Ok(())
+                            }
+                            .boxed();
+                            futures.push(fut);
+                        },
+                        GameEntity::Monster(_) => {
+                            let o = o.clone();
+                            let me = entity.clone();
+                            let fut = async move {
+                                let added = self.insert_entity(Arc::downgrade(&o))?;
+                                if !added {
+                                    return Ok(());
+                                }
+                                tracing::trace!(monster = o.id(), "Loaded Monster Into Screen");
                                 o.send_spawn(&me).await?;
                                 Result::<_, Error>::Ok(())
                             }
@@ -407,6 +434,20 @@ impl Screen {
                         GameEntity::Npc(_) => {
                             // NPC not loaded in the screen.
                             // Remove it from the screen.
+                            let _ = self.remove_entity(o.id());
+                        },
+                        GameEntity::Monster(_) if can_see(&o, &myself) => {
+                            let fut = async move {
+                                let added = self.insert_entity(Arc::downgrade(&o))?;
+                                if added {
+                                    o.send_spawn(&myself).await?;
+                                }
+                                Result::<_, Error>::Ok(())
+                            }
+                            .boxed();
+                            futures.push(fut);
+                        },
+                        GameEntity::Monster(_) => {
                             let _ = self.remove_entity(o.id());
                         },
                     }

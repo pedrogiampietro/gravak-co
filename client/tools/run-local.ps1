@@ -24,11 +24,17 @@ if ($CheckAssets) {
 }
 
 Push-Location $projectRoot
+$previousPresentMode = $env:GRAVAK_PRESENT_MODE
 try {
     cargo run --release --locked -- @cargoArgs
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 } finally {
+    if ($null -eq $previousPresentMode) {
+        Remove-Item Env:GRAVAK_PRESENT_MODE -ErrorAction SilentlyContinue
+    } else {
+        $env:GRAVAK_PRESENT_MODE = $previousPresentMode
+    }
     Pop-Location
 }

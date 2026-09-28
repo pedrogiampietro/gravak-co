@@ -10,14 +10,15 @@ use tq_math::SCREEN_DISTANCE;
 use tq_network::{PacketEncode, PacketID};
 
 use super::Portal;
-use crate::entities::{GameEntity, Npc};
+use crate::entities::{GameEntity, Monster, Npc};
 use crate::packets::{MapFlags, MsgWeather, WeatherKind};
-use crate::systems::{Floor, Tile};
+use crate::systems::{Floor, Tile, TileType};
 use crate::{constants, Error};
 
 type Entities = RwLock<HashMap<u32, Weak<GameEntity>>>;
 type Portals = HashSet<Portal>;
 type Npcs = HashMap<u32, Arc<GameEntity>>;
+type Monsters = HashMap<u32, Arc<GameEntity>>;
 type MapRegions = RwLock<Vec<MapRegion>>;
 
 /// This struct encapsulates map information from a compressed map and the
@@ -37,23 +38,74 @@ pub struct Map {
     portals: Portals,
     /// Holds all Npcs in that map.
     npcs: Npcs,
+    /// Persistent monster definitions and spawn rules for this map.
+    monsters: Vec<(tq_db::monster::MonsterSpawn, tq_db::monster::MonsterType)>,
+    /// Runtime monster instances for this map.
+    monster_entities: Monsters,
     /// Holds all MapRegions in that map.
     regions: MapRegions,
 }
 
 impl Map {
-    pub fn new(inner: tq_db::map::Map, portals: Vec<tq_db::portal::Portal>, npcs: Vec<tq_db::npc::Npc>) -> Self {
+    pub fn new(
+        inner: tq_db::map::Map,
+        portals: Vec<tq_db::portal::Portal>,
+        npcs: Vec<tq_db::npc::Npc>,
+        monsters: Vec<(tq_db::monster::MonsterSpawn, tq_db::monster::MonsterType)>,
+    ) -> Self {
         let portals = portals.into_iter().map(Portal::new).collect();
         let npcs = npcs
             .into_iter()
             .filter(|npc| !constants::is_terrain_npc(npc.id as _))
             .map(|v| (v.id as u32, Arc::new(GameEntity::from(Npc::from(v)))))
             .collect();
+        let mut occupied_monster_tiles = HashSet::new();
+        let mut monster_entities = HashMap::new();
+        for (spawn, monster_type) in &monsters {
+            let amount = spawn.amount.max(1) as u32;
+            for index in 0..amount {
+                let id_seed = spawn.id.max(0) as u32 * 1000 + index;
+                let id =
+                    constants::MONSTER_ID_MIN + (id_seed % (constants::MONSTER_ID_MAX - constants::MONSTER_ID_MIN));
+                // Keep the first instance at the authored location and
+                // spread additional instances across the spawn area. The
+                // previous diagonal-only offset made an entire pack spawn
+                // on top of the same visual lane.
+                let mut instance_spawn = spawn.clone();
+                if index > 0 && spawn.radius > 0 {
+                    let radius = spawn.radius as i16;
+                    let span = radius * 2 + 1;
+                    let mut offset_x = ((index as i16 * 37) % span) - radius;
+                    let mut offset_y = ((index as i16 * 53) % span) - radius;
+                    let mut candidate = (
+                        instance_spawn.x.saturating_add(offset_x),
+                        instance_spawn.y.saturating_add(offset_y),
+                    );
+                    let mut attempts = 0;
+                    while occupied_monster_tiles.contains(&candidate) && attempts < span * span {
+                        offset_x = (offset_x + 1).rem_euclid(span) - radius;
+                        offset_y = (offset_y + 1).rem_euclid(span) - radius;
+                        candidate = (
+                            instance_spawn.x.saturating_add(offset_x),
+                            instance_spawn.y.saturating_add(offset_y),
+                        );
+                        attempts += 1;
+                    }
+                    instance_spawn.x = candidate.0;
+                    instance_spawn.y = candidate.1;
+                }
+                occupied_monster_tiles.insert((instance_spawn.x, instance_spawn.y));
+                let monster = Monster::new(id, monster_type.clone(), instance_spawn);
+                monster_entities.insert(id, Arc::new(GameEntity::from(monster)));
+            }
+        }
         Self {
             floor: Floor::new(inner.path.clone()),
             revive_point: Point::new(inner.revive_point_x as u32, inner.revive_point_y as u32),
             regions: RwLock::new(Vec::new()),
             npcs,
+            monsters,
+            monster_entities,
             portals,
             inner,
         }
@@ -99,8 +151,35 @@ impl Map {
         self.floor.tile(x, y)
     }
 
+    /// Finds a nearby cell where a character can stand. Characters can be
+    /// left on an NPC tile by older clients or by an interrupted teleport;
+    /// accepting that persisted position would make the next login appear
+    /// frozen because the client starts inside the NPC collision cell.
+    pub fn nearest_walkable_position(&self, origin: Location, max_radius: u16) -> Option<Location> {
+        let walkable = |x: i32, y: i32| {
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                return false;
+            };
+            self.tile(x, y).is_some_and(|tile| tile.access > TileType::Npc)
+        };
+        nearest_walkable_candidate([i32::from(origin.x), i32::from(origin.y)], max_radius, walkable)
+            .map(|[x, y]| Location::new(x as u16, y as u16, origin.direction))
+    }
+
     pub fn npc(&self, id: u32) -> Option<&Npc> {
         self.npcs.get(&id).and_then(|v| v.as_npc())
+    }
+
+    pub fn monsters(&self) -> &[(tq_db::monster::MonsterSpawn, tq_db::monster::MonsterType)] {
+        &self.monsters
+    }
+
+    pub fn monster_entity(&self, id: u32) -> Option<&Arc<GameEntity>> {
+        self.monster_entities.get(&id)
+    }
+
+    pub fn monster_entities(&self) -> Vec<Arc<GameEntity>> {
+        self.monster_entities.values().cloned().collect()
     }
 
     pub fn with_regions<F, R>(&self, f: F) -> R
@@ -195,6 +274,7 @@ impl Map {
             *lock = regions;
         }
         self.insert_batch(self.npcs.values().cloned()).await?;
+        self.insert_batch(self.monster_entities.values().cloned()).await?;
         tracing::trace!("Map Loaded into memory");
         Ok(())
     }
@@ -286,8 +366,14 @@ impl Map {
                 region.insert_entity(e.clone());
                 old_region.remove_entity(e.id());
             },
-            (Some(_), Some(_)) => {
-                // it is the same region, do nothing
+            (Some(region), Some(_)) => {
+                // During initial map loading, an entity's previous location
+                // is equal to its current location. Insert it if the region
+                // does not contain it yet; moving entities already present in
+                // the same region remain untouched.
+                if region.try_entities(e.id()).is_none() {
+                    region.insert_entity(e);
+                }
             },
             (Some(region), None) => {
                 region.insert_entity(e.clone());
@@ -355,6 +441,35 @@ impl Map {
         }
         Ok(())
     }
+}
+
+fn nearest_walkable_candidate(
+    origin: [i32; 2],
+    max_radius: u16,
+    walkable: impl Fn(i32, i32) -> bool,
+) -> Option<[i32; 2]> {
+    if walkable(origin[0], origin[1]) {
+        return None;
+    }
+
+    for radius in 1..=i32::from(max_radius) {
+        for offset in -radius..=radius {
+            let candidates = [
+                [origin[0] + offset, origin[1] - radius],
+                [origin[0] + offset, origin[1] + radius],
+                [origin[0] - radius, origin[1] + offset],
+                [origin[0] + radius, origin[1] + offset],
+            ];
+            if let Some(candidate) = candidates
+                .into_iter()
+                .find(|candidate| walkable(candidate[0], candidate[1]))
+            {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
 }
 
 /// A region or a block is a set of the map which will hold a collection with
@@ -577,12 +692,31 @@ mod tests {
     use super::*;
     use crate::test_utils::*;
 
+    #[test]
+    fn nearest_walkable_candidate_recovers_from_a_blocked_spawn() {
+        let candidate = nearest_walkable_candidate([10, 10], 4, |x, y| [x, y] == [8, 9]);
+        assert_eq!(candidate, Some([8, 9]));
+    }
+
+    #[test]
+    fn nearest_walkable_candidate_keeps_a_valid_spawn() {
+        let candidate = nearest_walkable_candidate([10, 10], 4, |x, y| [x, y] == [10, 10]);
+        assert_eq!(candidate, None);
+    }
+
     #[tokio::test]
     async fn map_regions() -> Result<(), Error> {
         with_test_env(tracing::Level::TRACE, |state, _actors| {
             async move {
                 let test_map_id = Maps::Arena;
                 let map = state.try_map(test_map_id.into())?;
+                let data_dir = std::env::var("DATA_LOCATION").map(std::path::PathBuf::from)?;
+                let map_asset = data_dir.join("GameMaps").join("map").join("arena.DMap");
+                let converted_asset = data_dir.join("Maps").join("arena.cmap");
+                if !map_asset.exists() && !converted_asset.exists() {
+                    tracing::warn!(path = ?map_asset, "Skipping map region test because arena map assets are unavailable");
+                    return Ok(());
+                }
                 map.load().await?;
                 let my_region = map.region(50, 50);
                 assert!(my_region.is_some(), "Can't find a region on (50, 50)");

@@ -32,6 +32,10 @@ pub struct Character {
     pub health_points: i16,
     pub mana_points: i16,
     pub kill_points: i16,
+    pub nobility_donation: i64,
+    pub equipped_title: i64,
+    pub double_experience_until: i64,
+    pub heaven_blessing_until: i64,
 }
 
 #[derive(Debug)]
@@ -81,13 +85,14 @@ impl Character {
                     account_id, realm_id, name, mesh, avatar,
                     hair_style, silver, current_class,
                     map_id, x, y, virtue, strength, agility,
-                    vitality, spirit, health_points, mana_points
+                    vitality, spirit, health_points, mana_points,
+                    nobility_donation, equipped_title
                 )
             VALUES 
                 (
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?
                 )
             RETURNING character_id;
             ",
@@ -110,6 +115,8 @@ impl Character {
         .bind(self.spirit)
         .bind(self.health_points)
         .bind(self.mana_points)
+        .bind(self.nobility_donation)
+        .bind(self.equipped_title)
         .fetch_one(pool)
         .await?;
         Ok(id)
@@ -134,7 +141,13 @@ impl Character {
                 vitality = ?,
                 spirit = ?,
                 health_points = ?,
-                mana_points = ?
+                mana_points = ?,
+                nobility_donation = ?,
+                equipped_title = ?,
+                level = ?,
+                experience = ?,
+                double_experience_until = ?,
+                heaven_blessing_until = ?
             WHERE character_id = ?;
             ",
         )
@@ -154,6 +167,12 @@ impl Character {
         .bind(self.spirit)
         .bind(self.health_points)
         .bind(self.mana_points)
+        .bind(self.nobility_donation)
+        .bind(self.equipped_title)
+        .bind(self.level)
+        .bind(self.experience)
+        .bind(self.double_experience_until)
+        .bind(self.heaven_blessing_until)
         .bind(self.character_id)
         .execute(pool)
         .await?;

@@ -5,7 +5,8 @@ use std::time::Duration;
 pub const WALK_CELLS_PER_SECOND: f32 = 3.0;
 pub const RUN_CELLS_PER_SECOND: f32 = 6.0;
 pub const MAX_JUMP_DISTANCE: f32 = 16.0;
-pub const MAX_JUMP_CLIMB: i32 = 120;
+/// Keep the client in sync with the server's 210-point jump elevation limit.
+pub const MAX_JUMP_CLIMB: i32 = 210;
 pub const MAX_JUMP_RISE: i32 = 210;
 
 const WALK_X: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];

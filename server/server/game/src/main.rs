@@ -34,6 +34,22 @@ impl TQServer for GameServer {
             me.save(state).await?;
             me.try_screen()?.remove_from_observers().await?;
             ActorState::dispose(&actor, actor.handle()).await?;
+            state.team_manager().remove_member(me.id());
+            if let Some(game::trade::TradeChange::Closed { owner_id, target_id }) =
+                state.trade_manager().remove_member(me.id())
+            {
+                let peer_id = if owner_id == me.id() { target_id } else { owner_id };
+                if let Some(peer_entity) = state.entity(peer_id) {
+                    if let Some(peer_owner) = peer_entity.owner() {
+                        peer_owner
+                            .send(MsgTrade::new(me.id(), game::trade::HIDE_TABLE, 0))
+                            .await?;
+                    }
+                }
+            }
+            state.player_shop_manager().remove_member(me.id());
+            state.guild_manager().remove_member(me.id());
+            state.clear_friend_requests_for(me.id());
             state.remove_entity(me.id());
             let mymap = state.try_map(mymap_id)?;
             mymap.remove_entity(&entity)?;
@@ -47,6 +63,7 @@ impl TQServer for GameServer {
 #[handle(state = State, actor_state = ActorState)]
 pub enum Handler {
     MsgConnect,
+    MsgAssignAttributes,
     MsgRegister,
     MsgTalk,
     MsgAction,
@@ -55,6 +72,18 @@ pub enum Handler {
     MsgTransfer,
     MsgNpc,
     MsgTaskDialog,
+    MsgWarehouse,
+    MsgInteract,
+    MsgGroundItem,
+    MsgSocketGem,
+    MsgRefinery,
+    MsgItemRarity,
+    MsgItemRarityReroll,
+    MsgTeamAction,
+    MsgFriend,
+    MsgGuild,
+    MsgGuildWarehouse,
+    MsgTrade,
 }
 
 #[tokio::main]
@@ -91,6 +120,32 @@ Copyright 2020 Shady Khalifa (@shekohex)
     // SAFETY: We are the only owner of this Box, and we are deref
     // it. This happens only once, so no one else can access.
     let state = unsafe { &*static_state };
+    let ai_state = state;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            game::systems::temporary_effects::tick(ai_state).await;
+            game::systems::status_effects::tick(ai_state).await;
+            game::systems::monster_ai::tick(ai_state).await;
+            if let Err(error) = game::packets::expire_trades(ai_state).await {
+                tracing::warn!(%error, "trade timeout cleanup failed");
+            }
+        }
+    });
+    let autosave_state = state;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            match autosave_state.autosave_characters().await {
+                Ok(saved) if saved > 0 => tracing::debug!(saved, "online characters autosaved"),
+                Ok(_) => {},
+                Err(error) => tracing::warn!(%error, "online character autosave failed"),
+            }
+        }
+    });
     let realm = tq_db::realm::Realm::by_name(state.pool(), "CoEmu")
         .await?
         .ok_or(Error::RealmNotFound)?;
