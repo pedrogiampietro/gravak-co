@@ -7,6 +7,10 @@ target/
 **/.env
 logs/
 **/logs/
+*.log
+*.out
+*.err
+*.errout
 
 # Local server database
 data/coemu.db
@@ -18,6 +22,9 @@ server/data/GameMaps/map/
 server/data/GameMaps/Scene/
 server/data/GameMaps/ScenePart/
 server/data/GameMaps/GameMap.dat
+
+# Previews visuais gerados localmente
+docs/ui-preview*/
 
 # Editor / OS files
 .DS_Store
