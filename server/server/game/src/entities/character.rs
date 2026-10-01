@@ -31,6 +31,9 @@ pub struct Character {
     warehouse_silver: AtomicU64,
     active_shop_id: AtomicU32,
     active_storage_id: AtomicU32,
+    /// Where the Market controller sends the player back to: the map and
+    /// cell they were on when a Conductress took them to the Market.
+    market_return: Mutex<Option<(u32, (u16, u16))>>,
     /// Classic kill mode: 0 free, 1 safe, 2 team, 3 arrestment.
     kill_mode: AtomicU16,
     inventory: Mutex<Vec<InventoryItem>>,
@@ -380,6 +383,7 @@ impl Character {
             warehouse_silver: AtomicU64::new(0),
             active_shop_id: AtomicU32::new(0),
             active_storage_id: AtomicU32::new(0),
+            market_return: Mutex::new(None),
             kill_mode: AtomicU16::new(1),
             inventory: Mutex::new(Vec::new()),
             equipment: Mutex::new(Vec::new()),
@@ -552,6 +556,35 @@ impl Character {
         .unwrap_or_else(|| self.silver().min(u64::from(u32::MAX)) as i64);
         self.silver.store(balance.max(0) as u64, Ordering::Relaxed);
         Ok(balance.max(0).min(i64::from(u32::MAX)) as u32)
+    }
+
+    /// Debits `amount` silver only when the balance covers it. Returns the new
+    /// balance, or `None` without charging anything when it does not.
+    pub async fn spend_silver(&self, pool: &sqlx::SqlitePool, amount: u32) -> Result<Option<u32>, Error> {
+        if amount == 0 {
+            return Ok(Some(self.silver().min(u64::from(u32::MAX)) as u32));
+        }
+        let balance = sqlx::query_scalar::<_, i64>(
+            "UPDATE characters SET silver = silver - ? WHERE character_id = ? AND silver >= ? RETURNING silver",
+        )
+        .bind(i64::from(amount))
+        .bind(self.inner.character_id)
+        .bind(i64::from(amount))
+        .fetch_optional(pool)
+        .await?;
+        let Some(balance) = balance else {
+            return Ok(None);
+        };
+        self.silver.store(balance.max(0) as u64, Ordering::Relaxed);
+        Ok(Some(balance.max(0).min(i64::from(u32::MAX)) as u32))
+    }
+
+    pub fn set_market_return(&self, map_id: u32, position: (u16, u16)) {
+        *self.market_return.lock() = Some((map_id, position));
+    }
+
+    pub fn take_market_return(&self) -> Option<(u32, (u16, u16))> {
+        self.market_return.lock().take()
     }
 
     pub fn set_active_shop_id(&self, shop_id: u32) {

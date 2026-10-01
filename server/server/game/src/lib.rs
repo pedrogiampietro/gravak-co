@@ -28,4 +28,5 @@ pub mod refinery;
 pub mod shop;
 pub mod skills;
 pub mod team;
+pub mod teleports;
 pub mod trade;

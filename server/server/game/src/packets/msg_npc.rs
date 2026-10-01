@@ -73,7 +73,8 @@ impl PacketProcess for MsgNpc {
             .shop_catalog()
             .offer(npc_id)
             .map_or(0, |offer| offer.item_ids.len());
-        let (text, options, avatar) = npc_script(npc_name, npc.kind(), shop_items);
+        let (text, options, avatar) =
+            teleport_script(npc_id).unwrap_or_else(|| npc_script(npc_name, npc.kind(), shop_items));
         let mut builder = MsgTaskDialog::builder().text(text);
         for (option_id, option_text) in options {
             builder = builder.with_option(option_id, option_text);
@@ -93,7 +94,10 @@ impl PacketProcess for MsgNpc {
 /// category, while the name identifies the quest or town NPC within that
 /// category.  Keeping this dispatch in one place prevents every unknown NPC
 /// from falling through to the same placeholder conversation.
-fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> (String, Vec<(u8, String)>, u16) {
+/// Dialog text, `(option id, label)` pairs and avatar of an NPC.
+type NpcDialog = (String, Vec<(u8, String)>, u16);
+
+fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
     let lower = name.to_ascii_lowercase();
     if kind == NpcKind::ShopKeeper {
         if lower.contains("pharmac") {
@@ -170,18 +174,10 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> (String, Vec<(u8,
             47,
         );
     }
-    if lower.contains("conductress")
-        || lower.contains("gatekeeper")
-        || lower.contains("warden")
-        || lower.contains("captain")
-    {
+    if lower == "warden" {
         return (
-            format!("{name}: the roads are open to those who are prepared."),
-            vec![
-                (1, "Teleport to Twin City.".into()),
-                (2, "Teleport to Market.".into()),
-                (3, "Teleport to the Job Center.".into()),
-            ],
+            format!("{name}: you will leave this place once your sentence has been served."),
+            Vec::new(),
             47,
         );
     }
@@ -246,36 +242,45 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> (String, Vec<(u8,
     }
 }
 
-/// Resolves the small, safe set of city-service destinations exposed by the
-/// conductress/gatekeeper NPCs. The destination is selected on the server;
-/// the client only sends the dialog option chosen by the player.
-pub(crate) fn city_service_destination(
-    task_id: u32,
-    npc_name: &str,
-    option_id: u8,
-) -> Option<(u32, (u16, u16), &'static str)> {
-    let lower = npc_name.to_ascii_lowercase();
-    if task_id == 10010 && option_id == 3 {
-        return Some((1002, (430, 380), "Twin City"));
+/// Dialog of the NPCs that run a teleport service. The options map to the
+/// destinations resolved by [`crate::teleports::resolve`].
+fn teleport_script(npc_id: u32) -> Option<NpcDialog> {
+    use crate::teleports;
+    if let Some(conductress) = teleports::conductress(npc_id) {
+        let options = conductress
+            .destinations
+            .iter()
+            .zip(1u8..)
+            .map(|(destination, option_id)| {
+                (
+                    option_id,
+                    format!("{} ({} silver).", destination.name, teleports::CONDUCTRESS_FEE),
+                )
+            })
+            .collect();
+        return Some((
+            format!(
+                "Conductress: welcome to {}. For {} silver I can take you to the city gates or to the Market.",
+                conductress.city,
+                teleports::CONDUCTRESS_FEE
+            ),
+            options,
+            47,
+        ));
     }
-    if !(lower.contains("conductress")
-        || lower.contains("gatekeeper")
-        || lower.contains("warden")
-        || lower.contains("captain"))
-    {
-        return None;
+    if teleports::is_market_controller(npc_id) {
+        return Some((
+            "Mark.Controller: when you are done trading, I will send you back to where you came from.".into(),
+            vec![(teleports::LEAVE_MARKET_OPTION, "Leave the Market.".into())],
+            47,
+        ));
     }
-    match option_id {
-        1 => Some((1002, (430, 380), "Twin City")),
-        2 => Some((1000, (85, 323), "Market")),
-        3 => Some((1010, (111, 98), "the Job Center")),
-        _ => None,
-    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{city_service_destination, npc_script};
+    use super::{npc_script, teleport_script};
     use crate::entities::NpcKind;
 
     #[test]
@@ -306,29 +311,21 @@ mod tests {
     }
 
     #[test]
-    fn city_service_dialog_exposes_server_resolved_destinations() {
-        let (_, options, _) = npc_script("Conductress", NpcKind::Task, 0);
-        assert_eq!(options.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
+    fn conductress_dialog_lists_every_destination_with_its_fee() {
+        let Some((_, options, _)) = teleport_script(10050) else {
+            panic!("Twin City conductress must have a dialog");
+        };
+        assert_eq!(
+            options.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 6]
+        );
+        assert!(options.iter().all(|(_, text)| text.contains("100 silver")));
     }
 
     #[test]
-    fn city_service_destinations_are_not_client_supplied() {
-        assert_eq!(
-            city_service_destination(1, "Conductress", 1),
-            Some((1002, (430, 380), "Twin City"))
-        );
-        assert_eq!(
-            city_service_destination(1, "Gatekeeper", 2),
-            Some((1000, (85, 323), "Market"))
-        );
-        assert_eq!(
-            city_service_destination(1, "Captain", 3),
-            Some((1010, (111, 98), "the Job Center"))
-        );
-        assert_eq!(city_service_destination(1, "Blacksmith", 1), None);
-        assert_eq!(
-            city_service_destination(10010, "KnowItAll", 3),
-            Some((1002, (430, 380), "Twin City"))
-        );
+    fn prison_wardens_do_not_offer_teleports() {
+        assert!(teleport_script(42).is_none());
+        let (_, options, _) = npc_script("Warden", NpcKind::Task, 0);
+        assert!(options.is_empty());
     }
 }

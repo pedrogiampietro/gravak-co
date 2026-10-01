@@ -92,7 +92,7 @@ esse bônus ao PvP.
 
 ### P3: World content
 
-- [~] Build a data-driven NPC and quest system: `quest_definitions` and `character_quests` now power the first `Pheasant Hunt` quest, accepted through `OldGeneralYang`, progressed by a monster defeat, queried through `$quest-status` and completed with an idempotent silver/XP reward; Conductress/Gatekeeper/Warden/Captain now expose server-resolved teleports to Twin City, Market and Job Center with proximity validation; quest chains, requirements, additional objectives, costs and more city destinations remain.
+- [~] Build a data-driven NPC and quest system: `quest_definitions` and `character_quests` now power the first `Pheasant Hunt` quest, accepted through `OldGeneralYang`, progressed by a monster defeat, queried through `$quest-status` and completed with an idempotent silver/XP reward; the five city Conductresses (Twin City, Desert City, Phoenix Castle, Ape Mountain, Bird Island) now teleport to their own city gates and the Market for 100 silver, resolved on the server from `teleports.rs`, with the destination cell validated before the fee is charged and a refund if the map change fails; Mark.Controller returns players to where they entered the Market, and the prison Wardens no longer offer a way out; quest chains, requirements, additional objectives and the remaining service NPCs remain.
 - [~] Add monster AI, patrols, aggro, respawn and data-driven drops: monster definitions/spawns are persisted, runtime respawn/AI is active, and item drops load from `monster_drops` with per-monster chance, validated min/max quantities, monster-level ranges and exclusive groups; patrol policies and special drops remain.
 - Add teleport NPCs, city services, events, and scripted interactions.
 
