@@ -972,7 +972,14 @@ async fn city_teleport(
     let mut target = origin;
     target.x = position.0;
     target.y = position.1;
-    let Some(target) = new_map.nearest_walkable_position(target, 4) else {
+    // `nearest_walkable_position` only answers for blocked cells: it returns
+    // `None` when the requested cell is already free.
+    let target = if new_map.is_walkable(target.x, target.y) {
+        Some(target)
+    } else {
+        new_map.nearest_walkable_position(target, 4)
+    };
+    let Some(target) = target else {
         tracing::warn!(map_id, ?position, "city teleport destination is not walkable");
         actor
             .send(super::MsgTalk::from_system(
