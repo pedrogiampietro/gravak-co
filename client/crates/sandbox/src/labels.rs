@@ -450,7 +450,9 @@ pub fn dialog_layout(
     if lines.is_empty() {
         lines.push("(sem texto)".to_owned());
     }
-    let height = (74 + lines.len() * 20 + options.len() * 28).clamp(104, 300) as u32;
+    // Grow with the content: a clamped height cut off the last options of
+    // long menus (the Twin City Conductress has seven).
+    let height = (74 + lines.len() * 20 + options.len() * 28).clamp(104, 560) as u32;
     let left = ((viewport[0] - 720.0) * 0.5).max(8.0);
     let top = (viewport[1] - height as f32 - 24.0).max(8.0);
     let option_top = top + 48.0 + lines.len() as f32 * 20.0;

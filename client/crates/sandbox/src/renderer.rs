@@ -2793,10 +2793,9 @@ impl Renderer {
                     ((viewport[0] - size[0]) * 0.5).max(8.0),
                     (viewport[1] - size[1] - 24.0).max(8.0),
                 ];
-                let line_count = ((size[1] - 74.0 - options.len() as f32 * 28.0) / 20.0)
-                    .round()
-                    .max(1.0);
-                let option_top = position[1] + 48.0 + line_count * 20.0;
+                // Use the same layout as the hit test, so the highlighted
+                // row is always the one a click selects.
+                let option_top = crate::labels::dialog_layout(messages, options, viewport)?.option_top;
                 let row = ((cursor[1] - option_top) / 27.0).floor() as usize;
                 let row_offset = cursor[1] - option_top - row as f32 * 27.0;
                 let hovered = (cursor[0] >= position[0] + 15.0
