@@ -359,7 +359,14 @@ impl MsgInteract {
         let character_location = character.entity().location();
         let primary_entity = primary.basic();
         let primary_location = primary_entity.location();
-        let distance = tq_math::get_distance(character_location.into(), primary_location.into());
+        // Like the original server, magic range is measured in cells along
+        // the larger axis, so diagonal targets keep the full distance.
+        let distance = f32::from(
+            character_location
+                .x
+                .abs_diff(primary_location.x)
+                .max(character_location.y.abs_diff(primary_location.y)),
+        );
         let target_character = primary.as_character();
         let pvp_allowed = target_character.is_none_or(|target| character.can_attack_character(target));
         let valid_target = primary_entity.map_id() == character.entity().map_id()
@@ -728,9 +735,19 @@ impl PacketProcess for MsgInteract {
             .or_else(|| character.equipment_item(5))
             .map(|item| item.item_type)
         {
-            character
+            let practiced = character
                 .practice_weapon_proficiency(state.pool(), weapon_type, 1)
                 .await?;
+            if practiced.is_some() {
+                // Send the type's aggregate, which may come from another family.
+                let weapon_type = weapon_type / 1_000;
+                if let Some(packet) = super::MsgWeaponSkill::for_all(character.weapon_proficiencies())
+                    .into_iter()
+                    .find(|packet| packet.weapon_type == weapon_type)
+                {
+                    actor.send(packet).await?;
+                }
+            }
         }
         if outcome.defeated {
             let Some(monster) = target.as_monster() else {
@@ -750,16 +767,16 @@ mod tests {
     use tq_network::PacketEncode;
 
     #[test]
-    fn skill_catalog_exposes_single_and_area_skills() {
-        use crate::skills::{BASIC_FIRE_ID, FLAME_BURST_ID};
+    fn attack_magics_are_single_target_like_the_original() {
+        use crate::skills::{BASIC_FIRE_ID, FLAME_BURST_ID, WHIRLWIND_ID};
         let catalog = crate::skills::SkillCatalog::default();
-        let basic = catalog.get(BASIC_FIRE_ID).expect("basic fire definition");
+        let basic = catalog.get(BASIC_FIRE_ID).expect("thunder definition");
         assert_eq!(basic.mana_cost, 20);
-        assert_eq!(basic.radius, 0.0);
-
-        let burst = catalog.get(FLAME_BURST_ID).expect("flame burst definition");
-        assert_eq!(burst.mana_cost, 35);
-        assert!(burst.radius > 0.0);
+        // MagicType.dat: Thunder, Fire and Tornado are Type=1 with Range=0.
+        for id in [BASIC_FIRE_ID, FLAME_BURST_ID, WHIRLWIND_ID] {
+            assert_eq!(catalog.get(id).expect("skill definition").radius, 0.0);
+        }
+        assert_eq!(catalog.get(FLAME_BURST_ID).expect("fire").mana_cost, 35);
         assert!(catalog.get(99_999).is_none());
     }
 

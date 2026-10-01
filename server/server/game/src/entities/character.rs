@@ -697,6 +697,10 @@ impl Character {
         Ok(())
     }
 
+    pub fn weapon_proficiencies(&self) -> Vec<WeaponProficiency> {
+        self.weapon_proficiencies.lock().values().copied().collect()
+    }
+
     pub fn weapon_proficiency(&self, weapon_family: u32) -> Option<WeaponProficiency> {
         self.weapon_proficiencies.lock().get(&weapon_family).copied()
     }

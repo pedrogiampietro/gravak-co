@@ -8,19 +8,21 @@ use image::{Rgba, RgbaImage, imageops};
 use std::collections::{HashMap, HashSet};
 
 const PANEL_WIDTH: u32 = 272;
-const SHOP_HEIGHT: u32 = 250;
+// DialogNpcBuy.dds is drawn at the dialog origin; its frame ends at y=263.
+const SHOP_HEIGHT: u32 = 264;
 // Native DialogMpcGoods canvas from the 5065 atlas. The dimensions and
 // anchors are owned by original_ui_layout so rendering and hit-testing use
 // exactly the same coordinate system.
 const INVENTORY_HEIGHT: u32 = original_ui_layout::INVENTORY_HEIGHT as u32;
 const INVENTORY_WIDTH: u32 = original_ui_layout::INVENTORY_WIDTH as u32;
 const WAREHOUSE_WIDTH: u32 = 270;
-const WAREHOUSE_HEIGHT: u32 = 385;
-const SLOT_X: u32 = 25;
-const SLOT_Y: u32 = 28;
+const WAREHOUSE_HEIGHT: u32 = 386;
+// Shop slot frames painted by DialogNpcBuy ([152-1552] grid at 21,36).
+const SLOT_X: u32 = 24;
+const SLOT_Y: u32 = 38;
 const SLOT_STEP_X: u32 = 43;
 const SLOT_STEP_Y: u32 = 43;
-const SLOT_SIZE: u32 = 36;
+const SLOT_SIZE: u32 = 40;
 const ICON_SIZE: u32 = 32;
 const ICON_OFFSET: u32 = 6;
 // DialogMpcGoods.dds uses the original 5065 slot grid.
@@ -32,6 +34,11 @@ const INVENTORY_SLOT_SIZE: u32 = original_ui_layout::INVENTORY_GRID[2] as u32;
 const INVENTORY_ICON_OFFSET: u32 = ((original_ui_layout::INVENTORY_GRID[2]
     - original_ui_layout::INVENTORY_ICON_SIZE)
     * 0.5) as u32;
+// GUI.ini [153-1128] Close button and the text origins of the silver
+// ([153-1127]) and CPs ([153-1129]) fields painted by the dialog.
+const INVENTORY_CLOSE_RECT: [i32; 4] = [170, 447, 62, 20];
+const INVENTORY_SILVER_TEXT: [i32; 2] = [121, 388];
+const INVENTORY_CPS_TEXT: [i32; 2] = [121, 420];
 const INVENTORY_FILTER_X: u32 = 26;
 const INVENTORY_FILTER_Y: u32 = 44;
 const INVENTORY_FILTER_STEP_X: u32 = 42;
@@ -42,11 +49,31 @@ const INVENTORY_FILTER_HEIGHT: u32 = 22;
 // the close button without competing with the centered window title.
 const INVENTORY_ORGANIZE_BUTTON: UiRect = UiRect::new(182, 8, 46, 24);
 const ITEMS_PER_PAGE: usize = 20;
-const FOOTER_BUTTON_Y: f32 = 210.0;
+// GUI.ini [152-1105] Repair, [152-1667] Help and [152-1104] Close.
+const FOOTER_BUTTON_Y: f32 = 224.0;
+const SHOP_REPAIR_X: f32 = 33.0;
+const SHOP_HELP_X: f32 = 143.0;
+const SHOP_CLOSE_X: f32 = 200.0;
+// [152-1550]/[152-1551] page buttons.
+const SHOP_PAGE_X: f32 = 243.0;
+const SHOP_PAGE_UP_Y: f32 = 155.0;
+const SHOP_PAGE_DOWN_Y: f32 = 190.0;
 const WAREHOUSE_SLOT_X: u32 = 20;
 const WAREHOUSE_SLOT_Y: u32 = 168;
 const WAREHOUSE_SLOT_SIZE: u32 = 40;
 const WAREHOUSE_PAGE_SIZE: u8 = 20;
+// DialogDepot controls: withdraw/deposit buttons ([161-1619] row), the
+// amount/savings boxes painted by the art ([161-1620]), page buttons
+// ([161-1387]/[161-1388]) and the footer Help/Close text buttons.
+const WAREHOUSE_WITHDRAW: [i32; 2] = [46, 54];
+const WAREHOUSE_DEPOSIT: [i32; 2] = [150, 54];
+const WAREHOUSE_BUTTON_SIZE: [i32; 2] = [64, 22];
+const WAREHOUSE_AMOUNT_BOX: [i32; 4] = [126, 88, 82, 21];
+const WAREHOUSE_SAVINGS_BOX: [i32; 4] = [126, 117, 82, 21];
+const WAREHOUSE_PAGE_UP: [i32; 2] = [232, 287];
+const WAREHOUSE_PAGE_DOWN: [i32; 2] = [232, 321];
+const WAREHOUSE_HELP: [i32; 2] = [45, 348];
+const WAREHOUSE_CLOSE: [i32; 4] = [170, 348, 62, 20];
 // Native Character window dimensions from GUI.ini [0-131]. The original DDS
 // components occupy this logical space; the renderer scales the whole client
 // from the same 1024x768 reference instead of resizing each panel ad hoc.
@@ -59,7 +86,7 @@ const STATUS_STANDARD_WIDTH: u32 = original_ui_layout::CHARACTER_WIDTH as u32;
 const STATUS_STANDARD_HEIGHT: u32 = original_ui_layout::CHARACTER_CANVAS_HEIGHT as u32;
 const STATUS_TAB_WIDTH: u32 = 96;
 const QUICK_PANEL_WIDTH: u32 = 520;
-const QUICK_PANEL_HEIGHT: u32 = 360;
+const QUICK_PANEL_HEIGHT: u32 = 420;
 
 /// Single source of truth for the Character window geometry.
 ///
@@ -68,8 +95,8 @@ const QUICK_PANEL_HEIGHT: u32 = 360;
 /// hit-testing cannot drift apart when the panel is adjusted.
 struct StatusLayout;
 
-fn status_surface_size(tab: StatusTab) -> (u32, u32) {
-    let _ = tab;
+fn status_surface_size(_tab: StatusTab) -> (u32, u32) {
+    // Every tab shares the DialogQuery shell; only the child dialog changes.
     (STATUS_STANDARD_WIDTH, STATUS_STANDARD_HEIGHT)
 }
 
@@ -85,9 +112,12 @@ impl StatusLayout {
     const PAPER_Y: i32 = 55;
     const PAPER_WIDTH: i32 = 206;
     const PAPER_HEIGHT: i32 = 332;
-    // GUI.ini [135-*] equipment controls, in the same order as the server
-    // positions below: head, neck, armor, ring, mount, right hand, left hand,
-    // garment, foot and the reserved empty position.
+    // GUI.ini [135-*] equipment controls: head (1672), neck (1674), ring
+    // (1673, 手饰), garment (1680, 外套), bracelet/talisman (1679, 法宝),
+    // right hand (1677), left hand (1675), armor (1678, 盔甲), boots (1676)
+    // and the reserved empty position. SLOT_POSITIONS holds the matching
+    // server positions (1 head, 2 neck, 3 armor, 4 right, 5 left, 6 ring,
+    // 7 bracelet, 8 boots, 9 garment).
     const SLOT_RECTS: [(i32, i32, i32, i32); 10] = [
         (153, 14, 40, 40),
         (153, 67, 40, 40),
@@ -100,7 +130,7 @@ impl StatusLayout {
         (7, 269, 40, 40),
         (0, 0, 0, 0),
     ];
-    const SLOT_POSITIONS: [u8; 10] = [1, 2, 3, 6, 8, 4, 5, 7, 9, 0];
+    const SLOT_POSITIONS: [u8; 10] = [1, 2, 6, 9, 7, 4, 5, 3, 8, 0];
 
     const INFO_X: i32 = 40;
     const INFO_WIDTH: i32 = 206;
@@ -114,7 +144,9 @@ impl StatusLayout {
     const FOOTER_WIDTH: i32 = 206;
     const FOOTER_HEIGHT: i32 = 55;
 
-    const CLOSE_CENTER: [i32; 2] = [246, 20];
+    // GUI.ini [131-1027] (top-right X) and [131-1029] (bottom Close).
+    const CLOSE_ORIGIN: [i32; 2] = [239, 38];
+    const CLOSE_RECTS: [(i32, i32, i32, i32); 2] = [(236, 35, 19, 19), (168, 386, 63, 20)];
 
     fn reputation_button_rect() -> UiRect {
         UiRect::new(
@@ -408,15 +440,23 @@ impl ShopState {
             .read("ani/MapItemIcon.Ani")
             .ok()
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        let size = original_ui_layout::INVENTORY_ICON_SIZE as u32;
         let icons = items
             .iter()
             .map(|item_id| {
-                load_icon(
+                load_icon_native(
                     assets,
                     *item_id,
                     animation.as_deref(),
                     map_animation.as_deref(),
                 )
+                .map(|icon| {
+                    if icon.dimensions() == (size, size) {
+                        icon
+                    } else {
+                        imageops::resize(&icon, size, size, imageops::FilterType::Triangle)
+                    }
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         let infos = load_item_infos(assets, &items);
@@ -549,38 +589,12 @@ pub enum SettingsPanelAction {
     DistanceUp,
 }
 
+/// The Options window is the original `DialogSetup`, which has no HUD
+/// tuning controls; the HUD-centre settings belonged to the removed overlay.
 pub fn settings_panel_action_at(
-    viewport: [f32; 2],
-    cursor: [f32; 2],
+    _viewport: [f32; 2],
+    _cursor: [f32; 2],
 ) -> Option<SettingsPanelAction> {
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) {
-        return None;
-    }
-    if (92.0..124.0).contains(&y) && (330.0..480.0).contains(&x) {
-        return Some(SettingsPanelAction::ToggleArcs);
-    }
-    if (132.0..164.0).contains(&y) && (330.0..480.0).contains(&x) {
-        return Some(SettingsPanelAction::ToggleBars);
-    }
-    if (172.0..204.0).contains(&y) {
-        if (330.0..390.0).contains(&x) {
-            return Some(SettingsPanelAction::ScaleDown);
-        }
-        if (420.0..480.0).contains(&x) {
-            return Some(SettingsPanelAction::ScaleUp);
-        }
-    }
-    if (222.0..254.0).contains(&y) {
-        if (330.0..390.0).contains(&x) {
-            return Some(SettingsPanelAction::DistanceDown);
-        }
-        if (420.0..480.0).contains(&x) {
-            return Some(SettingsPanelAction::DistanceUp);
-        }
-    }
     None
 }
 
@@ -648,6 +662,7 @@ impl QuickPanel {
             7 => Self::Team,
             8 => Self::Market,
             9 => Self::Settings,
+            10 => Self::Mail,
             _ => return None,
         })
     }
@@ -674,55 +689,11 @@ pub fn trade_panel_action_at(
     trade: &crate::network::TradeView,
     has_selected_target: bool,
 ) -> Option<TradePanelAction> {
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) {
-        return None;
-    }
-    if !trade.active {
-        if trade.pending_request.is_some() && (112.0..140.0).contains(&y) {
-            return Some(TradePanelAction::AcceptRequest);
-        }
-        if trade.pending_request.is_some() && (146.0..174.0).contains(&y) {
-            return Some(TradePanelAction::Cancel);
-        }
-        if trade.pending_request.is_none() && has_selected_target && (112.0..140.0).contains(&y) {
-            return Some(TradePanelAction::Request);
-        }
-        return None;
-    }
-    for index in 0..trade.own_items.len().min(5) {
-        let row = 84.0 + index as f32 * 28.0;
-        if (row..row + 24.0).contains(&y) && x < 250.0 {
-            return Some(TradePanelAction::RemoveOwnItem(index));
-        }
-    }
-    if (250.0..278.0).contains(&y) {
-        return Some(if x < 260.0 {
-            TradePanelAction::AddItem
-        } else {
-            TradePanelAction::SetMoney
-        });
-    }
-    if (290.0..318.0).contains(&y) {
-        return Some(if x < 260.0 {
-            TradePanelAction::Confirm
-        } else {
-            TradePanelAction::Cancel
-        });
-    }
-    None
+    crate::original_panels::trade_action_at(viewport, cursor, trade, has_selected_target)
 }
 
 pub fn trade_panel_drop_at(viewport: [f32; 2], cursor: [f32; 2], active: bool) -> bool {
-    if !active || !quick_panel_at(viewport, cursor) {
-        return false;
-    }
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    (18.0..250.0).contains(&x) && (54.0..226.0).contains(&y)
+    active && crate::original_panels::trade_drop_at(viewport, cursor)
 }
 
 pub fn player_shop_panel_action_at(
@@ -733,7 +704,7 @@ pub fn player_shop_panel_action_at(
     own_character_id: Option<u32>,
     has_selected_target: bool,
 ) -> Option<PlayerShopPanelAction> {
-    let [left, top] = quick_panel_position(viewport);
+    let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
     let x = cursor[0] - left;
     let y = cursor[1] - top;
     if !(18.0..=502.0).contains(&x) {
@@ -766,28 +737,34 @@ pub fn player_shop_panel_action_at(
 }
 
 pub fn player_shop_price_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = quick_panel_position(viewport);
+    let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
     (left + 268.0..=left + 420.0).contains(&cursor[0])
         && (top + 76.0..=top + 104.0).contains(&cursor[1])
 }
 
-pub fn quick_panel_position(viewport: [f32; 2]) -> [f32; 2] {
-    [
+pub fn quick_panel_position(viewport: [f32; 2], panel: QuickPanel) -> [f32; 2] {
+    crate::original_panels::position(panel, viewport).unwrap_or([
         ((viewport[0] - QUICK_PANEL_WIDTH as f32) * 0.5).max(8.0),
         ((viewport[1] - QUICK_PANEL_HEIGHT as f32) * 0.5).max(8.0),
-    ]
+    ])
 }
 
-pub fn quick_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = quick_panel_position(viewport);
+pub fn quick_panel_at(viewport: [f32; 2], cursor: [f32; 2], panel: QuickPanel) -> bool {
+    if crate::original_panels::is_original(panel) {
+        return crate::original_panels::panel_at(panel, viewport, cursor);
+    }
+    let [left, top] = quick_panel_position(viewport, panel);
     cursor[0] >= left
         && cursor[0] < left + QUICK_PANEL_WIDTH as f32
         && cursor[1] >= top
         && cursor[1] < top + QUICK_PANEL_HEIGHT as f32
 }
 
-pub fn quick_panel_close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = quick_panel_position(viewport);
+pub fn quick_panel_close_at(viewport: [f32; 2], cursor: [f32; 2], panel: QuickPanel) -> bool {
+    if crate::original_panels::is_original(panel) {
+        return crate::original_panels::close_at(panel, viewport, cursor);
+    }
+    let [left, top] = quick_panel_position(viewport, panel);
     cursor[0] >= left + QUICK_PANEL_WIDTH as f32 - 32.0
         && cursor[0] < left + QUICK_PANEL_WIDTH as f32 - 8.0
         && cursor[1] >= top + 8.0
@@ -799,14 +776,9 @@ pub fn team_panel_member_at(
     cursor: [f32; 2],
     team_members: &[crate::network::TeamMember],
 ) -> Option<u32> {
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) || !(82.0..210.0).contains(&y) {
-        return None;
-    }
-    let index = ((y - 82.0) / 26.0) as usize;
-    team_members.get(index).map(|member| member.member_id)
+    crate::original_panels::team_portrait_at(viewport, cursor)
+        .and_then(|index| team_members.get(index))
+        .map(|member| member.member_id)
 }
 
 pub fn guild_panel_member_at(
@@ -814,14 +786,9 @@ pub fn guild_panel_member_at(
     cursor: [f32; 2],
     guild_members: &[crate::network::GuildMember],
 ) -> Option<u32> {
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) || !(184.0..354.0).contains(&y) {
-        return None;
-    }
-    let index = ((y - 184.0) / 21.0) as usize;
-    guild_members.get(index).map(|member| member.character_id)
+    crate::original_panels::guild_member_at(viewport, cursor)
+        .and_then(|index| guild_members.get(index))
+        .map(|member| member.character_id)
 }
 
 pub fn guild_panel_action_at(
@@ -830,31 +797,7 @@ pub fn guild_panel_action_at(
     has_guild: bool,
     pending_invite: bool,
 ) -> Option<GuildPanelAction> {
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) {
-        return None;
-    }
-    if !has_guild {
-        return (pending_invite && (112.0..140.0).contains(&y))
-            .then_some(GuildPanelAction::AcceptInvite);
-    }
-    if (350.0..378.0).contains(&y) {
-        return Some(if x < 260.0 {
-            GuildPanelAction::Warehouse
-        } else {
-            GuildPanelAction::Leave
-        });
-    }
-    if (382.0..410.0).contains(&y) {
-        return Some(if x < 260.0 {
-            GuildPanelAction::Invite
-        } else {
-            GuildPanelAction::Kick
-        });
-    }
-    None
+    crate::original_panels::guild_action_at(viewport, cursor, has_guild, pending_invite)
 }
 
 pub fn team_panel_action_at(
@@ -864,46 +807,16 @@ pub fn team_panel_action_at(
     pending_invite: bool,
     pending_join_request: bool,
 ) -> Option<TeamPanelAction> {
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) {
-        return None;
-    }
-    if !has_team {
-        if pending_invite && (112.0..140.0).contains(&y) {
-            return Some(TeamPanelAction::AcceptInvite);
-        }
-        if (146.0..174.0).contains(&y) {
-            return Some(TeamPanelAction::Create);
-        }
-        if (180.0..208.0).contains(&y) {
-            return Some(TeamPanelAction::RequestJoin);
-        }
-        return None;
-    }
-    if pending_join_request && (216.0..242.0).contains(&y) && x < 260.0 {
-        return Some(TeamPanelAction::AcceptJoin);
-    }
-    let left_button = x < 260.0;
-    match y {
-        246.0..274.0 => Some(if left_button {
-            TeamPanelAction::Invite
-        } else {
-            TeamPanelAction::Leave
-        }),
-        278.0..306.0 => Some(if left_button {
-            TeamPanelAction::Leader
-        } else {
-            TeamPanelAction::Kick
-        }),
-        310.0..338.0 => Some(if left_button {
-            TeamPanelAction::Dismiss
-        } else {
-            TeamPanelAction::ToggleJoin
-        }),
-        _ => None,
-    }
+    crate::original_panels::team_action_at(
+        viewport,
+        cursor,
+        &crate::original_panels::TeamState {
+            has_team,
+            pending_invite,
+            pending_join_request,
+            join_enabled: true,
+        },
+    )
 }
 
 pub fn friends_panel_action_at(
@@ -913,54 +826,23 @@ pub fn friends_panel_action_at(
     ignores: &[crate::network::SocialEntry],
     has_selected_target: bool,
 ) -> Option<FriendsPanelAction> {
-    let [left, top] = quick_panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) {
-        return None;
-    }
-    if has_selected_target && (58.0..84.0).contains(&y) {
-        if (300.0..390.0).contains(&x) {
-            return Some(FriendsPanelAction::AddFriend);
-        }
-        if (394.0..500.0).contains(&x) {
-            return Some(FriendsPanelAction::AddIgnore);
-        }
-    }
-    for (index, _) in friends.iter().take(6).enumerate() {
-        let row = 110.0 + index as f32 * 26.0;
-        if (row..row + 22.0).contains(&y) {
-            return Some(if x >= 410.0 {
-                FriendsPanelAction::RemoveFriend(index)
-            } else {
-                FriendsPanelAction::Whisper(index)
-            });
-        }
-    }
-    for (index, _) in ignores.iter().take(3).enumerate() {
-        let row = 286.0 + index as f32 * 22.0;
-        if (row..row + 20.0).contains(&y) && x >= 410.0 {
-            return Some(FriendsPanelAction::RemoveIgnore(index));
-        }
-    }
-    None
+    crate::original_panels::friends_action_at(
+        viewport,
+        cursor,
+        friends.len(),
+        ignores.len(),
+        has_selected_target,
+    )
 }
 
 fn team_button(image: &mut RgbaImage, font: &fontdue::Font, x: u32, y: u32, label: &str) {
-    let width = 228;
-    for px in x..x + width {
-        image.put_pixel(px, y, Rgba([111, 80, 36, 255]));
-        image.put_pixel(px, y + 27, Rgba([111, 80, 36, 255]));
-    }
-    for py in y..y + 28 {
-        image.put_pixel(x, py, Rgba([111, 80, 36, 255]));
-        image.put_pixel(x + width - 1, py, Rgba([111, 80, 36, 255]));
-    }
-    labels::text(
+    let rect = UiRect::new(x as i32, y as i32, 228, 28);
+    crate::components::draw_action_button(
         image,
         font,
-        &[(label, [225, 215, 180])],
-        [x as f32 + 10.0, y as f32 + 6.0],
+        rect,
+        label,
+        crate::components::WidgetState::Normal,
     );
 }
 
@@ -1070,23 +952,18 @@ fn social_button(
     width: u32,
     label: &str,
 ) {
-    for px in x..x + width {
-        image.put_pixel(px, y, Rgba([111, 80, 36, 255]));
-        image.put_pixel(px, y + 20, Rgba([111, 80, 36, 255]));
-    }
-    for py in y..y + 21 {
-        image.put_pixel(x, py, Rgba([111, 80, 36, 255]));
-        image.put_pixel(x + width - 1, py, Rgba([111, 80, 36, 255]));
-    }
-    labels::text(
+    let rect = UiRect::new(x as i32, y as i32, width as i32, 22);
+    crate::components::draw_button(
         image,
         font,
-        &[(label, [225, 215, 180])],
-        [x as f32 + 7.0, y as f32 + 3.0],
+        rect,
+        label,
+        crate::components::WidgetState::Normal,
     );
 }
 
 pub fn quick_panel_image(
+    assets: &mut Assets,
     panel: QuickPanel,
     character: &crate::character::Character,
     action_bar: &crate::action_bar::ActionBar,
@@ -1110,43 +987,38 @@ pub fn quick_panel_image(
     player_shop_price_focused: bool,
     hud_config: crate::hud::HudConfig,
 ) -> Result<RgbaImage> {
-    let mut image = RgbaImage::from_pixel(
-        QUICK_PANEL_WIDTH,
-        QUICK_PANEL_HEIGHT,
-        Rgba([8, 20, 29, 248]),
-    );
-    for x in 0..QUICK_PANEL_WIDTH {
-        image.put_pixel(x, 0, Rgba([205, 169, 83, 255]));
-        image.put_pixel(x, QUICK_PANEL_HEIGHT - 1, Rgba([205, 169, 83, 255]));
+    if crate::original_panels::is_original(panel) {
+        return crate::original_panels::image(
+            assets,
+            panel,
+            &crate::original_panels::PanelData {
+                character,
+                team_members,
+                team_leader_id,
+                team: crate::original_panels::TeamState {
+                    has_team: !team_members.is_empty(),
+                    pending_invite: pending_invite.is_some(),
+                    pending_join_request: pending_join_request.is_some(),
+                    join_enabled: team_join_enabled,
+                },
+                guild_members,
+                pending_guild_invite,
+                friends,
+                ignores,
+                selected_target_name,
+                trade,
+            },
+        );
     }
-    for y in 0..QUICK_PANEL_HEIGHT {
-        image.put_pixel(0, y, Rgba([205, 169, 83, 255]));
-        image.put_pixel(QUICK_PANEL_WIDTH - 1, y, Rgba([205, 169, 83, 255]));
-    }
-    for x in 2..QUICK_PANEL_WIDTH - 2 {
-        image.put_pixel(x, 38, Rgba([83, 59, 31, 255]));
-    }
+    let mut image =
+        RgbaImage::from_pixel(QUICK_PANEL_WIDTH, QUICK_PANEL_HEIGHT, Rgba([0, 0, 0, 0]));
+    crate::components::draw_window_rect(
+        &mut image,
+        UiRect::new(0, 0, QUICK_PANEL_WIDTH as i32, QUICK_PANEL_HEIGHT as i32),
+        panel.title(),
+        crate::components::WidgetState::Normal,
+    )?;
     let font = labels::font()?;
-    labels::text(
-        &mut image,
-        &font,
-        &[(panel.title(), [255, 224, 146])],
-        [18.0, 10.0],
-    );
-    for x in QUICK_PANEL_WIDTH - 31..QUICK_PANEL_WIDTH - 8 {
-        image.put_pixel(x, 8, Rgba([40, 60, 80, 255]));
-        image.put_pixel(x, 31, Rgba([40, 60, 80, 255]));
-    }
-    for y in 8..32 {
-        image.put_pixel(QUICK_PANEL_WIDTH - 31, y, Rgba([205, 169, 83, 255]));
-        image.put_pixel(QUICK_PANEL_WIDTH - 9, y, Rgba([205, 169, 83, 255]));
-    }
-    labels::text(
-        &mut image,
-        &font,
-        &[("X", [255, 224, 146])],
-        [(QUICK_PANEL_WIDTH - 25) as f32, 11.0],
-    );
     match panel {
         QuickPanel::Skills => {
             labels::text(
@@ -1214,47 +1086,69 @@ pub fn quick_panel_image(
             );
         }
         QuickPanel::Guild => {
+            crate::components::draw_card(
+                &mut image,
+                UiRect::new(20, 50, 480, 96),
+                crate::components::WidgetState::Normal,
+            );
             labels::text(
                 &mut image,
                 &font,
-                &[("Guild information", [255, 224, 146])],
-                [24.0, 64.0],
+                &[("Informações da Guild", ui_theme::TEXT_GOLD)],
+                [32.0, 58.0],
             );
             let guild = if character.guild.is_empty() {
-                "No guild"
+                "Sem guild"
             } else {
                 character.guild.as_str()
             };
             let rank = if character.guild_rank.is_empty() {
-                "No rank"
+                "Membro"
             } else {
                 character.guild_rank.as_str()
             };
             labels::text(
                 &mut image,
                 &font,
-                &[("Guild:", [220, 210, 175]), (guild, [255, 255, 255])],
-                [24.0, 98.0],
+                &[
+                    ("Guild:", [220, 210, 175]),
+                    (" ", [220, 210, 175]),
+                    (guild, [255, 255, 255]),
+                ],
+                [32.0, 84.0],
             );
             labels::text(
                 &mut image,
                 &font,
-                &[("Rank:", [220, 210, 175]), (rank, [255, 255, 255])],
-                [24.0, 128.0],
+                &[
+                    ("Cargo:", [220, 210, 175]),
+                    (" ", [220, 210, 175]),
+                    (rank, [255, 255, 255]),
+                ],
+                [32.0, 110.0],
+            );
+
+            crate::components::draw_card(
+                &mut image,
+                UiRect::new(20, 156, 480, 185),
+                crate::components::WidgetState::Normal,
             );
             labels::text(
                 &mut image,
                 &font,
-                &[("Members", [255, 224, 146])],
-                [24.0, 162.0],
+                &[("Membros da Guild", ui_theme::TEXT_GOLD)],
+                [32.0, 164.0],
             );
             if guild_members.is_empty() && character.guild.is_empty() {
                 if let Some(inviter_id) = pending_guild_invite {
                     labels::text(
                         &mut image,
                         &font,
-                        &[(format!("Convite de {inviter_id}").as_str(), [220, 210, 175])],
-                        [24.0, 110.0],
+                        &[(
+                            format!("Convite recebido de {inviter_id}").as_str(),
+                            [220, 210, 175],
+                        )],
+                        [32.0, 192.0],
                     );
                     team_button(&mut image, &font, 24, 112, "ACEITAR CONVITE");
                 } else {
@@ -1262,15 +1156,15 @@ pub fn quick_panel_image(
                         &mut image,
                         &font,
                         &[("Você não está em uma guild", [150, 150, 150])],
-                        [24.0, 188.0],
+                        [32.0, 192.0],
                     );
                 }
             } else if guild_members.is_empty() {
                 labels::text(
                     &mut image,
                     &font,
-                    &[("No online members", [150, 150, 150])],
-                    [24.0, 188.0],
+                    &[("Nenhum membro online no momento", [150, 150, 150])],
+                    [32.0, 192.0],
                 );
             } else {
                 for (index, member) in guild_members.iter().take(8).enumerate() {
@@ -1281,18 +1175,18 @@ pub fn quick_panel_image(
                         "Member"
                     };
                     let line = format!("{}  Lv.{} {}", member_name, member.level, rank_label);
-                    labels::text(
+                    let status = if member.online { "ONLINE" } else { "OFFLINE" };
+                    crate::components::draw_list_item(
                         &mut image,
                         &font,
-                        &[(
-                            &line,
-                            if member.online {
-                                [235, 225, 190]
-                            } else {
-                                [135, 135, 135]
-                            },
-                        )],
-                        [24.0, 186.0 + index as f32 * 21.0],
+                        UiRect::new(24, 184 + index as i32 * 21, 472, 20),
+                        &line,
+                        Some(status),
+                        if member.online {
+                            crate::components::WidgetState::Normal
+                        } else {
+                            crate::components::WidgetState::Disabled
+                        },
                     );
                 }
                 team_button(&mut image, &font, 24, 350, "ARMAZÉM");
@@ -1388,10 +1282,15 @@ pub fn quick_panel_image(
             labels::text(
                 &mut image,
                 &font,
-                &[("Troca segura entre jogadores", [255, 224, 146])],
-                [24.0, 54.0],
+                &[("Troca segura entre jogadores", ui_theme::TEXT_GOLD)],
+                [24.0, 48.0],
             );
             if !trade.active {
+                crate::components::draw_card(
+                    &mut image,
+                    UiRect::new(20, 72, 480, 110),
+                    crate::components::WidgetState::Normal,
+                );
                 if let Some(requester) = trade.pending_request {
                     labels::text(
                         &mut image,
@@ -1400,7 +1299,7 @@ pub fn quick_panel_image(
                             format!("Convite recebido de {requester}").as_str(),
                             [235, 225, 190],
                         )],
-                        [24.0, 82.0],
+                        [32.0, 84.0],
                     );
                     team_button(&mut image, &font, 24, 112, "ACEITAR TROCA");
                     team_button(&mut image, &font, 24, 146, "RECUSAR");
@@ -1412,36 +1311,43 @@ pub fn quick_panel_image(
                             format!("Alvo: {}", selected_target_name.unwrap_or_default()).as_str(),
                             [235, 225, 190],
                         )],
-                        [24.0, 82.0],
+                        [32.0, 84.0],
                     );
                     team_button(&mut image, &font, 24, 112, "SOLICITAR TROCA");
                 } else {
                     labels::text(
                         &mut image,
                         &font,
-                        &[("Selecione um jogador próximo", [150, 150, 150])],
-                        [24.0, 82.0],
+                        &[(
+                            "Selecione um jogador próximo para negociar",
+                            [150, 150, 150],
+                        )],
+                        [32.0, 84.0],
                     );
                 }
             } else {
-                let peer = trade.peer_id.unwrap_or_default();
-                labels::text(
+                crate::components::draw_card(
                     &mut image,
-                    &font,
-                    &[(format!("Com {peer}").as_str(), [235, 225, 190])],
-                    [24.0, 82.0],
+                    UiRect::new(20, 52, 236, 192),
+                    crate::components::WidgetState::Normal,
+                );
+                crate::components::draw_card(
+                    &mut image,
+                    UiRect::new(264, 52, 236, 192),
+                    crate::components::WidgetState::Normal,
                 );
                 labels::text(
                     &mut image,
                     &font,
-                    &[("Seu lado", [255, 224, 146])],
-                    [24.0, 104.0],
+                    &[("Seu lado", ui_theme::TEXT_GOLD)],
+                    [28.0, 58.0],
                 );
+                let peer_label = format!("Outro lado ({})", trade.peer_id.unwrap_or_default());
                 labels::text(
                     &mut image,
                     &font,
-                    &[("Outro lado", [255, 224, 146])],
-                    [268.0, 104.0],
+                    &[(peer_label.as_str(), ui_theme::TEXT_GOLD)],
+                    [272.0, 58.0],
                 );
                 for (index, item) in trade.own_items.iter().take(5).enumerate() {
                     let row = 84 + index as u32 * 28;
@@ -1452,7 +1358,7 @@ pub fn quick_panel_image(
                             format!("{}  +{}", item.item_type, item.plus).as_str(),
                             [220, 210, 175],
                         )],
-                        [24.0, row as f32],
+                        [28.0, row as f32],
                     );
                 }
                 for (index, item) in trade.peer_items.iter().take(5).enumerate() {
@@ -1464,7 +1370,7 @@ pub fn quick_panel_image(
                             format!("{}  +{}", item.item_type, item.plus).as_str(),
                             [220, 210, 175],
                         )],
-                        [268.0, row as f32],
+                        [272.0, row as f32],
                     );
                 }
                 labels::text(
@@ -1474,7 +1380,7 @@ pub fn quick_panel_image(
                         format!("Silver: {}", trade.own_silver).as_str(),
                         [220, 210, 175],
                     )],
-                    [24.0, 226.0],
+                    [28.0, 224.0],
                 );
                 labels::text(
                     &mut image,
@@ -1483,7 +1389,7 @@ pub fn quick_panel_image(
                         format!("Silver: {}", trade.peer_silver).as_str(),
                         [220, 210, 175],
                     )],
-                    [268.0, 226.0],
+                    [272.0, 224.0],
                 );
                 team_button(&mut image, &font, 24, 250, "ADICIONAR ITEM");
                 team_button(&mut image, &font, 268, 250, "+1 SILVER");
@@ -1499,16 +1405,17 @@ pub fn quick_panel_image(
                     },
                 );
                 team_button(&mut image, &font, 268, 290, "CANCELAR");
-                let other = if trade.peer_confirmed {
-                    "OUTRO: OK"
+                let other_status = if trade.peer_confirmed {
+                    "Status do parceiro: CONFIRMADO"
                 } else {
-                    "OUTRO: aguardando"
+                    "Status do parceiro: Aguardando confirmação"
                 };
-                labels::text(
+                crate::components::draw_status_banner(
                     &mut image,
                     &font,
-                    &[(other, [170, 220, 180])],
-                    [24.0, 332.0],
+                    UiRect::new(20, 326, 480, 22),
+                    other_status,
+                    !trade.peer_confirmed,
                 );
                 let available = inventory
                     .iter()
@@ -1526,7 +1433,7 @@ pub fn quick_panel_image(
                         format!("Itens disponíveis: {available}").as_str(),
                         [150, 150, 150],
                     )],
-                    [24.0, 354.0],
+                    [24.0, 356.0],
                 );
             }
         }
@@ -1900,11 +1807,10 @@ pub fn status_tab_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<StatusTab> 
 
 pub fn status_close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     let [left, top] = status_position(viewport);
-    let [close_x, close_y] = StatusLayout::CLOSE_CENTER;
-    cursor[0] >= left + (close_x - 24) as f32
-        && cursor[0] < left + (close_x + 24) as f32
-        && cursor[1] >= top + (close_y - 24) as f32
-        && cursor[1] < top + (close_y + 24) as f32
+    let local = [cursor[0] - left, cursor[1] - top];
+    StatusLayout::CLOSE_RECTS
+        .into_iter()
+        .any(|(x, y, width, height)| UiRect::new(x, y, width, height).contains_local(local))
 }
 
 pub fn status_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -1925,8 +1831,8 @@ pub fn status_attribute_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> Optio
     let role_left = left + StatusLayout::PAPER_X as f32;
     let role_top = top + StatusLayout::PAPER_Y as f32;
     for (attribute, x, y) in [
-        ("strength", 175.0, 199.0),
-        ("agility", 81.0, 199.0),
+        ("strength", 81.0, 199.0),
+        ("agility", 175.0, 199.0),
         ("vitality", 81.0, 230.0),
         ("spirit", 175.0, 230.0),
     ] {
@@ -2347,79 +2253,146 @@ pub fn status_image(
 
 /// Static layer for the original Character window. The atlas components and
 /// close button are independent from live data and can remain resident.
+/// Side tab textures (`Control.Ani` `[Check61]`, `[Check64]`, `[Check63]`,
+/// `[Check65]`); frame 1 is the selected, gold state.
+fn status_tab_frames(tab: StatusTab) -> [&'static str; 2] {
+    match tab {
+        StatusTab::Equipment => [
+            "data/main/QueryMissionBtn.dds",
+            "data/main/QueryMissionBtnClick.dds",
+        ],
+        StatusTab::Weapon => [
+            "data/main/QueryWeaponBtn.dds",
+            "data/main/QueryWeaponBtnClick.dds",
+        ],
+        StatusTab::Skills => [
+            "data/main/QuerySkillBtn.dds",
+            "data/main/QuerySkillBtnClick.dds",
+        ],
+        _ => [
+            "data/main/QueryRoleBtn.dds",
+            "data/main/QueryRoleBtnClick.dds",
+        ],
+    }
+}
+
+/// Character window frame: `DialogQuery` with the active child dialog and
+/// its native controls, all at their `GUI.ini` `[131-*]`..`[135-*]` offsets.
 pub fn status_base_image(
-    _assets: &mut Assets,
+    assets: &mut Assets,
     active_tab: StatusTab,
     close_hovered: bool,
 ) -> Result<RgbaImage> {
+    use crate::original_ui::{CharacterComponent, overlay_asset};
     let (width, height) = status_surface_size(active_tab);
     let mut image = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
-    ui_theme::window(&mut image, "CHARACTER", close_hovered)?;
-    for (index, tab) in StatusTab::ALL.iter().enumerate() {
-        ui_theme::icon_tab(
+    let shell = crate::original_ui::component(assets, CharacterComponent::Shell)?;
+    imageops::overlay(&mut image, &shell, 0, 0);
+    draw_battle_power_label(&mut image)?;
+    let child = match active_tab {
+        StatusTab::Equipment => CharacterComponent::Mission,
+        StatusTab::Weapon | StatusTab::Skills => CharacterComponent::Weapon,
+        _ => CharacterComponent::Role,
+    };
+    let child = crate::original_ui::component(assets, child)?;
+    let (paper_x, paper_y) = (
+        i64::from(StatusLayout::PAPER_X),
+        i64::from(StatusLayout::PAPER_Y),
+    );
+    imageops::overlay(&mut image, &child, paper_x, paper_y);
+    if active_tab == StatusTab::Equipment {
+        // `[Image160]`: the left-hand weapon frame is a separate texture
+        // around the 65x65 control [135-1675].
+        overlay_asset(
             &mut image,
-            StatusLayout::tab_rect(index),
-            index,
-            *tab == active_tab,
-        );
+            assets,
+            "data/main/DialogQuery_Mission1.dds",
+            paper_x + 54,
+            paper_y + 248,
+        )?;
     }
-    let font = labels::font()?;
-    match active_tab {
-        StatusTab::Equipment => {
-            labels::text_sized(
-                &mut image,
-                &font,
-                &[("EQUIPMENT", ui_theme::TEXT_GOLD)],
-                [92.0, 47.0],
-                9.0,
-            );
-            for slot in 0..StatusLayout::SLOT_POSITIONS.len() {
-                let rect = StatusLayout::slot_rect(slot);
-                if rect.width > 0 && rect.height > 0 {
-                    ui_theme::slot(
-                        &mut image,
-                        UiRect::new(
-                            StatusLayout::PAPER_X + rect.x,
-                            StatusLayout::PAPER_Y + rect.y,
-                            rect.width,
-                            rect.height,
-                        ),
-                        false,
-                        false,
-                        false,
-                    );
-                }
-            }
-        }
-        StatusTab::Attributes => {
-            ui_theme::section(&mut image, UiRect::new(40, 85, 206, 125), "IDENTITY", &font);
-            ui_theme::section(
-                &mut image,
-                UiRect::new(40, 216, 206, 110),
-                "ATTRIBUTES",
-                &font,
-            );
-        }
-        StatusTab::Weapon => {
-            ui_theme::section(
-                &mut image,
-                UiRect::new(40, 85, 206, 240),
-                "WEAPON PROFICIENCY",
-                &font,
-            );
-        }
-        StatusTab::Skills => {
-            ui_theme::section(&mut image, UiRect::new(40, 85, 206, 240), "SKILLS", &font);
-        }
-        StatusTab::Title | StatusTab::Reputation | StatusTab::Fashion => {}
+
+    for (index, tab) in StatusTab::ALL.iter().enumerate() {
+        let rect = StatusLayout::tab_rect(index);
+        let frame = status_tab_frames(*tab)[usize::from(*tab == active_tab)];
+        overlay_asset(&mut image, assets, frame, rect.x.into(), rect.y.into())?;
+    }
+    let close = if close_hovered {
+        "data/main/CloseBtnSclick.dds"
+    } else {
+        "data/main/CloseBtnS.dds"
+    };
+    let [close_x, close_y] = StatusLayout::CLOSE_ORIGIN;
+    overlay_asset(&mut image, assets, close, close_x.into(), close_y.into())?;
+    overlay_asset(&mut image, assets, "data/main/HelpBtn2.dds", 75, 386)?;
+    overlay_asset(&mut image, assets, "data/main/CloseBtn2.dds", 168, 386)?;
+
+    let controls: &[(&str, i64, i64)] = match active_tab {
+        // [132-1150], [132-1151] and the four [132-156x] plus buttons.
+        StatusTab::Attributes => &[
+            ("data/main/RoleBtnBase.dds", 24, 282),
+            ("data/main/RoleBtnMore.dds", 119, 282),
+            ("data/main/RoleBtnI.dds", 81, 199),
+            ("data/main/RoleBtnI.dds", 175, 199),
+            ("data/main/RoleBtnI.dds", 81, 230),
+            ("data/main/RoleBtnI.dds", 175, 230),
+        ],
+        // [134-1519..1521] and the [134-1063/1064] page buttons.
+        StatusTab::Weapon => &[
+            ("data/main/WeaponBtnS.dds", 4, 297),
+            ("data/main/WeaponBtnD.dds", 70, 297),
+            ("data/main/WeaponBtnO.dds", 136, 297),
+            ("data/main/QuerySkillBtnU.dds", 183, 230),
+            ("data/main/QuerySkillBtnD.dds", 183, 264),
+        ],
+        StatusTab::Skills => &[
+            ("data/main/QuerySkillBtnZ.dds", 4, 297),
+            ("data/main/QuerySkillBtnM.dds", 70, 297),
+            ("data/main/QuerySkillBtnJ.dds", 136, 297),
+            ("data/main/QuerySkillBtnU.dds", 183, 230),
+            ("data/main/QuerySkillBtnD.dds", 183, 264),
+        ],
+        _ => &[],
+    };
+    for (path, x, y) in controls {
+        overlay_asset(&mut image, assets, path, paper_x + x, paper_y + y)?;
     }
     Ok(image)
+}
+
+/// The 5065 shell bakes "Battle Power" into its plate with a blurry serif;
+/// the client paints the plate clean and writes the label with the system
+/// font. Repaint the plate interior with its vertical gradient and redraw.
+fn draw_battle_power_label(image: &mut RgbaImage) -> Result<()> {
+    const PLATE: [u32; 4] = [58, 28, 71, 12];
+    const TOP: [f32; 3] = [18.0, 36.0, 46.0];
+    const BOTTOM: [f32; 3] = [58.0, 84.0, 98.0];
+    let [x0, y0, width, height] = PLATE;
+    for row in 0..height {
+        let t = row as f32 / (height - 1) as f32;
+        let colour = std::array::from_fn::<u8, 3, _>(|i| (TOP[i] + (BOTTOM[i] - TOP[i]) * t) as u8);
+        for x in x0..x0 + width {
+            image.put_pixel(x, y0 + row, Rgba([colour[0], colour[1], colour[2], 255]));
+        }
+    }
+    let font = crate::main_hud::client_font()?;
+    let label = "Battle Power";
+    let text_width = crate::main_hud::text_width(font, label, 12.0);
+    crate::main_hud::crisp_text(
+        image,
+        font,
+        label,
+        12.0,
+        [(x0 + width / 2) as i32 - text_width / 2, y0 as i32],
+        [240, 232, 205, 255],
+    );
+    Ok(())
 }
 
 /// Transparent live-data layer for Character. Only values change here; the
 /// original frame, tabs, and native panels never need to be regenerated.
 pub fn status_dynamic_image(
-    _assets: &mut Assets,
+    assets: &mut Assets,
     level: u8,
     _experience: u64,
     nobility_rank: u32,
@@ -2427,139 +2400,259 @@ pub fn status_dynamic_image(
     active_tab: StatusTab,
     _mana: u32,
     _maximum_mana: u32,
+    known_skills: &[(u32, u16, u32)],
+    equipment: &[crate::network::OwnedItem],
+    weapon_skills: &[(u32, u32, u32)],
+    selected_skill: Option<u32>,
 ) -> Result<RgbaImage> {
     let (width, height) = status_surface_size(active_tab);
     let mut image = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
-    let font = labels::font()?;
-    let value_colour = [235, 225, 193];
-    let name = if character.name.is_empty() {
-        "Character"
-    } else {
-        character.name.as_str()
+    let font = crate::main_hud::font()?;
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+    let paper = [StatusLayout::PAPER_X, StatusLayout::PAPER_Y];
+    let value = |image: &mut RgbaImage, text: &str, x: i32, y: i32| {
+        crate::main_hud::text(
+            image,
+            font,
+            text,
+            12.0,
+            [paper[0] + x, paper[1] + y + 1],
+            WHITE,
+            Some(122),
+        );
     };
-    let guild = if character.guild.is_empty() {
-        "None"
-    } else {
-        character.guild.as_str()
+
+    // The orb beside "Battle Power" shows the battle power (potency), in
+    // white italic with a soft blue glow, spilling over the orb like the
+    // original.
+    let power = battle_power(level, character.rebirths, equipment, nobility_rank).to_string();
+    let power_font = crate::main_hud::italic_font().unwrap_or(font);
+    let size = if power.len() > 2 { 24.0 } else { 30.0 };
+    let power_width = crate::main_hud::text_width(power_font, &power, size);
+    crate::main_hud::glow_text(
+        &mut image,
+        power_font,
+        &power,
+        size,
+        [28 - power_width / 2, 27 - (size * 0.62) as i32],
+        [90, 104, 234],
+    );
+
+    let or_none = |text: &str| {
+        if text.is_empty() {
+            "None".to_owned()
+        } else {
+            text.to_owned()
+        }
     };
-    let class = class_name(character.current_class);
     match active_tab {
-        StatusTab::Equipment => {
-            let rank = nobility_rank_label(nobility_rank);
-            labels::text_sized(
-                &mut image,
-                &font,
-                &[("Name:", ui_theme::TEXT_MUTED)],
-                [50.0, 88.0],
-                9.0,
-            );
-            labels::text_sized(
-                &mut image,
-                &font,
-                &[(name, ui_theme::TEXT)],
-                [91.0, 88.0],
-                9.0,
-            );
-            labels::text_sized(
-                &mut image,
-                &font,
-                &[("Class:", ui_theme::TEXT_MUTED)],
-                [50.0, 104.0],
-                9.0,
-            );
-            labels::text_sized(
-                &mut image,
-                &font,
-                &[(class.as_str(), ui_theme::TEXT)],
-                [91.0, 104.0],
-                9.0,
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[(rank, ui_theme::TEXT_GOLD)],
-                [centered_text_x(&font, rank, 128.0), 116.0],
-            );
-        }
         StatusTab::Attributes => {
-            let identity = [
-                ("Name", name.to_owned()),
-                ("Level", level.to_string()),
-                ("Class", class_name(character.current_class)),
-                ("Spouse", "None".to_owned()),
-                ("Guild", guild.to_owned()),
-                (
-                    "Rank",
-                    if character.guild_rank.is_empty() {
-                        "None".to_owned()
-                    } else {
-                        character.guild_rank.clone()
-                    },
-                ),
-            ];
-            for ((label, text), y) in identity
-                .iter()
-                .zip([112.0, 127.0, 142.0, 157.0, 172.0, 187.0])
-            {
-                labels::text_sized(
-                    &mut image,
-                    &font,
-                    &[(format!("{label}:").as_str(), ui_theme::TEXT_MUTED)],
-                    [50.0, y],
-                    8.0,
-                );
-                labels::text_sized(
-                    &mut image,
-                    &font,
-                    &[(text.as_str(), value_colour)],
-                    [101.0, y],
-                    8.0,
-                );
-            }
-            for (label, value, y) in [
-                ("Strength", character.strength, 244.0),
-                ("Agility", character.agility, 262.0),
-                ("Vitality", character.vitality, 280.0),
-                ("Spirit", character.spirit, 298.0),
-                ("Points", character.attribute_points, 316.0),
+            // [132-1130..1136]: name, level, job, PK, spouse, guild, position.
+            for (text, y) in [
+                (character.name.clone(), 8),
+                (level.to_string(), 36),
+                (class_name(character.current_class), 62),
+                ("0".to_owned(), 88),
+                ("None".to_owned(), 114),
+                (or_none(&character.guild), 140),
+                (character.guild_rank.clone(), 166),
             ] {
-                labels::text_sized(
+                value(&mut image, &text, 72, y);
+            }
+            // [132-1137], [132-1566..1569].
+            for (number, x, y) in [
+                (character.strength, 53, 199),
+                (character.agility, 148, 199),
+                (character.vitality, 53, 229),
+                (character.spirit, 148, 229),
+                (character.attribute_points, 102, 259),
+            ] {
+                value(&mut image, &number.to_string(), x, y);
+            }
+        }
+        StatusTab::Equipment => {
+            // [135-1619]: nobility rank above the character model.
+            let rank = nobility_rank_label(nobility_rank);
+            let rank_width = crate::main_hud::text_width(font, rank, 13.0);
+            crate::main_hud::text(
+                &mut image,
+                font,
+                rank,
+                13.0,
+                [paper[0] + 82 - rank_width / 2, paper[1] + 6],
+                [255, 236, 150, 255],
+                None,
+            );
+        }
+        StatusTab::Weapon => {
+            let mut rows = weapon_skills.to_vec();
+            rows.sort_unstable_by_key(|(weapon_type, _, _)| *weapon_type);
+            let equipped = equipment
+                .iter()
+                .find(|item| item.position == 4)
+                .map(|item| item.item_type / 1_000);
+            let selected = rows
+                .iter()
+                .find(|(weapon_type, _, _)| Some(*weapon_type) == equipped)
+                .or(rows.first())
+                .copied();
+            if let Some((weapon_type, level, experience)) = selected {
+                let name = weapon_type_name(assets, weapon_type);
+                let lines = [
+                    format!("{name}: Level {level}"),
+                    format!("EXP: {experience}"),
+                    format!("Attack +{}%", weapon_attack_bonus(level, experience)),
+                ];
+                for (index, line) in lines.iter().enumerate() {
+                    let y = paper[1] + 8 + index as i32 * 18;
+                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 12, y], WHITE, Some(180));
+                }
+            }
+            for (row, &(weapon_type, level, _)) in rows.iter().take(STATUS_LIST_ROWS).enumerate() {
+                let y = paper[1] + 67 + row as i32 * 38;
+                if let Some(icon) = weapon_type_icon(assets, weapon_type) {
+                    draw_list_icon(&mut image, &icon, [paper[0] + 17, y]);
+                }
+                draw_level_stars(&mut image, assets, level, [paper[0] + 82, y + 18]);
+            }
+        }
+        StatusTab::Skills => {
+            let selected = known_skills
+                .iter()
+                .find(|(id, _, _)| Some(*id) == selected_skill)
+                .or(known_skills.first())
+                .copied();
+            if let Some((skill_id, level, experience)) = selected {
+                let kind = crate::magic::magic_type(assets, skill_id, level)
+                    .map(|magic| magic.kind.clone())
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or_else(|| format!("Level {level}  Exp {experience}"));
+                let name = crate::magic::skill_name(assets, skill_id);
+                for (index, line) in [name, kind].iter().enumerate() {
+                    let y = paper[1] + 8 + index as i32 * 18;
+                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 12, y], WHITE, Some(180));
+                }
+            }
+            // [134-1522..1526]/[134-1165] icons and the level boxes beside.
+            for (row, &(skill_id, skill_level, _)) in
+                known_skills.iter().take(STATUS_LIST_ROWS).enumerate()
+            {
+                let y = paper[1] + 67 + row as i32 * 38;
+                if let Some(icon) = crate::main_hud::skill_icon(assets, skill_id) {
+                    draw_list_icon(&mut image, &icon, [paper[0] + 17, y]);
+                }
+                draw_level_stars(
                     &mut image,
-                    &font,
-                    &[(label, ui_theme::TEXT_MUTED)],
-                    [52.0, y],
-                    8.0,
-                );
-                labels::text_sized(
-                    &mut image,
-                    &font,
-                    &[(value.to_string().as_str(), value_colour)],
-                    [160.0, y],
-                    8.0,
+                    assets,
+                    u32::from(skill_level),
+                    [paper[0] + 82, y + 18],
                 );
             }
         }
-        StatusTab::Weapon | StatusTab::Skills => {}
-        StatusTab::Title => labels::text(
-            &mut image,
-            &font,
-            &[("Titles", [255, 224, 146])],
-            [58.0, 78.0],
-        ),
-        StatusTab::Reputation => labels::text(
-            &mut image,
-            &font,
-            &[("Reputation", [255, 224, 146])],
-            [58.0, 78.0],
-        ),
-        StatusTab::Fashion => labels::text(
-            &mut image,
-            &font,
-            &[("Fashion", [255, 224, 146])],
-            [58.0, 78.0],
-        ),
+        _ => {}
     }
     Ok(image)
+}
+
+const STATUS_LIST_ROWS: usize = 6;
+
+/// Mirrors the server: two points per level above the first, plus up to
+/// four from progress inside the level, capped at 20%.
+fn weapon_attack_bonus(level: u32, experience: u32) -> u32 {
+    (level.saturating_sub(1) * 2 + experience.min(100) / 25).min(20)
+}
+
+/// `ini/WeaponSkillName.ini`: "410,Blade" lines.
+fn weapon_type_name(assets: &mut Assets, weapon_type: u32) -> String {
+    assets
+        .read("ini/WeaponSkillName.ini")
+        .ok()
+        .and_then(|bytes| {
+            String::from_utf8_lossy(&bytes).lines().find_map(|line| {
+                let (id, name) = line.split_once(',')?;
+                (id.trim().parse::<u32>().ok()? == weapon_type).then(|| name.trim().to_owned())
+            })
+        })
+        .unwrap_or_else(|| format!("Weapon {weapon_type}"))
+}
+
+/// `ani/Control.Ani` `[Weapon{type}]`: the weapon type icon.
+fn weapon_type_icon(assets: &mut Assets, weapon_type: u32) -> Option<RgbaImage> {
+    let ani = assets.read("ani/Control.Ani").ok()?;
+    let ani = String::from_utf8_lossy(&ani);
+    let path = animation_frame(&ani, &format!("[Weapon{weapon_type}]"))?.to_owned();
+    crate::original_ui::visible_part(&assets.image(&path).ok()?).ok()
+}
+
+/// Icon centred in a 37x37 list box ([134-1522..]).
+fn draw_list_icon(image: &mut RgbaImage, icon: &RgbaImage, origin: [i32; 2]) {
+    let icon = imageops::resize(icon, 33, 33, imageops::FilterType::Triangle);
+    imageops::overlay(image, &icon, i64::from(origin[0] + 2), i64::from(origin[1] + 2));
+}
+
+/// Level as the original stars: a gold mark per 20 levels
+/// (`[Weaponlevel20]`), silver per 5 (`[Weaponlevel5]`), copper per level
+/// (`[Weaponlevel1]`), vertically centred on `centre[1]`.
+fn draw_level_stars(image: &mut RgbaImage, assets: &mut Assets, level: u32, centre: [i32; 2]) {
+    let marks = [
+        ("data/main/LevelGold.dds", level / 20),
+        ("data/main/LevelSiller.dds", level % 20 / 5),
+        ("data/main/LevelCopper.dds", level % 5),
+    ];
+    let mut x = centre[0];
+    for (path, count) in marks {
+        let Some(mark) = assets
+            .image(path)
+            .ok()
+            .and_then(|mark| crate::original_ui::visible_part(&mark).ok())
+        else {
+            continue;
+        };
+        for _ in 0..count {
+            let y = centre[1] - mark.height() as i32 / 2;
+            imageops::overlay(image, &mark, i64::from(x), i64::from(y));
+            x += mark.width() as i32 + 1;
+        }
+    }
+}
+
+/// Battle power ("Potency" in the 5065 art): level, five per reborn, the
+/// nobility bonus and, for each worn item except the garment, its quality
+/// above Normal, its plus and one per gem (two for a super gem). A
+/// two-handed weapon without an off-hand item counts twice.
+pub fn battle_power(
+    level: u8,
+    rebirths: u8,
+    equipment: &[crate::network::OwnedItem],
+    nobility_rank: u32,
+) -> u32 {
+    let nobility = match nobility_rank {
+        12 => 5,
+        9 => 4,
+        7 => 3,
+        5 => 2,
+        3 => 1,
+        _ => 0,
+    };
+    let item_power = |item: &crate::network::OwnedItem| {
+        let quality = (item.item_type % 10).saturating_sub(5);
+        let gems = [item.gem_one, item.gem_two]
+            .into_iter()
+            .filter(|gem| *gem != 0 && *gem != 255)
+            .map(|gem| if gem % 10 == 3 { 2 } else { 1 })
+            .sum::<u32>();
+        quality + u32::from(item.plus) + gems
+    };
+    let has_off_hand = equipment.iter().any(|item| item.position == 5);
+    let items = equipment
+        .iter()
+        .filter(|item| (1..=8).contains(&item.position))
+        .map(|item| {
+            let two_handed = item.position == 4 && (500..600).contains(&(item.item_type / 1_000));
+            item_power(item) * if two_handed && !has_off_hand { 2 } else { 1 }
+        })
+        .sum::<u32>();
+    u32::from(level) + u32::from(rebirths) * 5 + nobility + items
 }
 
 fn draw_reputation_tab(
@@ -3116,7 +3209,13 @@ fn status_slot(image: &mut RgbaImage, x: i32, y: i32, position: u8, occupied: bo
 }
 
 fn quality_outline(image: &mut RgbaImage, rect: UiRect, rarity_code: u8) {
-    let colour = ItemRarity::from_custom_code(rarity_code).colour();
+    // Common items keep the plain slot of the original client; only the
+    // custom rarity tiers are called out.
+    let rarity = ItemRarity::from_custom_code(rarity_code);
+    if rarity == ItemRarity::Common {
+        return;
+    }
+    let colour = rarity.colour();
     let colour = [colour[0], colour[1], colour[2], 255];
     ui_theme::outline(image, rect, colour);
     if rect.width > 5 && rect.height > 5 {
@@ -3621,18 +3720,28 @@ pub fn status_equipment_overlay_image(
         );
         let position = StatusLayout::slot_position(slot);
         let item = equipment.iter().find(|item| item.position == position);
-        ui_theme::slot(
-            &mut image,
-            absolute,
-            hovered == Some(position),
-            false,
-            item.is_some(),
-        );
+        // DialogQuery_Mission already paints the slot frames; only the
+        // hover state and the items are drawn here.
+        if hovered == Some(position) {
+            for x in absolute.x..absolute.x + absolute.width {
+                for y in [absolute.y, absolute.y + absolute.height - 1] {
+                    status_pixel(&mut image, x, y, [255, 230, 150, 220]);
+                }
+            }
+            for y in absolute.y..absolute.y + absolute.height {
+                for x in [absolute.x, absolute.x + absolute.width - 1] {
+                    status_pixel(&mut image, x, y, [255, 230, 150, 220]);
+                }
+            }
+        }
         if let Some(item) = item
-            && let Ok(icon) = item_icon_image(assets, item.item_type)
+            && let Ok(icon) = item_icon_native(assets, item.item_type)
         {
-            let icon_x = absolute.x + (absolute.width - 32).max(0) / 2;
-            let icon_y = absolute.y + (absolute.height - 32).max(0) / 2;
+            // Like the original, the icon fills its frame (40px or 65px).
+            let size = (absolute.width - 4).max(1) as u32;
+            let icon = imageops::resize(&icon, size, size, imageops::FilterType::Triangle);
+            let icon_x = absolute.x + 2;
+            let icon_y = absolute.y + 2;
             imageops::overlay(&mut image, &icon, i64::from(icon_x), i64::from(icon_y));
             draw_durability_indicator(
                 &mut image,
@@ -5423,8 +5532,9 @@ pub fn inventory_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
 
 pub fn inventory_close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     let [left, top] = inventory_position(viewport);
-    ((left + 238.0)..=(left + 266.0)).contains(&cursor[0])
-        && ((top + 6.0)..=(top + 35.0)).contains(&cursor[1])
+    let [x, y, width, height] = INVENTORY_CLOSE_RECT.map(|value| value as f32);
+    (left + x..left + x + width).contains(&cursor[0])
+        && (top + y..top + y + height).contains(&cursor[1])
 }
 
 pub fn warehouse_position(viewport: [f32; 2]) -> [f32; 2] {
@@ -5458,33 +5568,43 @@ pub fn warehouse_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
         && cursor[1] < top + WAREHOUSE_HEIGHT as f32
 }
 
-pub fn warehouse_close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+fn warehouse_local(viewport: [f32; 2], cursor: [f32; 2]) -> [f32; 2] {
     let [left, top] = warehouse_position(viewport);
-    ((left + 234.0)..=(left + 254.0)).contains(&cursor[0])
-        && ((top + 15.0)..=(top + 36.0)).contains(&cursor[1])
-        || ((left + 150.0)..=(left + 210.0)).contains(&cursor[0])
-            && ((top + 339.0)..=(top + 370.0)).contains(&cursor[1])
+    [cursor[0] - left, cursor[1] - top]
 }
 
+fn warehouse_hit(viewport: [f32; 2], cursor: [f32; 2], rect: [i32; 4]) -> bool {
+    let [x, y, width, height] = rect.map(|value| value as f32);
+    within(warehouse_local(viewport, cursor), x, y, width, height)
+}
+
+pub fn warehouse_close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    warehouse_hit(viewport, cursor, WAREHOUSE_CLOSE)
+}
+
+/// `Some(false)` withdraws, `Some(true)` deposits.
 pub fn warehouse_action_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
-    let [left, top] = warehouse_position(viewport);
-    let y = (top + 52.0)..=(top + 75.0);
-    if !y.contains(&cursor[1]) {
-        return None;
+    let [width, height] = WAREHOUSE_BUTTON_SIZE;
+    for (origin, deposit) in [(WAREHOUSE_WITHDRAW, false), (WAREHOUSE_DEPOSIT, true)] {
+        if warehouse_hit(viewport, cursor, [origin[0], origin[1], width, height]) {
+            return Some(deposit);
+        }
     }
-    if ((left + 41.0)..=(left + 105.0)).contains(&cursor[0]) {
-        Some(false)
-    } else if ((left + 145.0)..=(left + 209.0)).contains(&cursor[0]) {
-        Some(true)
-    } else {
-        None
+    None
+}
+
+/// `Some(true)` pages forward.
+pub fn warehouse_page_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
+    for (origin, forward) in [(WAREHOUSE_PAGE_UP, false), (WAREHOUSE_PAGE_DOWN, true)] {
+        if warehouse_hit(viewport, cursor, [origin[0], origin[1], 17, 17]) {
+            return Some(forward);
+        }
     }
+    None
 }
 
 pub fn warehouse_amount_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = warehouse_position(viewport);
-    (left + 125.0..=left + 207.0).contains(&cursor[0])
-        && (top + 87.0..=top + 110.0).contains(&cursor[1])
+    warehouse_hit(viewport, cursor, WAREHOUSE_AMOUNT_BOX)
 }
 
 pub fn shop_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -5493,6 +5613,24 @@ pub fn shop_panel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
         && cursor[0] < left + PANEL_WIDTH as f32
         && cursor[1] >= top
         && cursor[1] < top + SHOP_HEIGHT as f32
+}
+
+/// Item icon at its native 64px resolution.
+pub fn item_icon_native(assets: &mut Assets, item_id: u32) -> Result<RgbaImage> {
+    let animation = assets
+        .read("ani/ItemMinIcon.Ani")
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let map_animation = assets
+        .read("ani/MapItemIcon.Ani")
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    load_icon_native(
+        assets,
+        item_id,
+        animation.as_deref(),
+        map_animation.as_deref(),
+    )
 }
 
 pub fn item_icon_image(assets: &mut Assets, item_id: u32) -> Result<RgbaImage> {
@@ -5578,202 +5716,95 @@ pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> 
     Ok(image)
 }
 
-pub fn panel_base_image(_assets: &mut Assets) -> Result<RgbaImage> {
+/// Static NPC shop window: `DialogNpcBuy` and its footer buttons.
+pub fn panel_base_image(assets: &mut Assets) -> Result<RgbaImage> {
+    use crate::original_ui::overlay_asset;
     let mut image = RgbaImage::from_pixel(PANEL_WIDTH, SHOP_HEIGHT, Rgba([0, 0, 0, 0]));
-    ui_theme::window(&mut image, "SHOP", false)?;
-    for row in 0..4 {
-        for column in 0..5 {
-            ui_theme::slot(
-                &mut image,
-                UiRect::new(
-                    SLOT_X as i32 + column * SLOT_STEP_X as i32,
-                    SLOT_Y as i32 + row * SLOT_STEP_Y as i32,
-                    SLOT_SIZE as i32,
-                    SLOT_SIZE as i32,
-                ),
-                false,
-                false,
-                false,
-            );
-        }
-    }
-    let font = labels::font()?;
-    ui_theme::section(
+    overlay_asset(&mut image, assets, "data/main/DialogNpcBuy.dds", 0, 0)?;
+    let y = FOOTER_BUTTON_Y as i64;
+    overlay_asset(
         &mut image,
-        UiRect::new(18, 198, 236, 42),
-        "SHOP ACTIONS",
-        &font,
-    );
+        assets,
+        "data/main/HelpBtn2.dds",
+        SHOP_HELP_X as i64,
+        y,
+    )?;
+    overlay_asset(
+        &mut image,
+        assets,
+        "data/main/CloseBtn2.dds",
+        SHOP_CLOSE_X as i64,
+        y,
+    )?;
+    // The client has no texture for the page buttons and shows them as
+    // plain outlined squares.
+    for page_y in [SHOP_PAGE_UP_Y, SHOP_PAGE_DOWN_Y] {
+        shop_square(
+            &mut image,
+            SHOP_PAGE_X as u32 + 3,
+            page_y as u32 + 3,
+            [222, 205, 150, 255],
+        );
+    }
     Ok(image)
+}
+
+fn shop_square(image: &mut RgbaImage, x: u32, y: u32, colour: [u8; 4]) {
+    outline(image, x, y, 10, Rgba(colour));
 }
 
 pub fn panel_overlay_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(PANEL_WIDTH, SHOP_HEIGHT, Rgba([0, 0, 0, 0]));
-    let font = labels::font()?;
-    let title = if state.name.is_empty() {
-        "Shop"
-    } else {
-        state.name.as_str()
-    };
-    let title_width = title
-        .chars()
-        .map(|character| font.metrics(character, 12.0).advance_width)
-        .sum::<f32>();
-    labels::text(
-        &mut image,
-        &font,
-        &[(title, [255, 232, 160])],
-        [((PANEL_WIDTH as f32 - title_width) * 0.5).max(0.0), 12.0],
-    );
     let first_item = state.page * 5;
+    let icon_offset = (SLOT_SIZE - original_ui_layout::INVENTORY_ICON_SIZE as u32) / 2;
     for (slot, item_index) in
         (first_item..(first_item + ITEMS_PER_PAGE).min(state.items.len())).enumerate()
     {
         let row = slot as u32 / 5;
         let column = slot as u32 % 5;
-        let x = SLOT_X + column * SLOT_STEP_X + ICON_OFFSET;
-        let y = SLOT_Y + row * SLOT_STEP_Y + ICON_OFFSET;
+        let x = SLOT_X + column * SLOT_STEP_X;
+        let y = SLOT_Y + row * SLOT_STEP_Y;
         let Some(icon) = state.icons.get(item_index) else {
             continue;
         };
-        imageops::overlay(&mut image, icon, x.into(), y.into());
-        if state.selected == Some(item_index) {
-            outline(
-                &mut image,
-                x - 3,
-                y - 3,
-                SLOT_SIZE + 2,
-                Rgba([255, 220, 70, 255]),
-            );
-        }
-    }
-    let up = scroll_button_image(false, state.scroll_hover == Some(false));
-    let down = scroll_button_image(true, state.scroll_hover == Some(true));
-    imageops::overlay(&mut image, &up, 242, 154);
-    imageops::overlay(&mut image, &down, 242, 189);
-    let repair_button = labelled_repair_button(&font, state.repair_hover);
-    imageops::overlay(&mut image, &repair_button, 33, FOOTER_BUTTON_Y as i64);
-    labels::text(
-        &mut image,
-        &font,
-        &[("Help", [255, 232, 160])],
-        [143.0, FOOTER_BUTTON_Y],
-    );
-    labels::text(
-        &mut image,
-        &font,
-        &[("Close", [255, 232, 160])],
-        [200.0, FOOTER_BUTTON_Y],
-    );
-    Ok(image)
-}
-
-fn scroll_button_image(down: bool, hovered: bool) -> RgbaImage {
-    let mut image = RgbaImage::from_pixel(18, 18, Rgba([0, 0, 0, 0]));
-    rounded_rect(
-        &mut image,
-        0,
-        0,
-        18,
-        18,
-        4,
-        if hovered {
-            Rgba([250, 214, 128, 255])
-        } else {
-            Rgba([91, 125, 137, 255])
-        },
-    );
-    rounded_rect(
-        &mut image,
-        1,
-        1,
-        16,
-        16,
-        3,
-        if hovered {
-            Rgba([47, 83, 96, 255])
-        } else {
-            Rgba([16, 42, 56, 255])
-        },
-    );
-    for row in 0..6u32 {
-        let half = if down { row } else { 5 - row };
-        let y = if down { 5 + row } else { 5 + row };
-        for x in (8 - half)..=(8 + half) {
-            if x < image.width() && y < image.height() {
-                image.put_pixel(
-                    x,
-                    y,
-                    if hovered {
-                        Rgba([255, 233, 169, 255])
-                    } else {
-                        Rgba([191, 215, 221, 255])
-                    },
-                );
-            }
-        }
-    }
-    image
-}
-
-fn labelled_repair_button(font: &fontdue::Font, hovered: bool) -> RgbaImage {
-    let mut button = RgbaImage::from_pixel(62, 20, Rgba([0, 0, 0, 0]));
-    rounded_rect(&mut button, 0, 1, 62, 18, 4, Rgba([5, 12, 17, 255]));
-    let frame = if hovered {
-        Rgba([248, 211, 111, 255])
-    } else {
-        Rgba([197, 161, 77, 255])
-    };
-    let inset = if hovered {
-        Rgba([22, 47, 58, 255])
-    } else {
-        Rgba([12, 29, 39, 255])
-    };
-    rounded_rect(&mut button, 1, 1, 60, 17, 4, frame);
-    rounded_rect(&mut button, 2, 2, 58, 15, 3, inset);
-    rounded_rect(
-        &mut button,
-        3,
-        3,
-        56,
-        13,
-        2,
-        if hovered {
-            Rgba([27, 63, 78, 255])
-        } else {
-            Rgba([17, 45, 59, 255])
-        },
-    );
-    for x in 5..57 {
-        button.put_pixel(
-            x,
-            3,
-            if hovered {
-                Rgba([98, 133, 142, 255])
-            } else {
-                Rgba([55, 82, 92, 255])
-            },
+        imageops::overlay(
+            &mut image,
+            icon,
+            (x + icon_offset).into(),
+            (y + icon_offset).into(),
         );
-        button.put_pixel(x, 15, Rgba([9, 24, 32, 255]));
+        if state.selected == Some(item_index) {
+            outline(&mut image, x, y, SLOT_SIZE, Rgba([255, 221, 96, 255]));
+        } else if state.hover == Some(item_index) {
+            outline(&mut image, x, y, SLOT_SIZE, Rgba([255, 236, 170, 200]));
+        }
     }
-    let text_width = "Repair"
-        .chars()
-        .map(|character| font.metrics(character, 12.0).advance_width)
-        .sum::<f32>();
-    labels::text(
-        &mut button,
-        font,
-        &[(
-            "Repair",
-            if hovered {
-                [255, 245, 193]
-            } else {
-                [255, 232, 160]
-            },
-        )],
-        [(62.0 - text_width) * 0.5, 2.0],
-    );
-    button
+    let repair = if state.repair_hover {
+        "data/main/NpcBuyBtnFixClick.dds"
+    } else {
+        "data/main/NpcBuyBtnFix.dds"
+    };
+    crate::original_ui::overlay_asset(
+        &mut image,
+        assets,
+        repair,
+        SHOP_REPAIR_X as i64,
+        FOOTER_BUTTON_Y as i64,
+    )?;
+    if let Some(down) = state.scroll_hover {
+        let y = if down {
+            SHOP_PAGE_DOWN_Y
+        } else {
+            SHOP_PAGE_UP_Y
+        };
+        shop_square(
+            &mut image,
+            SHOP_PAGE_X as u32 + 3,
+            y as u32 + 3,
+            [255, 255, 255, 255],
+        );
+    }
+    Ok(image)
 }
 
 fn rounded_rect(
@@ -5834,33 +5865,40 @@ pub fn highlight_image() -> RgbaImage {
     image
 }
 
-pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+fn shop_local(viewport: [f32; 2], cursor: [f32; 2]) -> [f32; 2] {
     let [left, top] = panel_position(viewport);
-    (cursor[0] >= left + 243.0
-        && cursor[0] <= left + 266.0
-        && cursor[1] >= top + 7.0
-        && cursor[1] <= top + 34.0)
-        || (cursor[0] >= left + 200.0
-            && cursor[0] <= left + 243.0
-            && cursor[1] >= top + FOOTER_BUTTON_Y
-            && cursor[1] <= top + FOOTER_BUTTON_Y + 20.0)
+    [cursor[0] - left, cursor[1] - top]
+}
+
+fn within(point: [f32; 2], x: f32, y: f32, width: f32, height: f32) -> bool {
+    (x..x + width).contains(&point[0]) && (y..y + height).contains(&point[1])
+}
+
+pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    within(
+        shop_local(viewport, cursor),
+        SHOP_CLOSE_X,
+        FOOTER_BUTTON_Y,
+        43.0,
+        20.0,
+    )
 }
 
 pub fn repair_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = panel_position(viewport);
-    cursor[0] >= left + 33.0
-        && cursor[0] < left + 95.0
-        && cursor[1] >= top + FOOTER_BUTTON_Y
-        && cursor[1] < top + FOOTER_BUTTON_Y + 20.0
+    within(
+        shop_local(viewport, cursor),
+        SHOP_REPAIR_X,
+        FOOTER_BUTTON_Y,
+        62.0,
+        20.0,
+    )
 }
 
 pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
-    let [left, top] = panel_position(viewport);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if (241.0..261.0).contains(&x) && (153.0..173.0).contains(&y) {
+    let local = shop_local(viewport, cursor);
+    if within(local, SHOP_PAGE_X, SHOP_PAGE_UP_Y, 16.0, 16.0) {
         Some(false)
-    } else if (241.0..261.0).contains(&x) && (188.0..208.0).contains(&y) {
+    } else if within(local, SHOP_PAGE_X, SHOP_PAGE_DOWN_Y, 16.0, 16.0) {
         Some(true)
     } else {
         None
@@ -5871,6 +5909,7 @@ pub fn inventory_image(
     assets: &mut Assets,
     inventory: &[crate::network::OwnedItem],
     silver: u32,
+    cps: u32,
     selected_uid: Option<u32>,
     filter: InventoryFilter,
     hovered_filter: Option<InventoryFilter>,
@@ -5882,6 +5921,7 @@ pub fn inventory_image(
         assets,
         inventory,
         silver,
+        cps,
         selected_uid,
         filter,
         hovered_filter,
@@ -5896,21 +5936,7 @@ pub fn inventory_image(
 /// Static layer for the original inventory. It is uploaded once and never
 /// regenerated when an item, hover state, or currency value changes.
 pub fn inventory_base_image(assets: &mut Assets) -> Result<RgbaImage> {
-    let mut image = RgbaImage::from_pixel(INVENTORY_WIDTH, INVENTORY_HEIGHT, Rgba([0, 0, 0, 0]));
-    ui_theme::window(&mut image, "INVENTORY", false)?;
-    let font = labels::font()?;
-    for slot in 0..40_u8 {
-        let rect = inventory_slot_rect(slot);
-        ui_theme::slot(&mut image, rect, false, false, false);
-    }
-    ui_theme::section(
-        &mut image,
-        UiRect::new(18, 380, 234, 100),
-        "CURRENCY",
-        &font,
-    );
-    let _ = assets;
-    Ok(image)
+    crate::original_ui::inventory_base(assets)
 }
 
 /// Dynamic layer for the original inventory. It is transparent everywhere
@@ -5919,6 +5945,7 @@ pub fn inventory_overlay_image(
     assets: &mut Assets,
     inventory: &[crate::network::OwnedItem],
     silver: u32,
+    cps: u32,
     selected_uid: Option<u32>,
     filter: InventoryFilter,
     hovered_filter: Option<InventoryFilter>,
@@ -5926,17 +5953,17 @@ pub fn inventory_overlay_image(
     organize_hovered: bool,
 ) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(INVENTORY_WIDTH, INVENTORY_HEIGHT, Rgba([0, 0, 0, 0]));
-    let font = labels::font()?;
-    let _ = (filter, hovered_filter);
-    ui_theme::tab(
-        &mut image,
-        &font,
-        INVENTORY_ORGANIZE_BUTTON,
-        "SORT",
-        organize_hovered,
-    );
+    let font = crate::main_hud::font()?;
+    let _ = (filter, hovered_filter, organize_hovered);
     if close_hovered {
-        ui_theme::close_button(&mut image, true, 241, 9);
+        let [x, y, _, _] = INVENTORY_CLOSE_RECT;
+        crate::original_ui::overlay_asset(
+            &mut image,
+            assets,
+            "data/main/CloseBtn2Click.dds",
+            x.into(),
+            y.into(),
+        )?;
     }
     let animation = assets
         .read("ani/ItemMinIcon.Ani")
@@ -5951,27 +5978,31 @@ pub fn inventory_overlay_image(
         .filter(|item| item.position < 40 && filter.accepts(item.item_type))
     {
         let slot = inventory_slot_rect(item.position);
-        ui_theme::slot(
-            &mut image,
-            slot,
-            false,
-            selected_uid == Some(item.uid),
-            true,
-        );
         quality_outline(&mut image, slot, item.rarity);
-        let icon = load_icon(
+        let icon = load_icon_native(
             assets,
             item.item_type,
             animation.as_deref(),
             map_animation.as_deref(),
         )?;
+        // The original scales the 64px icons down to fill the slot.
+        let size = original_ui_layout::INVENTORY_ICON_SIZE as u32;
+        let icon = if icon.dimensions() == (size, size) {
+            icon
+        } else {
+            imageops::resize(&icon, size, size, imageops::FilterType::Triangle)
+        };
         imageops::overlay(
             &mut image,
             &icon,
             (slot.x as u32 + INVENTORY_ICON_OFFSET).into(),
             (slot.y as u32 + INVENTORY_ICON_OFFSET).into(),
         );
-        if item.item_type < 1_000_000 {
+        // Like the original, durability is only called out once it is low.
+        if item.item_type < 1_000_000
+            && item.max_durability > 0
+            && u32::from(item.durability) * 4 <= u32::from(item.max_durability)
+        {
             draw_durability_indicator(&mut image, slot.x + 4, slot.y + 34, 31, item);
         }
         if selected_uid == Some(item.uid) {
@@ -5984,48 +6015,25 @@ pub fn inventory_overlay_image(
             );
         }
     }
-    let silver = format_silver(silver);
-    labels::text_sized(
+    let [x, y] = INVENTORY_SILVER_TEXT;
+    crate::main_hud::text(
         &mut image,
-        &font,
-        &[("Silver", [180, 155, 93])],
-        [28.0, 400.0],
-        10.0,
+        font,
+        &format_silver(silver),
+        12.0,
+        [x, y],
+        [255, 255, 255, 255],
+        Some(80),
     );
-    labels::text_sized(
+    let [x, y] = INVENTORY_CPS_TEXT;
+    crate::main_hud::text(
         &mut image,
-        &font,
-        &[(&silver, [255, 232, 160])],
-        [right_aligned_text_x(&font, &silver, 230.0), 400.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("Cps", [180, 155, 93])],
-        [28.0, 420.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("0", [220, 205, 160])],
-        [right_aligned_text_x(&font, "0", 230.0), 420.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("Bound CPs", [180, 155, 93])],
-        [28.0, 440.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("0", [220, 205, 160])],
-        [right_aligned_text_x(&font, "0", 230.0), 440.0],
-        10.0,
+        font,
+        &format_silver(cps),
+        12.0,
+        [x, y],
+        [255, 255, 255, 255],
+        Some(80),
     );
     Ok(image)
 }
@@ -6144,58 +6152,25 @@ pub fn warehouse_image(
     Ok(image)
 }
 
-pub fn warehouse_base_image(_assets: &mut Assets, guild_warehouse: bool) -> Result<RgbaImage> {
+/// Static Warehouse window: `DialogDepot` with its native buttons.
+pub fn warehouse_base_image(assets: &mut Assets, guild_warehouse: bool) -> Result<RgbaImage> {
+    use crate::original_ui::overlay_asset;
     let mut image = RgbaImage::from_pixel(WAREHOUSE_WIDTH, WAREHOUSE_HEIGHT, Rgba([0, 0, 0, 0]));
-    ui_theme::window(
-        &mut image,
-        if guild_warehouse {
-            "GUILD WAREHOUSE"
-        } else {
-            "WAREHOUSE"
-        },
-        false,
-    )?;
-    let font = labels::font()?;
-    for row in 0..4 {
-        for column in 0..5 {
-            ui_theme::slot(
-                &mut image,
-                UiRect::new(
-                    WAREHOUSE_SLOT_X as i32 + column * SLOT_STEP_X as i32,
-                    WAREHOUSE_SLOT_Y as i32 + row * SLOT_STEP_Y as i32,
-                    WAREHOUSE_SLOT_SIZE as i32,
-                    WAREHOUSE_SLOT_SIZE as i32,
-                ),
-                false,
-                false,
-                false,
-            );
-        }
+    overlay_asset(&mut image, assets, "data/main/DialogDepot.dds", 0, 0)?;
+    for (path, [x, y]) in [
+        ("data/main/DepotBtnGet.dds", WAREHOUSE_WITHDRAW),
+        ("data/main/DepotBtnAdd.dds", WAREHOUSE_DEPOSIT),
+        ("data/main/QuerySkillBtnU.dds", WAREHOUSE_PAGE_UP),
+        ("data/main/QuerySkillBtnD.dds", WAREHOUSE_PAGE_DOWN),
+        ("data/main/HelpBtn2.dds", WAREHOUSE_HELP),
+        (
+            "data/main/CloseBtn2.dds",
+            [WAREHOUSE_CLOSE[0], WAREHOUSE_CLOSE[1]],
+        ),
+    ] {
+        overlay_asset(&mut image, assets, path, x.into(), y.into())?;
     }
-    ui_theme::tab(&mut image, &font, UiRect::new(41, 52, 80, 28), "GET", true);
-    ui_theme::tab(
-        &mut image,
-        &font,
-        UiRect::new(145, 52, 80, 28),
-        "ADD",
-        false,
-    );
-    if !guild_warehouse {
-        ui_theme::tab(
-            &mut image,
-            &font,
-            UiRect::new(43, 342, 70, 24),
-            "HELP",
-            false,
-        );
-        ui_theme::tab(
-            &mut image,
-            &font,
-            UiRect::new(152, 342, 70, 24),
-            "CLOSE",
-            false,
-        );
-    }
+    let _ = guild_warehouse;
     Ok(image)
 }
 
@@ -6210,7 +6185,7 @@ pub fn warehouse_overlay_image(
     guild_warehouse: bool,
 ) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(WAREHOUSE_WIDTH, WAREHOUSE_HEIGHT, Rgba([0, 0, 0, 0]));
-    let font = labels::font()?;
+    let font = crate::main_hud::font()?;
     let animation = assets
         .read("ani/ItemMinIcon.Ani")
         .ok()
@@ -6219,76 +6194,88 @@ pub fn warehouse_overlay_image(
         .read("ani/MapItemIcon.Ani")
         .ok()
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let size = original_ui_layout::INVENTORY_ICON_SIZE as u32;
+    let icon_offset = (WAREHOUSE_SLOT_SIZE - size) / 2;
     let first_slot = (page.min(1) as u8) * WAREHOUSE_PAGE_SIZE;
     for item in items
         .iter()
         .filter(|item| (first_slot..first_slot + WAREHOUSE_PAGE_SIZE).contains(&item.position))
     {
         let slot = item.position - first_slot;
-        let row = u32::from(slot) / 5;
-        let column = u32::from(slot) % 5;
-        let slot_x = WAREHOUSE_SLOT_X + column * SLOT_STEP_X;
-        let slot_y = WAREHOUSE_SLOT_Y + row * SLOT_STEP_Y;
-        quality_outline(
-            &mut image,
-            UiRect::new(
-                slot_x as i32,
-                slot_y as i32,
-                WAREHOUSE_SLOT_SIZE as i32,
-                WAREHOUSE_SLOT_SIZE as i32,
-            ),
-            item.rarity,
+        let slot_x = WAREHOUSE_SLOT_X + u32::from(slot % 5) * SLOT_STEP_X;
+        let slot_y = WAREHOUSE_SLOT_Y + u32::from(slot / 5) * SLOT_STEP_Y;
+        let rect = UiRect::new(
+            slot_x as i32,
+            slot_y as i32,
+            WAREHOUSE_SLOT_SIZE as i32,
+            WAREHOUSE_SLOT_SIZE as i32,
         );
-        let icon = load_icon(
+        quality_outline(&mut image, rect, item.rarity);
+        let icon = load_icon_native(
             assets,
             item.item_type,
             animation.as_deref(),
             map_animation.as_deref(),
         )?;
+        let icon = if icon.dimensions() == (size, size) {
+            icon
+        } else {
+            imageops::resize(&icon, size, size, imageops::FilterType::Triangle)
+        };
         imageops::overlay(
             &mut image,
             &icon,
-            (slot_x + ICON_OFFSET).into(),
-            (slot_y + ICON_OFFSET).into(),
+            (slot_x + icon_offset).into(),
+            (slot_y + icon_offset).into(),
         );
         if selected_uid == Some(item.uid) {
             outline(
                 &mut image,
-                slot_x + 1,
-                slot_y + 1,
-                37,
+                slot_x,
+                slot_y,
+                WAREHOUSE_SLOT_SIZE,
                 Rgba([255, 221, 96, 255]),
             );
         }
     }
-    if amount_focused && !guild_warehouse {
-        rect_outline(&mut image, 125, 88, 82, 21, Rgba([92, 127, 143, 255]));
-    }
-    let amount_text = if amount_text.is_empty() {
-        "0"
-    } else {
-        amount_text
-    };
-    if guild_warehouse {
-        labels::text(
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+    if !guild_warehouse {
+        let [x, y, width, height] = WAREHOUSE_AMOUNT_BOX;
+        if amount_focused {
+            rect_outline(
+                &mut image,
+                x as u32,
+                y as u32,
+                width as u32,
+                height as u32,
+                Rgba([150, 190, 205, 255]),
+            );
+        }
+        let amount = if amount_focused {
+            format!("{amount_text}|")
+        } else if amount_text.is_empty() {
+            "0".to_owned()
+        } else {
+            amount_text.to_owned()
+        };
+        crate::main_hud::text(
             &mut image,
-            &font,
-            &[("Itens compartilhados da Guild", [200, 190, 155])],
-            [56.0, 365.0],
+            font,
+            &amount,
+            12.0,
+            [x + 5, y + 4],
+            WHITE,
+            Some(width - 8),
         );
-    } else {
-        labels::text(
+        let [x, y, width, _] = WAREHOUSE_SAVINGS_BOX;
+        crate::main_hud::text(
             &mut image,
-            &font,
-            &[(amount_text, [225, 229, 220])],
-            [131.0, 92.0],
-        );
-        let saved = format_silver(saved_silver);
-        labels::text(
-            &mut image,
-            &font,
-            &[(saved.as_str(), [225, 229, 220])],
-            [131.0, 121.0],
+            font,
+            &format_silver(saved_silver),
+            12.0,
+            [x + 5, y + 4],
+            WHITE,
+            Some(width - 8),
         );
     }
     Ok(image)
@@ -6323,150 +6310,16 @@ pub fn item_tooltip_image(
     rarity_code: u8,
     rarity_roll: u8,
 ) -> Result<RgbaImage> {
-    let font = labels::font()?;
-    let mut image = RgbaImage::from_pixel(330, 348, Rgba([5, 12, 18, 252]));
-
-    let rarity = ItemRarity::from_custom_code(rarity_code);
-    tooltip_frame(&mut image, rarity.colour());
-    let fallback = format!("Item {item_id}");
-    let name = info.map(|item| item.name.as_str()).unwrap_or(&fallback);
-    let title = if plus > 0 {
-        format!("{name}  +{plus}")
-    } else {
-        name.to_owned()
-    };
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(title.as_str(), rarity.colour())],
-        [14.0, 10.0],
-        13.0,
-    );
-    let quality_line = format!("Quality  {}", ItemRarity::native_quality(item_id));
-    let rarity_line = format!("Rarity  {}", rarity.label());
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(quality_line.as_str(), ui_theme::TEXT_MUTED)],
-        [14.0, 29.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(rarity_line.as_str(), rarity.colour())],
-        [106.0, 29.0],
-        10.0,
-    );
-    let level = format!(
-        "Item level  {}",
-        info.map(|item| item.level).unwrap_or_default()
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(level.as_str(), ui_theme::TEXT_MUTED)],
-        [188.0, 29.0],
-        9.0,
-    );
-    tooltip_rule(&mut image, 46);
-
-    let stat_scale = item_stat_scale(plus, rarity_code);
-    let attack = format!(
-        "Attack  {}",
-        format_attack(
-            info.map(|item| (item.attack_min, item.attack_max)),
-            stat_scale
-        )
-    );
-    let defense = format!(
-        "Defense  {}",
-        info.map(|item| scale_item_value(item.defense, stat_scale))
-            .unwrap_or_default()
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(attack.as_str(), ui_theme::TEXT)],
-        [14.0, 59.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(defense.as_str(), ui_theme::TEXT)],
-        [160.0, 59.0],
-        10.0,
-    );
-    let price = format!(
-        "Price  {}",
-        info.map(|item| format_silver(item.price))
-            .unwrap_or_default()
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(price.as_str(), ui_theme::TEXT_GOLD)],
-        [14.0, 78.0],
-        10.0,
-    );
-    let bonus = format!("Rarity bonus  +{}%", rarity.bonus_percent());
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(bonus.as_str(), rarity.colour())],
-        [174.0, 78.0],
-        10.0,
-    );
-    tooltip_rule(&mut image, 96);
-
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("ATTRIBUTES", ui_theme::TEXT_GOLD)],
-        [14.0, 106.0],
-        10.0,
-    );
-    let attributes = tooltip_attributes(info, plus);
-    for (index, attribute) in attributes.iter().take(4).enumerate() {
-        labels::text_sized(
-            &mut image,
-            &font,
-            &[(attribute.as_str(), [126, 205, 231])],
-            [18.0, 124.0 + index as f32 * 17.0],
-            9.0,
-        );
-    }
-    let rarity_y = 198;
-    draw_rarity_bonuses(
-        &mut image,
-        &font,
+    classic_item_tooltip(
         item_uid,
+        item_id,
+        info,
+        None,
+        plus,
+        [gem_one, gem_two],
         rarity_code,
         rarity_roll,
-        rarity_y,
-    );
-    let sockets = format!(
-        "Sockets  {}  /  {}",
-        socket_label(gem_one),
-        socket_label(gem_two)
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(sockets.as_str(), ui_theme::TEXT_MUTED)],
-        [14.0, 296.0],
-        9.0,
-    );
-    tooltip_rule(&mut image, 312);
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("Right-click for actions", ui_theme::TEXT_MUTED)],
-        [14.0, 322.0],
-        9.0,
-    );
-    Ok(image)
+    )
 }
 
 pub fn equipment_tooltip_image(
@@ -6481,224 +6334,144 @@ pub fn equipment_tooltip_image(
     rarity_code: u8,
     rarity_roll: u8,
 ) -> Result<RgbaImage> {
-    let font = labels::font()?;
-    let mut image = RgbaImage::from_pixel(330, 410, Rgba([5, 10, 15, 252]));
-    let rarity = ItemRarity::from_custom_code(rarity_code);
-    tooltip_frame(&mut image, rarity.colour());
-    let fallback = format!("Item {item_id}");
-    let name = info.map(|item| item.name.as_str()).unwrap_or(&fallback);
-    let title = if plus > 0 {
-        format!("{name}  +{plus}")
-    } else {
-        name.to_owned()
-    };
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(title.as_str(), rarity.colour())],
-        [14.0, 10.0],
-        13.0,
-    );
-    let quality_line = format!("Quality  {}", ItemRarity::native_quality(item_id));
-    let rarity_line = format!("Rarity  {}", rarity.label());
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(quality_line.as_str(), ui_theme::TEXT_MUTED)],
-        [14.0, 29.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(rarity_line.as_str(), rarity.colour())],
-        [106.0, 29.0],
-        10.0,
-    );
-    let level = format!(
-        "Item level  {}",
-        info.map(|item| item.level).unwrap_or_default()
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(level.as_str(), ui_theme::TEXT_MUTED)],
-        [188.0, 29.0],
-        9.0,
-    );
-    let durability_text = if max_durability == 0 {
-        "Durability  --".to_owned()
-    } else {
-        format!("Durability  {durability}/{max_durability}")
-    };
-    tooltip_rule(&mut image, 46);
-    let condition = if max_durability > 0 && durability == 0 {
-        ("BROKEN", [232, 78, 70])
-    } else {
-        ("Equipped", [91, 221, 133])
-    };
-    labels::text_sized(&mut image, &font, &[condition], [224.0, 29.0], 9.0);
-    let stat_scale = item_stat_scale(plus, rarity_code);
-    let attack = format!(
-        "Attack  {}",
-        format_attack(
-            info.map(|item| (item.attack_min, item.attack_max)),
-            stat_scale
-        )
-    );
-    let defense = format!(
-        "Defense  {}",
-        info.map(|item| scale_item_value(item.defense, stat_scale))
-            .unwrap_or_default()
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(attack.as_str(), ui_theme::TEXT)],
-        [14.0, 59.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(defense.as_str(), ui_theme::TEXT)],
-        [164.0, 59.0],
-        10.0,
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(durability_text.as_str(), ui_theme::TEXT_MUTED)],
-        [14.0, 78.0],
-        10.0,
-    );
-    let price = format!(
-        "Price  {}",
-        info.map(|item| format_silver(item.price))
-            .unwrap_or_default()
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(price.as_str(), ui_theme::TEXT_GOLD)],
-        [174.0, 78.0],
-        10.0,
-    );
-    tooltip_rule(&mut image, 96);
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("ATTRIBUTES", ui_theme::TEXT_GOLD)],
-        [14.0, 106.0],
-        10.0,
-    );
-    let attributes = tooltip_attributes(info, plus);
-    for (index, attribute) in attributes.iter().take(6).enumerate() {
-        labels::text_sized(
-            &mut image,
-            &font,
-            &[(attribute.as_str(), [126, 205, 231])],
-            [18.0, 124.0 + index as f32 * 17.0],
-            9.0,
-        );
-    }
-    let rarity_y = 232;
-    draw_rarity_bonuses(
-        &mut image,
-        &font,
+    classic_item_tooltip(
         item_uid,
+        item_id,
+        info,
+        Some((durability, max_durability)),
+        plus,
+        [gem_one, gem_two],
         rarity_code,
         rarity_roll,
-        rarity_y,
-    );
-    let sockets = format!(
-        "Sockets  {}  /  {}",
-        socket_label(gem_one),
-        socket_label(gem_two)
-    );
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[(sockets.as_str(), ui_theme::TEXT_MUTED)],
-        [14.0, 358.0],
-        9.0,
-    );
-    tooltip_rule(&mut image, 374);
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("Move item to change equipment", ui_theme::TEXT_MUTED)],
-        [14.0, 386.0],
-        9.0,
-    );
-    Ok(image)
+    )
 }
 
-fn draw_rarity_bonuses(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
+/// The original item tooltip: a translucent black box sized to its lines,
+/// with the name in yellow, attributes in white, gems in green and bonuses
+/// in magenta. The custom rarity system keeps its colour for its lines.
+fn classic_item_tooltip(
+    item_uid: u32,
     item_id: u32,
+    info: Option<&ItemInfo>,
+    durability: Option<(u16, u16)>,
+    plus: u8,
+    gems: [u8; 2],
     rarity_code: u8,
     rarity_roll: u8,
-    y: u32,
-) {
+) -> Result<RgbaImage> {
+    const YELLOW: [u8; 4] = [255, 255, 0, 255];
+    const WHITE: [u8; 4] = [255, 255, 255, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const MAGENTA: [u8; 4] = [255, 64, 255, 255];
+    const RED: [u8; 4] = [255, 80, 64, 255];
     let rarity = ItemRarity::from_custom_code(rarity_code);
-    labels::text_sized(
-        image,
-        font,
-        &[("RARITY BONUSES", ui_theme::TEXT_GOLD)],
-        [14.0, y as f32],
-        10.0,
-    );
-    let slots = rarity_bonus_slots(rarity_code);
-    let slot_count = format!("BONUS SLOTS  {slots}/4");
-    labels::text_sized(
-        image,
-        font,
-        &[(slot_count.as_str(), ui_theme::TEXT_MUTED)],
-        [18.0, y as f32 + 13.0],
-        8.0,
-    );
-    for slot in 0..4_u8 {
-        let (line, colour) = if slot < slots {
-            let (name, value, unit) = rarity_bonus(item_id, rarity_roll, slot);
-            (format!("{name}  +{value}{unit}"), rarity.colour())
-        } else {
-            ("LOCKED BONUS SLOT".to_owned(), [86, 100, 106])
-        };
-        labels::text_sized(
-            image,
-            font,
-            &[(line.as_str(), colour)],
-            [18.0, y as f32 + 29.0 + f32::from(slot) * 17.0],
-            8.0,
-        );
+    let rarity_colour = {
+        let [r, g, b] = rarity.colour();
+        [r, g, b, 255]
+    };
+    let mut lines: Vec<(String, [u8; 4])> = Vec::new();
+
+    let fallback = format!("Item {item_id}");
+    let name = info.map(|item| item.name.as_str()).unwrap_or(&fallback);
+    let mut title = name.to_owned();
+    if plus > 0 {
+        title.push_str(&format!("(+{plus})"));
     }
+    if let Some(kind) = info.map(|item| item.item_type.trim()).filter(|kind| !kind.is_empty()) {
+        title.push_str(&format!(" ({kind})"));
+    }
+    lines.push((title, YELLOW));
+    if rarity != ItemRarity::Common {
+        lines.push((format!("Rarity: {}", rarity.label()), rarity_colour));
+    }
+    let scale = item_stat_scale(plus, rarity_code);
+    if let Some(info) = info {
+        if info.level > 0 {
+            lines.push((format!("Level: {}", info.level), WHITE));
+        }
+        if info.attack_max > 0 {
+            let attack = format_attack(Some((info.attack_min, info.attack_max)), scale);
+            lines.push((format!("Attack: {attack}"), WHITE));
+        }
+        if info.defense > 0 {
+            lines.push((
+                format!("Defense: {}", scale_item_value(info.defense, scale)),
+                WHITE,
+            ));
+        }
+        if info.health_add > 0 {
+            lines.push((format!("HP: +{}", info.health_add), WHITE));
+        }
+        if info.mana_add > 0 {
+            lines.push((format!("MP: +{}", info.mana_add), WHITE));
+        }
+        if info.attack_speed > 0 {
+            lines.push((format!("Attack Rate: {}", info.attack_speed), WHITE));
+        }
+    }
+    let sockets = gems.iter().filter(|gem| **gem != 0).count();
+    if sockets > 0 {
+        lines.push((format!("Socket {sockets} gem(s)"), WHITE));
+        for (index, gem) in gems.iter().enumerate() {
+            if *gem != 0 && *gem != 255 {
+                lines.push((
+                    format!("SocketGem {}:{}", index + 1, gem_code_name(*gem)),
+                    GREEN,
+                ));
+            }
+        }
+    }
+    if let Some((current, maximum)) = durability.filter(|(_, maximum)| *maximum > 0) {
+        lines.push((
+            format!("Dura.: {current}/{maximum}"),
+            if current == 0 { RED } else { WHITE },
+        ));
+    }
+    if plus > 0 {
+        lines.push((format!("Upgrade: +{}%", u32::from(plus) * 10), MAGENTA));
+    }
+    for slot in 0..rarity_bonus_slots(rarity_code) {
+        let (bonus, value, unit) = rarity_bonus(item_uid, rarity_roll, slot);
+        lines.push((format!("{bonus}: +{value}{unit}"), rarity_colour));
+    }
+    if let Some(price) = info.map(|item| item.price).filter(|price| *price > 0) {
+        lines.push((format!("Price: {}", format_silver(price)), WHITE));
+    }
+    classic_tooltip(&lines)
 }
 
-fn tooltip_frame(image: &mut RgbaImage, accent: [u8; 3]) {
-    let width = image.width();
-    let height = image.height();
-    ui_theme::fill(
-        image,
-        UiRect::new(0, 0, width as i32, height as i32),
-        [5, 12, 18, 246],
-    );
-    ui_theme::outline(
-        image,
-        UiRect::new(0, 0, width as i32, height as i32),
-        [accent[0], accent[1], accent[2], 255],
-    );
-    ui_theme::outline(
-        image,
-        UiRect::new(3, 3, width as i32 - 6, height as i32 - 6),
-        [91, 65, 31, 255],
-    );
-    ui_theme::outline(
-        image,
-        UiRect::new(7, 7, width as i32 - 14, height as i32 - 14),
-        [35, 65, 75, 255],
-    );
+/// Translucent black box with one 15px line per entry.
+fn classic_tooltip(lines: &[(String, [u8; 4])]) -> Result<RgbaImage> {
+    let font = crate::main_hud::font()?;
+    let width = lines
+        .iter()
+        .map(|(line, _)| crate::main_hud::text_width(font, line, 12.0))
+        .max()
+        .unwrap_or(0)
+        + 12;
+    let height = lines.len() as u32 * 15 + 8;
+    let mut image = RgbaImage::from_pixel(width.max(40) as u32, height, Rgba([0, 0, 0, 200]));
+    let [w, h] = [image.width(), image.height()];
+    for x in 0..w {
+        image.put_pixel(x, 0, Rgba([70, 70, 70, 230]));
+        image.put_pixel(x, h - 1, Rgba([70, 70, 70, 230]));
+    }
+    for y in 0..h {
+        image.put_pixel(0, y, Rgba([70, 70, 70, 230]));
+        image.put_pixel(w - 1, y, Rgba([70, 70, 70, 230]));
+    }
+    for (index, (line, colour)) in lines.iter().enumerate() {
+        crate::main_hud::text(
+            &mut image,
+            font,
+            line,
+            12.0,
+            [6, 4 + index as i32 * 15],
+            *colour,
+            None,
+        );
+    }
+    Ok(image)
 }
 
 fn tooltip_rule(image: &mut RgbaImage, y: u32) {
@@ -6726,36 +6499,6 @@ fn format_attack(values: Option<(u32, u32)>, scale: u32) -> String {
             scale_item_value(min, scale),
             scale_item_value(max, scale)
         ),
-    }
-}
-
-fn tooltip_attributes(info: Option<&ItemInfo>, plus: u8) -> Vec<String> {
-    let mut attributes = Vec::new();
-    if plus > 0 {
-        attributes.push(format!("Tier upgrade  +{}%", u32::from(plus) * 10));
-    }
-    if let Some(info) = info {
-        if info.health_add > 0 {
-            attributes.push(format!("Health  +{}", info.health_add));
-        }
-        if info.mana_add > 0 {
-            attributes.push(format!("Mana  +{}", info.mana_add));
-        }
-        if info.attack_speed > 0 {
-            attributes.push(format!("Attack speed  {}", info.attack_speed));
-        }
-    }
-    if attributes.is_empty() {
-        attributes.push("No bonus attributes".to_owned());
-    }
-    attributes
-}
-
-fn socket_label(socket: u8) -> String {
-    match socket {
-        0 => "Closed".to_owned(),
-        255 => "Open".to_owned(),
-        code => gem_code_name(code),
     }
 }
 
@@ -6837,18 +6580,28 @@ fn load_icon(
     animation: Option<&str>,
     map_animation: Option<&str>,
 ) -> Result<image::RgbaImage> {
+    let icon = load_icon_native(assets, item_id, animation, map_animation)?;
+    Ok(if icon.dimensions() == (ICON_SIZE, ICON_SIZE) {
+        icon
+    } else {
+        imageops::resize(&icon, ICON_SIZE, ICON_SIZE, imageops::FilterType::Nearest)
+    })
+}
+
+/// Item icon at its native resolution (64x64 for `ItemMinIcon`).
+fn load_icon_native(
+    assets: &mut Assets,
+    item_id: u32,
+    animation: Option<&str>,
+    map_animation: Option<&str>,
+) -> Result<image::RgbaImage> {
     let candidates = [
         format!("data/ItemMinIcon/{item_id}.dds"),
         format!("data/MapItemIcon/{item_id}.dds"),
     ];
     for path in candidates {
         if let Ok(icon) = assets.image(&path) {
-            return Ok(imageops::resize(
-                &icon,
-                ICON_SIZE,
-                ICON_SIZE,
-                imageops::FilterType::Nearest,
-            ));
+            return Ok(icon);
         }
     }
     if let Some(animation) = animation {
@@ -6859,12 +6612,7 @@ fn load_icon(
                 continue;
             };
             if let Ok(icon) = assets.image(frame.trim()) {
-                return Ok(imageops::resize(
-                    &icon,
-                    ICON_SIZE,
-                    ICON_SIZE,
-                    imageops::FilterType::Nearest,
-                ));
+                return Ok(icon);
             }
         }
     }
@@ -6872,12 +6620,7 @@ fn load_icon(
         && let Some(frame) = animation_frame(animation, &format!("[{item_id}]"))
         && let Ok(icon) = assets.image(frame.trim())
     {
-        return Ok(imageops::resize(
-            &icon,
-            ICON_SIZE,
-            ICON_SIZE,
-            imageops::FilterType::Nearest,
-        ));
+        return Ok(icon);
     }
     if (700_000..800_000).contains(&item_id) && item_id % 1000 != 0 {
         return Ok(gem_placeholder_icon(item_id));
@@ -7054,20 +6797,18 @@ fn rect_outline(image: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32, 
 #[cfg(test)]
 mod icon_tests {
     use super::{
-        FriendsPanelAction, GuildPanelAction, INVENTORY_FILTER_HEIGHT, INVENTORY_FILTER_STEP_X,
-        INVENTORY_FILTER_WIDTH, INVENTORY_FILTER_X, INVENTORY_FILTER_Y, INVENTORY_SLOT_SIZE,
-        INVENTORY_SLOT_STEP_X, INVENTORY_SLOT_STEP_Y, INVENTORY_SLOT_X, INVENTORY_SLOT_Y,
-        INVENTORY_WIDTH, InventoryFilter, PlayerShopPanelAction, STATUS_STANDARD_HEIGHT,
-        StatusLayout, StatusTab, TeamPanelAction, TradePanelAction, animation_frame,
-        consumable_bundle_for_item, friends_panel_action_at, guild_panel_action_at,
-        guild_panel_member_at, health_recovery_for_item, inventory_close_at, inventory_filter_at,
-        inventory_image, inventory_item_at, inventory_organize_at, inventory_panel_at,
-        inventory_position, inventory_slot_at, inventory_slot_position, is_consumable,
-        mana_recovery_for_item, player_shop_panel_action_at, player_shop_price_at,
-        quick_panel_position, status_character_clip, status_close_at, status_equipment_slot_at,
-        status_image, status_position, status_reputation_donate_at, status_tab_at, status_title_at,
-        team_health_fraction, team_panel_action_at, temporary_effect_for_item,
-        trade_panel_action_at, trade_panel_drop_at,
+        INVENTORY_FILTER_HEIGHT, INVENTORY_FILTER_STEP_X, INVENTORY_FILTER_WIDTH,
+        INVENTORY_FILTER_X, INVENTORY_FILTER_Y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_STEP_X,
+        INVENTORY_SLOT_STEP_Y, INVENTORY_SLOT_X, INVENTORY_SLOT_Y, INVENTORY_WIDTH,
+        InventoryFilter, PlayerShopPanelAction, STATUS_STANDARD_HEIGHT, StatusLayout, StatusTab,
+        animation_frame, consumable_bundle_for_item, health_recovery_for_item, inventory_close_at,
+        inventory_filter_at, inventory_image, inventory_item_at, inventory_organize_at,
+        inventory_panel_at, inventory_position, inventory_slot_at, inventory_slot_position,
+        is_consumable, mana_recovery_for_item, player_shop_panel_action_at, player_shop_price_at,
+        status_base_image, status_character_clip, status_close_at, status_dynamic_image,
+        status_equipment_items, status_equipment_overlay_image, status_equipment_slot_at,
+        status_position, status_reputation_donate_at, status_tab_at, status_title_at,
+        team_health_fraction, temporary_effect_for_item,
     };
 
     #[test]
@@ -7079,13 +6820,12 @@ mod icon_tests {
                 top,
                 ((viewport[1] - STATUS_STANDARD_HEIGHT as f32) * 0.5).max(8.0)
             );
-            assert!(status_close_at(
-                viewport,
-                [
-                    left + StatusLayout::CLOSE_CENTER[0] as f32,
-                    top + StatusLayout::CLOSE_CENTER[1] as f32
-                ]
-            ));
+            for (x, y, width, height) in StatusLayout::CLOSE_RECTS {
+                assert!(status_close_at(
+                    viewport,
+                    [left + (x + width / 2) as f32, top + (y + height / 2) as f32]
+                ));
+            }
 
             for (index, tab) in StatusTab::ALL.into_iter().enumerate() {
                 let tab_y = top + StatusLayout::TAB_Y_POSITIONS[index] as f32;
@@ -7351,14 +7091,44 @@ mod icon_tests {
     }
 
     #[test]
+    fn battle_power_counts_level_reborns_nobility_and_items() {
+        let item = |position, item_type, plus, gem_one, gem_two| crate::network::OwnedItem {
+            uid: 1,
+            item_type,
+            position,
+            durability: 0,
+            max_durability: 0,
+            plus,
+            rarity: 0,
+            gem_one,
+            gem_two,
+            rarity_roll: 0,
+        };
+        assert_eq!(super::battle_power(24, 1, &[], 0), 29);
+        // Super armor (+4), plus 3, one normal and one super gem (+3).
+        let armor = item(3, 130_009, 3, 1, 13);
+        assert_eq!(super::battle_power(24, 1, &[armor.clone()], 12), 29 + 5 + 10);
+        // Garments do not count; an empty socket (255) does not either.
+        let garment = item(9, 181_309, 9, 255, 0);
+        assert_eq!(super::battle_power(1, 1, &[garment], 0), 6);
+        // A two-handed weapon counts twice unless an off-hand is worn.
+        let glaive = item(4, 510_009, 0, 0, 0);
+        assert_eq!(super::battle_power(1, 1, &[glaive.clone()], 0), 6 + 8);
+        let shield = item(5, 900_005, 0, 0, 0);
+        assert_eq!(super::battle_power(1, 1, &[glaive, shield], 0), 6 + 4);
+    }
+
+    #[test]
     fn role_attribute_buttons_follow_native_gui_coordinates() {
         let viewport = [1024.0, 768.0];
         let [left, top] = status_position(viewport);
         let role_left = left + StatusLayout::PAPER_X as f32;
         let role_top = top + StatusLayout::PAPER_Y as f32;
+        // GUI.ini [132-1565] strength, [132-1562] agility, [132-1563]
+        // vitality and [132-1564] spirit; each sits right of its value.
         for (attribute, x, y) in [
-            ("strength", 175.0, 199.0),
-            ("agility", 81.0, 199.0),
+            ("strength", 81.0, 199.0),
+            ("agility", 175.0, 199.0),
             ("vitality", 81.0, 230.0),
             ("spirit", 175.0, 230.0),
         ] {
@@ -7394,45 +7164,6 @@ mod icon_tests {
     }
 
     #[test]
-    fn guild_panel_actions_and_member_selection_use_stable_hit_zones() {
-        let viewport = [1024.0, 768.0];
-        let [left, top] = quick_panel_position(viewport);
-        assert_eq!(
-            guild_panel_action_at(viewport, [left + 30.0, top + 125.0], false, true),
-            Some(GuildPanelAction::AcceptInvite)
-        );
-        assert_eq!(
-            guild_panel_action_at(viewport, [left + 30.0, top + 355.0], true, false),
-            Some(GuildPanelAction::Warehouse)
-        );
-        assert_eq!(
-            guild_panel_action_at(viewport, [left + 300.0, top + 355.0], true, false),
-            Some(GuildPanelAction::Leave)
-        );
-        assert_eq!(
-            guild_panel_action_at(viewport, [left + 30.0, top + 387.0], true, false),
-            Some(GuildPanelAction::Invite)
-        );
-        assert_eq!(
-            guild_panel_action_at(viewport, [left + 300.0, top + 387.0], true, false),
-            Some(GuildPanelAction::Kick)
-        );
-        let members = vec![crate::network::GuildMember {
-            name: "Leader".into(),
-            character_id: 1_000_001,
-            mesh: 0,
-            level: 10,
-            rank: 1000,
-            donation: 0,
-            online: true,
-        }];
-        assert_eq!(
-            guild_panel_member_at(viewport, [left + 30.0, top + 190.0], &members),
-            Some(1_000_001)
-        );
-    }
-
-    #[test]
     fn inventory_filters_match_classic_item_ranges() {
         assert!(InventoryFilter::Equipment.accepts(410339));
         assert!(InventoryFilter::Consumables.accepts(1_050_000));
@@ -7448,7 +7179,9 @@ mod icon_tests {
             let [left, top] = inventory_position(viewport);
             assert_eq!(left, (viewport[0] - INVENTORY_WIDTH as f32).max(0.0));
             assert!(inventory_panel_at(viewport, [left + 136.0, top + 256.0]));
-            assert!(inventory_close_at(viewport, [left + 248.0, top + 26.0]));
+            // The original Close button at the bottom ([153-1128]).
+            assert!(inventory_close_at(viewport, [left + 200.0, top + 457.0]));
+            assert!(!inventory_close_at(viewport, [left + 248.0, top + 26.0]));
             assert!(inventory_organize_at(viewport, [left + 201.0, top + 20.0]));
             for (index, filter) in InventoryFilter::ALL.into_iter().enumerate() {
                 assert_eq!(
@@ -7584,36 +7317,6 @@ mod icon_tests {
     }
 
     #[test]
-    fn team_panel_actions_use_stable_hit_zones() {
-        let viewport = [1000.0, 800.0];
-        let [left, top] = super::quick_panel_position(viewport);
-        assert_eq!(
-            team_panel_action_at(viewport, [left + 30.0, top + 158.0], false, false, false),
-            Some(TeamPanelAction::Create)
-        );
-        assert_eq!(
-            team_panel_action_at(viewport, [left + 30.0, top + 260.0], true, false, false),
-            Some(TeamPanelAction::Invite)
-        );
-        assert_eq!(
-            team_panel_action_at(viewport, [left + 300.0, top + 292.0], true, false, false),
-            Some(TeamPanelAction::Kick)
-        );
-        assert_eq!(
-            team_panel_action_at(viewport, [left + 30.0, top + 125.0], false, true, false),
-            Some(TeamPanelAction::AcceptInvite)
-        );
-        assert_eq!(
-            team_panel_action_at(viewport, [left + 30.0, top + 192.0], false, false, false),
-            Some(TeamPanelAction::RequestJoin)
-        );
-        assert_eq!(
-            team_panel_action_at(viewport, [left + 30.0, top + 228.0], true, false, true),
-            Some(TeamPanelAction::AcceptJoin)
-        );
-    }
-
-    #[test]
     fn team_health_fraction_is_safe_for_empty_and_overflowing_values() {
         assert_eq!(team_health_fraction(0, 100), 0.0);
         assert_eq!(team_health_fraction(50, 100), 0.5);
@@ -7622,129 +7325,9 @@ mod icon_tests {
     }
 
     #[test]
-    fn friends_panel_actions_use_stable_hit_zones() {
-        let viewport = [1000.0, 800.0];
-        let [left, top] = super::quick_panel_position(viewport);
-        let friends = vec![crate::network::SocialEntry {
-            friend_id: 7,
-            name: "Friend".into(),
-            online: true,
-        }];
-        let ignores = vec![crate::network::SocialEntry {
-            friend_id: 8,
-            name: "Ignored".into(),
-            online: false,
-        }];
-        assert_eq!(
-            friends_panel_action_at(
-                viewport,
-                [left + 330.0, top + 70.0],
-                &friends,
-                &ignores,
-                true,
-            ),
-            Some(FriendsPanelAction::AddFriend)
-        );
-        assert_eq!(
-            friends_panel_action_at(
-                viewport,
-                [left + 450.0, top + 70.0],
-                &friends,
-                &ignores,
-                true,
-            ),
-            Some(FriendsPanelAction::AddIgnore)
-        );
-        assert_eq!(
-            friends_panel_action_at(
-                viewport,
-                [left + 120.0, top + 116.0],
-                &friends,
-                &ignores,
-                false,
-            ),
-            Some(FriendsPanelAction::Whisper(0))
-        );
-        assert_eq!(
-            friends_panel_action_at(
-                viewport,
-                [left + 450.0, top + 116.0],
-                &friends,
-                &ignores,
-                false,
-            ),
-            Some(FriendsPanelAction::RemoveFriend(0))
-        );
-        assert_eq!(
-            friends_panel_action_at(
-                viewport,
-                [left + 450.0, top + 292.0],
-                &friends,
-                &ignores,
-                false,
-            ),
-            Some(FriendsPanelAction::RemoveIgnore(0))
-        );
-    }
-
-    #[test]
-    fn trade_panel_actions_use_stable_hit_zones() {
-        let viewport = [1000.0, 800.0];
-        let [left, top] = super::quick_panel_position(viewport);
-        let trade = crate::network::TradeView {
-            active: false,
-            pending_request: Some(8),
-            ..Default::default()
-        };
-        assert_eq!(
-            trade_panel_action_at(viewport, [left + 30.0, top + 125.0], &trade, false),
-            Some(TradePanelAction::AcceptRequest)
-        );
-        let active = crate::network::TradeView {
-            active: true,
-            peer_id: Some(8),
-            own_items: vec![crate::network::OwnedItem {
-                uid: 77,
-                item_type: 410003,
-                position: 0,
-                durability: 100,
-                max_durability: 100,
-                plus: 0,
-                rarity: 0,
-                gem_one: 0,
-                gem_two: 0,
-                rarity_roll: 0,
-            }],
-            ..Default::default()
-        };
-        assert_eq!(
-            trade_panel_action_at(viewport, [left + 30.0, top + 94.0], &active, false),
-            Some(TradePanelAction::RemoveOwnItem(0))
-        );
-        assert_eq!(
-            trade_panel_action_at(viewport, [left + 30.0, top + 262.0], &active, false),
-            Some(TradePanelAction::AddItem)
-        );
-        assert_eq!(
-            trade_panel_action_at(viewport, [left + 300.0, top + 302.0], &active, false),
-            Some(TradePanelAction::Cancel)
-        );
-        assert!(trade_panel_drop_at(
-            viewport,
-            [left + 80.0, top + 180.0],
-            true
-        ));
-        assert!(!trade_panel_drop_at(
-            viewport,
-            [left + 300.0, top + 180.0],
-            true
-        ));
-    }
-
-    #[test]
     fn player_shop_panel_actions_keep_open_query_and_listing_zones_stable() {
         let viewport = [1000.0, 800.0];
-        let [left, top] = super::quick_panel_position(viewport);
+        let [left, top] = super::quick_panel_position(viewport, super::QuickPanel::Market);
         assert!(player_shop_price_at(viewport, [left + 300.0, top + 90.0]));
         assert!(!player_shop_price_at(viewport, [left + 300.0, top + 120.0]));
         let listings = vec![crate::network::PlayerShopItem {
@@ -7816,37 +7399,59 @@ mod icon_tests {
         let output = std::path::PathBuf::from(std::env::var("GRAVAK_CHARACTER_PREVIEW")?);
         std::fs::create_dir_all(&output)?;
         let mut assets = crate::assets::Assets::open(std::path::Path::new(&root))?;
-        let character = crate::character::Character::load(&mut assets, 2)?;
+        let mut character = crate::character::Character::load(&mut assets, 2)?;
+        character.name = "Ikzordep".into();
+        character.strength = 40;
+        character.agility = 15;
+        character.vitality = 24;
+        let equipment = status_equipment_items(&character, &[], &[false; 10]);
         for (tab, name) in [
             (StatusTab::Equipment, "equipment"),
             (StatusTab::Attributes, "attributes"),
             (StatusTab::Weapon, "weapon"),
             (StatusTab::Skills, "skills"),
-            (StatusTab::Title, "title"),
-            (StatusTab::Reputation, "reputation"),
-            (StatusTab::Fashion, "fashion"),
         ] {
-            status_image(
+            // Same layers, in the same order, as the renderer.
+            let mut image = status_base_image(&mut assets, tab, false)?;
+            let skills = [(1_000, 3, 120), (1_001, 1, 15)];
+            let values = status_dynamic_image(
                 &mut assets,
-                13,
-                75,
+                24,
+                0,
+                0,
                 &character,
-                &[],
-                &[false; 10],
                 tab,
-                40,
-                100,
-                false,
                 0,
                 0,
-                0,
-                0,
-                &[],
-                false,
-                None,
-            )?
-            .save(output.join(format!("character-{name}.png")))?;
+                &skills,
+                &equipment,
+                &[(410, 20, 0), (420, 12, 3_500), (480, 3, 90)],
+                Some(1_000),
+            )?;
+            image::imageops::overlay(&mut image, &values, 0, 0);
+            if tab == StatusTab::Equipment {
+                let items = status_equipment_overlay_image(&mut assets, &equipment, Some(4))?;
+                image::imageops::overlay(&mut image, &items, 0, 0);
+            }
+            image.save(output.join(format!("character-{name}.png")))?;
         }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "Requires a local 5065 installation; exports the NPC shop preview"]
+    fn export_shop_preview() -> super::Result<()> {
+        let root = std::env::var("GRAVAK_ASSETS")?;
+        let output = std::path::PathBuf::from(std::env::var("GRAVAK_SHOP_PREVIEW")?);
+        std::fs::create_dir_all(&output)?;
+        let mut assets = crate::assets::Assets::open(std::path::Path::new(&root))?;
+        let mut state = super::ShopState::load(&mut assets, 3)?.ok_or("shop 3 is missing")?;
+        state.hover = Some(1);
+        state.selected = Some(2);
+        super::panel_image(&mut assets, &state)?.save(output.join("shop.png"))?;
+        let info = super::item_info(&mut assets, 410_339);
+        super::equipment_tooltip_image(7, 410_339, info.as_ref(), 70, 70, 12, 13, 13, 2, 9)?
+            .save(output.join("tooltip.png"))?;
         Ok(())
     }
 
@@ -7861,6 +7466,7 @@ mod icon_tests {
             &mut assets,
             &[],
             123_456,
+            0,
             None,
             InventoryFilter::All,
             None,
@@ -7933,6 +7539,7 @@ mod icon_tests {
             &mut assets,
             &filled,
             987_654,
+            1_250,
             Some(2),
             InventoryFilter::All,
             None,

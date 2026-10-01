@@ -33,24 +33,24 @@ pub fn skill_action(skill_id: u32) -> Option<SkillAction> {
             id: 1_000,
             name: "Basic Fire",
             label: "FIRE",
-            range: 6.0,
-            cooldown_seconds: 1.2,
+            range: 9.0,
+            cooldown_seconds: 0.8,
             requires_target: true,
         },
         1_001 => SkillAction {
             id: 1_001,
             name: "Flame Burst",
             label: "BURST",
-            range: 6.0,
-            cooldown_seconds: 2.5,
+            range: 12.0,
+            cooldown_seconds: 0.8,
             requires_target: true,
         },
         1_002 => SkillAction {
             id: 1_002,
             name: "Whirlwind",
             label: "WIND",
-            range: 6.0,
-            cooldown_seconds: 2.0,
+            range: 15.0,
+            cooldown_seconds: 0.8,
             requires_target: true,
         },
         1_110 => SkillAction {
@@ -87,6 +87,24 @@ pub fn skill_action(skill_id: u32) -> Option<SkillAction> {
         },
         _ => return None,
     })
+}
+
+/// Skill icon from `ani/Magic.Ani` (`[MagicSkillType{id}]`).
+pub fn skill_icon(skill_id: u32) -> String {
+    format!("data/main/MagicSkillType{skill_id}.dds")
+}
+
+impl ActionSlot {
+    /// Explicit icon, or the original skill icon for skill actions.
+    pub fn icon_path(&self) -> Option<String> {
+        self.icon.clone().or_else(|| {
+            self.action_id
+                .as_deref()
+                .and_then(|action| action.strip_prefix("skill:"))
+                .and_then(|id| id.parse().ok())
+                .map(skill_icon)
+        })
+    }
 }
 
 impl Default for ActionBar {

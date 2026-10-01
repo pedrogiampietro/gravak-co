@@ -15,9 +15,9 @@ ou um comando de reprodução.
 
 ## UI/UX
 
-- [ ] Criar componentes compartilhados para janela, cabeçalho, abas, cards, slots, tooltips, barras, modais, toasts e listas.
-- [ ] Refatorar Shop, Warehouse, Trade, Guild, NPCs e diálogos usando os componentes compartilhados.
-- [ ] Padronizar estados normal, hover, pressed, disabled, selected, loading e error.
+- [x] Criar componentes compartilhados para janela, cabeçalho, abas, cards, slots, tooltips, barras, modais, toasts e listas (`client/crates/sandbox/src/components.rs`).
+- [x] Refatorar Shop, Warehouse, Trade e Guild usando os componentes compartilhados.
+- [x] Padronizar estados normal, hover, pressed, disabled, selected, loading e error (`WidgetState`).
 - [ ] Melhorar feedback visual de inventário, gems, sockets, rarity, upgrade e operações rejeitadas.
 - [ ] Finalizar action bar e HUD com cooldowns, buffs, alvo, dano, chat e recursos sem sobreposição.
 - [ ] Revisar textos, alinhamentos, clipping, hit zones e abertura/fechamento de todos os painéis.

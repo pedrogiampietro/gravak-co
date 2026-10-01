@@ -40,6 +40,28 @@ struct LevelUpLayer {
     texture: String,
 }
 
+/// A cast seen on screen: the caster's intone effect and the target effect
+/// from `MagicType.dat`, played from `started`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillEffectInstance {
+    pub attacker_id: u32,
+    pub target_id: u32,
+    pub skill_id: u32,
+    pub level: u16,
+    pub started: f32,
+    pub expires: f32,
+}
+
+/// Upper bound kept by the client; each effect ends with its own animation.
+pub const SKILL_EFFECT_MAX_SECONDS: f32 = 4.0;
+
+/// An original 3D effect (`3DEffect.ini`) loaded into C3 layers.
+struct LoadedEffect {
+    layers: Vec<LevelUpLayer>,
+    frame_interval: f32,
+    frames: f32,
+}
+
 #[derive(Clone)]
 struct StaticMapSprite {
     texture: String,
@@ -199,6 +221,7 @@ enum UiTextureJob {
         stigma_active: bool,
         shield_active: bool,
         hud_config: crate::hud::HudConfig,
+        skills: crate::hud::SkillHud,
     },
     StatusBase {
         path: String,
@@ -214,6 +237,10 @@ enum UiTextureJob {
         active_tab: crate::shop::StatusTab,
         mana: u32,
         maximum_mana: u32,
+        known_skills: Vec<(u32, u16, u32)>,
+        equipment: Vec<crate::network::OwnedItem>,
+        weapon_skills: Vec<(u32, u32, u32)>,
+        selected_skill: Option<u32>,
     },
     StatusOverlay {
         path: String,
@@ -227,6 +254,7 @@ enum UiTextureJob {
         path: String,
         inventory: Vec<crate::network::OwnedItem>,
         silver: u32,
+        cps: u32,
         selected_uid: Option<u32>,
         filter: crate::shop::InventoryFilter,
         hovered_filter: Option<crate::shop::InventoryFilter>,
@@ -377,6 +405,7 @@ impl UiTextureJob {
                 stigma_active,
                 shield_active,
                 hud_config,
+                skills,
                 ..
             } => crate::hud::image(
                 assets,
@@ -406,6 +435,7 @@ impl UiTextureJob {
                 stigma_active,
                 shield_active,
                 hud_config,
+                &skills,
             ),
             Self::StatusBase {
                 active_tab,
@@ -420,6 +450,10 @@ impl UiTextureJob {
                 active_tab,
                 mana,
                 maximum_mana,
+                known_skills,
+                equipment,
+                weapon_skills,
+                selected_skill,
                 ..
             } => crate::shop::status_dynamic_image(
                 assets,
@@ -430,6 +464,10 @@ impl UiTextureJob {
                 active_tab,
                 mana,
                 maximum_mana,
+                &known_skills,
+                &equipment,
+                &weapon_skills,
+                selected_skill,
             ),
             Self::StatusOverlay {
                 equipment,
@@ -440,6 +478,7 @@ impl UiTextureJob {
             Self::InventoryOverlay {
                 inventory,
                 silver,
+                cps,
                 selected_uid,
                 filter,
                 hovered_filter,
@@ -450,6 +489,7 @@ impl UiTextureJob {
                 assets,
                 &inventory,
                 silver,
+                cps,
                 selected_uid,
                 filter,
                 hovered_filter,
@@ -505,6 +545,7 @@ impl UiTextureJob {
                 hud_config,
                 ..
             } => crate::shop::quick_panel_image(
+                assets,
                 panel,
                 &character,
                 &action_bar,
@@ -600,6 +641,8 @@ pub struct Renderer {
     feedback_signature: Option<u64>,
     quick_panel_signature: Option<u64>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
+    /// Original 3D effects by name; `None` when the effect is unavailable.
+    effects: HashMap<String, Option<std::rc::Rc<LoadedEffect>>>,
     last_hud_key: Option<String>,
 }
 impl Renderer {
@@ -792,8 +835,128 @@ impl Renderer {
             feedback_signature: None,
             quick_panel_signature: None,
             level_up_layers: None,
+            effects: HashMap::new(),
             last_hud_key: None,
         })
+    }
+
+    /// Plays an original 3D effect (`3DEffect.ini`) at a screen point.
+    /// Returns false once the effect has finished.
+    fn push_effect(
+        &mut self,
+        assets: &mut Assets,
+        name: &str,
+        origin: [f32; 2],
+        elapsed: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) -> bool {
+        if !self.effects.contains_key(name) {
+            let loaded = crate::magic::effect(assets, name).and_then(|definition| {
+                let layers = definition
+                    .layers
+                    .iter()
+                    .filter_map(|layer| {
+                        Some(LevelUpLayer {
+                            document: C3Document::parse(&assets.read(&layer.mesh).ok()?).ok()?,
+                            texture: layer.texture.clone(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let frames = layers
+                    .iter()
+                    .flat_map(|layer| {
+                        layer
+                            .document
+                            .motions
+                            .iter()
+                            .map(|motion| motion.frame_count as f32)
+                            .chain(layer.document.meshes.iter().flat_map(|mesh| {
+                                mesh.transparency_keys
+                                    .last()
+                                    .map(|key| key.frame as f32)
+                                    .into_iter()
+                                    .chain(mesh.draw_keys.last().map(|key| key.frame as f32))
+                            }))
+                    })
+                    .fold(1.0_f32, f32::max);
+                (!layers.is_empty()).then(|| {
+                    std::rc::Rc::new(LoadedEffect {
+                        layers,
+                        frame_interval: definition.frame_interval,
+                        frames,
+                    })
+                })
+            });
+            self.effects.insert(name.to_owned(), loaded);
+        }
+        let Some(effect) = self.effects.get(name).cloned().flatten() else {
+            return false;
+        };
+        let frame = elapsed.max(0.0) * 1000.0 / effect.frame_interval;
+        if frame >= effect.frames {
+            return false;
+        }
+        for layer in &effect.layers {
+            self.texture(assets, &layer.texture);
+        }
+        let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
+        let scale = 0.75;
+        for layer in &effect.layers {
+            if !self.textures.contains_key(&layer.texture) {
+                continue;
+            }
+            for (mesh_index, mesh) in layer.document.meshes.iter().enumerate() {
+                if !draw_key_visible(&mesh.draw_keys, frame) {
+                    continue;
+                }
+                let Some(motion) = layer
+                    .document
+                    .motions
+                    .get(mesh_index)
+                    .or_else(|| layer.document.motions.first())
+                else {
+                    continue;
+                };
+                let alpha = transparency_at(&mesh.transparency_keys, frame);
+                let vertices: Vec<Vertex> = mesh
+                    .vertices
+                    .iter()
+                    .map(|vertex| {
+                        let p = mesh.transformed_vertex_position(
+                            vertex,
+                            motion,
+                            Matrix4::IDENTITY,
+                            frame,
+                        );
+                        let screen_y = (p.y * sin + p.z * cos) * scale;
+                        let depth = (p.y * cos - p.z * sin) * scale;
+                        Vertex {
+                            position: clip(
+                                [origin[0] + p.x * scale, origin[1] + screen_y],
+                                (0.5 + depth * 0.0005).clamp(0.001, 0.999),
+                                viewport,
+                            ),
+                            uv: [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
+                            alpha,
+                        }
+                    })
+                    .collect();
+                draws.push(Draw {
+                    texture: layer.texture.clone(),
+                    vertices: mesh
+                        .opaque_indices
+                        .iter()
+                        .chain(&mesh.alpha_indices)
+                        .map(|index| vertices[*index as usize])
+                        .collect(),
+                    depth_test: false,
+                    sort_depth,
+                });
+            }
+        }
+        true
     }
 
     fn push_status_character(
@@ -845,9 +1008,12 @@ impl Renderer {
         // Keep the complete equipped model inside the safe lane between the
         // left and right equipment slots. Large weapons must not push the
         // paper doll underneath the slot frames.
-        let scale = (92.0 / width).min(282.0 / height);
+        // Height drives the scale, as in the original paper doll; the width
+        // cap only matters for unusually wide bodies. Scaling by width made
+        // slim bodies blow up past the panel.
+        let scale = (230.0 / height).min(80.0 / width);
         let center_x = panel[0] + 128.0;
-        let top = panel[1] + 72.0;
+        let top = panel[1] + 82.0;
         for (part, pose) in character.parts.iter().zip(poses) {
             self.texture(assets, &part.texture);
             let triangles = part
@@ -1412,6 +1578,7 @@ impl Renderer {
         character: &Character,
         action_bar: &crate::action_bar::ActionBar,
         known_skills: &std::collections::HashMap<u32, (u16, u32)>,
+        skill_hud: &crate::hud::SkillHud,
         team_members: &[crate::network::TeamMember],
         team_leader_id: Option<u32>,
         pending_team_invite: Option<u32>,
@@ -1428,7 +1595,7 @@ impl Renderer {
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
         remote_monsters: &HashMap<u32, crate::character::NpcModel>,
         combat_numbers: &[(u32, u32, f32)],
-        skill_effects: &[(u32, u16, f32)],
+        skill_effects: &[SkillEffectInstance],
         ground_loot: &[(u32, [f32; 2], u32, f32)],
         hit_until: f32,
         level_up_until: f32,
@@ -1455,6 +1622,7 @@ impl Renderer {
         friends: &[crate::network::SocialEntry],
         ignores: &[crate::network::SocialEntry],
         silver: u32,
+        cps: u32,
         mana: u32,
         maximum_mana: u32,
         level: u8,
@@ -1487,11 +1655,7 @@ impl Renderer {
     ) -> Result<()> {
         let frame_started = Instant::now();
         let measure_perf = self.perf_enabled || performance_overlay;
-        let minimap_visible = !status_open
-            && !inventory_open
-            && shop.is_none()
-            && warehouse.is_none()
-            && quick_panel.is_none();
+        let minimap_visible = shop.is_none() && warehouse.is_none() && quick_panel.is_none();
         self.texture_loads_this_frame = 0;
         self.poll_texture_loader();
         let texture_phase_finished = Instant::now();
@@ -1613,185 +1777,179 @@ impl Renderer {
         };
         let origin = [ground[0] + recoil_x, ground[1] - player.height + recoil_y];
         let actor_depth = player.position[0] + player.position[1];
-        // The world character is the same account being previewed in the
-        // Character panel.  Do not draw it behind the modal: movement packets
-        // may continue arriving, but they must not leak into the preview.
-        if !status_open {
-            if time < level_up_until {
-                const LEVEL_UP_DURATION: f32 = 61.0 / 30.0;
-                if self.level_up_layers.is_none() {
-                    let layers = (1..=4)
-                        .map(|number| {
-                            let c3_path = format!("C3/Effect/zf2-e095/{number}.C3");
-                            let texture = format!("C3/Effect/zf2-e095/{number}.dds");
-                            Ok(LevelUpLayer {
-                                document: C3Document::parse(&assets.read(&c3_path)?)?,
-                                texture,
-                            })
+        // The world character stays visible while the Character panel is open;
+        // the paper doll in the panel is a separate preview on the left.
+        if time < level_up_until {
+            const LEVEL_UP_DURATION: f32 = 61.0 / 30.0;
+            if self.level_up_layers.is_none() {
+                let layers = (1..=4)
+                    .map(|number| {
+                        let c3_path = format!("C3/Effect/zf2-e095/{number}.C3");
+                        let texture = format!("C3/Effect/zf2-e095/{number}.dds");
+                        Ok(LevelUpLayer {
+                            document: C3Document::parse(&assets.read(&c3_path)?)?,
+                            texture,
                         })
-                        .collect::<Result<Vec<_>>>()?;
-                    self.level_up_layers = Some(layers);
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                self.level_up_layers = Some(layers);
+            }
+            for number in 1..=4 {
+                let texture = format!("C3/Effect/zf2-e095/{number}.dds");
+                self.texture(assets, &texture);
+            }
+            let elapsed =
+                (time - (level_up_until - LEVEL_UP_DURATION)).clamp(0.0, LEVEL_UP_DURATION);
+            let frame = elapsed * 30.0;
+            let effect_origin = ground;
+            let layers = self
+                .level_up_layers
+                .as_ref()
+                .ok_or("Level-up effect unavailable")?;
+            let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
+            let scale = 0.75;
+            for layer in layers {
+                if !self.textures.contains_key(&layer.texture) {
+                    continue;
                 }
-                for number in 1..=4 {
-                    let texture = format!("C3/Effect/zf2-e095/{number}.dds");
-                    self.texture(assets, &texture);
-                }
-                let elapsed =
-                    (time - (level_up_until - LEVEL_UP_DURATION)).clamp(0.0, LEVEL_UP_DURATION);
-                let frame = elapsed * 30.0;
-                let effect_origin = ground;
-                let layers = self
-                    .level_up_layers
-                    .as_ref()
-                    .ok_or("Level-up effect unavailable")?;
-                let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
-                let scale = 0.75;
-                for layer in layers {
-                    if !self.textures.contains_key(&layer.texture) {
+                for (mesh_index, mesh) in layer.document.meshes.iter().enumerate() {
+                    let Some(motion) = layer
+                        .document
+                        .motions
+                        .get(mesh_index)
+                        .or_else(|| layer.document.motions.first())
+                    else {
                         continue;
-                    }
-                    for (mesh_index, mesh) in layer.document.meshes.iter().enumerate() {
-                        let Some(motion) = layer
-                            .document
-                            .motions
-                            .get(mesh_index)
-                            .or_else(|| layer.document.motions.first())
-                        else {
-                            continue;
-                        };
-                        let alpha = transparency_at(&mesh.transparency_keys, frame);
-                        let vertices: Vec<Vertex> = mesh
-                            .vertices
-                            .iter()
-                            .map(|vertex| {
-                                let p = mesh.transformed_vertex_position(
-                                    vertex,
-                                    motion,
-                                    Matrix4::IDENTITY,
-                                    frame,
-                                );
-                                let screen_y = (p.y * sin + p.z * cos) * scale;
-                                let depth = (p.y * cos - p.z * sin) * scale;
-                                Vertex {
-                                    position: clip(
-                                        [
-                                            effect_origin[0] + p.x * scale,
-                                            effect_origin[1] + screen_y,
-                                        ],
-                                        (0.5 + depth * 0.0005).clamp(0.001, 0.999),
-                                        viewport,
-                                    ),
-                                    uv: [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
-                                    alpha,
-                                }
-                            })
-                            .collect();
-                        let indices = mesh
-                            .opaque_indices
-                            .iter()
-                            .chain(&mesh.alpha_indices)
-                            .map(|index| vertices[*index as usize]);
-                        draws.push(Draw {
-                            texture: layer.texture.clone(),
-                            vertices: indices.collect(),
-                            depth_test: false,
-                            sort_depth: actor_depth + 0.04,
-                        });
-                    }
+                    };
+                    let alpha = transparency_at(&mesh.transparency_keys, frame);
+                    let vertices: Vec<Vertex> = mesh
+                        .vertices
+                        .iter()
+                        .map(|vertex| {
+                            let p = mesh.transformed_vertex_position(
+                                vertex,
+                                motion,
+                                Matrix4::IDENTITY,
+                                frame,
+                            );
+                            let screen_y = (p.y * sin + p.z * cos) * scale;
+                            let depth = (p.y * cos - p.z * sin) * scale;
+                            Vertex {
+                                position: clip(
+                                    [effect_origin[0] + p.x * scale, effect_origin[1] + screen_y],
+                                    (0.5 + depth * 0.0005).clamp(0.001, 0.999),
+                                    viewport,
+                                ),
+                                uv: [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
+                                alpha,
+                            }
+                        })
+                        .collect();
+                    let indices = mesh
+                        .opaque_indices
+                        .iter()
+                        .chain(&mesh.alpha_indices)
+                        .map(|index| vertices[*index as usize]);
+                    draws.push(Draw {
+                        texture: layer.texture.clone(),
+                        vertices: indices.collect(),
+                        depth_test: false,
+                        sort_depth: actor_depth + 0.04,
+                    });
                 }
             }
-            if !self.textures.contains_key("@shadow") && !self.loading.contains("@shadow") {
-                self.queue_ui_texture(
-                    assets,
-                    UiTextureJob::Shadow {
-                        path: "@shadow".to_owned(),
-                    },
-                );
+        }
+        if !self.textures.contains_key("@shadow") && !self.loading.contains("@shadow") {
+            self.queue_ui_texture(
+                assets,
+                UiTextureJob::Shadow {
+                    path: "@shadow".to_owned(),
+                },
+            );
+        }
+        if let Some(shadow) = self.textures.get("@shadow") {
+            let size = [shadow.size[0] * 1.4, shadow.size[1] * 1.4];
+            draws.push(Draw {
+                texture: "@shadow".into(),
+                vertices: quad(
+                    [ground[0] - size[0] * 0.5, ground[1] - size[1] * 0.5],
+                    size,
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: actor_depth - 0.01,
+            });
+        }
+        let local_idle = player.action == Action::Idle
+            && player.progress().is_none()
+            && action_progress.is_none();
+        let local_signature = appearance_signature(character);
+        let local_facing_sector = (player.facing / std::f32::consts::FRAC_PI_4).round() as i8;
+        for (part_index, part) in character.parts.iter().enumerate() {
+            self.texture(assets, &part.texture);
+            let vertices = if local_idle {
+                let Some(vertices) = self.queue_character_idle_geometry(
+                    character,
+                    local_signature,
+                    part_index,
+                    local_facing_sector,
+                    player.facing,
+                ) else {
+                    continue;
+                };
+                vertices
+            } else {
+                Arc::new(character.vertices(
+                    part,
+                    time,
+                    player.action,
+                    player.facing,
+                    player.progress().or(action_progress),
+                ))
+            };
+            let triangles = part
+                .mesh
+                .opaque_indices
+                .iter()
+                .chain(&part.mesh.alpha_indices)
+                .map(|i| {
+                    let (p, uv) = vertices[*i as usize];
+                    Vertex {
+                        position: clip(
+                            [origin[0] + p[0], origin[1] + p[1]],
+                            (0.5 + p[2] * 0.0005).clamp(0.001, 0.999),
+                            viewport,
+                        ),
+                        uv,
+                        alpha: 1.0,
+                    }
+                })
+                .collect();
+            draws.push(Draw {
+                texture: part.texture.clone(),
+                vertices: triangles,
+                depth_test: true,
+                sort_depth: actor_depth,
+            });
+        }
+        if time < hit_until {
+            if !self.textures.contains_key("@hit-flash") {
+                self.upload("@hit-flash", crate::labels::hit_flash_image()?);
             }
-            if let Some(shadow) = self.textures.get("@shadow") {
-                let size = [shadow.size[0] * 1.4, shadow.size[1] * 1.4];
+            if let Some(flash) = self.textures.get("@hit-flash") {
+                let progress = ((hit_until - time) / 0.45).clamp(0.0, 1.0);
+                let size = 46.0 + (1.0 - progress) * 18.0;
                 draws.push(Draw {
-                    texture: "@shadow".into(),
+                    texture: "@hit-flash".into(),
                     vertices: quad(
-                        [ground[0] - size[0] * 0.5, ground[1] - size[1] * 0.5],
-                        size,
+                        [origin[0] - size * 0.5, origin[1] - size * 0.7],
+                        [size, size],
                         viewport,
                     ),
                     depth_test: false,
-                    sort_depth: actor_depth - 0.01,
+                    sort_depth: actor_depth + 0.01,
                 });
-            }
-            let local_idle = player.action == Action::Idle
-                && player.progress().is_none()
-                && action_progress.is_none();
-            let local_signature = appearance_signature(character);
-            let local_facing_sector = (player.facing / std::f32::consts::FRAC_PI_4).round() as i8;
-            for (part_index, part) in character.parts.iter().enumerate() {
-                self.texture(assets, &part.texture);
-                let vertices = if local_idle {
-                    let Some(vertices) = self.queue_character_idle_geometry(
-                        character,
-                        local_signature,
-                        part_index,
-                        local_facing_sector,
-                        player.facing,
-                    ) else {
-                        continue;
-                    };
-                    vertices
-                } else {
-                    Arc::new(character.vertices(
-                        part,
-                        time,
-                        player.action,
-                        player.facing,
-                        player.progress().or(action_progress),
-                    ))
-                };
-                let triangles = part
-                    .mesh
-                    .opaque_indices
-                    .iter()
-                    .chain(&part.mesh.alpha_indices)
-                    .map(|i| {
-                        let (p, uv) = vertices[*i as usize];
-                        Vertex {
-                            position: clip(
-                                [origin[0] + p[0], origin[1] + p[1]],
-                                (0.5 + p[2] * 0.0005).clamp(0.001, 0.999),
-                                viewport,
-                            ),
-                            uv,
-                            alpha: 1.0,
-                        }
-                    })
-                    .collect();
-                draws.push(Draw {
-                    texture: part.texture.clone(),
-                    vertices: triangles,
-                    depth_test: true,
-                    sort_depth: actor_depth,
-                });
-            }
-            if time < hit_until {
-                if !self.textures.contains_key("@hit-flash") {
-                    self.upload("@hit-flash", crate::labels::hit_flash_image()?);
-                }
-                if let Some(flash) = self.textures.get("@hit-flash") {
-                    let progress = ((hit_until - time) / 0.45).clamp(0.0, 1.0);
-                    let size = 46.0 + (1.0 - progress) * 18.0;
-                    draws.push(Draw {
-                        texture: "@hit-flash".into(),
-                        vertices: quad(
-                            [origin[0] - size * 0.5, origin[1] - size * 0.7],
-                            [size, size],
-                            viewport,
-                        ),
-                        depth_test: false,
-                        sort_depth: actor_depth + 0.01,
-                    });
-                    let _ = flash;
-                }
+                let _ = flash;
             }
         }
         let static_world_phase_finished = Instant::now();
@@ -2119,41 +2277,39 @@ impl Renderer {
                 });
             }
         }
-        for (index, (target_id, skill_id, expires)) in skill_effects.iter().enumerate() {
-            if *expires <= time {
+        for effect in skill_effects {
+            let Some(magic) = crate::magic::magic_type(assets, effect.skill_id, effect.level) else {
                 continue;
-            }
-            let position = remote_actors
-                .get(target_id)
-                .map(|target| target.position)
-                .unwrap_or(player.position);
-            let projected = map.project(position);
-            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
-            if !world_point_visible(origin, viewport, 192.0) {
-                continue;
-            }
-            let key = format!("@skill-effect-{skill_id}");
-            if !self.textures.contains_key(&key) {
-                self.upload(&key, crate::labels::skill_effect_image(*skill_id)?);
-            }
-            if let Some(texture) = self.textures.get(&key) {
-                let progress = (1.0 - (*expires - time).clamp(0.0, 0.9) / 0.9).clamp(0.0, 1.0);
-                let size = texture.size[0] * (0.65 + progress * 0.45);
-                let alpha = (1.0 - progress).clamp(0.0, 1.0);
-                draws.push(Draw {
-                    texture: key,
-                    vertices: quad_with_alpha(
-                        [
-                            origin[0] - size * 0.5,
-                            origin[1] - 92.0 - index as f32 * 3.0 - size * 0.5,
-                        ],
-                        [size, size],
-                        viewport,
-                        alpha,
-                    ),
-                    depth_test: false,
-                    sort_depth: f32::INFINITY,
-                });
+            };
+            let position_of = |id: u32| {
+                remote_actors
+                    .get(&id)
+                    .map(|actor| actor.position)
+                    .unwrap_or(player.position)
+            };
+            let elapsed = time - effect.started;
+            for (name, actor) in [
+                (magic.intone_effect.as_deref(), effect.attacker_id),
+                (magic.target_effect.as_deref(), effect.target_id),
+            ] {
+                let Some(name) = name else {
+                    continue;
+                };
+                let position = position_of(actor);
+                let projected = map.project(position);
+                let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+                if !world_point_visible(origin, viewport, 256.0) {
+                    continue;
+                }
+                self.push_effect(
+                    assets,
+                    name,
+                    origin,
+                    elapsed,
+                    position[0] + position[1] + 0.05,
+                    viewport,
+                    &mut draws,
+                );
             }
         }
         for (loot_id, position, item_id, _) in ground_loot {
@@ -2261,8 +2417,8 @@ impl Renderer {
                 },
             );
         }
-        // Character is a modal window. Keeping the minimap and HUD out of
-        // this pass removes unrelated controls behind/above the panel.
+        // The Character window is not modal: the minimap and HUD stay visible
+        // so world information remains available while the panel is open.
         if minimap_visible {
             if let Some(minimap) = &self.minimap {
                 for item in minimap.quads(map, player.position, camera, viewport) {
@@ -2310,6 +2466,9 @@ impl Renderer {
         network_status.hash(&mut hud_hasher);
         action_bar.hash(&mut hud_hasher);
         hud_config.hash(&mut hud_hasher);
+        let mut hud_skills = skill_hud.clone();
+        hud_skills.hovered = crate::hud::skill_bar_at(assets, viewport, cursor, &hud_skills);
+        hud_skills.hash(&mut hud_hasher);
         let hud_signature = hud_hasher.finish();
         let hud_key = format!("@hud-{hud_signature}");
         if self.hud_signature != Some(hud_signature) {
@@ -2344,29 +2503,28 @@ impl Renderer {
                     stigma_active: status_flags & crate::network::STIGMA_FLAG != 0,
                     shield_active: status_flags & crate::network::SHIELD_FLAG != 0,
                     hud_config,
+                    skills: hud_skills,
                 },
             );
             self.hud_signature = Some(hud_signature);
         }
-        if !status_open {
-            let hud_draw_key = if self.textures.contains_key(&hud_key) {
-                self.last_hud_key = Some(hud_key.clone());
-                Some(hud_key.clone())
-            } else {
-                self.last_hud_key.clone()
-            };
-            if let Some(hud_draw_key) = hud_draw_key
-                && let Some(texture) = self.textures.get(&hud_draw_key)
-            {
-                draws.push(Draw {
-                    texture: hud_draw_key,
-                    vertices: quad(crate::hud::position(viewport), texture.size, viewport),
-                    depth_test: false,
-                    sort_depth: f32::INFINITY,
-                });
-            }
+        let hud_draw_key = if self.textures.contains_key(&hud_key) {
+            self.last_hud_key = Some(hud_key.clone());
+            Some(hud_key.clone())
+        } else {
+            self.last_hud_key.clone()
+        };
+        if let Some(hud_draw_key) = hud_draw_key
+            && let Some(texture) = self.textures.get(&hud_draw_key)
+        {
+            draws.push(Draw {
+                texture: hud_draw_key,
+                vertices: quad(crate::hud::position(viewport), texture.size, viewport),
+                depth_test: false,
+                sort_depth: f32::INFINITY,
+            });
         }
-        if !status_open && !network_status.trim().is_empty() {
+        if !network_status.trim().is_empty() {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             network_status.hash(&mut hasher);
@@ -2429,6 +2587,14 @@ impl Renderer {
             character.left_weapon_id.hash(&mut hasher);
             status_equipment.hash(&mut hasher);
             status_tab.hash(&mut hasher);
+            let mut status_skills = known_skills
+                .iter()
+                .map(|(&id, &(level, experience))| (id, level, experience))
+                .collect::<Vec<_>>();
+            status_skills.sort_unstable();
+            status_skills.hash(&mut hasher);
+            skill_hud.weapon_skills.hash(&mut hasher);
+            skill_hud.active_skill.hash(&mut hasher);
             mana.hash(&mut hasher);
             maximum_mana.hash(&mut hasher);
             let close_hovered = crate::shop::status_close_at(viewport, cursor);
@@ -2465,6 +2631,10 @@ impl Renderer {
                         active_tab: status_tab,
                         mana,
                         maximum_mana,
+                        known_skills: status_skills.clone(),
+                        equipment: status_equipment.clone(),
+                        weapon_skills: skill_hud.weapon_skills.clone(),
+                        selected_skill: skill_hud.active_skill,
                     },
                 );
                 self.status_signature = Some(signature);
@@ -2655,6 +2825,7 @@ impl Renderer {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             inventory.hash(&mut hasher);
             silver.hash(&mut hasher);
+            cps.hash(&mut hasher);
             inventory_filter.hash(&mut hasher);
             selected_inventory_uid.hash(&mut hasher);
             let hovered_filter = crate::shop::inventory_filter_at(viewport, cursor);
@@ -2680,6 +2851,7 @@ impl Renderer {
                         path: key.clone(),
                         inventory: inventory.to_vec(),
                         silver,
+                        cps,
                         selected_uid: selected_inventory_uid,
                         filter: inventory_filter,
                         hovered_filter,
@@ -2811,7 +2983,7 @@ impl Renderer {
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(
-                        crate::shop::quick_panel_position(viewport),
+                        crate::shop::quick_panel_position(viewport, panel),
                         texture.size,
                         viewport,
                     ),
@@ -2916,6 +3088,7 @@ impl Renderer {
             let mut inventory_hasher = std::collections::hash_map::DefaultHasher::new();
             inventory.hash(&mut inventory_hasher);
             silver.hash(&mut inventory_hasher);
+            cps.hash(&mut inventory_hasher);
             inventory_filter.hash(&mut inventory_hasher);
             selected_inventory_uid.hash(&mut inventory_hasher);
             let hovered_filter = crate::shop::inventory_filter_at(viewport, cursor);
@@ -2941,6 +3114,7 @@ impl Renderer {
                         path: inventory_key.clone(),
                         inventory: inventory.to_vec(),
                         silver,
+                        cps,
                         selected_uid: selected_inventory_uid,
                         filter: inventory_filter,
                         hovered_filter,
@@ -3023,6 +3197,7 @@ impl Renderer {
                 let mut inventory_hasher = std::collections::hash_map::DefaultHasher::new();
                 inventory.hash(&mut inventory_hasher);
                 silver.hash(&mut inventory_hasher);
+                cps.hash(&mut inventory_hasher);
                 inventory_filter.hash(&mut inventory_hasher);
                 selected_inventory_uid.hash(&mut inventory_hasher);
                 let hovered_filter = crate::shop::inventory_filter_at(viewport, cursor);
@@ -3048,6 +3223,7 @@ impl Renderer {
                             path: inventory_key.clone(),
                             inventory: inventory.to_vec(),
                             silver,
+                            cps,
                             selected_uid: selected_inventory_uid,
                             filter: inventory_filter,
                             hovered_filter,
@@ -3732,6 +3908,15 @@ fn clip(p: [f32; 2], z: f32, viewport: [f32; 2]) -> [f32; 3] {
         z,
     ]
 }
+/// C3 draw keys switch a mesh on and off over time; no keys means visible.
+fn draw_key_visible(keys: &[sandbox_data::c3::DrawKey], frame: f32) -> bool {
+    keys.iter()
+        .take_while(|key| key.frame as f32 <= frame)
+        .last()
+        .or(keys.first())
+        .is_none_or(|key| key.visible)
+}
+
 fn transparency_at(keys: &[TransparencyKey], frame: f32) -> f32 {
     let Some(first) = keys.first() else {
         return 1.0;

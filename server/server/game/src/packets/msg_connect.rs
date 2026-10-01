@@ -83,6 +83,7 @@ impl PacketProcess for MsgConnect {
                 let msg = MsgUserInfo::from(&me);
                 let nobility = MsgNobility::from(&me);
                 let skills = me.skills();
+                let weapon_skills = super::MsgWeaponSkill::for_all(me.weapon_proficiencies());
                 actor.update(me, screen);
                 mymap.insert_entity(actor.entity()).await?;
                 state.insert_entity(actor.entity());
@@ -92,6 +93,9 @@ impl PacketProcess for MsgConnect {
                 super::send_nobility_ranking(state, actor).await?;
                 for skill in skills {
                     actor.send(super::MsgSkill::from(skill)).await?;
+                }
+                for weapon_skill in weapon_skills {
+                    actor.send(weapon_skill).await?;
                 }
                 for info in refinery_info {
                     actor.send(info).await?;

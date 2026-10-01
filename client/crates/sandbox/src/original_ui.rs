@@ -40,6 +40,21 @@ pub const CLOSE_HOVER_ASSET: &str = "data/main/CloseBtnSclick.dds";
 pub const ROLE_BASE_BUTTON_ASSET: &str = "data/main/RoleBtnBase.dds";
 pub const ROLE_MORE_BUTTON_ASSET: &str = "data/main/RoleBtnMore.dds";
 
+/// Draws an original control texture with its canvas origin at `(x, y)`.
+/// `GUI.ini` rectangles address the texture canvas, transparent margin
+/// included, so the image is not cropped first.
+pub fn overlay_asset(
+    target: &mut RgbaImage,
+    assets: &mut Assets,
+    path: &str,
+    x: i64,
+    y: i64,
+) -> Result<()> {
+    let source = assets.image(path)?;
+    imageops::overlay(target, &source, x, y);
+    Ok(())
+}
+
 pub fn component(assets: &mut Assets, component: CharacterComponent) -> Result<RgbaImage> {
     let source = assets.image(component.asset())?;
     let [x, y, width, height] = component.native_rect();
@@ -48,7 +63,15 @@ pub fn component(assets: &mut Assets, component: CharacterComponent) -> Result<R
 
 pub fn inventory_base(assets: &mut Assets) -> Result<RgbaImage> {
     let source = assets.image(INVENTORY_ASSET)?;
-    Ok(imageops::crop_imm(&source, 0, 0, INVENTORY_RECT[2], INVENTORY_RECT[3]).to_image())
+    let mut base =
+        imageops::crop_imm(&source, 0, 0, INVENTORY_RECT[2], INVENTORY_RECT[3]).to_image();
+    // GUI.ini [153-1561] money button, [153-1667] Help, [153-1128] Close.
+    overlay_asset(&mut base, assets, "data/main/MpcGoodsMoneyBtn.dds", 71, 390)?;
+    // `[Dialog57]` CPs (晶石) icon beside the second field ([153-1562]).
+    overlay_asset(&mut base, assets, "data/main/PublicBtnMoney.dds", 71, 422)?;
+    overlay_asset(&mut base, assets, "data/main/HelpBtn2.dds", 45, 447)?;
+    overlay_asset(&mut base, assets, "data/main/CloseBtn2.dds", 170, 447)?;
+    Ok(base)
 }
 
 pub fn close_button(assets: &mut Assets, hovered: bool) -> Result<RgbaImage> {

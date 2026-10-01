@@ -41,6 +41,7 @@ pub struct ReadyState {
     pub map_id: u32,
     pub position: [i32; 2],
     pub silver: u32,
+    pub cps: u32,
     pub health: u32,
     pub maximum_health: u32,
     pub mana: u32,
@@ -143,6 +144,7 @@ pub enum NetworkEvent {
     Status(String),
     Ready(ReadyState),
     Silver(u32),
+    Cps(u32),
     Vitals {
         health: u32,
         maximum_health: u32,
@@ -270,6 +272,11 @@ pub enum NetworkEvent {
     Skill {
         skill_id: u16,
         level: u16,
+        experience: u32,
+    },
+    WeaponSkill {
+        weapon_type: u32,
+        level: u32,
         experience: u32,
     },
     GroundItem {
@@ -517,6 +524,7 @@ impl NetworkHandle {
                 | NetworkEvent::RemoteCombat { .. }
                 | NetworkEvent::SkillEffect { .. }
                 | NetworkEvent::Skill { .. }
+                | NetworkEvent::WeaponSkill { .. }
                 | NetworkEvent::EquipmentItem(_)
                 | NetworkEvent::EquipmentItemRemoved { .. }
                 | NetworkEvent::GroundItem { .. }
@@ -532,6 +540,7 @@ impl NetworkHandle {
                 | NetworkEvent::Guild { .. }
                 | NetworkEvent::GuildMember(_) => {}
                 NetworkEvent::Silver(_)
+                | NetworkEvent::Cps(_)
                 | NetworkEvent::Vitals { .. }
                 | NetworkEvent::Attributes { .. }
                 | NetworkEvent::Nobility { .. }
@@ -1007,6 +1016,7 @@ async fn run(
             map_id,
             position,
             silver,
+            cps: user.cps,
             health,
             maximum_health,
             mana,
@@ -1149,6 +1159,7 @@ async fn run(
                 }
                 Some(GameEvent::UserInfo(info)) if info.character_id == local_character_id => {
                     let _ = events.send(NetworkEvent::Silver(info.silver));
+                    let _ = events.send(NetworkEvent::Cps(info.cps));
                     let _ = events.send(NetworkEvent::Vitals {
                         health: u32::from(info.health_points),
                         maximum_health: u32::try_from(info.reserved0)
@@ -1443,6 +1454,13 @@ async fn run(
                         skill_id: skill.skill_id,
                         level: skill.level,
                         experience: skill.experience,
+                    });
+                }
+                Some(GameEvent::WeaponSkill(packet)) => {
+                    let _ = events.send(NetworkEvent::WeaponSkill {
+                        weapon_type: packet.weapon_type,
+                        level: packet.level,
+                        experience: packet.experience,
                     });
                 }
                 Some(GameEvent::RefineryInfo(info)) => {

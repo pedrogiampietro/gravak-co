@@ -14,7 +14,8 @@ mod character;
 pub use character::{
     ArtifactOutcome, AttributeAllocation, AttributeKind, Character, GemComposeOutcome, InventoryItem,
     ItemUpgradeOutcome, PurchaseOutcome, QualityUpgradeOutcome, RarityBonusOutcome, RarityUpgradeOutcome,
-    RefineryOutcome, SaleOutcome, SkillProgress, SocketOutcome, TradeTransfer, GEM_FAMILY_BASES,
+    RefineryOutcome, SaleOutcome, SkillProgress, SocketOutcome, TradeTransfer, WeaponProficiency,
+    GEM_FAMILY_BASES,
 };
 
 mod npc;

@@ -42,6 +42,7 @@ pub const MSG_FRIEND: u16 = 1019;
 pub const MSG_GROUND_ITEM: u16 = 1101;
 pub const MSG_SKILL_EFFECT: u16 = 1105;
 pub const MSG_SKILL: u16 = 1103;
+pub const MSG_WEAPON_SKILL: u16 = 1025;
 pub const MSG_NPC_INFO: u16 = 2030;
 pub const MSG_NPC: u16 = 2031;
 pub const MSG_TASK_DIALOG: u16 = 2032;
@@ -244,6 +245,16 @@ pub struct RefineryInfoRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefineryInfoPacket {
     pub records: Vec<RefineryInfoRecord>,
+}
+
+/// Weapon proficiency (1025): weapon type (`item_type / 1000`), level and
+/// experience inside the level.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1025)]
+pub struct WeaponSkillPacket {
+    pub weapon_type: u32,
+    pub level: u32,
+    pub experience: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
@@ -1174,6 +1185,7 @@ pub enum GameEvent {
     GroundItem(GroundItemPacket),
     SkillEffect(SkillEffect),
     Skill(SkillPacket),
+    WeaponSkill(WeaponSkillPacket),
     RefineryInfo(RefineryInfoPacket),
     NpcInfo(ServerNpcInfo),
     TaskDialog(TaskDialog),
@@ -1298,6 +1310,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
             GroundItemPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_SKILL_EFFECT => Ok(GameEvent::SkillEffect(decode_skill_effect(body)?)),
+        MSG_WEAPON_SKILL => Ok(GameEvent::WeaponSkill(
+            WeaponSkillPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
         MSG_SKILL => Ok(GameEvent::Skill(
             SkillPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
