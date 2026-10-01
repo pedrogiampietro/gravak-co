@@ -101,6 +101,51 @@ mod preview {
         Ok(())
     }
 
+    /// Exports every frame of the `ani/Control.Ani` (or `GRAVAK_ANI_FILE`)
+    /// sections whose name starts
+    /// with one of the comma-separated prefixes in `GRAVAK_ANI_SECTIONS` to
+    /// `GRAVAK_ANI_EXPORT`, e.g. `Dialog4,Button4,Check4,Progress4`.
+    #[test]
+    #[ignore = "Exports original control artwork for visual inspection"]
+    fn export_control_ani_sections() -> super::Result<()> {
+        let mut assets = super::Assets::open(std::path::Path::new("R:/5065"))?;
+        let out = std::path::PathBuf::from(std::env::var("GRAVAK_ANI_EXPORT")?);
+        let prefixes = std::env::var("GRAVAK_ANI_SECTIONS")?;
+        let prefixes = prefixes.split(',').map(str::trim).collect::<Vec<_>>();
+        std::fs::create_dir_all(&out)?;
+        let file = std::env::var("GRAVAK_ANI_FILE").unwrap_or_else(|_| "ani/Control.Ani".into());
+        let ani = assets.read(&file)?;
+        let ani = String::from_utf8_lossy(&ani);
+        let mut section = String::new();
+        for line in ani.lines().map(str::trim) {
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.to_owned();
+                continue;
+            }
+            let Some((key, path)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(frame) = key
+                .strip_prefix("Frame")
+                .filter(|f| f.parse::<u32>().is_ok())
+            else {
+                continue;
+            };
+            if !prefixes.iter().any(|p| section.starts_with(p)) {
+                continue;
+            }
+            let file = format!("{section}_{frame}");
+            match assets.image(path.trim()) {
+                Ok(image) => {
+                    println!("{file}: {path} {}x{}", image.width(), image.height());
+                    image.save(out.join(format!("{file}.png")))?;
+                }
+                Err(error) => println!("{file}: {path} {error}"),
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     #[ignore = "Catalogues the installed 5065 main UI assets"]
     fn catalog_main_ui_assets() -> super::Result<()> {

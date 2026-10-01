@@ -403,28 +403,6 @@ pub fn hit_flash_image() -> Result<RgbaImage> {
     Ok(image)
 }
 
-pub fn skill_effect_image(_skill_id: u16) -> Result<RgbaImage> {
-    let mut image = RgbaImage::new(96, 96);
-    let center = 48.0_f32;
-    for y in 0..96 {
-        for x in 0..96 {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let distance = (dx * dx + dy * dy).sqrt();
-            let ring = (distance - 32.0).abs();
-            let alpha = if ring < 4.0 {
-                ((4.0 - ring) * 48.0).clamp(0.0, 180.0) as u8
-            } else if distance < 16.0 {
-                ((16.0 - distance) * 3.0).clamp(0.0, 42.0) as u8
-            } else {
-                0
-            };
-            image.put_pixel(x, y, Rgba([88, 190, 255, alpha]));
-        }
-    }
-    Ok(image)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DialogHit {
     Outside,

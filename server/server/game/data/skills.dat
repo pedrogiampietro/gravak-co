@@ -1,13 +1,15 @@
 # Server-authoritative starter skill catalog.
 # Values are intentionally small and easy to tune while the combat vertical
-# slice is being built. One [Skill] section describes one skill.
+# slice is being built. Ranges follow the level-0 distance of the original
+# ini/MagicType.dat and the attack magics repeat every 800 ms, as in the
+# reference servers. One [Skill] section describes one skill.
 
 [Skill]
 ID=1000
 Name=Basic Fire
 Mana=20
-Range=6.0
-CooldownMs=1200
+Range=9.0
+CooldownMs=800
 Radius=0.0
 Power=110
 Starter=true
@@ -16,9 +18,9 @@ Starter=true
 ID=1001
 Name=Flame Burst
 Mana=35
-Range=6.0
-CooldownMs=2500
-Radius=2.5
+Range=12.0
+CooldownMs=800
+Radius=0.0
 Power=125
 Status=Burning
 StatusDurationMs=5000
@@ -28,9 +30,9 @@ Starter=true
 ID=1002
 Name=Whirlwind
 Mana=45
-Range=6.0
-CooldownMs=2000
-Radius=2.0
+Range=15.0
+CooldownMs=800
+Radius=0.0
 Power=145
 Status=Stunned
 StatusDurationMs=1500

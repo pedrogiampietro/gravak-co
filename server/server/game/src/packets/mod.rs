@@ -88,6 +88,9 @@ pub use msg_skill_effect::{MsgSkillEffect, SkillTarget};
 mod msg_skill;
 pub use msg_skill::MsgSkill;
 
+mod msg_weapon_skill;
+pub use msg_weapon_skill::MsgWeaponSkill;
+
 mod msg_ground_item;
 pub use msg_ground_item::MsgGroundItem;
 

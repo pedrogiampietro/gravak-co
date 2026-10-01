@@ -4,14 +4,18 @@ mod action_bar;
 mod assets;
 mod audio;
 mod character;
+mod components;
 mod debug_log;
 mod hud;
 mod labels;
+mod main_hud;
+mod magic;
 mod map;
 mod minimap;
 mod motion_math;
 mod movement;
 mod network;
+mod original_panels;
 mod original_ui;
 mod original_ui_layout;
 mod renderer;
@@ -242,6 +246,7 @@ struct App {
     mana: u32,
     maximum_mana: u32,
     warehouse_silver: u32,
+    cps: u32,
     warehouse_amount: String,
     warehouse_amount_focused: bool,
     chat_text: String,
@@ -258,6 +263,10 @@ struct App {
     pending_network_steps: VecDeque<[i32; 2]>,
     pending_network_jump: bool,
     pending_attack: Option<u32>,
+    /// Monster being attacked with the selected skill (right click): the
+    /// skill is recast whenever its cooldown allows, approaching first when
+    /// the target is out of range.
+    pending_skill_attack: Option<(u32, u32)>,
     selected_target: Option<u32>,
     pending_pickup: Option<(u32, u32, [i32; 2])>,
     skill_cooldown_until: HashMap<u32, f32>,
@@ -267,8 +276,16 @@ struct App {
     remote_npcs: HashMap<u32, character::NpcModel>,
     remote_monsters: HashMap<u32, character::NpcModel>,
     combat_numbers: Vec<(u32, u32, f32)>,
-    skill_effects: Vec<(u32, u16, f32)>,
+    skill_effects: Vec<renderer::SkillEffectInstance>,
     known_skills: HashMap<u32, (u16, u32)>,
+    /// Weapon proficiency by weapon type: (level, experience).
+    weapon_skills: std::collections::BTreeMap<u32, (u32, u32)>,
+    /// Monsters killed by this character in the session (the KO counter).
+    kill_count: u32,
+    skill_bar_open: bool,
+    /// Skill chosen in the skill bar; shown on the "Skill" button and cast
+    /// with the right mouse button.
+    active_skill: Option<u32>,
     team_members: Vec<network::TeamMember>,
     team_leader_id: Option<u32>,
     pending_team_invite: Option<u32>,
@@ -533,6 +550,9 @@ impl ApplicationHandler for App {
                     if self.begin_item_context_menu() {
                         return;
                     }
+                    if self.cast_active_skill_at_cursor() {
+                        return;
+                    }
                 }
                 if button == MouseButton::Left && state == ElementState::Pressed {
                     if self.handle_gem_selection_panel_click() {
@@ -680,6 +700,7 @@ impl ApplicationHandler for App {
                     }
                     PhysicalKey::Code(KeyCode::Space) => {
                         self.pending_attack = None;
+                        self.pending_skill_attack = None;
                         self.player.stop();
                     }
                     PhysicalKey::Code(KeyCode::Slash) => self.player.running = !self.player.running,
@@ -707,6 +728,7 @@ impl ApplicationHandler for App {
                     self.remote_models.remove(&id);
                 }
                 self.process_pending_attack();
+                self.process_pending_skill_attack();
                 self.process_pending_pickup();
                 let mut local_action_progress = None;
                 if let Some((action, started_at, until)) = self.local_action {
@@ -743,6 +765,7 @@ impl ApplicationHandler for App {
                 if let Some(audio) = &mut self.audio {
                     audio.update(&self.player);
                 }
+                let skill_hud = self.skill_hud();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -750,6 +773,7 @@ impl ApplicationHandler for App {
                         &self.character,
                         &self.action_bar,
                         &self.known_skills,
+                        &skill_hud,
                         &self.team_members,
                         self.team_leader_id,
                         self.pending_team_invite,
@@ -795,6 +819,7 @@ impl ApplicationHandler for App {
                         &self.friends,
                         &self.ignores,
                         self.silver,
+                        self.cps,
                         self.mana,
                         self.maximum_mana,
                         self.level,
@@ -848,7 +873,7 @@ impl ApplicationHandler for App {
         // look like they teleport or freeze between updates.
         let now = self.started.elapsed().as_secs_f32();
         self.combat_numbers.retain(|(_, _, expires)| *expires > now);
-        self.skill_effects.retain(|(_, _, expires)| *expires > now);
+        self.skill_effects.retain(|effect| effect.expires > now);
         for slot in &mut self.action_bar.slots {
             slot.cooldown = slot
                 .action_id
@@ -1065,6 +1090,15 @@ impl App {
             self.held = false;
             return true;
         }
+        let skill_hud = self.skill_hud();
+        if let Some(skill_id) = hud::skill_bar_at(&mut self.assets, viewport, self.cursor, &skill_hud)
+        {
+            self.active_skill = Some(skill_id);
+            self.skill_bar_open = false;
+            self.network_status = format!("skill selecionada: {skill_id}");
+            self.held = false;
+            return true;
+        }
         if self.quick_panel.is_some() {
             if self.quick_panel == Some(shop::QuickPanel::Settings)
                 && let Some(action) = shop::settings_panel_action_at(viewport, self.cursor)
@@ -1107,7 +1141,10 @@ impl App {
                 self.held = false;
                 return true;
             }
-            if shop::quick_panel_close_at(viewport, self.cursor) {
+            if self
+                .quick_panel
+                .is_some_and(|panel| shop::quick_panel_close_at(viewport, self.cursor, panel))
+            {
                 self.quick_panel = None;
                 self.player_shop_price_focused = false;
                 self.held = false;
@@ -1197,7 +1234,10 @@ impl App {
                     return true;
                 }
             }
-            if shop::quick_panel_at(viewport, self.cursor) {
+            if self
+                .quick_panel
+                .is_some_and(|panel| shop::quick_panel_at(viewport, self.cursor, panel))
+            {
                 self.held = false;
                 return true;
             }
@@ -1271,8 +1311,13 @@ impl App {
             match button {
                 0 => {
                     self.status_open = !self.status_open;
-                    self.inventory_open = self.status_open;
+                    self.inventory_open = false;
                     self.quick_panel = None;
+                }
+                // "Skill" toggles the bar with the learned skills above the
+                // HUD, as in the original client.
+                2 => {
+                    self.skill_bar_open = !self.skill_bar_open;
                 }
                 1 => {
                     self.inventory_open = !self.inventory_open;
@@ -1306,7 +1351,7 @@ impl App {
         }
         if hud::status_button_at(viewport, self.cursor) {
             self.status_open = !self.status_open;
-            self.inventory_open = self.status_open;
+            self.inventory_open = false;
             self.chat_focused = false;
             self.held = false;
             return true;
@@ -1315,6 +1360,11 @@ impl App {
             self.chat_history.clear();
             self.network_status = "chat history cleared".into();
             self.chat_focused = false;
+            self.held = false;
+            return true;
+        }
+        if hud::chat_send_at(viewport, self.cursor) {
+            self.submit_chat();
             self.held = false;
             return true;
         }
@@ -1754,6 +1804,7 @@ impl App {
 
     fn move_cursor(&mut self) {
         self.pending_attack = None;
+        self.pending_skill_attack = None;
         self.selected_target = None;
         self.pending_pickup = None;
         self.shop = None;
@@ -1984,6 +2035,13 @@ impl App {
                     .insert(skill_id as u32, (level, experience));
                 self.network_status = format!("online: skill {skill_id} level {level}");
             }
+            NetworkEvent::WeaponSkill {
+                weapon_type,
+                level,
+                experience,
+            } => {
+                self.weapon_skills.insert(weapon_type, (level, experience));
+            }
             NetworkEvent::LevelUp { level } => {
                 self.level = self.level.max(level);
                 self.level_up_until = self.started.elapsed().as_secs_f32() + LEVEL_UP_DURATION;
@@ -1992,6 +2050,7 @@ impl App {
                 self.player.position = ready.position.map(|value| value as f32);
                 self.character.name = ready.character_name;
                 self.silver = ready.silver;
+                self.cps = ready.cps;
                 self.character.health = ready.health;
                 self.character.maximum_health = ready.maximum_health;
                 self.mana = ready.mana;
@@ -2014,6 +2073,7 @@ impl App {
                     format!("online: char {} map {}", ready.character_id, ready.map_id);
             }
             NetworkEvent::Silver(silver) => self.silver = silver,
+            NetworkEvent::Cps(cps) => self.cps = cps,
             NetworkEvent::Vitals {
                 health,
                 maximum_health,
@@ -2445,6 +2505,9 @@ impl App {
                 value,
             } => {
                 if action == 14 {
+                    if self.network_character_id == Some(id) {
+                        self.kill_count = self.kill_count.saturating_add(1);
+                    }
                     let now = self.started.elapsed().as_secs_f32();
                     if let Some(actor) = self.remote_actors.get_mut(&target_id) {
                         actor.health = 0;
@@ -2453,6 +2516,12 @@ impl App {
                     }
                     if self.pending_attack == Some(target_id) {
                         self.pending_attack = None;
+                    }
+                    if self
+                        .pending_skill_attack
+                        .is_some_and(|(target, _)| target == target_id)
+                    {
+                        self.pending_skill_attack = None;
                     }
                 }
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
@@ -2485,7 +2554,20 @@ impl App {
                 damage,
             } => {
                 let now = self.started.elapsed().as_secs_f32();
-                self.skill_effects.push((target_id, skill_id, now + 0.9));
+                let level = self
+                    .known_skills
+                    .get(&u32::from(skill_id))
+                    .filter(|_| self.network_character_id == Some(attacker_id))
+                    .map_or(0, |(level, _)| *level);
+                self.skill_effects.push(renderer::SkillEffectInstance {
+                    attacker_id,
+                    target_id,
+                    skill_id: u32::from(skill_id),
+                    level,
+                    started: now,
+                    // The renderer stops each effect when its animation ends.
+                    expires: now + renderer::SKILL_EFFECT_MAX_SECONDS,
+                });
                 if damage > 0 {
                     self.combat_numbers.push((target_id, damage, now + 1.0));
                 }
@@ -2844,6 +2926,7 @@ impl App {
         }
         if monster {
             self.pending_pickup = None;
+            self.pending_skill_attack = None;
             self.selected_target = Some(id);
             self.pending_attack = Some(id);
             self.next_attack_at = 0.0;
@@ -2991,6 +3074,132 @@ impl App {
         }
     }
 
+    fn skill_hud(&self) -> hud::SkillHud {
+        let mut skills = self
+            .known_skills
+            .iter()
+            .map(|(&id, &(level, experience))| (id, level, experience))
+            .collect::<Vec<_>>();
+        skills.sort_unstable();
+        hud::SkillHud {
+            skills,
+            weapon_skills: self
+                .weapon_skills
+                .iter()
+                .map(|(&weapon_type, &(level, experience))| (weapon_type, level, experience))
+                .collect(),
+            bar_open: self.skill_bar_open,
+            active_skill: self.active_skill,
+            kill_count: self.kill_count,
+            hovered: None,
+        }
+    }
+
+    /// Right click in the world casts the skill selected in the skill bar,
+    /// targeting the monster under the cursor when there is one.
+    fn cast_active_skill_at_cursor(&mut self) -> bool {
+        let Some(skill) = self.active_skill.and_then(action_bar::skill_action) else {
+            return false;
+        };
+        if self.window.as_ref().is_some_and(|window| {
+            let size = window.inner_size();
+            hud::contains([size.width as f32, size.height as f32], self.cursor)
+        }) {
+            return false;
+        }
+        if skill.requires_target {
+            let Some(target) = self.monster_at_cursor().or(self.selected_target) else {
+                self.network_status = format!("selecione um monstro para usar {}", skill.name);
+                return true;
+            };
+            self.selected_target = Some(target);
+            self.pending_attack = None;
+            self.pending_pickup = None;
+            self.pending_skill_attack = Some((target, skill.id));
+            self.process_pending_skill_attack();
+        } else {
+            self.cast_skill(skill);
+        }
+        true
+    }
+
+    /// Keeps attacking the target with the selected skill: walk until it is
+    /// in range, then recast each time the cooldown expires.
+    fn process_pending_skill_attack(&mut self) {
+        let Some((target_id, skill_id)) = self.pending_skill_attack else {
+            return;
+        };
+        let Some(skill) = action_bar::skill_action(skill_id) else {
+            self.pending_skill_attack = None;
+            return;
+        };
+        let Some(target) = self.remote_actors.get(&target_id) else {
+            self.pending_skill_attack = None;
+            return;
+        };
+        if target.health == 0 || target.action == 160 {
+            self.pending_skill_attack = None;
+            return;
+        }
+        let target_cell = target.position.map(|value| value.round() as i32);
+        let distance = motion_math::skill_distance(self.player.position, target.position);
+        if distance > skill.range {
+            if !self.player.moving() {
+                let candidates = [
+                    [target_cell[0] - 1, target_cell[1]],
+                    [target_cell[0] + 1, target_cell[1]],
+                    [target_cell[0], target_cell[1] - 1],
+                    [target_cell[0], target_cell[1] + 1],
+                ];
+                if let Some(destination) =
+                    candidates.into_iter().find(|cell| self.map.walkable(*cell))
+                {
+                    self.player.go(&self.map, destination);
+                } else {
+                    self.pending_skill_attack = None;
+                    self.network_status = format!("online: no path to monster {target_id}");
+                }
+            }
+            return;
+        }
+        if self.player.moving() {
+            self.player.stop();
+        }
+        if !self.pending_network_steps.is_empty() {
+            return;
+        }
+        let now = self.started.elapsed().as_secs_f32();
+        if self
+            .skill_cooldown_until
+            .get(&skill.id)
+            .is_some_and(|until| now < *until)
+        {
+            return;
+        }
+        self.selected_target = Some(target_id);
+        self.cast_skill(skill);
+    }
+
+    fn monster_at_cursor(&self) -> Option<u32> {
+        let renderer = self.renderer.as_ref()?;
+        let camera = renderer.camera(&self.map, &self.player);
+        self.remote_actors
+            .values()
+            .filter(|actor| !actor.npc && (400001..=499999).contains(&actor.id))
+            .filter(|actor| {
+                let projected = self.map.project(actor.position);
+                let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+                (self.cursor[0] - origin[0]).abs() <= 48.0
+                    && self.cursor[1] >= origin[1] - 160.0
+                    && self.cursor[1] <= origin[1] + 24.0
+            })
+            .min_by(|left, right| {
+                (left.position[0] + left.position[1])
+                    .total_cmp(&(right.position[0] + right.position[1]))
+            })
+            .map(|actor| actor.id)
+    }
+
     fn cast_action_slot(&mut self, slot: usize) {
         let Some(skill_id) = self.action_bar.skill_id(slot) else {
             self.network_status = format!("action bar slot {} is empty", slot + 1);
@@ -3035,7 +3244,7 @@ impl App {
                 return;
             };
             let target_cell = target.position.map(|value| value.round() as i32);
-            let distance = motion_math::cell_distance(self.player.position, target.position);
+            let distance = motion_math::skill_distance(self.player.position, target.position);
             if distance > skill.range {
                 self.network_status = format!("{}: o alvo está fora do alcance", skill.name);
                 return;
@@ -4230,7 +4439,7 @@ impl App {
         ));
         if self.quick_panel == Some(shop::QuickPanel::Market)
             && self.player_shop_open
-            && shop::quick_panel_at(viewport, self.cursor)
+            && shop::quick_panel_at(viewport, self.cursor, shop::QuickPanel::Market)
         {
             if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id)
             {
@@ -4453,6 +4662,10 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        if let Some(forward) = shop::warehouse_page_at(viewport, self.cursor) {
+            self.scroll_warehouse_page(forward);
+            return true;
+        }
         if shop::warehouse_close_at(viewport, self.cursor) {
             self.warehouse = None;
             self.warehouse_npc_id = None;
@@ -5215,6 +5428,10 @@ fn run() -> Result<()> {
             .map(|ready| ready.maximum_mana)
             .unwrap_or_default(),
         warehouse_silver: 0,
+        cps: server_ready
+            .as_ref()
+            .map(|ready| ready.cps)
+            .unwrap_or_default(),
         warehouse_amount: "1".into(),
         warehouse_amount_focused: false,
         chat_text: String::new(),
@@ -5231,6 +5448,7 @@ fn run() -> Result<()> {
         pending_network_steps: VecDeque::new(),
         pending_network_jump: false,
         pending_attack: None,
+        pending_skill_attack: None,
         selected_target: None,
         pending_pickup: None,
         skill_cooldown_until: HashMap::new(),
@@ -5242,6 +5460,10 @@ fn run() -> Result<()> {
         combat_numbers: Vec::new(),
         skill_effects: Vec::new(),
         known_skills: HashMap::new(),
+        weapon_skills: Default::default(),
+        kill_count: 0,
+        skill_bar_open: false,
+        active_skill: None,
         team_members: Vec::new(),
         team_leader_id: None,
         pending_team_invite: None,

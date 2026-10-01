@@ -261,8 +261,8 @@ impl Default for SkillCatalog {
                 id: BASIC_FIRE_ID,
                 name: "Basic Fire".to_owned(),
                 mana_cost: 20,
-                range: 6.0,
-                cooldown: Duration::from_millis(1_200),
+                range: 9.0,
+                cooldown: Duration::from_millis(800),
                 radius: 0.0,
                 power_percent: 110,
                 status: None,
@@ -279,9 +279,9 @@ impl Default for SkillCatalog {
                 id: FLAME_BURST_ID,
                 name: "Flame Burst".to_owned(),
                 mana_cost: 35,
-                range: 6.0,
-                cooldown: Duration::from_millis(2_500),
-                radius: 2.5,
+                range: 12.0,
+                cooldown: Duration::from_millis(800),
+                radius: 0.0,
                 power_percent: 125,
                 status: Some(SkillStatus::Burning),
                 status_duration: Duration::from_secs(5),
@@ -297,9 +297,9 @@ impl Default for SkillCatalog {
                 id: WHIRLWIND_ID,
                 name: "Whirlwind".to_owned(),
                 mana_cost: 45,
-                range: 6.0,
-                cooldown: Duration::from_millis(2_000),
-                radius: 2.0,
+                range: 15.0,
+                cooldown: Duration::from_millis(800),
+                radius: 0.0,
                 power_percent: 145,
                 status: Some(SkillStatus::Stunned),
                 status_duration: Duration::from_millis(1_500),
@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(catalog.len(), 7);
         assert_eq!(catalog.get(BASIC_FIRE_ID).unwrap().mana_cost, 20);
         assert_eq!(catalog.get(BASIC_FIRE_ID).unwrap().power_percent, 110);
-        assert_eq!(catalog.get(FLAME_BURST_ID).unwrap().radius, 2.5);
+        assert_eq!(catalog.get(FLAME_BURST_ID).unwrap().radius, 0.0);
         assert_eq!(catalog.get(FLAME_BURST_ID).unwrap().status, Some(SkillStatus::Burning));
         assert_eq!(catalog.get(WHIRLWIND_ID).unwrap().learn_item, Some(WHIRLWIND_BOOK_ITEM));
         assert_eq!(catalog.get(WHIRLWIND_ID).unwrap().training_cost, 500);

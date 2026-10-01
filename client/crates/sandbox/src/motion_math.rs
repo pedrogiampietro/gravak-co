@@ -51,6 +51,15 @@ pub fn jump_screen_height(peak_screen_pixels: f32, progress: f32) -> f32 {
 }
 
 #[must_use]
+/// Cell distance along the larger axis, the metric the server uses for
+/// magic range.
+#[must_use]
+pub fn skill_distance(start: [f32; 2], target: [f32; 2]) -> f32 {
+    (target[0] - start[0])
+        .abs()
+        .max((target[1] - start[1]).abs())
+}
+
 pub fn cell_distance(start: [f32; 2], target: [f32; 2]) -> f32 {
     (target[0] - start[0]).hypot(target[1] - start[1])
 }
