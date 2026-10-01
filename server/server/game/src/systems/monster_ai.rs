@@ -53,7 +53,14 @@ pub async fn tick(state: &State) {
                     *due <= now
                 };
                 if should_respawn {
-                    monster_ref.respawn();
+                    let home = monster_ref.home();
+                    let location = if map.is_walkable(home.x, home.y) {
+                        home
+                    } else {
+                        map.nearest_walkable_position(home, crate::world::MONSTER_RELOCATION_RADIUS)
+                            .unwrap_or(home)
+                    };
+                    monster_ref.respawn_at(location);
                     next_respawn.lock().unwrap().remove(&monster.id());
                     map.update_region_for(monster.clone());
                     let _ = map.broadcast(MsgPlayer::from_monster(monster_ref)).await;
@@ -63,10 +70,36 @@ pub async fn tick(state: &State) {
                 }
                 continue;
             }
-            if monster_ref.has_status(crate::entities::StatusEffect::Stunned) {
+            // Nobody can see a monster on a map without players; skip its
+            // movement so idle hunting grounds cost nothing per tick.
+            if characters.is_empty() || monster_ref.has_status(crate::entities::StatusEffect::Stunned) {
                 continue;
             }
             let mloc = monster_ref.entity().location();
+            let home = monster_ref.home();
+            let wander_radius = monster_ref.wander_radius();
+            // A monster that chased too far gives up and walks back home
+            // instead of following a player across the whole map.
+            if distance_between(mloc, home) > wander_radius.saturating_add(VIEW_RANGE as u16) {
+                let can_move = next_move
+                    .lock()
+                    .unwrap()
+                    .get(&monster.id())
+                    .is_none_or(|due| *due <= now);
+                if can_move {
+                    if let Some(next) = next_step(map, mloc, home, &occupied) {
+                        occupied.remove(&(mloc.x, mloc.y));
+                        occupied.insert((next.0.x, next.0.y));
+                        move_to(map, &monster, next.0, next.1).await;
+                    }
+                    let delay = 650 + (monster.id() % 240) as u64;
+                    next_move
+                        .lock()
+                        .unwrap()
+                        .insert(monster.id(), now + Duration::from_millis(delay));
+                }
+                continue;
+            }
             let Some((target, distance)) = nearest_target(&characters, mloc) else {
                 let can_move = next_move
                     .lock()
@@ -78,7 +111,7 @@ pub async fn tick(state: &State) {
                         .duration_since(UNIX_EPOCH)
                         .map(|value| value.as_millis() as u64)
                         .unwrap_or_default();
-                    if let Some(next) = wander_step(map, mloc, &occupied, monster.id(), seed) {
+                    if let Some(next) = wander_step(map, mloc, (home, wander_radius), &occupied, monster.id(), seed) {
                         occupied.remove(&(mloc.x, mloc.y));
                         occupied.insert((next.0.x, next.0.y));
                         move_to(map, &monster, next.0, next.1).await;
@@ -174,9 +207,14 @@ fn next_step(
     Some((Location::new(x, y, direction(dx, dy)), direction(dx, dy)))
 }
 
+fn distance_between(a: Location, b: Location) -> u16 {
+    a.x.abs_diff(b.x).max(a.y.abs_diff(b.y))
+}
+
 fn wander_step(
     map: &crate::world::Map,
     from: Location,
+    (home, radius): (Location, u16),
     occupied: &HashSet<(u16, u16)>,
     id: u32,
     tick: u64,
@@ -190,6 +228,12 @@ fn wander_step(
         let x = (from.x as i16 + dx).max(0) as u16;
         let y = (from.y as i16 + dy).max(0) as u16;
         if occupied.contains(&(x, y)) {
+            return None;
+        }
+        // Idle monsters stay inside their spawn area; one that is outside
+        // (after a chase) may only step closer to home.
+        let next = Location::new(x, y, 0);
+        if distance_between(next, home) > radius.max(distance_between(from, home).saturating_sub(1)) {
             return None;
         }
         map.tile(x, y)

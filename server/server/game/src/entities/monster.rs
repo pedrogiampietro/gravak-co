@@ -156,13 +156,20 @@ impl Monster {
         &self.inner
     }
 
-    pub fn respawn(&self) {
-        let spawn = self.spawn();
-        self.entity.set_location(primitives::Location::new(
-            spawn.x.max(0) as u16,
-            spawn.y.max(0) as u16,
-            0,
-        ));
+    /// The cell this instance was spawned around.
+    pub fn home(&self) -> primitives::Location {
+        primitives::Location::new(self.spawn.x.max(0) as u16, self.spawn.y.max(0) as u16, 0)
+    }
+
+    /// How far the instance may wander from [`Self::home`].
+    pub fn wander_radius(&self) -> u16 {
+        self.spawn.radius.clamp(3, 30) as u16
+    }
+
+    /// Brings the monster back to life at `location`, normally its home cell
+    /// or the nearest free cell to it.
+    pub fn respawn_at(&self, location: primitives::Location) {
+        self.entity.set_location(location);
         self.entity.restore_health();
     }
 
