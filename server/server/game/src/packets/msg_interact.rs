@@ -881,6 +881,9 @@ impl MsgInteract {
                 )
             };
             let health_after = target_entity.apply_damage(outcome.damage);
+            if let Some(victim) = target.as_character() {
+                crate::death::check_crime(state, character, victim).await?;
+            }
             if let Some(monster) = target.as_monster() {
                 crate::systems::monster_ai::provoke(monster.id(), character.id());
                 hit_experience += crate::leveling::combat_experience(
@@ -1276,6 +1279,9 @@ impl PacketProcess for MsgInteract {
         target_entity.apply_damage(outcome.damage);
         if let Some(monster) = target.as_monster() {
             crate::systems::monster_ai::provoke(monster.id(), character.id());
+        }
+        if let Some(victim) = target.as_character() {
+            crate::death::check_crime(state, character, victim).await?;
         }
         tracing::debug!(
             character_id = character.id(),

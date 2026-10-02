@@ -4883,9 +4883,12 @@ impl Character {
         self.entity.set_flags(flags | crate::death::name_flags(points));
     }
 
-    /// The blue flashing name of a fresh killer.
+    /// The blue flashing name of an attacker or a fresh killer, for at least
+    /// `duration`; a longer flash already running (a kill's) is kept.
     pub fn flash_name(&self, duration: Duration) {
-        *self.flashing_until.lock() = Some(std::time::Instant::now() + duration);
+        let until = std::time::Instant::now() + duration;
+        let mut flashing = self.flashing_until.lock();
+        *flashing = Some(flashing.map_or(until, |current| current.max(until)));
         self.entity
             .set_flags(self.entity.flags() | crate::entities::Flags::BLUE_FLASHING_NAME);
     }
