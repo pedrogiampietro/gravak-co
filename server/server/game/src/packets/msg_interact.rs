@@ -870,7 +870,10 @@ impl MsgInteract {
                 resolve_magic_damage(
                     magic_attack,
                     magic_defense,
-                    0,
+                    // Monster `MagicDefence` (Redux takes it as a percent).
+                    target.as_monster().map_or(0, |monster| {
+                        u16::try_from(monster.monster_type().magic_resistance.clamp(0, 100)).unwrap_or(0)
+                    }),
                     target_stats.damage_reduction_percent,
                     u32::from(health_before.current),
                     target_stats.max_health,

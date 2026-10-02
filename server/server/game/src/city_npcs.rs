@@ -1,7 +1,7 @@
 //! City service NPCs, after the reference server scripts (`Npcs/Twin City`,
 //! `Npcs/Market` and the city Assistants): travel, barber, arena, jail,
 //! mines, CP exchange, body size, attribute reallotment, virtue prizes,
-//! the homeless UnknownMan, the CelestialStone and +10..+12 composing.
+//! the homeless UnknownMan, the CelestialStone and +1..+12 composing.
 
 use tq_network::Actor;
 
@@ -93,6 +93,38 @@ const GEAR: [(u8, &str); 7] = [
     (5, "Shield "),
     (4, "Weapon "),
 ];
+
+/// Redux `Process_ComposePacket`: a main item and two minor items of the
+/// same +n. Minors above the main item give it their plus; otherwise it
+/// gains one. Nothing goes past +9.
+pub fn composed_plus(main: u8, minor: u8) -> Option<u8> {
+    if main >= 9 || minor == 0 {
+        return None;
+    }
+    Some(if minor > main { minor.min(9) } else { main + 1 })
+}
+
+/// The worn slot picked for +1..+9 composing, per character.
+fn compose_slots() -> &'static parking_lot::Mutex<std::collections::HashMap<u32, u8>> {
+    static SLOTS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<u32, u8>>> =
+        std::sync::OnceLock::new();
+    SLOTS.get_or_init(Default::default)
+}
+
+/// Pairs of minor items in the bag by plus: (plus, two uids).
+fn minor_pairs(character: &Character) -> Vec<(u8, [u32; 2])> {
+    let mut by_plus = std::collections::BTreeMap::<u8, Vec<u32>>::new();
+    for item in character.inventory_items() {
+        if (1..=9).contains(&item.plus) {
+            by_plus.entry(item.plus).or_default().push(item.uid);
+        }
+    }
+    by_plus
+        .into_iter()
+        .filter(|(_, uids)| uids.len() >= 2)
+        .map(|(plus, uids)| (plus, [uids[0], uids[1]]))
+        .collect()
+}
 
 fn gear_menu(group: u8) -> Options {
     let mut list = GEAR
@@ -1261,6 +1293,66 @@ async fn wuxing_oven(state: &State, actor: &Actor<ActorState>, character: &Chara
         actor.send(MsgUserInfo::from(character)).await?;
         return say(actor, NPC, format!("Your item now adds +{hp} HP."), "Thanks!").await;
     }
+    // +1..+9: the worn item (61..68), then the pair of minors (191..199).
+    if option == 3 {
+        return send(
+            actor,
+            NPC,
+            "Put two items of the same +n into your bag. If they are above your gear, it takes their plus; otherwise it gains one, up to +9. Which item?",
+            gear_menu(6),
+        )
+        .await;
+    }
+    if (61..=68).contains(&option) {
+        let slot = option - 60;
+        let Some(item) = character.equipment_item(slot) else {
+            return say(actor, NPC, "There must be some mistake.... You must be wearing the item!", "Nevermind").await;
+        };
+        if item.plus >= 9 {
+            return say(actor, NPC, "This item is already +9. Only DragonBalls can raise it further.", "I see.").await;
+        }
+        let mut list = minor_pairs(character)
+            .into_iter()
+            .filter_map(|(plus, _)| {
+                let result = composed_plus(item.plus, plus)?;
+                Some((190 + plus, format!("Two +{plus} items (your item becomes +{result}).")))
+            })
+            .collect::<Vec<_>>();
+        if list.is_empty() {
+            return say(actor, NPC, "You need two items of the same +n in your bag.", "I see.").await;
+        }
+        compose_slots().lock().insert(character.id(), slot);
+        list.push((255, "Never mind.".to_owned()));
+        return send(actor, NPC, "Which items will you melt into it?", list).await;
+    }
+    if (191..=199).contains(&option) {
+        let plus = option - 190;
+        let Some(slot) = compose_slots().lock().remove(&character.id()) else {
+            return Ok(());
+        };
+        let Some(item) = character.equipment_item(slot) else {
+            return say(actor, NPC, "There must be some mistake.... You must be wearing the item!", "Nevermind").await;
+        };
+        let Some(result) = composed_plus(item.plus, plus) else {
+            return Ok(());
+        };
+        let Some((_, uids)) = minor_pairs(character).into_iter().find(|(minor, _)| *minor == plus) else {
+            return say(actor, NPC, "You need two items of the same +n in your bag.", "I see.").await;
+        };
+        let Some(minors) = character.consume_item_uids(state.pool(), &uids).await? else {
+            return Ok(());
+        };
+        for minor in minors {
+            actor.send(MsgItemInfo::remove_inventory_item(minor)).await?;
+        }
+        if let Some(item) = character.set_equipment_plus(state.pool(), slot, result).await? {
+            actor.send(MsgItemInfo::equipment_item(item)).await?;
+        }
+        character.refresh_equipment_resources(state.shop_catalog());
+        actor.send(MsgUserInfo::from(character)).await?;
+        crate::audit::economic("wuxing_compose", character.id(), NPC, item.uid, u32::from(result));
+        return say(actor, NPC, format!("Your item is now +{result}."), "Thanks!").await;
+    }
     match option {
         2 => {
             send(
@@ -1268,6 +1360,7 @@ async fn wuxing_oven(state: &State, actor: &Actor<ActorState>, character: &Chara
                 NPC,
                 "There are two ways of composing from +1 to +9 with +n stones or +n items and from +9 to +12 with DragonBalls. Whitch one would you want?",
                 options(&[
+                    (3, "Compose +1 to +9."),
                     (4, "Compose +9 to +12."),
                     (5, "How does composing  +9 to +12 works?"),
                     (255, "Thanks."),
@@ -1375,6 +1468,16 @@ async fn wuxing_oven(state: &State, actor: &Actor<ActorState>, character: &Chara
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composing_follows_the_minor_items() {
+        // Three +1 make a +2; two +5 lift a +2 to +5; two +1 still add one.
+        assert_eq!(composed_plus(1, 1), Some(2));
+        assert_eq!(composed_plus(2, 5), Some(5));
+        assert_eq!(composed_plus(7, 1), Some(8));
+        assert_eq!(composed_plus(9, 9), None);
+        assert_eq!(composed_plus(3, 0), None);
+    }
 
     #[test]
     fn surgeon_swaps_the_body_size() {
