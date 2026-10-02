@@ -2079,14 +2079,28 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
     }
 }
 
+/// The 3D body (armor.ini's `body * 1_000_000` sections) of a look: its
+/// last digit. 2001/2002 are the small/large female bodies 1 and 2,
+/// 1003/1004 the small/large male bodies 3 and 4.
 pub fn body_from_mesh(mesh: u32) -> u32 {
     match mesh % 10_000 {
-        1003 => 1,
-        1004 => 2,
-        2001 => 3,
-        2002 => 4,
+        2001 => 1,
+        2002 => 2,
+        1003 => 3,
+        1004 => 4,
         _ => 0,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn male_looks_use_the_male_bodies() {
+    // Avatar 31, small male: the sample profile's body 3.
+    assert_eq!(body_from_mesh(311_003), 3);
+    assert_eq!(body_from_mesh(1004), 4);
+    assert_eq!(body_from_mesh(2_012_001), 1);
+    assert_eq!(body_from_mesh(2002), 2);
+    assert_eq!(body_from_mesh(999), 0);
 }
 
 fn unpack_position(value: u32) -> [i32; 2] {
