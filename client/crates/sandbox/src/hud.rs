@@ -37,6 +37,13 @@ pub struct SkillHud {
     pub skills: Vec<(u32, u16, u32)>,
     /// Weapon proficiency as (weapon type, level, experience).
     pub weapon_skills: Vec<(u32, u32, u32)>,
+    /// Stamina and its cap (100, 150 with Heaven's Blessing).
+    pub stamina: u8,
+    pub max_stamina: u8,
+    /// The XP circle is lit: XP skills can be cast.
+    pub xp_ready: bool,
+    /// The page selected in the status Weapon tab.
+    pub weapon_filter: crate::shop::WeaponFilter,
     pub bar_open: bool,
     pub active_skill: Option<u32>,
     pub kill_count: u32,
@@ -157,7 +164,14 @@ fn draw_skill_bar(
     for (id, rect) in skill_bar_slots(assets, viewport, hud) {
         if let Some(icon) = crate::main_hud::skill_icon(assets, id) {
             let size = (rect.2 - 2) as u32;
-            let icon = imageops::resize(&icon, size, size, imageops::FilterType::Triangle);
+            let mut icon = imageops::resize(&icon, size, size, imageops::FilterType::Triangle);
+            // XP skills stay greyed until the XP circle lights up.
+            if !hud.xp_ready && crate::main_hud::is_xp_skill(assets, id) {
+                for pixel in icon.pixels_mut() {
+                    let grey = ((u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 6) as u8;
+                    *pixel = image::Rgba([grey, grey, grey, pixel[3]]);
+                }
+            }
             imageops::overlay(img, &icon, i64::from(rect.0 + 1), i64::from(rect.1 + 1));
         }
         if hud.active_skill == Some(id) {
@@ -629,14 +643,38 @@ fn active_buff_badges(
 
 /// XP progress within the current level. Mirrors the server's placeholder
 /// curve, where reaching level `n + 1` needs `n * 100` total experience.
+/// Server `levexp` table: experience to leave each level (1-140), as in
+/// the reference server. The server keeps experience inside the level.
+const LEVEL_EXPERIENCE: [u64; 140] = [
+    120, 180, 240, 360, 600, 960, 1200, 2400,
+    3600, 8400, 12000, 14400, 18000, 21600, 22646, 32203,
+    37433, 47556, 56609, 68772, 70515, 75936, 97733, 114836,
+    120853, 123981, 126720, 145878, 173436, 197646, 202451, 212160,
+    244190, 285823, 305986, 312864, 324480, 366168, 433959, 460590,
+    506738, 569994, 728527, 850829, 916479, 935118, 940800, 1076593,
+    1272780, 1357994, 1384861, 1478400, 1632438, 1903104, 2066042, 2104924,
+    1921085, 2417202, 2853462, 3054574, 3111217, 3225600, 3810962, 4437896,
+    4880605, 4970962, 5107200, 5652518, 6579162, 6877991, 7100700, 7157657,
+    9106860, 10596398, 11220549, 11409192, 11424000, 12882952, 15172807, 15896990,
+    16163799, 16800000, 19230280, 22365208, 23819312, 24219528, 24864000, 27200077,
+    32033165, 33723801, 34291317, 34944000, 39463523, 45878567, 48924236, 49729220,
+    51072000, 55808379, 64870058, 68391931, 69537026, 76422968, 96950789, 112676755,
+    120090482, 121798280, 127680000, 137446887, 193715970, 408832150, 454674685, 461125885,
+    469189885, 477253885, 480479485, 485317885, 493381885, 580580046, 717424987, 282274058,
+    338728870, 406474644, 487769572, 585323487, 702388184, 842865821, 1011438985, 1073741823,
+    1073741823, 8589134588, 25767403764, 77302211292, 231906633876, 347859950814, 521789926221, 782684889332,
+    1174027333998, 1761041000997, 2641561501496, 0,
+];
+
 fn experience_fraction(level: u8, experience: u64) -> f32 {
-    let previous = u64::from(level.saturating_sub(1)) * 100;
-    let next = u64::from(level.max(1)) * 100;
-    if next > previous {
-        (experience.saturating_sub(previous) as f32 / (next - previous) as f32).clamp(0.0, 1.0)
-    } else {
-        0.0
+    let need = LEVEL_EXPERIENCE
+        .get(usize::from(level.max(1)) - 1)
+        .copied()
+        .unwrap_or(0);
+    if need == 0 {
+        return 0.0;
     }
+    (experience as f32 / need as f32).clamp(0.0, 1.0)
 }
 
 pub fn image(
@@ -692,6 +730,8 @@ pub fn image(
             max_health,
             mana,
             max_mana,
+            stamina: u32::from(skills.stamina),
+            max_stamina: u32::from(skills.max_stamina),
             experience: experience_fraction(level, experience),
             hovered_button,
             hovered_chat,
@@ -708,7 +748,7 @@ pub fn image(
     draw_hotkeys(&mut img, assets, font, viewport, action_bar, hover)?;
 
     // Status effects, listed under the top-left information line.
-    for (row, (label, color)) in active_buff_badges(
+    let mut badges = active_buff_badges(
         double_experience_active,
         heaven_blessing_active,
         burning_active,
@@ -717,10 +757,11 @@ pub fn image(
         superman_active,
         stigma_active,
         shield_active,
-    )
-    .into_iter()
-    .enumerate()
-    {
+    );
+    if skills.xp_ready {
+        badges.insert(0, ("XP Skills Ready", [255, 220, 90, 255]));
+    }
+    for (row, (label, color)) in badges.into_iter().enumerate() {
         main_hud::text(
             &mut img,
             font,
@@ -834,7 +875,8 @@ mod tests {
 
     #[test]
     fn experience_tracks_the_current_level() {
-        assert_eq!(experience_fraction(2, 150), 0.5);
+        // Level 2 needs 180 experience.
+        assert_eq!(experience_fraction(2, 90), 0.5);
         assert_eq!(experience_fraction(1, 0), 0.0);
         assert_eq!(experience_fraction(3, 10_000), 1.0);
     }

@@ -81,7 +81,11 @@ pub async fn send_guild_members(
         let Some(member) = member_entity.as_character() else {
             continue;
         };
-        let rank = if *member_id == guild.leader_id { 1000 } else { 200 };
+        let rank = if *member_id == guild.leader_id {
+            1000
+        } else {
+            state.guild_manager().role_for(*member_id).map_or(200, |role| u16::try_from(role).unwrap_or(200))
+        };
         owner
             .send(MsgGuildMember::from_character(member, rank, index as i32))
             .await?;

@@ -1795,6 +1795,55 @@ impl StatusTab {
     }
 }
 
+/// The Weapon tab's three pages: one-handed (4xx), two-handed (5xx) and
+/// the rest (shields, boxing...).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum WeaponFilter {
+    #[default]
+    OneHand,
+    TwoHand,
+    Others,
+}
+
+impl WeaponFilter {
+    pub const ALL: [WeaponFilter; 3] = [Self::OneHand, Self::TwoHand, Self::Others];
+
+    pub fn of(weapon_type: u32) -> Self {
+        match weapon_type / 100 {
+            4 => Self::OneHand,
+            5 => Self::TwoHand,
+            _ => Self::Others,
+        }
+    }
+
+    /// `Control.Ani` `[Button90..92]`: normal and pressed frames.
+    fn frames(self) -> [&'static str; 2] {
+        match self {
+            Self::OneHand => ["data/main/WeaponBtnS.dds", "data/main/WeaponBtnSClick.dds"],
+            Self::TwoHand => ["data/main/WeaponBtnD.dds", "data/main/WeaponBtnDClick.dds"],
+            Self::Others => ["data/main/WeaponBtnO.dds", "data/main/WeaponBtnOClick.dds"],
+        }
+    }
+
+    /// GUI.ini `[134-1519..1521]`, relative to the paper.
+    fn rect(self) -> UiRect {
+        let x = match self {
+            Self::OneHand => 4,
+            Self::TwoHand => 70,
+            Self::Others => 136,
+        };
+        UiRect::new(StatusLayout::PAPER_X + x, StatusLayout::PAPER_Y + 297, 64, 21)
+    }
+}
+
+pub fn status_weapon_filter_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<WeaponFilter> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    WeaponFilter::ALL
+        .into_iter()
+        .find(|filter| filter.rect().contains_local(local))
+}
+
 pub fn status_tab_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<StatusTab> {
     let [left, top] = status_position(viewport);
     for (i, tab) in StatusTab::ALL.iter().enumerate() {
@@ -2281,6 +2330,7 @@ fn status_tab_frames(tab: StatusTab) -> [&'static str; 2] {
 pub fn status_base_image(
     assets: &mut Assets,
     active_tab: StatusTab,
+    weapon_filter: WeaponFilter,
     close_hovered: bool,
 ) -> Result<RgbaImage> {
     use crate::original_ui::{CharacterComponent, overlay_asset};
@@ -2339,9 +2389,6 @@ pub fn status_base_image(
         ],
         // [134-1519..1521] and the [134-1063/1064] page buttons.
         StatusTab::Weapon => &[
-            ("data/main/WeaponBtnS.dds", 4, 297),
-            ("data/main/WeaponBtnD.dds", 70, 297),
-            ("data/main/WeaponBtnO.dds", 136, 297),
             ("data/main/QuerySkillBtnU.dds", 183, 230),
             ("data/main/QuerySkillBtnD.dds", 183, 264),
         ],
@@ -2356,6 +2403,13 @@ pub fn status_base_image(
     };
     for (path, x, y) in controls {
         overlay_asset(&mut image, assets, path, paper_x + x, paper_y + y)?;
+    }
+    if active_tab == StatusTab::Weapon {
+        for filter in WeaponFilter::ALL {
+            let rect = filter.rect();
+            let frame = filter.frames()[usize::from(filter == weapon_filter)];
+            overlay_asset(&mut image, assets, frame, rect.x.into(), rect.y.into())?;
+        }
     }
     Ok(image)
 }
@@ -2403,6 +2457,7 @@ pub fn status_dynamic_image(
     known_skills: &[(u32, u16, u32)],
     equipment: &[crate::network::OwnedItem],
     weapon_skills: &[(u32, u32, u32)],
+    weapon_filter: WeaponFilter,
     selected_skill: Option<u32>,
 ) -> Result<RgbaImage> {
     let (width, height) = status_surface_size(active_tab);
@@ -2452,8 +2507,8 @@ pub fn status_dynamic_image(
                 (character.name.clone(), 8),
                 (level.to_string(), 36),
                 (class_name(character.current_class), 62),
-                ("0".to_owned(), 88),
-                ("None".to_owned(), 114),
+                (character.kill_points.to_string(), 88),
+                (or_none(&character.spouse), 114),
                 (or_none(&character.guild), 140),
                 (character.guild_rank.clone(), 166),
             ] {
@@ -2485,7 +2540,11 @@ pub fn status_dynamic_image(
             );
         }
         StatusTab::Weapon => {
-            let mut rows = weapon_skills.to_vec();
+            let mut rows = weapon_skills
+                .iter()
+                .copied()
+                .filter(|(weapon_type, _, _)| WeaponFilter::of(*weapon_type) == weapon_filter)
+                .collect::<Vec<_>>();
             rows.sort_unstable_by_key(|(weapon_type, _, _)| *weapon_type);
             let equipped = equipment
                 .iter()
@@ -2498,14 +2557,20 @@ pub fn status_dynamic_image(
                 .copied();
             if let Some((weapon_type, level, experience)) = selected {
                 let name = weapon_type_name(assets, weapon_type);
+                let needed = weapon_level_experience(level);
                 let lines = [
                     format!("{name}: Level {level}"),
-                    format!("EXP: {experience}"),
+                    if needed == 0 {
+                        "EXP: Max".to_owned()
+                    } else {
+                        format!("EXP: {experience}/{needed}")
+                    },
                     format!("Attack +{}%", weapon_attack_bonus(level, experience)),
                 ];
+                // Inside the description box at the top of the paper.
                 for (index, line) in lines.iter().enumerate() {
-                    let y = paper[1] + 8 + index as i32 * 18;
-                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 12, y], WHITE, Some(180));
+                    let y = paper[1] + 6 + index as i32 * 17;
+                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 24, y], WHITE, Some(180));
                 }
             }
             for (row, &(weapon_type, level, _)) in rows.iter().take(STATUS_LIST_ROWS).enumerate() {
@@ -2560,6 +2625,17 @@ const STATUS_LIST_ROWS: usize = 6;
 /// four from progress inside the level, capped at 20%.
 fn weapon_attack_bonus(level: u32, experience: u32) -> u32 {
     (level.saturating_sub(1) * 2 + experience.min(100) / 25).min(20)
+}
+
+/// The server's (and Redux's) proficiency needed to leave `level`; 0 at
+/// the top level.
+fn weapon_level_experience(level: u32) -> u32 {
+    const TABLE: [u32; 21] = [
+        0, 1_200, 68_000, 250_000, 640_000, 1_600_000, 4_000_000, 10_000_000, 22_000_000,
+        40_000_000, 90_000_000, 95_000_000, 142_500_000, 213_750_000, 320_625_000, 480_937_500,
+        721_406_250, 1_082_109_375, 1_623_164_063, 2_100_000_000, 0,
+    ];
+    TABLE.get(level as usize).copied().unwrap_or(0)
 }
 
 /// `ini/WeaponSkillName.ini`: "410,Blade" lines.
@@ -3112,17 +3188,59 @@ fn draw_attribute_plus_button(
     );
 }
 
+/// Profession names from the original `ini/ProfessionalName.ini`.
 fn class_name(class_id: u8) -> String {
     match class_id {
-        10 => "Warrior".to_owned(),
-        20 => "Trojan".to_owned(),
-        40 => "Archer".to_owned(),
-        100 => "Taoist".to_owned(),
-        130 => "Water Taoist".to_owned(),
-        140 => "Fire Taoist".to_owned(),
-        _ if class_id == 0 => "Unknown".to_owned(),
-        _ => format!("Class {class_id}"),
+        10 => "InternTrojan",
+        11 => "Trojan",
+        12 => "VeteranTrojan",
+        13 => "TigerTrojan",
+        14 => "DragonTrojan",
+        15 => "TrojanMaster",
+        20 => "InternWarrior",
+        21 => "Warrior",
+        22 => "BrassWarrior",
+        23 => "SilverWarrior",
+        24 => "GoldWarrior",
+        25 => "WarriorMaster",
+        40 => "InternArcher",
+        41 => "Archer",
+        42 => "EagleArcher",
+        43 => "TigerArcher",
+        44 => "DragonArcher",
+        45 => "ArcherMaster",
+        100 => "InternTaoist",
+        101 => "Taoist",
+        112 => "MetalTaoist",
+        113 => "MetalWizard",
+        114 => "MetalMaster",
+        115 => "MetalSaint",
+        122 => "WoodTaoist",
+        123 => "WoodWizard",
+        124 => "WoodMaster",
+        125 => "WoodSaint",
+        132 => "WaterTaoist",
+        133 => "WaterWizard",
+        134 => "WaterMaster",
+        135 => "WaterSaint",
+        142 => "FireTaoist",
+        143 => "FireWizard",
+        144 => "FireMaster",
+        145 => "FireSaint",
+        152 => "EarthTaoist",
+        153 => "EarthWizard",
+        154 => "EarthMaster",
+        155 => "EarthSaint",
+        190 => "InternTaoist",
+        191 => "Taosit",
+        192 => "GeneralTaoist",
+        193 => "Wizard",
+        194 => "Master",
+        195 => "Saint",
+        30 => "Knight",
+        _ => return "Unknown".to_owned(),
     }
+    .to_owned()
 }
 
 fn status_pixel(image: &mut RgbaImage, x: i32, y: i32, color: [u8; 4]) {
@@ -3788,6 +3906,9 @@ pub fn status_equipment_items(
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             });
         }
     }
@@ -5130,7 +5251,9 @@ pub fn equipment_slot_for_item(assets: &mut Assets, item_type: u32) -> Option<u8
         170..=179 => return Some(7), // bracelet variants
         180..=189 => return Some(9), // garment / fashion
         410..=499 => return Some(4), // weapon
+        500..=599 => return Some(4), // two-handed weapon
         900..=909 => return Some(5), // shield / off-hand
+        1_050 => return Some(5),     // arrows
         _ => {}
     }
 
@@ -5251,12 +5374,15 @@ pub fn consumable_bundle_for_item(item_type: u32) -> Option<(u32, u8)> {
         720_015 => Some((1_001_040, 3)),
         720_016 => Some((1_002_030, 3)),
         720_017 | 721_332 => Some((1_002_040, 3)),
+        720_027 => Some((1_088_001, 10)),
+        720_028 => Some((1_088_000, 10)),
         _ => None,
     }
 }
 
 pub fn temporary_effect_for_item(item_type: u32) -> bool {
-    matches!(item_type, 722_700 | 723_017 | 1_200_000..=1_200_002)
+    // 723700 is the ExpBall.
+    matches!(item_type, 722_700 | 723_017 | 723_700 | 1_200_000..=1_200_002)
 }
 
 pub fn is_consumable(item_type: u32) -> bool {
@@ -6294,7 +6420,7 @@ fn format_silver(silver: u32) -> String {
 }
 
 pub fn tooltip_image(item_id: u32, info: Option<&ItemInfo>) -> Result<RgbaImage> {
-    item_tooltip_image(item_id, item_id, info, 0, 0, 0, 0, 0)
+    item_tooltip_image(item_id, item_id, info, 0, 0, 0, 0, 0, 0, 0)
 }
 
 /// Rich tooltip used for inventory items. The wrapper above remains available
@@ -6309,6 +6435,8 @@ pub fn item_tooltip_image(
     gem_two: u8,
     rarity_code: u8,
     rarity_roll: u8,
+    bless: u8,
+    enchant_hp: u8,
 ) -> Result<RgbaImage> {
     classic_item_tooltip(
         item_uid,
@@ -6319,6 +6447,8 @@ pub fn item_tooltip_image(
         [gem_one, gem_two],
         rarity_code,
         rarity_roll,
+        bless,
+        enchant_hp,
     )
 }
 
@@ -6333,6 +6463,8 @@ pub fn equipment_tooltip_image(
     gem_two: u8,
     rarity_code: u8,
     rarity_roll: u8,
+    bless: u8,
+    enchant_hp: u8,
 ) -> Result<RgbaImage> {
     classic_item_tooltip(
         item_uid,
@@ -6343,6 +6475,8 @@ pub fn equipment_tooltip_image(
         [gem_one, gem_two],
         rarity_code,
         rarity_roll,
+        bless,
+        enchant_hp,
     )
 }
 
@@ -6358,6 +6492,8 @@ fn classic_item_tooltip(
     gems: [u8; 2],
     rarity_code: u8,
     rarity_roll: u8,
+    bless: u8,
+    enchant_hp: u8,
 ) -> Result<RgbaImage> {
     const YELLOW: [u8; 4] = [255, 255, 0, 255];
     const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -6376,6 +6512,9 @@ fn classic_item_tooltip(
     let mut title = name.to_owned();
     if plus > 0 {
         title.push_str(&format!("(+{plus})"));
+    }
+    if bless > 0 {
+        title.push_str(&format!(" -{bless}%"));
     }
     if let Some(kind) = info.map(|item| item.item_type.trim()).filter(|kind| !kind.is_empty()) {
         title.push_str(&format!(" ({kind})"));
@@ -6426,6 +6565,9 @@ fn classic_item_tooltip(
             format!("Dura.: {current}/{maximum}"),
             if current == 0 { RED } else { WHITE },
         ));
+    }
+    if enchant_hp > 0 {
+        lines.push((format!("Enchant: +{enchant_hp} HP"), MAGENTA));
     }
     if plus > 0 {
         lines.push((format!("Upgrade: +{}%", u32::from(plus) * 10), MAGENTA));
@@ -6902,6 +7044,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
             crate::network::OwnedItem {
                 uid: 702,
@@ -6914,6 +7059,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
         ];
         assert_eq!(
@@ -6987,6 +7135,9 @@ mod icon_tests {
             gem_one: 255,
             gem_two: 0,
             rarity_roll: 0,
+            bless: 0,
+            enchant_hp: 0,
+            color: 0,
         };
         for action in actions {
             let [left, top] = super::item_action_panel_position(viewport, action);
@@ -7050,6 +7201,9 @@ mod icon_tests {
             gem_one: 0,
             gem_two: 0,
             rarity_roll: 0,
+            bless: 0,
+            enchant_hp: 0,
+            color: 0,
         };
         let panel = super::ItemActionPanel {
             item,
@@ -7103,6 +7257,9 @@ mod icon_tests {
             gem_one,
             gem_two,
             rarity_roll: 0,
+            bless: 0,
+            enchant_hp: 0,
+            color: 0,
         };
         assert_eq!(super::battle_power(24, 1, &[], 0), 29);
         // Super armor (+4), plus 3, one normal and one super gem (+3).
@@ -7252,6 +7409,9 @@ mod icon_tests {
             gem_one: 0,
             gem_two: 0,
             rarity_roll: 0,
+            bless: 0,
+            enchant_hp: 0,
+            color: 0,
         };
         let [left, top] = inventory_position(viewport);
         let cursor = [
@@ -7344,6 +7504,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
         }];
         assert_eq!(
@@ -7412,7 +7575,7 @@ mod icon_tests {
             (StatusTab::Skills, "skills"),
         ] {
             // Same layers, in the same order, as the renderer.
-            let mut image = status_base_image(&mut assets, tab, false)?;
+            let mut image = status_base_image(&mut assets, tab, super::WeaponFilter::OneHand, false)?;
             let skills = [(1_000, 3, 120), (1_001, 1, 15)];
             let values = status_dynamic_image(
                 &mut assets,
@@ -7425,7 +7588,8 @@ mod icon_tests {
                 0,
                 &skills,
                 &equipment,
-                &[(410, 20, 0), (420, 12, 3_500), (480, 3, 90)],
+                &[(410, 1, 110), (420, 12, 3_500), (480, 3, 90)],
+                super::WeaponFilter::OneHand,
                 Some(1_000),
             )?;
             image::imageops::overlay(&mut image, &values, 0, 0);
@@ -7450,7 +7614,7 @@ mod icon_tests {
         state.selected = Some(2);
         super::panel_image(&mut assets, &state)?.save(output.join("shop.png"))?;
         let info = super::item_info(&mut assets, 410_339);
-        super::equipment_tooltip_image(7, 410_339, info.as_ref(), 70, 70, 12, 13, 13, 2, 9)?
+        super::equipment_tooltip_image(7, 410_339, info.as_ref(), 70, 70, 12, 13, 13, 2, 9, 3, 120)?
             .save(output.join("tooltip.png"))?;
         Ok(())
     }
@@ -7485,6 +7649,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
             crate::network::OwnedItem {
                 uid: 2,
@@ -7497,6 +7664,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
             crate::network::OwnedItem {
                 uid: 3,
@@ -7509,6 +7679,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
             crate::network::OwnedItem {
                 uid: 4,
@@ -7521,6 +7694,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
             crate::network::OwnedItem {
                 uid: 5,
@@ -7533,6 +7709,9 @@ mod icon_tests {
                 gem_one: 0,
                 gem_two: 0,
                 rarity_roll: 0,
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             },
         ];
         inventory_image(

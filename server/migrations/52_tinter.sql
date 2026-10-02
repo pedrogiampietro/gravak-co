@@ -1,0 +1,9 @@
+-- Item dyes (Tinter), by item uid like the blessings.
+CREATE TABLE IF NOT EXISTS item_colors (
+  item_uid INTEGER PRIMARY KEY,
+  color INTEGER NOT NULL CHECK (color BETWEEN 0 AND 9)
+);
+
+-- The Tinter in the dyeing shop (Redux [5030]).
+INSERT OR IGNORE INTO npcs (id, name, kind, look, map_id, x, y, base, sort, level, life, defense, magic_defense)
+VALUES (5030, 'Tinter', 2, 5030, 1008, 26, 16, 0, 0, 0, 0, 0, 0);

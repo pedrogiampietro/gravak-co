@@ -203,9 +203,32 @@ impl PacketProcess for MsgTaskDialog {
             .ok()
             .and_then(|map| map.npc(self.task_id));
         if let Some(npc) = npc.as_ref() {
-            if let Some((destination_map, destination, destination_name)) =
-                super::msg_npc::city_service_destination(self.task_id, npc.entity().name(), self.option_id)
-            {
+            let player = character.entity().location();
+            let location = npc.entity().location();
+            let near = player.x.abs_diff(location.x) <= 12 && player.y.abs_diff(location.y) <= 12;
+            if near && crate::artisans::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::trainers::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::market_npcs::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::quest_npcs::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::guild_war::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::offline_tg::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            let typed = self.msgs.iter().next().map_or("", String::as_str);
+            if near && crate::city_npcs::answer(_state, actor, character, npc.id(), self.option_id, typed).await? {
+                return Ok(());
+            }
+            if let Some(teleport) = crate::teleports::resolve(self.task_id, self.option_id) {
                 let player = character.entity().location();
                 let location = npc.entity().location();
                 if player.x.abs_diff(location.x) > 12 || player.y.abs_diff(location.y) > 12 {
@@ -218,18 +241,7 @@ impl PacketProcess for MsgTaskDialog {
                         .await?;
                     return Ok(());
                 }
-                let new_map = _state.try_map(destination_map)?;
-                character.teleport(_state, destination_map, destination).await?;
-                new_map.insert_entity(entity.clone()).await?;
-                character.try_screen()?.load_surroundings(_state).await?;
-                actor
-                    .send(super::MsgTalk::from_system(
-                        character.id(),
-                        super::TalkChannel::System,
-                        format!("Teleported to {destination_name}."),
-                    ))
-                    .await?;
-                return Ok(());
+                return city_teleport(_state, actor, character, npc.id(), teleport).await;
             }
         }
         if matches!(self.option_id, 1 | 2 | 3)
@@ -909,9 +921,6 @@ impl PacketProcess for MsgTaskDialog {
             (_, 1) if self.task_id == 10010 => "Twin City is the heart of this realm.".to_owned(),
             (_, 2) if self.task_id == 10010 => "Many secrets are hidden beyond the city gates.".to_owned(),
             (_, 1) if self.task_id == 10009 => "I heard that brave adventurers are needed near the gates.".to_owned(),
-            (_, 1) if npc_name_lower.contains("conductress") || npc_name_lower.contains("gatekeeper") => {
-                "I can guide you to nearby cities and training grounds.".to_owned()
-            },
             (_, 1) if npc_name_lower.contains("guild") => {
                 "A guild is stronger when its members share their skills and protect one another.".to_owned()
             },
@@ -945,4 +954,111 @@ impl PacketProcess for MsgTaskDialog {
         }
         Ok(())
     }
+}
+
+/// Runs a teleport resolved by [`crate::teleports::resolve`]. The destination
+/// cell is validated before any silver is charged, and the fee is refunded if
+/// the map change itself fails.
+async fn city_teleport(
+    state: &crate::State,
+    actor: &Actor<crate::ActorState>,
+    character: &crate::entities::Character,
+    npc_id: u32,
+    teleport: crate::teleports::Teleport,
+) -> Result<(), crate::Error> {
+    use crate::teleports::{Teleport, TWIN_CITY_CENTER, TWIN_CITY_MAP};
+
+    let origin = character.entity().location();
+    let origin_map = character.entity().map_id();
+    let (map_id, position, name, fee, records_market_return) = match teleport {
+        Teleport::Paid {
+            destination,
+            fee,
+            records_market_return,
+        } => (
+            destination.map_id,
+            destination.position,
+            destination.name,
+            fee,
+            records_market_return,
+        ),
+        Teleport::Free(destination) => (destination.map_id, destination.position, destination.name, 0, false),
+        Teleport::LeaveMarket | Teleport::LeaveTrainingGround => {
+            let current = character.entity().map_id();
+            let (map_id, position) = character
+                .take_market_return()
+                .filter(|(map_id, _)| *map_id != current)
+                .unwrap_or((TWIN_CITY_MAP, TWIN_CITY_CENTER));
+            (map_id, position, "your previous location", 0, false)
+        },
+    };
+
+    let new_map = state.try_map(map_id)?;
+    new_map.load().await?;
+    let mut target = origin;
+    target.x = position.0;
+    target.y = position.1;
+    let Some(target) = new_map.landing_position(target, 4) else {
+        tracing::warn!(map_id, ?position, "city teleport destination is not walkable");
+        actor
+            .send(super::MsgTalk::from_system(
+                character.id(),
+                super::TalkChannel::TopLeft,
+                format!("The road to {name} is closed right now."),
+            ))
+            .await?;
+        return Ok(());
+    };
+
+    if fee > 0 {
+        if character.spend_silver(state.pool(), fee).await?.is_none() {
+            // The reference scripts answer in the dialog itself.
+            let text = if fee == crate::teleports::CONDUCTRESS_FEE {
+                format!("Sorry, you do not have {fee} silver.")
+            } else {
+                "Sorry, you do not have enough.".to_owned()
+            };
+            let dialog = MsgTaskDialog::builder()
+                .text(text)
+                .with_option(255, "I see.")
+                .and()
+                .with_avatar(crate::teleports::opening(npc_id).map_or(1, |(_, _, face)| face))
+                .task_id(npc_id)
+                .build();
+            actor.send_all(dialog).await?;
+            return Ok(());
+        }
+        crate::audit::economic("npc_teleport", character.id(), npc_id, 0, fee);
+    }
+
+    let entity = actor.entity();
+    let moved = async {
+        character.teleport(state, map_id, (target.x, target.y)).await?;
+        new_map.insert_entity(entity.clone()).await?;
+        character.try_screen()?.load_surroundings(state).await
+    }
+    .await;
+    if let Err(error) = moved {
+        if fee > 0 {
+            character.grant_silver(state.pool(), fee).await?;
+            crate::audit::economic("npc_teleport_refund", character.id(), npc_id, 0, fee);
+            actor.send(super::MsgUserInfo::from(character)).await?;
+        }
+        return Err(error);
+    }
+
+    if records_market_return && origin_map != map_id {
+        character.set_market_return(origin_map, (origin.x, origin.y));
+    }
+    if fee > 0 {
+        actor.send(super::MsgUserInfo::from(character)).await?;
+    }
+    actor
+        .send(super::MsgTalk::from_system(
+            character.id(),
+            super::TalkChannel::System,
+            format!("Teleported to {name}."),
+        ))
+        .await?;
+    Ok(())
 }

@@ -56,6 +56,17 @@ pub struct SkillEffectInstance {
 pub const SKILL_EFFECT_MAX_SECONDS: f32 = 4.0;
 
 /// An original 3D effect (`3DEffect.ini`) loaded into C3 layers.
+/// `ini/statuseffect.ini`: status flag and its looping effect.
+const STATUS_EFFECTS: [(u64, &str); 7] = [
+    (0x80, "attackfast40"),
+    (0x100, "zf2-e307"),
+    (0x200, "attackup40"),
+    (0x40000, "SuperSoldier"),
+    (0x800000, "Tornado"),
+    (0x4000000, "Dodge"),
+    (0x80000, "BodyShield"),
+];
+
 struct LoadedEffect {
     layers: Vec<LevelUpLayer>,
     frame_interval: f32,
@@ -178,6 +189,7 @@ enum UiTextureJob {
     Label {
         path: String,
         character: Character,
+        name_colour: [u8; 3],
     },
     Build {
         path: String,
@@ -192,6 +204,7 @@ enum UiTextureJob {
         monster: bool,
         health: u16,
         maximum_health: u16,
+        name_colour: [u8; 3],
     },
     Hud {
         path: String,
@@ -226,6 +239,7 @@ enum UiTextureJob {
     StatusBase {
         path: String,
         active_tab: crate::shop::StatusTab,
+        weapon_filter: crate::shop::WeaponFilter,
         close_hovered: bool,
     },
     StatusDynamic {
@@ -240,6 +254,7 @@ enum UiTextureJob {
         known_skills: Vec<(u32, u16, u32)>,
         equipment: Vec<crate::network::OwnedItem>,
         weapon_skills: Vec<(u32, u32, u32)>,
+        weapon_filter: crate::shop::WeaponFilter,
         selected_skill: Option<u32>,
     },
     StatusOverlay {
@@ -362,7 +377,11 @@ impl UiTextureJob {
                 )
                 .to_image())
             }
-            Self::Label { character, .. } => crate::labels::image(&character),
+            Self::Label {
+                character,
+                name_colour,
+                ..
+            } => crate::labels::image(&character, name_colour),
             Self::Build { .. } => crate::labels::build_banner(),
             Self::Feedback { message, .. } => crate::labels::status_image(&message),
             Self::ActorLabel {
@@ -370,12 +389,13 @@ impl UiTextureJob {
                 monster,
                 health,
                 maximum_health,
+                name_colour,
                 ..
             } => {
                 if monster {
                     crate::labels::monster_image(&name, health, maximum_health)
                 } else {
-                    crate::labels::actor_image(&name)
+                    crate::labels::actor_image(&name, name_colour)
                 }
             }
             Self::Hud {
@@ -439,9 +459,10 @@ impl UiTextureJob {
             ),
             Self::StatusBase {
                 active_tab,
+                weapon_filter,
                 close_hovered,
                 ..
-            } => crate::shop::status_base_image(assets, active_tab, close_hovered),
+            } => crate::shop::status_base_image(assets, active_tab, weapon_filter, close_hovered),
             Self::StatusDynamic {
                 level,
                 experience,
@@ -453,6 +474,7 @@ impl UiTextureJob {
                 known_skills,
                 equipment,
                 weapon_skills,
+                weapon_filter,
                 selected_skill,
                 ..
             } => crate::shop::status_dynamic_image(
@@ -467,6 +489,7 @@ impl UiTextureJob {
                 &known_skills,
                 &equipment,
                 &weapon_skills,
+                weapon_filter,
                 selected_skill,
             ),
             Self::StatusOverlay {
@@ -838,6 +861,29 @@ impl Renderer {
             effects: HashMap::new(),
             last_hud_key: None,
         })
+    }
+
+    /// Plays an effect over and over (status effects): the time wraps at
+    /// the effect's length.
+    fn push_looping_effect(
+        &mut self,
+        assets: &mut Assets,
+        name: &str,
+        origin: [f32; 2],
+        time: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        let length = self
+            .effects
+            .get(name)
+            .cloned()
+            .flatten()
+            .map(|effect| effect.frames * effect.frame_interval / 1000.0)
+            .filter(|length| *length > 0.0)
+            .unwrap_or(1.0);
+        self.push_effect(assets, name, origin, time % length, sort_depth, viewport, draws);
     }
 
     /// Plays an original 3D effect (`3DEffect.ini`) at a screen point.
@@ -1599,7 +1645,7 @@ impl Renderer {
         ground_loot: &[(u32, [f32; 2], u32, f32)],
         hit_until: f32,
         level_up_until: f32,
-        dialog: Option<(&[String], &[(u8, String)])>,
+        dialog: Option<(&[String], &[(u8, String)], u16)>,
         shop: Option<&crate::shop::ShopState>,
         equipment: &[crate::network::OwnedItem],
         hidden_default_equipment_slots: &[bool; 10],
@@ -1971,17 +2017,21 @@ impl Renderer {
             {
                 continue;
             }
-            let action = if time < actor.animation_until {
+            let held = matches!(actor.action, REMOTE_SIT | REMOTE_DEAD);
+            let action = if time < actor.animation_until || held {
                 remote_action(actor.action)
             } else {
                 Action::Idle
             };
-            let action_progress =
+            let action_progress = if held && time >= actor.animation_until {
+                Some(1.0)
+            } else {
                 (action != Action::Idle && time < actor.animation_until).then(|| {
                     ((time - actor.animation_started)
                         / (actor.animation_until - actor.animation_started).max(f32::EPSILON))
                     .clamp(0.0, 1.0)
-                });
+                })
+            };
             let projected = map.project(actor.position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             let visibility_margin = if monster {
@@ -2200,10 +2250,13 @@ impl Renderer {
                 }
             }
             if !actor.name.is_empty() {
+                let name_colour = crate::labels::name_colour(actor.status_flags);
+                // The Guild War pole and gates show their life like monsters.
+                let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
                 let label_key = if monster {
                     format!("@monster-label-{}-{}", actor.id, actor.health)
                 } else {
-                    format!("@actor-label-{}", actor.id)
+                    format!("@actor-label-{}-{:?}", actor.id, name_colour)
                 };
                 if !self.textures.contains_key(&label_key) && !self.loading.contains(&label_key) {
                     self.queue_ui_texture(
@@ -2214,6 +2267,7 @@ impl Renderer {
                             monster,
                             health: actor.health,
                             maximum_health: actor.maximum_health,
+                            name_colour,
                         },
                     );
                 }
@@ -2312,6 +2366,25 @@ impl Renderer {
                 );
             }
         }
+        // Status effects (`ini/statuseffect.ini`) around the player and the
+        // other actors: shield, Superman, Cyclone, Stigma, accuracy...
+        let mut status_effects = vec![(player.position, status_flags)];
+        status_effects.extend(remote_actors.values().map(|actor| (actor.position, actor.status_flags)));
+        for (position, flags) in status_effects {
+            if flags == 0 {
+                continue;
+            }
+            let projected = map.project(position);
+            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            if !world_point_visible(origin, viewport, 256.0) {
+                continue;
+            }
+            for (bit, name) in STATUS_EFFECTS {
+                if flags & bit != 0 {
+                    self.push_looping_effect(assets, name, origin, time, position[0] + position[1] + 0.04, viewport, &mut draws);
+                }
+            }
+        }
         for (loot_id, position, item_id, _) in ground_loot {
             let projected = map.project(*position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
@@ -2362,9 +2435,10 @@ impl Renderer {
             }
         }
         let world_phase_finished = Instant::now();
+        let name_colour = crate::labels::name_colour(status_flags);
         let label_key = format!(
-            "@label-{}-{}-{}",
-            character.name, character.health, character.maximum_health
+            "@label-{}-{}-{}-{:?}",
+            character.name, character.health, character.maximum_health, name_colour
         );
         if !self.textures.contains_key(&label_key) && !self.loading.contains(&label_key) {
             self.queue_ui_texture(
@@ -2372,6 +2446,7 @@ impl Renderer {
                 UiTextureJob::Label {
                     path: label_key.clone(),
                     character: character.clone(),
+                    name_colour,
                 },
             );
         }
@@ -2493,7 +2568,9 @@ impl Renderer {
                     chat_focused,
                     chat_history: chat_history.to_vec(),
                     chat_filter,
-                    double_experience_active: status_flags & crate::network::XP_CIRCLE_FLAG != 0,
+                    double_experience_active: status_flags
+                        & crate::network::DOUBLE_EXPERIENCE_FLAG
+                        != 0,
                     heaven_blessing_active: status_flags & crate::network::HEAVEN_BLESSING_FLAG
                         != 0,
                     burning_active: status_flags & crate::network::POISONED_FLAG != 0,
@@ -2594,6 +2671,7 @@ impl Renderer {
             status_skills.sort_unstable();
             status_skills.hash(&mut hasher);
             skill_hud.weapon_skills.hash(&mut hasher);
+            skill_hud.weapon_filter.hash(&mut hasher);
             skill_hud.active_skill.hash(&mut hasher);
             mana.hash(&mut hasher);
             maximum_mana.hash(&mut hasher);
@@ -2607,7 +2685,10 @@ impl Renderer {
             reputation_donate_hovered.hash(&mut hasher);
             title_hovered.hash(&mut hasher);
             let signature = hasher.finish();
-            let base_key = format!("@original-character-base-{status_tab:?}-{close_hovered}");
+            let weapon_filter = skill_hud.weapon_filter;
+            let base_key = format!(
+                "@original-character-base-{status_tab:?}-{weapon_filter:?}-{close_hovered}"
+            );
             let dynamic_key = format!("@original-character-dynamic-{signature}");
             if !self.textures.contains_key(&base_key) && !self.loading.contains(&base_key) {
                 self.queue_ui_texture(
@@ -2615,6 +2696,7 @@ impl Renderer {
                     UiTextureJob::StatusBase {
                         path: base_key.clone(),
                         active_tab: status_tab,
+                        weapon_filter,
                         close_hovered,
                     },
                 );
@@ -2634,6 +2716,7 @@ impl Renderer {
                         known_skills: status_skills.clone(),
                         equipment: status_equipment.clone(),
                         weapon_skills: skill_hud.weapon_skills.clone(),
+                        weapon_filter,
                         selected_skill: skill_hud.active_skill,
                     },
                 );
@@ -2756,6 +2839,8 @@ impl Renderer {
                                 item.gem_two,
                                 item.rarity,
                                 item.rarity_roll,
+                                item.bless,
+                                item.enchant_hp,
                             )?,
                         );
                     }
@@ -2777,44 +2862,25 @@ impl Renderer {
                 }
             }
         }
-        if let Some((messages, options)) = dialog {
+        if let Some((messages, options, avatar)) = dialog {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             messages.hash(&mut hasher);
             options.hash(&mut hasher);
-            let signature = hasher.finish();
-            let base_key = format!("@dialog-base-{signature}");
-            if !self.textures.contains_key(&base_key) {
-                self.upload(&base_key, crate::labels::dialog_image(messages, options)?);
+            avatar.hash(&mut hasher);
+            let hovered = crate::npc_dialog::hovered_option(viewport, cursor, messages, options);
+            hovered.hash(&mut hasher);
+            let key = format!("@npc-dialog-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                self.upload(
+                    &key,
+                    crate::npc_dialog::image(assets, messages, options, avatar, hovered)?,
+                );
             }
-            if let Some(texture) = self.textures.get(&base_key) {
-                let size = texture.size;
-                let position = [
-                    ((viewport[0] - size[0]) * 0.5).max(8.0),
-                    (viewport[1] - size[1] - 24.0).max(8.0),
-                ];
-                let line_count = ((size[1] - 74.0 - options.len() as f32 * 28.0) / 20.0)
-                    .round()
-                    .max(1.0);
-                let option_top = position[1] + 48.0 + line_count * 20.0;
-                let row = ((cursor[1] - option_top) / 27.0).floor() as usize;
-                let row_offset = cursor[1] - option_top - row as f32 * 27.0;
-                let hovered = (cursor[0] >= position[0] + 15.0
-                    && cursor[0] <= position[0] + 705.0
-                    && row < options.len()
-                    && row_offset >= 0.0
-                    && row_offset < 24.0)
-                    .then_some(row);
-                let key = format!("@dialog-{signature}-{:?}", hovered);
-                if !self.textures.contains_key(&key) {
-                    self.upload(
-                        &key,
-                        crate::labels::dialog_image_with_hover(messages, options, hovered)?,
-                    );
-                }
+            if let Some(texture) = self.textures.get(&key) {
                 draws.push(Draw {
                     texture: key,
-                    vertices: quad(position, size, viewport),
+                    vertices: quad(crate::npc_dialog::position(viewport), texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
@@ -3397,6 +3463,8 @@ impl Renderer {
                         item.gem_two,
                         item.rarity,
                         item.rarity_roll,
+                        item.bless,
+                        item.enchant_hp,
                     )?,
                 );
             }
@@ -3520,6 +3588,8 @@ impl Renderer {
                             panel.item.gem_two,
                             panel.item.rarity,
                             panel.item.rarity_roll,
+                            panel.item.bless,
+                            panel.item.enchant_hp,
                         )?,
                     );
                 }
@@ -3877,8 +3947,15 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
         && origin[1] <= viewport[1] + margin
 }
 
+/// Remote action codes whose last frame is held: sitting (250) and a
+/// dead player (161, a client-side code for the 401 fall).
+pub(crate) const REMOTE_SIT: u8 = 250;
+pub(crate) const REMOTE_DEAD: u8 = 161;
+
 fn remote_action(value: u8) -> Action {
     match value {
+        REMOTE_SIT => Action::Sit,
+        REMOTE_DEAD => Action::Die,
         110 => Action::WalkLeft,
         111 => Action::WalkRight,
         120 => Action::RunLeft,

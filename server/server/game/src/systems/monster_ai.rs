@@ -53,7 +53,14 @@ pub async fn tick(state: &State) {
                     *due <= now
                 };
                 if should_respawn {
-                    monster_ref.respawn();
+                    let home = monster_ref.home();
+                    let location = if map.is_walkable(home.x, home.y) {
+                        home
+                    } else {
+                        map.nearest_walkable_position(home, crate::world::MONSTER_RELOCATION_RADIUS)
+                            .unwrap_or(home)
+                    };
+                    monster_ref.respawn_at(location);
                     next_respawn.lock().unwrap().remove(&monster.id());
                     map.update_region_for(monster.clone());
                     let _ = map.broadcast(MsgPlayer::from_monster(monster_ref)).await;
@@ -63,11 +70,38 @@ pub async fn tick(state: &State) {
                 }
                 continue;
             }
-            if monster_ref.has_status(crate::entities::StatusEffect::Stunned) {
+            // Nobody can see a monster on a map without players; skip its
+            // movement so idle hunting grounds cost nothing per tick.
+            if characters.is_empty() || monster_ref.has_status(crate::entities::StatusEffect::Stunned) {
                 continue;
             }
             let mloc = monster_ref.entity().location();
-            let Some((target, distance)) = nearest_target(&characters, mloc) else {
+            let home = monster_ref.home();
+            let wander_radius = monster_ref.wander_radius();
+            // A monster that chased too far gives up and walks back home
+            // instead of following a player across the whole map.
+            if distance_between(mloc, home) > wander_radius.saturating_add(VIEW_RANGE as u16) {
+                let can_move = next_move
+                    .lock()
+                    .unwrap()
+                    .get(&monster.id())
+                    .is_none_or(|due| *due <= now);
+                if can_move {
+                    if let Some(next) = next_step(map, mloc, home, &occupied) {
+                        occupied.remove(&(mloc.x, mloc.y));
+                        occupied.insert((next.0.x, next.0.y));
+                        move_to(map, &monster, next.0, next.1).await;
+                    }
+                    let delay = 650 + (monster.id() % 240) as u64;
+                    next_move
+                        .lock()
+                        .unwrap()
+                        .insert(monster.id(), now + Duration::from_millis(delay));
+                }
+                continue;
+            }
+            let guard = is_guard(monster_ref.monster_type().id);
+            let Some((target, distance)) = nearest_target(&characters, mloc, guard) else {
                 let can_move = next_move
                     .lock()
                     .unwrap()
@@ -78,7 +112,7 @@ pub async fn tick(state: &State) {
                         .duration_since(UNIX_EPOCH)
                         .map(|value| value.as_millis() as u64)
                         .unwrap_or_default();
-                    if let Some(next) = wander_step(map, mloc, &occupied, monster.id(), seed) {
+                    if let Some(next) = wander_step(map, mloc, (home, wander_radius), &occupied, monster.id(), seed) {
                         occupied.remove(&(mloc.x, mloc.y));
                         occupied.insert((next.0.x, next.0.y));
                         move_to(map, &monster, next.0, next.1).await;
@@ -131,12 +165,27 @@ pub async fn tick(state: &State) {
     }
 }
 
-fn nearest_target(characters: &[Arc<GameEntity>], location: Location) -> Option<(Arc<GameEntity>, i16)> {
+/// City guards (Guard1, Guard2): they punish crime instead of hunting.
+fn is_guard(monster_type_id: i32) -> bool {
+    matches!(monster_type_id, 900 | 910 | 911)
+}
+
+fn nearest_target(characters: &[Arc<GameEntity>], location: Location, guard: bool) -> Option<(Arc<GameEntity>, i16)> {
     characters
         .iter()
         .filter_map(|entity| {
             let character = entity.as_character()?;
-            if character.entity().is_dead() {
+            // Dead, invisible or flying players are out of reach.
+            let flags = character.entity().flags();
+            if character.entity().is_dead()
+                || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
+            {
+                return None;
+            }
+            // Guards only go after fresh killers and black names.
+            if guard
+                && !flags.intersects(crate::entities::Flags::BLUE_FLASHING_NAME | crate::entities::Flags::BLACK_NAME)
+            {
                 return None;
             }
             let target = character.entity().location();
@@ -174,9 +223,14 @@ fn next_step(
     Some((Location::new(x, y, direction(dx, dy)), direction(dx, dy)))
 }
 
+fn distance_between(a: Location, b: Location) -> u16 {
+    a.x.abs_diff(b.x).max(a.y.abs_diff(b.y))
+}
+
 fn wander_step(
     map: &crate::world::Map,
     from: Location,
+    (home, radius): (Location, u16),
     occupied: &HashSet<(u16, u16)>,
     id: u32,
     tick: u64,
@@ -190,6 +244,12 @@ fn wander_step(
         let x = (from.x as i16 + dx).max(0) as u16;
         let y = (from.y as i16 + dy).max(0) as u16;
         if occupied.contains(&(x, y)) {
+            return None;
+        }
+        // Idle monsters stay inside their spawn area; one that is outside
+        // (after a chase) may only step closer to home.
+        let next = Location::new(x, y, 0);
+        if distance_between(next, home) > radius.max(distance_between(from, home).saturating_sub(1)) {
             return None;
         }
         map.tile(x, y)
@@ -247,5 +307,10 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
     let _ = character.owner().send(packet.clone()).await;
     if let Ok(screen) = character.try_screen() {
         let _ = screen.send_message(packet).await;
+    }
+    if character.entity().is_dead() {
+        if let Err(error) = crate::death::kill_character(state, character, monster.id(), None).await {
+            tracing::warn!(character = character.id(), ?error, "Failed to process character death");
+        }
     }
 }

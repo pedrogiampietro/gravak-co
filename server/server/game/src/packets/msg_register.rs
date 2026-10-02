@@ -50,16 +50,11 @@ impl MsgRegister {
         };
 
         let hair_style = rng.gen_range(3..9) * 100 + crate::constants::HAIR_STYLES[rng.gen_range(0..12)];
-        let strength = match class {
-            BaseClass::Taoist => 2,
-            _ => 4,
-        };
-        let agility = 6;
-        let vitality = 12;
-        let spirit = match class {
-            BaseClass::Taoist => 10,
-            _ => 0,
-        };
+        // Redux: a new character starts with its class's level 1 attributes.
+        let (strength, vitality, agility, spirit) =
+            crate::stats::for_level(u16::from(class) as u8, 1).map_or((4, 12, 6, 0), |(s, v, a, sp)| {
+                (i16::try_from(s).unwrap_or(0), i16::try_from(v).unwrap_or(0), i16::try_from(a).unwrap_or(0), i16::try_from(sp).unwrap_or(0))
+            });
 
         let health_points = (strength * 3) + (agility * 3) + (spirit * 3) + (vitality * 24);
         let mana_points = spirit * 5;

@@ -95,7 +95,7 @@ impl From<&Character> for MsgUserInfo {
             show_name: true,
             list_count: 2,
             character_name: c.entity().name().to_owned(),
-            spouse: "None".to_owned(),
+            spouse: c.spouse(),
         }
     }
 }

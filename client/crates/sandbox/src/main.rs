@@ -15,6 +15,7 @@ mod minimap;
 mod motion_math;
 mod movement;
 mod network;
+mod npc_dialog;
 mod original_panels;
 mod original_ui;
 mod original_ui_layout;
@@ -207,6 +208,14 @@ struct App {
     held: bool,
     queued_jump: Option<[i32; 2]>,
     local_action: Option<(Action, f32, f32)>,
+    stamina: u8,
+    /// When the player died; `None` while alive.
+    dead_since: Option<f32>,
+    /// Sitting (MsgAction 250): stamina comes back faster.
+    sitting: bool,
+    /// A portal works once the hero has stood off every portal, so arriving
+    /// on the destination's own portal does not bounce straight back.
+    portal_armed: bool,
     hit_until: f32,
     level_up_until: f32,
     level: u8,
@@ -220,6 +229,7 @@ struct App {
     status_flags: u64,
     status_open: bool,
     status_tab: shop::StatusTab,
+    weapon_filter: shop::WeaponFilter,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -272,6 +282,8 @@ struct App {
     skill_cooldown_until: HashMap<u32, f32>,
     next_attack_at: f32,
     remote_actors: HashMap<u32, RemoteActor>,
+    /// Life and maximum life of the Guild War structures.
+    structure_lives: HashMap<u32, (u32, u32)>,
     remote_models: HashMap<u32, character::Character>,
     remote_npcs: HashMap<u32, character::NpcModel>,
     remote_monsters: HashMap<u32, character::NpcModel>,
@@ -312,10 +324,35 @@ struct App {
     remote_monsters_loading: HashSet<u32>,
 }
 
+/// The client offers Revive this long after dying (server `REVIVE_DELAY`).
+const REVIVE_DELAY_SECONDS: f32 = 18.0;
+/// Task id of the local Revive dialog; it never reaches an NPC.
+const REVIVE_TASK_ID: u32 = u32::MAX;
+
 struct DialogState {
     task_id: u32,
+    /// NPC face (`ani/NpcFace.Ani`) sent with the avatar action.
+    avatar: u16,
     lines: Vec<String>,
     options: Vec<(u8, String)>,
+    /// A text box (MsgTaskDialog Edit): its option, label and what was
+    /// typed, and whether the keyboard goes to it.
+    edit: Option<(u8, String)>,
+    input: String,
+    input_focused: bool,
+}
+
+impl DialogState {
+    /// Shows what is typed on the text box's row.
+    fn refresh_edit_row(&mut self) {
+        let Some((option_id, label)) = self.edit.clone() else {
+            return;
+        };
+        let caret = if self.input_focused { "_" } else { "" };
+        if let Some(row) = self.options.iter_mut().find(|(id, _)| *id == option_id) {
+            row.1 = format!("{label}: {}{caret}", self.input);
+        }
+    }
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -436,6 +473,40 @@ impl ApplicationHandler for App {
                                         self.player_shop_price.push(ch);
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.dialog.as_ref().is_some_and(|dialog| dialog.input_focused) =>
+            {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => {
+                            if let Some(dialog) = self.dialog.as_mut() {
+                                dialog.input_focused = false;
+                                dialog.refresh_edit_row();
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            if let Some(dialog) = self.dialog.as_mut() {
+                                dialog.input.pop();
+                                dialog.refresh_edit_row();
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            self.submit_dialog_text();
+                        }
+                        _ => {
+                            if let (Some(dialog), Some(text)) = (self.dialog.as_mut(), event.text.as_ref()) {
+                                for character in text.chars().filter(|character| !character.is_control()) {
+                                    if dialog.input.chars().count() < 16 {
+                                        dialog.input.push(character);
+                                    }
+                                }
+                                dialog.refresh_edit_row();
                             }
                         }
                     }
@@ -705,6 +776,8 @@ impl ApplicationHandler for App {
                     }
                     PhysicalKey::Code(KeyCode::Slash) => self.player.running = !self.player.running,
                     PhysicalKey::Code(KeyCode::KeyC) => self.send_network_action(120),
+                    PhysicalKey::Code(KeyCode::KeyX) => self.toggle_sit(),
+                    PhysicalKey::Code(KeyCode::KeyM) => self.request_mining(),
                     _ => {}
                 }
             }
@@ -716,6 +789,7 @@ impl ApplicationHandler for App {
                 self.last = now;
                 let elapsed = self.started.elapsed().as_secs_f32();
                 self.send_network_step(previous_cell);
+                self.check_portal();
                 let expired_dead = self
                     .remote_actors
                     .iter()
@@ -740,6 +814,29 @@ impl ApplicationHandler for App {
                         );
                     } else if elapsed >= until {
                         self.local_action = None;
+                    }
+                }
+                if self.sitting && self.player.moving() {
+                    self.sitting = false;
+                }
+                if self.sitting && self.dead_since.is_none() {
+                    self.player.action = Action::Sit;
+                    local_action_progress = Some(1.0);
+                }
+                if let Some(died_at) = self.dead_since {
+                    let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
+                    self.player.action = Action::Die;
+                    local_action_progress = Some(((elapsed - died_at) / fall).clamp(0.0, 1.0));
+                    if elapsed - died_at >= REVIVE_DELAY_SECONDS && self.dialog.is_none() {
+                        self.dialog = Some(DialogState {
+                            task_id: REVIVE_TASK_ID,
+                            avatar: 0,
+                            lines: vec!["You are dead.".to_owned()],
+                            options: vec![(1, "Revive".to_owned())],
+                            edit: None,
+                            input: String::new(),
+                            input_focused: false,
+                        });
                     }
                 }
                 let action_animation_progress = self
@@ -796,7 +893,9 @@ impl ApplicationHandler for App {
                         self.level_up_until,
                         self.dialog
                             .as_ref()
-                            .map(|dialog| (dialog.lines.as_slice(), dialog.options.as_slice())),
+                            .map(|dialog| {
+                                (dialog.lines.as_slice(), dialog.options.as_slice(), dialog.avatar)
+                            }),
                         self.shop.as_ref(),
                         &self.equipment,
                         &self.hidden_default_equipment_slots,
@@ -1003,14 +1102,14 @@ impl App {
             .equipment
             .iter()
             .find(|item| item.position == 3)
-            .map(|item| item.item_type)
+            .map(|item| character::dyed(item.item_type, item.color))
             .unwrap_or(0);
         let armor = self.appearance_armor(armor);
         let helmet = self
             .equipment
             .iter()
             .find(|item| item.position == 1)
-            .map(|item| item.item_type)
+            .map(|item| character::dyed(item.item_type, item.color))
             .unwrap_or(0);
         let right_weapon = self
             .equipment
@@ -1022,7 +1121,7 @@ impl App {
             .equipment
             .iter()
             .find(|item| item.position == 5)
-            .map(|item| item.item_type)
+            .map(|item| character::dyed(item.item_type, item.color))
             .unwrap_or(0);
         debug_log::write(format_args!(
             "refresh world model: helmet={} armor_or_garment={} right_weapon={} left_weapon={} equipment_count={}",
@@ -1297,7 +1396,20 @@ impl App {
                 self.held = false;
                 return true;
             }
+            if self.status_tab == shop::StatusTab::Weapon
+                && let Some(filter) = shop::status_weapon_filter_at(viewport, self.cursor)
+            {
+                self.weapon_filter = filter;
+                self.held = false;
+                return true;
+            }
             if let Some(tab) = shop::status_tab_at(viewport, self.cursor) {
+                if tab == shop::StatusTab::Weapon && self.status_tab != tab {
+                    // Open on the page of the weapon in hand.
+                    if let Some(weapon) = self.equipment.iter().find(|item| item.position == 4) {
+                        self.weapon_filter = shop::WeaponFilter::of(weapon.item_type / 1_000);
+                    }
+                }
                 self.status_tab = tab;
                 self.held = false;
                 return true;
@@ -1803,6 +1915,9 @@ impl App {
     }
 
     fn move_cursor(&mut self) {
+        if self.dead_since.is_some() {
+            return;
+        }
         self.pending_attack = None;
         self.pending_skill_attack = None;
         self.selected_target = None;
@@ -1866,11 +1981,12 @@ impl App {
             }
             NetworkEvent::GuildMember(member) => {
                 if self.network_character_id == Some(member.character_id) {
-                    self.character.guild_rank = if member.rank == 1000 {
-                        "Leader".to_owned()
-                    } else {
-                        "Member".to_owned()
-                    };
+                    self.character.guild_rank = match member.rank {
+                        1000 => "Leader",
+                        990 => "Deputy Leader",
+                        _ => "Member",
+                    }
+                    .to_owned();
                 }
                 self.guild_members
                     .retain(|existing| existing.character_id != member.character_id);
@@ -2035,6 +2151,26 @@ impl App {
                     .insert(skill_id as u32, (level, experience));
                 self.network_status = format!("online: skill {skill_id} level {level}");
             }
+            NetworkEvent::Stamina(stamina) => self.stamina = stamina,
+            NetworkEvent::ActorLife { id, maximum, value } => {
+                let entry = self.structure_lives.entry(id).or_insert((value, value));
+                if maximum {
+                    entry.1 = value;
+                } else {
+                    entry.0 = value;
+                }
+                let (life, max) = *entry;
+                if let Some(actor) = self.remote_actors.get_mut(&id) {
+                    actor.health = scaled_life(life, max);
+                    actor.maximum_health = 1_000;
+                }
+            }
+            NetworkEvent::SkillForgotten(skill_id) => {
+                self.known_skills.remove(&skill_id);
+                if self.active_skill == Some(skill_id) {
+                    self.active_skill = None;
+                }
+            }
             NetworkEvent::WeaponSkill {
                 weapon_type,
                 level,
@@ -2066,6 +2202,7 @@ impl App {
                 self.character.current_class = ready.current_class;
                 self.character.previous_class = ready.previous_class;
                 self.character.rebirths = ready.rebirths;
+                self.character.kill_points = ready.kill_points;
                 self.confirmed_network_cell = Some(ready.position);
                 self.pending_network_steps.clear();
                 self.player_shop_items.clear();
@@ -2087,6 +2224,11 @@ impl App {
                 }
                 self.level = level;
                 self.experience = experience;
+                if self.initial_sync_complete && health == 0 {
+                    self.on_own_death();
+                } else if health > 0 && self.dead_since.is_some() {
+                    self.on_own_revive();
+                }
                 self.character.health = health;
                 self.character.maximum_health = maximum_health;
                 self.mana = mana;
@@ -2101,7 +2243,11 @@ impl App {
                 current_class,
                 previous_class,
                 rebirths,
+                kill_points,
+                spouse,
             } => {
+                self.character.kill_points = kill_points;
+                self.character.spouse = spouse;
                 self.character.strength = strength;
                 self.character.agility = agility;
                 self.character.vitality = vitality;
@@ -2396,6 +2542,7 @@ impl App {
                 self.selected_warehouse_uid = None;
                 self.pending_network_steps.clear();
                 self.confirmed_network_cell = Some(position);
+                self.portal_armed = false;
                 if self.map.id != map_id {
                     match map::Map::load(&mut self.assets, map_id) {
                         Ok(map) => {
@@ -2505,14 +2652,27 @@ impl App {
                 value,
             } => {
                 if action == 14 {
+                    if self.network_character_id == Some(target_id) {
+                        self.on_own_death();
+                    }
                     if self.network_character_id == Some(id) {
                         self.kill_count = self.kill_count.saturating_add(1);
                     }
                     let now = self.started.elapsed().as_secs_f32();
+                    let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
                     if let Some(actor) = self.remote_actors.get_mut(&target_id) {
                         actor.health = 0;
-                        actor.action = 160;
-                        actor.animation_until = now + 1.2;
+                        let player = !actor.npc && !(400001..=499999).contains(&target_id);
+                        // Players stay on the ground until they revive;
+                        // monsters fade after their death animation.
+                        if player {
+                            actor.action = renderer::REMOTE_DEAD;
+                            actor.animation_started = now;
+                            actor.animation_until = now + fall;
+                        } else {
+                            actor.action = 160;
+                            actor.animation_until = now + 1.2;
+                        }
                     }
                     if self.pending_attack == Some(target_id) {
                         self.pending_attack = None;
@@ -2627,14 +2787,26 @@ impl App {
                     .any(|message| message.contains("catalog items"));
                 let state = self.dialog.get_or_insert_with(|| DialogState {
                     task_id: dialog.task_id,
+                    avatar: 0,
                     lines: Vec::new(),
                     options: Vec::new(),
+                    edit: None,
+                    input: String::new(),
+                    input_focused: false,
                 });
                 if dialog.task_id != 0 {
                     state.task_id = dialog.task_id;
                 }
+                if dialog.action == 4 {
+                    state.avatar = dialog.avatar;
+                }
                 for message in dialog.messages {
-                    if matches!(dialog.action, 2 | 3) {
+                    if dialog.action == 3 {
+                        state.edit = Some((dialog.option_id, message.clone()));
+                        state.input_focused = true;
+                        state.options.push((dialog.option_id, message));
+                        state.refresh_edit_row();
+                    } else if dialog.action == 2 {
                         state.options.push((dialog.option_id, message));
                     } else if !message.is_empty() {
                         state.lines.push(message);
@@ -2680,6 +2852,10 @@ impl App {
                 );
             }
             NetworkEvent::PlayerSpawn(mut actor) | NetworkEvent::NpcSpawn(mut actor) => {
+                if let Some(&(life, max)) = self.structure_lives.get(&actor.id) {
+                    actor.health = scaled_life(life, max);
+                    actor.maximum_health = 1_000;
+                }
                 let monster = !actor.npc && (400001..=499999).contains(&actor.id);
                 if monster && actor.health == 0 {
                     if let Some(existing) = self.remote_actors.get_mut(&actor.id) {
@@ -2769,6 +2945,15 @@ impl App {
                     {
                         self.remote_models_loading.remove(&id);
                     }
+                }
+                // A gate opening or closing comes back with another look.
+                if actor.npc
+                    && self
+                        .remote_actors
+                        .get(&id)
+                        .is_some_and(|old| old.mesh != actor.mesh)
+                {
+                    self.remote_npcs.remove(&id);
                 }
                 if actor.npc
                     && !self.remote_npcs.contains_key(&id)
@@ -2907,12 +3092,18 @@ impl App {
         let Some((id, npc, npc_kind, name)) = selected else {
             return false;
         };
+        // Training ground Stakes and Scarecrows are attacked, not talked to;
+        // the Guild War pole and gates with Ctrl held (StrRes 10352).
+        let training_goal = npc
+            && (is_training_goal(npc_kind)
+                || (is_war_structure(npc_kind) && self.modifiers.control_key()));
+        let npc = npc && !training_goal;
         self.held = false;
         if npc {
             self.dialog = None;
             self.shop = None;
         }
-        let monster = !npc && (400001..=499999).contains(&id);
+        let monster = training_goal || (!npc && (400001..=499999).contains(&id));
         let kind = if npc {
             "npc"
         } else if monster {
@@ -3088,6 +3279,14 @@ impl App {
                 .iter()
                 .map(|(&weapon_type, &(level, experience))| (weapon_type, level, experience))
                 .collect(),
+            weapon_filter: self.weapon_filter,
+            stamina: self.stamina,
+            max_stamina: if self.status_flags & network::HEAVEN_BLESSING_FLAG != 0 {
+                150
+            } else {
+                100
+            },
+            xp_ready: self.status_flags & network::XP_CIRCLE_FLAG != 0,
             bar_open: self.skill_bar_open,
             active_skill: self.active_skill,
             kill_count: self.kill_count,
@@ -3117,10 +3316,33 @@ impl App {
             self.pending_pickup = None;
             self.pending_skill_attack = Some((target, skill.id));
             self.process_pending_skill_attack();
+        } else if action_bar::is_support_skill(skill.id)
+            && let Some(ally) = self.player_at_cursor()
+        {
+            self.cast_support_skill(skill, ally);
         } else {
             self.cast_skill(skill);
         }
         true
+    }
+
+    /// A heal or revive aimed at another player.
+    fn cast_support_skill(&mut self, skill: action_bar::SkillAction, target_id: u32) {
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            return;
+        };
+        if !self.known_skills.contains_key(&skill.id) {
+            self.network_status = format!("{} ainda não foi aprendida", skill.name);
+            return;
+        }
+        let Some(target) = self.remote_actors.get(&target_id) else {
+            return;
+        };
+        let cell = target.position.map(|value| value.round() as u16);
+        network.send_magic_attack(character_id, target_id, cell[0], cell[1], skill.id);
+        let now = self.started.elapsed().as_secs_f32();
+        self.skill_cooldown_until.insert(skill.id, now + skill.cooldown_seconds);
+        self.network_status = format!("online: {} -> {target_id}", skill.name);
     }
 
     /// Keeps attacking the target with the selected skill: walk until it is
@@ -3137,7 +3359,8 @@ impl App {
             self.pending_skill_attack = None;
             return;
         };
-        if target.health == 0 || target.action == 160 {
+        // Training dummies are NPCs without health; only real targets die.
+        if !target.npc && (target.health == 0 || target.action == 160) {
             self.pending_skill_attack = None;
             return;
         }
@@ -3180,12 +3403,37 @@ impl App {
         self.cast_skill(skill);
     }
 
+    /// Another player under the cursor (for heals and revives).
+    fn player_at_cursor(&self) -> Option<u32> {
+        let renderer = self.renderer.as_ref()?;
+        let camera = renderer.camera(&self.map, &self.player);
+        self.remote_actors
+            .values()
+            .filter(|actor| !actor.npc && !(400001..=499999).contains(&actor.id))
+            .filter(|actor| {
+                let projected = self.map.project(actor.position);
+                let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+                (self.cursor[0] - origin[0]).abs() <= 32.0
+                    && self.cursor[1] >= origin[1] - 120.0
+                    && self.cursor[1] <= origin[1] + 24.0
+            })
+            .min_by(|left, right| {
+                (left.position[0] + left.position[1])
+                    .total_cmp(&(right.position[0] + right.position[1]))
+            })
+            .map(|actor| actor.id)
+    }
+
     fn monster_at_cursor(&self) -> Option<u32> {
         let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera(&self.map, &self.player);
         self.remote_actors
             .values()
-            .filter(|actor| !actor.npc && (400001..=499999).contains(&actor.id))
+            .filter(|actor| {
+                // Summoned pets (495000..) fight for their owners.
+                (!actor.npc && (400001..495_000).contains(&actor.id))
+                    || (actor.npc && (is_training_goal(actor.npc_kind) || is_war_structure(actor.npc_kind)))
+            })
             .filter(|actor| {
                 let projected = self.map.project(actor.position);
                 let origin = [projected[0] - camera[0], projected[1] - camera[1]];
@@ -3266,6 +3514,114 @@ impl App {
         }
     }
 
+    /// Stepping on a map portal (`DMap` portal list) asks the server to
+    /// change map, like the original client's MsgAction 85.
+    fn check_portal(&mut self) {
+        if self.dead_since.is_some() {
+            return;
+        }
+        let cell = self.player.cell();
+        let portal = self
+            .map
+            .data
+            .portals
+            .iter()
+            .find(|portal| (portal.x - cell[0]).abs() <= 1 && (portal.y - cell[1]).abs() <= 1)
+            .copied();
+        let Some(portal) = portal else {
+            self.portal_armed = true;
+            return;
+        };
+        if !self.portal_armed {
+            return;
+        }
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            return;
+        };
+        self.portal_armed = false;
+        network.change_map(
+            character_id,
+            portal.x.clamp(0, i32::from(u16::MAX)) as u16,
+            portal.y.clamp(0, i32::from(u16::MAX)) as u16,
+        );
+        self.network_status = format!("online: portal at ({}, {})", portal.x, portal.y);
+    }
+
+    /// X: sit down or stand up (ChangeAction 250 / 100).
+    fn toggle_sit(&mut self) {
+        if self.dead_since.is_some() || self.player.moving() {
+            return;
+        }
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            return;
+        };
+        self.sitting = !self.sitting;
+        network.send_action(character_id, if self.sitting { 250 } else { 100 });
+        self.player.action_instance = self.player.action_instance.wrapping_add(1);
+        if !self.sitting {
+            self.player.action = Action::Idle;
+        }
+    }
+
+    /// M: start mining with a PickAxe in a mine.
+    fn request_mining(&mut self) {
+        if self.dead_since.is_some() {
+            return;
+        }
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.mine(character_id);
+            self.network_status = "online: mining".into();
+        }
+    }
+
+    fn on_own_death(&mut self) {
+        if self.dead_since.is_some() {
+            return;
+        }
+        self.dead_since = Some(self.started.elapsed().as_secs_f32());
+        self.player.stop();
+        self.pending_attack = None;
+        self.pending_skill_attack = None;
+        self.pending_pickup = None;
+        self.local_action = None;
+        self.dialog = None;
+        self.player.action_instance = self.player.action_instance.wrapping_add(1);
+        self.network_status = "You are dead.".into();
+    }
+
+    fn on_own_revive(&mut self) {
+        self.dead_since = None;
+        if self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.task_id == REVIVE_TASK_ID)
+        {
+            self.dialog = None;
+        }
+        self.player.action = Action::Idle;
+        self.player.action_instance = self.player.action_instance.wrapping_add(1);
+    }
+
+    /// Sends what was typed in the dialog's text box.
+    fn submit_dialog_text(&mut self) {
+        let Some(dialog) = self.dialog.take() else {
+            return;
+        };
+        let Some((option_id, _)) = dialog.edit else {
+            self.dialog = Some(dialog);
+            return;
+        };
+        let text = dialog.input.trim().to_owned();
+        if text.is_empty() {
+            self.dialog = Some(dialog);
+            return;
+        }
+        if let Some(network) = &self.network {
+            network.send_npc_dialog_text(dialog.task_id, option_id, text);
+            self.network_status = format!("online: NPC answer {option_id}");
+        }
+    }
+
     fn select_dialog_option(&mut self) -> bool {
         let Some(dialog) = self.dialog.as_ref() else {
             return false;
@@ -3275,27 +3631,48 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
-        let hit = labels::dialog_hit_test(viewport, self.cursor, &dialog.lines, &dialog.options)
-            .unwrap_or(labels::DialogHit::Outside);
+        let hit = npc_dialog::hit_test(viewport, self.cursor, &dialog.lines, &dialog.options)
+            .unwrap_or(npc_dialog::DialogHit::Outside);
         match hit {
-            labels::DialogHit::Outside => {
+            npc_dialog::DialogHit::Outside => {
                 self.dialog = None;
                 self.network_status = "online: NPC dialog closed; moving".into();
                 false
             }
-            labels::DialogHit::Panel => true,
-            labels::DialogHit::Close => {
+            npc_dialog::DialogHit::Panel => true,
+            npc_dialog::DialogHit::Close => {
                 self.dialog = None;
                 self.network_status = "online: NPC dialog closed".into();
                 true
             }
-            labels::DialogHit::Option(index) => {
+            npc_dialog::DialogHit::Option(index) => {
                 let Some(dialog) = self.dialog.as_ref() else {
                     return true;
                 };
                 let Some((option_id, _)) = dialog.options.get(index).cloned() else {
                     return true;
                 };
+                if dialog.edit.as_ref().is_some_and(|(edit_id, _)| *edit_id == option_id) {
+                    if let Some(dialog) = self.dialog.as_mut() {
+                        if dialog.input_focused && !dialog.input.trim().is_empty() {
+                            self.submit_dialog_text();
+                        } else {
+                            dialog.input_focused = true;
+                            dialog.refresh_edit_row();
+                        }
+                    }
+                    return true;
+                }
+                if dialog.task_id == REVIVE_TASK_ID {
+                    if let (Some(network), Some(character_id)) =
+                        (&self.network, self.network_character_id)
+                    {
+                        network.revive(character_id);
+                        self.network_status = "online: reviving".into();
+                    }
+                    self.dialog = None;
+                    return true;
+                }
                 if let Some(network) = &self.network {
                     network.send_npc_dialog_answer(dialog.task_id, option_id);
                     self.dialog = None;
@@ -3714,6 +4091,20 @@ impl App {
             .copied()
     }
 
+    /// The worn item under the cursor, including the character's default
+    /// outfit (uid 0) that the paper doll shows in an empty slot.
+    fn equipped_item_at_cursor(&self) -> Option<network::OwnedItem> {
+        if let Some(item) = self.equipment_slot_item_at_cursor() {
+            return Some(item);
+        }
+        let window = self.window.as_ref()?;
+        let size = window.inner_size();
+        let slot = shop::status_equipment_slot_at([size.width as f32, size.height as f32], self.cursor)?;
+        shop::status_equipment_items(&self.character, &self.equipment, &self.hidden_default_equipment_slots)
+            .into_iter()
+            .find(|item| item.position == slot)
+    }
+
     fn first_empty_inventory_slot(&self) -> Option<u8> {
         (0..40_u8).find(|slot| !self.inventory.iter().any(|item| item.position == *slot))
     }
@@ -3948,11 +4339,15 @@ impl App {
 
     fn queue_unequip_item(&mut self, item: network::OwnedItem) -> bool {
         if item.uid == 0 {
+            // The default outfit is only appearance: there is no item to
+            // move to the inventory, so taking it off just hides it.
             debug_log::write(format_args!(
-                "unequip rejected locally: uid=0 type={} slot={}",
+                "default outfit hidden: type={} slot={}",
                 item.item_type, item.position
             ));
-            self.network_status = "O outfit padrão não pode ser desequipado".into();
+            self.hide_default_equipment_slot(item.position);
+            self.refresh_character_equipment_model();
+            self.network_status = "Aparência padrão removida (não é um item real)".into();
             return true;
         }
         let Some(inventory_slot) = self.first_empty_inventory_slot() else {
@@ -4025,20 +4420,16 @@ impl App {
         }
         if self.status_open
             && self.status_tab == shop::StatusTab::Equipment
-            && let Some(item) = self.equipment_slot_item_at_cursor()
+            && let Some(item) = self.equipped_item_at_cursor()
         {
+            // Like the original client, a right click on a worn item takes
+            // it off.
             debug_log::write(format_args!(
-                "context requested: equipment uid={} type={} slot={} cursor=({:.1},{:.1})",
-                item.uid, item.item_type, item.position, self.cursor[0], self.cursor[1]
+                "equipment right click: uid={} type={} slot={}",
+                item.uid, item.item_type, item.position
             ));
-            self.item_context = Some(shop::ItemContext {
-                item,
-                actions: self.available_item_actions(item, true),
-                anchor: self.cursor,
-            });
-            self.network_status =
-                format!("item {}: escolha UNEQUIP para desequipar", item.item_type);
-            return true;
+            self.item_context = None;
+            return self.queue_unequip_item(item);
         }
         self.item_context = None;
         false
@@ -4343,15 +4734,17 @@ impl App {
         if !self.status_open || self.status_tab != shop::StatusTab::Equipment {
             return false;
         }
-        let Some(item) = self.equipment_slot_item_at_cursor() else {
+        let Some(item) = self.equipped_item_at_cursor() else {
             self.last_equipment_click = None;
             return false;
         };
         let now = Instant::now();
-        let double = self.last_equipment_click.is_some_and(|(uid, at)| {
-            uid == item.uid && now.duration_since(at) <= std::time::Duration::from_millis(350)
+        // The default outfit has no uid, so the slot identifies it.
+        let key = if item.uid == 0 { u32::from(item.position) | 0x8000_0000 } else { item.uid };
+        let double = self.last_equipment_click.is_some_and(|(clicked, at)| {
+            clicked == key && now.duration_since(at) <= std::time::Duration::from_millis(350)
         });
-        self.last_equipment_click = (!double).then_some((item.uid, now));
+        self.last_equipment_click = (!double).then_some((key, now));
         if double {
             debug_log::write(format_args!(
                 "equipment double click: uid={} type={} slot={}",
@@ -5002,9 +5395,28 @@ fn action_duration(action: u16, character: &character::Character) -> f32 {
         140 => character.duration(Action::Attack).as_secs_f32(),
         150 => character.duration(Action::Hit).as_secs_f32(),
         220 => character.duration(Action::Pickup).as_secs_f32(),
+        250 => character.duration(Action::Sit).as_secs_f32(),
         _ => 0.5,
     }
 }
+/// `WeaponGoal`, `MagicGoal`, `BowGoal` and `Target`: training dummies.
+fn is_training_goal(kind: u16) -> bool {
+    (21..=24).contains(&kind)
+}
+
+/// The Guild War pole (`SynFlag`) and gates (`CityGate`).
+fn is_war_structure(kind: u16) -> bool {
+    matches!(kind, 10 | 26)
+}
+
+/// A large life shown on the u16 health bar: thousandths of the maximum.
+fn scaled_life(life: u32, maximum: u32) -> u16 {
+    if life == 0 {
+        return 0;
+    }
+    ((u64::from(life) * 1_000 / u64::from(maximum.max(1))).clamp(1, 1_000)) as u16
+}
+
 fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let mut root = None;
@@ -5380,6 +5792,10 @@ fn run() -> Result<()> {
         held: false,
         queued_jump: None,
         local_action: None,
+        stamina: 100,
+        dead_since: None,
+        sitting: false,
+        portal_armed: false,
         hit_until: 0.0,
         level_up_until: 0.0,
         level: server_ready.as_ref().map(|ready| ready.level).unwrap_or(1),
@@ -5396,6 +5812,7 @@ fn run() -> Result<()> {
         status_flags: 0,
         status_open: benchmark_character,
         status_tab: shop::StatusTab::Equipment,
+        weapon_filter: shop::WeaponFilter::OneHand,
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,
@@ -5454,6 +5871,7 @@ fn run() -> Result<()> {
         skill_cooldown_until: HashMap::new(),
         next_attack_at: 0.0,
         remote_actors: HashMap::new(),
+        structure_lives: HashMap::new(),
         remote_models: HashMap::new(),
         remote_npcs: HashMap::new(),
         remote_monsters: HashMap::new(),
@@ -5525,3 +5943,4 @@ mod tests {
         assert!(frame_interval_for(0).is_none());
     }
 }
+

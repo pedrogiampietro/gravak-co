@@ -87,6 +87,8 @@ struct GuildBook {
     membership: HashMap<u32, u32>,
     roles: HashMap<u32, u32>,
     invites: HashMap<u32, u32>,
+    /// (guild, other guild) -> "ally" or "enemy".
+    relations: HashMap<(u32, u32), String>,
 }
 
 /// Server-authoritative guild rules backed by SQLite. The in-memory book keeps
@@ -135,6 +137,14 @@ impl GuildManager {
                     members,
                 },
             );
+        }
+        let relation_rows =
+            sqlx::query_as::<_, (i64, i64, String)>("SELECT guild_id, other_guild_id, kind FROM guild_relations")
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+        for (guild_id, other, kind) in relation_rows {
+            book.relations.insert((guild_id as u32, other as u32), kind);
         }
         Ok(Self { book: Mutex::new(book) })
     }
@@ -353,6 +363,134 @@ impl GuildManager {
         let book = self.book.lock();
         let guild_id = book.membership.get(&character_id)?;
         book.guilds.get(guild_id).map(GuildRecord::info)
+    }
+
+    /// Dissolves the leader's guild; its former members are returned.
+    pub fn disband(&self, leader_id: u32) -> Result<GuildInfo, GuildError> {
+        let mut book = self.book.lock();
+        let guild_id = *book.membership.get(&leader_id).ok_or(GuildError::NotInGuild)?;
+        if book.guilds.get(&guild_id).is_none_or(|guild| guild.leader_id != leader_id) {
+            return Err(GuildError::NotLeader);
+        }
+        let guild = book.guilds.remove(&guild_id).ok_or(GuildError::NotInGuild)?;
+        for member in &guild.members {
+            book.membership.remove(member);
+            book.roles.remove(member);
+        }
+        Ok(guild.info())
+    }
+
+    /// The leader gives a member another rank (990 deputy, 200 member).
+    pub fn set_role(&self, leader_id: u32, member_id: u32, role: u32) -> Result<GuildInfo, GuildError> {
+        let mut book = self.book.lock();
+        let guild_id = *book.membership.get(&leader_id).ok_or(GuildError::NotInGuild)?;
+        let guild = book.guilds.get(&guild_id).ok_or(GuildError::NotInGuild)?;
+        if guild.leader_id != leader_id {
+            return Err(GuildError::NotLeader);
+        }
+        if member_id == leader_id {
+            return Err(GuildError::CannotKickLeader);
+        }
+        if book.membership.get(&member_id) != Some(&guild_id) {
+            return Err(GuildError::TargetNotFound);
+        }
+        let info = guild.info();
+        book.roles.insert(member_id, role);
+        Ok(info)
+    }
+
+    /// The guild named `name`, if any.
+    pub fn guild_by_name(&self, name: &str) -> Option<GuildInfo> {
+        let book = self.book.lock();
+        book.guilds
+            .values()
+            .find(|guild| guild.name.eq_ignore_ascii_case(name.trim()))
+            .map(GuildRecord::info)
+    }
+
+    pub async fn persist_disband(pool: &SqlitePool, guild_id: u32) -> Result<(), sqlx::Error> {
+        let mut transaction = pool.begin().await?;
+        for table in ["guild_members", "guild_relations"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = ?"))
+                .bind(i64::from(guild_id))
+                .execute(&mut *transaction)
+                .await?;
+        }
+        sqlx::query("DELETE FROM guild_relations WHERE other_guild_id = ?")
+            .bind(i64::from(guild_id))
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM guilds WHERE guild_id = ?")
+            .bind(i64::from(guild_id))
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await
+    }
+
+    pub async fn persist_role(pool: &SqlitePool, member_id: u32, role: u32) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE guild_members SET role = ? WHERE character_id = ?")
+            .bind(i64::from(role))
+            .bind(database_id(member_id))
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Adds or removes an ally ("ally") or an enemy ("enemy") guild.
+    pub async fn set_relation(
+        &self,
+        pool: &SqlitePool,
+        guild_id: u32,
+        other_guild_id: u32,
+        kind: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        {
+            let mut book = self.book.lock();
+            match kind {
+                Some(kind) => {
+                    book.relations.insert((guild_id, other_guild_id), kind.to_owned());
+                },
+                None => {
+                    book.relations.remove(&(guild_id, other_guild_id));
+                },
+            }
+        }
+        match kind {
+            Some(kind) => {
+                sqlx::query(
+                    "INSERT INTO guild_relations (guild_id, other_guild_id, kind) VALUES (?, ?, ?)
+                     ON CONFLICT(guild_id, other_guild_id) DO UPDATE SET kind = excluded.kind",
+                )
+                .bind(i64::from(guild_id))
+                .bind(i64::from(other_guild_id))
+                .bind(kind)
+                .execute(pool)
+                .await?;
+            },
+            None => {
+                sqlx::query("DELETE FROM guild_relations WHERE guild_id = ? AND other_guild_id = ?")
+                    .bind(i64::from(guild_id))
+                    .bind(i64::from(other_guild_id))
+                    .execute(pool)
+                    .await?;
+            },
+        }
+        Ok(())
+    }
+
+    /// The relation `guild_id` declared toward `other_guild_id`.
+    pub fn relation(&self, guild_id: u32, other_guild_id: u32) -> Option<String> {
+        self.book.lock().relations.get(&(guild_id, other_guild_id)).cloned()
+    }
+
+    /// The guilds `guild_id` declared as `kind`.
+    pub fn relations_of(&self, guild_id: u32, kind: &str) -> Vec<String> {
+        let book = self.book.lock();
+        book.relations
+            .iter()
+            .filter(|((owner, _), relation)| *owner == guild_id && relation.as_str() == kind)
+            .filter_map(|((_, other), _)| book.guilds.get(other).map(|guild| guild.name.clone()))
+            .collect()
     }
 
     pub fn role_for(&self, character_id: u32) -> Option<u32> {

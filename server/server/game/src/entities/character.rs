@@ -31,8 +31,38 @@ pub struct Character {
     warehouse_silver: AtomicU64,
     active_shop_id: AtomicU32,
     active_storage_id: AtomicU32,
+    /// Where the Market controller sends the player back to: the map and
+    /// cell they were on when a Conductress took them to the Market.
+    market_return: Mutex<Option<(u32, (u16, u16))>>,
+    /// Current profession; promotions change it after login.
+    class: std::sync::atomic::AtomicU8,
+    /// Profession before the rebirth, and the number of rebirths.
+    previous_class: std::sync::atomic::AtomicU8,
+    rebirths: std::sync::atomic::AtomicU8,
+    /// Virtue points, spent at Simon for the Labyrinth.
+    virtue: AtomicU32,
+    cps: AtomicU64,
+    hair_style: AtomicU16,
+    /// The spouse's name, or "None".
+    spouse: Mutex<String>,
     /// Classic kill mode: 0 free, 1 safe, 2 team, 3 arrestment.
     kill_mode: AtomicU16,
+    /// PK points: red name from 30, black name from 100.
+    kill_points: AtomicU16,
+    /// When the character died; `None` while alive.
+    died_at: Mutex<Option<std::time::Instant>>,
+    /// The blue flashing name after killing someone.
+    flashing_until: Mutex<Option<std::time::Instant>>,
+    /// When the next PK point wears off.
+    next_pk_decay: Mutex<Option<std::time::Instant>>,
+    /// Stamina (0-100, 150 with Heaven's Blessing).
+    stamina: std::sync::atomic::AtomicU8,
+    /// XP points; at 100 the XP circle lights up.
+    xp_points: std::sync::atomic::AtomicU8,
+    last_xp_up: Mutex<std::time::Instant>,
+    /// Until when the lit XP circle waits for an XP skill.
+    xp_ready_until: Mutex<Option<std::time::Instant>>,
+    last_regeneration: Mutex<std::time::Instant>,
     inventory: Mutex<Vec<InventoryItem>>,
     equipment: Mutex<Vec<InventoryItem>>,
     warehouse: Mutex<Vec<InventoryItem>>,
@@ -66,6 +96,12 @@ pub struct InventoryItem {
     pub socket_two: u8,
     /// Seed used to generate the item's custom rarity bonus slots.
     pub rarity_roll: u8,
+    /// Blessing: 1, 3, 5 or 7 percent less damage taken.
+    pub bless: u8,
+    /// Life added by a WuxingOven enchantment (0-255).
+    pub enchant_hp: u8,
+    /// Dye of a helmet, armor or shield (3-9; 0 is the default 3).
+    pub color: u8,
 }
 
 /// Quality is encoded by the final digit of the classic equipment type and
@@ -341,6 +377,13 @@ pub enum SaleOutcome {
 
 impl Character {
     pub fn new(owner: ActorHandle, inner: tq_db::character::Character) -> Self {
+        let class = inner.current_class as u8;
+        let previous_class = inner.previous_class as u8;
+        let rebirths = inner.rebirths as u8;
+        let virtue = inner.virtue.max(0) as u32;
+        let cps = inner.cps.max(0) as u64;
+        let hair_style = inner.hair_style.max(0) as u16;
+        let kill_points = inner.kill_points.max(0) as u16;
         let persisted_double_experience_until = (inner.double_experience_until > 0)
             .then(|| UNIX_EPOCH.checked_add(Duration::from_secs(inner.double_experience_until as u64)))
             .flatten();
@@ -348,27 +391,39 @@ impl Character {
             .then(|| UNIX_EPOCH.checked_add(Duration::from_secs(inner.heaven_blessing_until as u64)))
             .flatten();
         let entity = Entity::from(&inner);
+        entity.set_flags(entity.flags() | crate::death::name_flags(kill_points));
         let silver = inner.silver.max(0) as u64;
         let nobility_donation = inner.nobility_donation.max(0) as u64;
         let equipped_title = inner.equipped_title.max(0) as u32;
         let experience = inner.experience.max(0) as u64;
-        let attributes = BaseAttributes {
+        let mut attributes = BaseAttributes {
             strength: inner.strength.max(0) as u16,
             agility: inner.agility.max(0) as u16,
             vitality: inner.vitality.max(0) as u16,
             spirit: inner.spirit.max(0) as u16,
             points: inner.attribute_points.max(0) as u16,
         };
+        // Before the first rebirth the attributes follow the class table
+        // (Redux); older characters are brought in line when they log in.
+        let class_stats = (inner.rebirths == 0)
+            .then(|| crate::stats::for_level(class, inner.level.max(1) as u16))
+            .flatten();
+        if let Some((strength, vitality, agility, spirit)) = class_stats {
+            attributes.strength = strength;
+            attributes.vitality = vitality;
+            attributes.agility = agility;
+            attributes.spirit = spirit;
+        }
         let now = SystemTime::now();
         let double_experience_active = persisted_double_experience_until.is_some_and(|expires_at| expires_at > now);
         let heaven_blessing_active = persisted_heaven_blessing_until.is_some_and(|expires_at| expires_at > now);
         if double_experience_active {
-            entity.set_flags(entity.flags() | crate::entities::Flags::XP_CIRCLE);
+            entity.set_flags(entity.flags() | crate::entities::Flags::DOUBLE_EXPERIENCE);
         }
         if heaven_blessing_active {
             entity.set_flags(entity.flags() | crate::entities::Flags::HEAVEN_BLESSING);
         }
-        Self {
+        let character = Self {
             entity,
             owner,
             inner,
@@ -380,6 +435,23 @@ impl Character {
             warehouse_silver: AtomicU64::new(0),
             active_shop_id: AtomicU32::new(0),
             active_storage_id: AtomicU32::new(0),
+            market_return: Mutex::new(None),
+            class: std::sync::atomic::AtomicU8::new(class),
+            previous_class: std::sync::atomic::AtomicU8::new(previous_class),
+            rebirths: std::sync::atomic::AtomicU8::new(rebirths),
+            virtue: AtomicU32::new(virtue),
+            cps: AtomicU64::new(cps),
+            hair_style: AtomicU16::new(hair_style),
+            spouse: Mutex::new("None".to_owned()),
+            kill_points: AtomicU16::new(kill_points),
+            died_at: Mutex::new(None),
+            flashing_until: Mutex::new(None),
+            next_pk_decay: Mutex::new((kill_points > 0).then(|| std::time::Instant::now() + crate::death::PK_DECAY)),
+            stamina: std::sync::atomic::AtomicU8::new(crate::vitals::MAX_STAMINA),
+            xp_points: std::sync::atomic::AtomicU8::new(0),
+            last_xp_up: Mutex::new(std::time::Instant::now()),
+            xp_ready_until: Mutex::new(None),
+            last_regeneration: Mutex::new(std::time::Instant::now()),
             kill_mode: AtomicU16::new(1),
             inventory: Mutex::new(Vec::new()),
             equipment: Mutex::new(Vec::new()),
@@ -401,7 +473,11 @@ impl Character {
             refineries: Mutex::new(HashMap::new()),
             artifacts: Mutex::new(HashMap::new()),
             screen: Default::default(),
+        };
+        if class_stats.is_some() {
+            character.recalculate_resources(true);
         }
+        character
     }
 
     pub fn set_screen(&self, screen: Weak<Screen>) {
@@ -443,7 +519,80 @@ impl Character {
     }
 
     pub fn hair_style(&self) -> u16 {
-        self.inner.hair_style as u16
+        self.hair_style.load(Ordering::Relaxed)
+    }
+
+    pub fn spouse(&self) -> String {
+        self.spouse.lock().clone()
+    }
+
+    pub fn set_spouse(&self, name: impl Into<String>) {
+        *self.spouse.lock() = name.into();
+    }
+
+    /// Reads the spouse from the marriages table.
+    pub async fn load_spouse(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+        let name = sqlx::query_scalar::<_, String>("SELECT spouse_name FROM marriages WHERE character_id = ?")
+            .bind(self.inner.character_id)
+            .fetch_optional(pool)
+            .await?;
+        self.set_spouse(name.unwrap_or_else(|| "None".to_owned()));
+        Ok(())
+    }
+
+    pub fn set_hair_style(&self, hair_style: u16) {
+        self.hair_style.store(hair_style, Ordering::Relaxed);
+    }
+
+    /// Resets the four attributes like a rebirth and frees the rest as
+    /// points to allot (CelestialTao).
+    pub fn reallot_attributes(&self) {
+        let mut attributes = self.attributes.lock();
+        let total = attributes.strength
+            + attributes.agility
+            + attributes.vitality
+            + attributes.spirit
+            + attributes.points;
+        *attributes = BaseAttributes {
+            strength: 0,
+            agility: 2,
+            vitality: 8,
+            spirit: 0,
+            points: total.saturating_sub(10),
+        };
+        drop(attributes);
+        self.recalculate_resources(false);
+    }
+
+    /// Sets the plus (+n) of a worn item.
+    pub async fn set_equipment_plus(
+        &self,
+        pool: &sqlx::SqlitePool,
+        position: u8,
+        plus: u8,
+    ) -> Result<Option<InventoryItem>, Error> {
+        let Some(mut item) = self.equipment_item(position) else {
+            return Ok(None);
+        };
+        item.plus = plus;
+        sqlx::query(
+            "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus",
+        )
+        .bind(i64::from(item.uid))
+        .bind(i64::from(item.plus))
+        .bind(i64::from(item.gem_one))
+        .bind(i64::from(item.gem_two))
+        .bind(i64::from(item.socket_one))
+        .bind(i64::from(item.socket_two))
+        .bind(i64::from(item.rarity))
+        .execute(pool)
+        .await?;
+        if let Some(existing) = self.equipment.lock().iter_mut().find(|owned| owned.uid == item.uid) {
+            *existing = item;
+        }
+        Ok(Some(item))
     }
 
     pub fn avatar(&self) -> u16 {
@@ -554,6 +703,35 @@ impl Character {
         Ok(balance.max(0).min(i64::from(u32::MAX)) as u32)
     }
 
+    /// Debits `amount` silver only when the balance covers it. Returns the new
+    /// balance, or `None` without charging anything when it does not.
+    pub async fn spend_silver(&self, pool: &sqlx::SqlitePool, amount: u32) -> Result<Option<u32>, Error> {
+        if amount == 0 {
+            return Ok(Some(self.silver().min(u64::from(u32::MAX)) as u32));
+        }
+        let balance = sqlx::query_scalar::<_, i64>(
+            "UPDATE characters SET silver = silver - ? WHERE character_id = ? AND silver >= ? RETURNING silver",
+        )
+        .bind(i64::from(amount))
+        .bind(self.inner.character_id)
+        .bind(i64::from(amount))
+        .fetch_optional(pool)
+        .await?;
+        let Some(balance) = balance else {
+            return Ok(None);
+        };
+        self.silver.store(balance.max(0) as u64, Ordering::Relaxed);
+        Ok(Some(balance.max(0).min(i64::from(u32::MAX)) as u32))
+    }
+
+    pub fn set_market_return(&self, map_id: u32, position: (u16, u16)) {
+        *self.market_return.lock() = Some((map_id, position));
+    }
+
+    pub fn take_market_return(&self) -> Option<(u32, (u16, u16))> {
+        self.market_return.lock().take()
+    }
+
     pub fn set_active_shop_id(&self, shop_id: u32) {
         self.active_shop_id.store(shop_id, Ordering::Relaxed);
     }
@@ -613,17 +791,18 @@ impl Character {
                 ) else {
                     continue;
                 };
-                if catalog.get(skill_id).is_some() {
-                    skills.insert(
+                // Every learned skill stays known; casting still checks the
+                // catalog, but trainers teach skills the catalog does not
+                // describe yet and they must survive a relog.
+                skills.insert(
+                    skill_id,
+                    SkillProgress {
                         skill_id,
-                        SkillProgress {
-                            skill_id,
-                            level,
-                            experience,
-                            proficiency,
-                        },
-                    );
-                }
+                        level,
+                        experience,
+                        proficiency,
+                    },
+                );
             }
         }
 
@@ -655,6 +834,70 @@ impl Character {
 
     pub fn has_skill(&self, skill_id: u32) -> bool {
         self.skills.lock().contains_key(&skill_id)
+    }
+
+    /// Learns `skill_id` unless it is already known, like the trainers'
+    /// `LearnNewSkill`: a skill that was trained further keeps its level.
+    pub async fn learn_new_skill(&self, pool: &sqlx::SqlitePool, skill_id: u32) -> Result<Option<SkillProgress>, Error> {
+        if self.has_skill(skill_id) {
+            return Ok(None);
+        }
+        self.learn_skill(pool, skill_id, 0).await?;
+        Ok(self.skill_progress(skill_id))
+    }
+
+    /// Creates one item in the inventory with its catalog durability and,
+    /// when asked, an open first socket. `None` means the inventory is full.
+    pub async fn grant_item(
+        &self,
+        pool: &sqlx::SqlitePool,
+        catalog: &ShopCatalog,
+        item_type: u32,
+        open_socket: bool,
+    ) -> Result<Option<InventoryItem>, Error> {
+        let (durability, max_durability) = catalog
+            .template(item_type)
+            .map_or((100, 100), |template| (template.durability, template.max_durability));
+        let Some(mut item) = self.add_ground_item(pool, item_type, durability, max_durability).await? else {
+            return Ok(None);
+        };
+        if open_socket {
+            sqlx::query(
+                "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
+                 VALUES (?, 0, 0, 0, 1, 0, 0)
+                 ON CONFLICT(item_uid) DO UPDATE SET socket_one = 1",
+            )
+            .bind(i64::from(item.uid))
+            .execute(pool)
+            .await?;
+            item.socket_one = 1;
+            if let Some(existing) = self.inventory.lock().iter_mut().find(|owned| owned.uid == item.uid) {
+                *existing = item;
+            }
+        }
+        Ok(Some(item))
+    }
+
+    /// Consumes one inventory item of `item_type`, returning it.
+    pub async fn take_item(&self, pool: &sqlx::SqlitePool, item_type: u32) -> Result<Option<InventoryItem>, Error> {
+        let Some(item) = self
+            .inventory_items()
+            .into_iter()
+            .find(|owned| owned.item_type == item_type)
+        else {
+            return Ok(None);
+        };
+        let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+            .bind(i64::from(item.uid))
+            .bind(self.inner.character_id)
+            .bind(i64::from(item_type))
+            .execute(pool)
+            .await?;
+        if deleted.rows_affected() != 1 {
+            return Ok(None);
+        }
+        self.inventory.lock().retain(|owned| owned.uid != item.uid);
+        Ok(Some(item))
     }
 
     pub fn skills(&self) -> Vec<SkillProgress> {
@@ -771,31 +1014,10 @@ impl Character {
 
     pub fn apply_status(&self, effect: StatusEffect, duration: Duration) {
         self.statuses.apply(effect, duration);
-        match effect {
-            StatusEffect::Burning => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::POISONED);
-            },
-            StatusEffect::Stunned => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::RESTRICT_MOVEMENT);
-            },
-            StatusEffect::Cyclone => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::CYCLONE);
-            },
-            StatusEffect::Superman => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::SUPERMAN);
-            },
-            StatusEffect::Stigma => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::STIGMA);
-            },
-            StatusEffect::Shield => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::SHIELD);
-            },
+        if duration.is_zero() {
+            self.entity.set_flags(self.entity.flags() & !effect.flag());
+        } else {
+            self.entity.set_flags(self.entity.flags() | effect.flag());
         }
     }
 
@@ -818,41 +1040,10 @@ impl Character {
 
     pub fn expire_statuses(&self, now: std::time::Instant) -> bool {
         let expired = self.statuses.expire(now);
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Burning))
-            && !self.statuses.contains(StatusEffect::Burning)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::POISONED);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Stunned))
-            && !self.statuses.contains(StatusEffect::Stunned)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::RESTRICT_MOVEMENT);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Cyclone))
-            && !self.statuses.contains(StatusEffect::Cyclone)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::CYCLONE);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Superman))
-            && !self.statuses.contains(StatusEffect::Superman)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::SUPERMAN);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Stigma))
-            && !self.statuses.contains(StatusEffect::Stigma)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::STIGMA);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Shield))
-            && !self.statuses.contains(StatusEffect::Shield)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::SHIELD);
+        for effect in &expired {
+            if !self.statuses.contains(*effect) {
+                self.entity.set_flags(self.entity.flags() & !effect.flag());
+            }
         }
         !expired.is_empty()
     }
@@ -1098,42 +1289,170 @@ impl Character {
         .bind(self.inner.character_id)
         .fetch_all(pool)
         .await?;
-        let mut inventory = self.inventory.lock();
-        *inventory = rows
-            .into_iter()
-            .filter_map(
-                |(
-                    uid,
-                    item_type,
-                    position,
-                    durability,
-                    max_durability,
-                    plus,
-                    rarity,
-                    gem_one,
-                    gem_two,
-                    socket_one,
-                    socket_two,
-                    rarity_roll,
-                )| {
-                    Some(InventoryItem {
-                        uid: u32::try_from(uid).ok()?,
-                        item_type: u32::try_from(item_type).ok()?,
-                        position: u8::try_from(position).ok()?,
-                        durability: u16::try_from(durability).ok()?,
-                        max_durability: u16::try_from(max_durability).ok()?,
-                        plus: u8::try_from(plus).ok()?,
-                        rarity: u8::try_from(rarity).ok()?,
-                        gem_one: u8::try_from(gem_one).ok()?,
-                        gem_two: u8::try_from(gem_two).ok()?,
-                        socket_one: u8::try_from(socket_one).ok()?,
-                        socket_two: u8::try_from(socket_two).ok()?,
-                        rarity_roll: u8::try_from(rarity_roll).ok()?,
-                    })
-                },
-            )
-            .collect();
+        {
+            let mut inventory = self.inventory.lock();
+            *inventory = rows
+                .into_iter()
+                .filter_map(
+                    |(
+                        uid,
+                        item_type,
+                        position,
+                        durability,
+                        max_durability,
+                        plus,
+                        rarity,
+                        gem_one,
+                        gem_two,
+                        socket_one,
+                        socket_two,
+                        rarity_roll,
+                    )| {
+                        Some(InventoryItem {
+                            uid: u32::try_from(uid).ok()?,
+                            item_type: u32::try_from(item_type).ok()?,
+                            position: u8::try_from(position).ok()?,
+                            durability: u16::try_from(durability).ok()?,
+                            max_durability: u16::try_from(max_durability).ok()?,
+                            plus: u8::try_from(plus).ok()?,
+                            rarity: u8::try_from(rarity).ok()?,
+                            gem_one: u8::try_from(gem_one).ok()?,
+                            gem_two: u8::try_from(gem_two).ok()?,
+                            socket_one: u8::try_from(socket_one).ok()?,
+                            socket_two: u8::try_from(socket_two).ok()?,
+                            rarity_roll: u8::try_from(rarity_roll).ok()?,
+                            bless: 0,
+                            enchant_hp: 0,
+                            color: 0,
+                        })
+                    },
+                )
+                .collect();
+        }
+        self.apply_blessings(pool).await?;
         Ok(())
+    }
+
+    /// Copies the stored blessings onto the items in memory.
+    async fn apply_blessings(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+        let uids = self
+            .inventory
+            .lock()
+            .iter()
+            .chain(self.equipment.lock().iter())
+            .chain(self.warehouse.lock().iter())
+            .map(|item| item.uid)
+            .collect::<Vec<_>>();
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let rows = sqlx::query_as::<_, (i64, i64)>("SELECT item_uid, bless FROM item_blessings")
+            .fetch_all(pool)
+            .await?;
+        let blessings = rows
+            .into_iter()
+            .filter_map(|(uid, bless)| Some((u32::try_from(uid).ok()?, u8::try_from(bless).ok()?)))
+            .filter(|(uid, _)| uids.contains(uid))
+            .collect::<HashMap<_, _>>();
+        let rows = sqlx::query_as::<_, (i64, i64)>("SELECT item_uid, hp FROM item_enchants")
+            .fetch_all(pool)
+            .await?;
+        let enchants = rows
+            .into_iter()
+            .filter_map(|(uid, hp)| Some((u32::try_from(uid).ok()?, u8::try_from(hp).ok()?)))
+            .filter(|(uid, _)| uids.contains(uid))
+            .collect::<HashMap<_, _>>();
+        let rows = sqlx::query_as::<_, (i64, i64)>("SELECT item_uid, color FROM item_colors")
+            .fetch_all(pool)
+            .await?;
+        let colors = rows
+            .into_iter()
+            .filter_map(|(uid, color)| Some((u32::try_from(uid).ok()?, u8::try_from(color).ok()?)))
+            .filter(|(uid, _)| uids.contains(uid))
+            .collect::<HashMap<_, _>>();
+        for items in [&self.inventory, &self.equipment, &self.warehouse] {
+            for item in items.lock().iter_mut() {
+                item.bless = blessings.get(&item.uid).copied().unwrap_or(0);
+                item.enchant_hp = enchants.get(&item.uid).copied().unwrap_or(0);
+                item.color = colors.get(&item.uid).copied().unwrap_or(0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets the blessing of an owned item.
+    pub async fn bless_item(&self, pool: &sqlx::SqlitePool, item_uid: u32, bless: u8) -> Result<Option<InventoryItem>, Error> {
+        sqlx::query(
+            "INSERT INTO item_blessings (item_uid, bless) VALUES (?, ?)
+             ON CONFLICT(item_uid) DO UPDATE SET bless = excluded.bless",
+        )
+        .bind(i64::from(item_uid))
+        .bind(i64::from(bless))
+        .execute(pool)
+        .await?;
+        let mut updated = None;
+        for items in [&self.inventory, &self.equipment, &self.warehouse] {
+            if let Some(item) = items.lock().iter_mut().find(|item| item.uid == item_uid) {
+                item.bless = bless;
+                updated = Some(*item);
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Dyes an owned item.
+    pub async fn dye_item(&self, pool: &sqlx::SqlitePool, item_uid: u32, color: u8) -> Result<Option<InventoryItem>, Error> {
+        sqlx::query(
+            "INSERT INTO item_colors (item_uid, color) VALUES (?, ?)
+             ON CONFLICT(item_uid) DO UPDATE SET color = excluded.color",
+        )
+        .bind(i64::from(item_uid))
+        .bind(i64::from(color))
+        .execute(pool)
+        .await?;
+        let mut updated = None;
+        for items in [&self.inventory, &self.equipment, &self.warehouse] {
+            if let Some(item) = items.lock().iter_mut().find(|item| item.uid == item_uid) {
+                item.color = color;
+                updated = Some(*item);
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Helmet, armor and shield dyes packed for the spawn packet.
+    pub fn appearance_colors(&self) -> i32 {
+        let color = |slot: u8| self.equipment_item(slot).map_or(0, |item| i32::from(item.color));
+        color(3) | (color(1) << 8) | (color(5) << 16)
+    }
+
+    /// Sets the HP enchantment of an owned item.
+    pub async fn enchant_item(&self, pool: &sqlx::SqlitePool, item_uid: u32, hp: u8) -> Result<Option<InventoryItem>, Error> {
+        sqlx::query(
+            "INSERT INTO item_enchants (item_uid, hp) VALUES (?, ?)
+             ON CONFLICT(item_uid) DO UPDATE SET hp = excluded.hp",
+        )
+        .bind(i64::from(item_uid))
+        .bind(i64::from(hp))
+        .execute(pool)
+        .await?;
+        let mut updated = None;
+        for items in [&self.inventory, &self.equipment, &self.warehouse] {
+            if let Some(item) = items.lock().iter_mut().find(|item| item.uid == item_uid) {
+                item.enchant_hp = hp;
+                updated = Some(*item);
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Damage taken is lowered by the blessings of the worn items.
+    pub fn bless_reduction_percent(&self) -> u16 {
+        self.equipment_items()
+            .iter()
+            .filter(|item| item.durability > 0)
+            .map(|item| u16::from(item.bless))
+            .sum()
     }
 
     pub fn inventory_items(&self) -> Vec<InventoryItem> {
@@ -1152,41 +1471,47 @@ impl Character {
         .bind(self.inner.character_id)
         .fetch_all(pool)
         .await?;
-        let mut equipment = self.equipment.lock();
-        *equipment = rows
-            .into_iter()
-            .filter_map(
-                |(
-                    uid,
-                    item_type,
-                    position,
-                    durability,
-                    max_durability,
-                    plus,
-                    rarity,
-                    gem_one,
-                    gem_two,
-                    socket_one,
-                    socket_two,
-                    rarity_roll,
-                )| {
-                    Some(InventoryItem {
-                        uid: u32::try_from(uid).ok()?,
-                        item_type: u32::try_from(item_type).ok()?,
-                        position: u8::try_from(position).ok()?,
-                        durability: u16::try_from(durability).ok()?,
-                        max_durability: u16::try_from(max_durability).ok()?,
-                        plus: u8::try_from(plus).ok()?,
-                        rarity: u8::try_from(rarity).ok()?,
-                        gem_one: u8::try_from(gem_one).ok()?,
-                        gem_two: u8::try_from(gem_two).ok()?,
-                        socket_one: u8::try_from(socket_one).ok()?,
-                        socket_two: u8::try_from(socket_two).ok()?,
-                        rarity_roll: u8::try_from(rarity_roll).ok()?,
-                    })
-                },
-            )
-            .collect();
+        {
+            let mut equipment = self.equipment.lock();
+            *equipment = rows
+                .into_iter()
+                .filter_map(
+                    |(
+                        uid,
+                        item_type,
+                        position,
+                        durability,
+                        max_durability,
+                        plus,
+                        rarity,
+                        gem_one,
+                        gem_two,
+                        socket_one,
+                        socket_two,
+                        rarity_roll,
+                    )| {
+                        Some(InventoryItem {
+                            uid: u32::try_from(uid).ok()?,
+                            item_type: u32::try_from(item_type).ok()?,
+                            position: u8::try_from(position).ok()?,
+                            durability: u16::try_from(durability).ok()?,
+                            max_durability: u16::try_from(max_durability).ok()?,
+                            plus: u8::try_from(plus).ok()?,
+                            rarity: u8::try_from(rarity).ok()?,
+                            gem_one: u8::try_from(gem_one).ok()?,
+                            gem_two: u8::try_from(gem_two).ok()?,
+                            socket_one: u8::try_from(socket_one).ok()?,
+                            socket_two: u8::try_from(socket_two).ok()?,
+                            rarity_roll: u8::try_from(rarity_roll).ok()?,
+                            bless: 0,
+                            enchant_hp: 0,
+                            color: 0,
+                        })
+                    },
+                )
+                .collect();
+        }
+        self.apply_blessings(pool).await?;
         Ok(())
     }
 
@@ -1801,6 +2126,93 @@ impl Character {
     /// Opens the next available socket on an owned equipment item. The first
     /// socket costs one DragonBall; the second costs five, matching the
     /// classic 5065 progression.
+    /// Reforges a worn item at an artisan: replaces its type (next quality
+    /// or next level), consumes `cost` catalysts of `catalyst_type` and, when
+    /// `open_socket` is set, opens the next closed socket. Everything is one
+    /// transaction; `None` means the item or the catalysts were missing.
+    pub async fn reforge_equipment(
+        &self,
+        pool: &sqlx::SqlitePool,
+        position: u8,
+        new_type: u32,
+        catalyst_type: u32,
+        cost: u32,
+        open_socket: bool,
+    ) -> Result<Option<(InventoryItem, Vec<InventoryItem>)>, Error> {
+        let Some(mut item) = self.equipment_item(position) else {
+            return Ok(None);
+        };
+        let catalysts = self
+            .inventory_items()
+            .into_iter()
+            .filter(|owned| owned.item_type == catalyst_type)
+            .take(cost as usize)
+            .collect::<Vec<_>>();
+        if catalysts.len() != cost as usize {
+            return Ok(None);
+        }
+        let mut transaction = pool.begin().await?;
+        for catalyst in &catalysts {
+            let deleted =
+                sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+                    .bind(i64::from(catalyst.uid))
+                    .bind(self.inner.character_id)
+                    .bind(i64::from(catalyst_type))
+                    .execute(&mut *transaction)
+                    .await?;
+            if deleted.rows_affected() != 1 {
+                transaction.rollback().await?;
+                return Ok(None);
+            }
+        }
+        let updated = sqlx::query(
+            "UPDATE equipment_items SET item_type = ?
+             WHERE item_uid = ? AND character_id = ? AND item_type = ? AND position = ?",
+        )
+        .bind(i64::from(new_type))
+        .bind(i64::from(item.uid))
+        .bind(self.inner.character_id)
+        .bind(i64::from(item.item_type))
+        .bind(i64::from(position))
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        item.item_type = new_type;
+        if open_socket {
+            if item.socket_one == 0 && item.gem_one == 0 {
+                item.socket_one = 1;
+            } else if item.socket_two == 0 && item.gem_two == 0 {
+                item.socket_two = 1;
+            }
+            sqlx::query(
+                "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(item_uid) DO UPDATE SET socket_one = excluded.socket_one,
+                   socket_two = excluded.socket_two",
+            )
+            .bind(i64::from(item.uid))
+            .bind(i64::from(item.plus))
+            .bind(i64::from(item.gem_one))
+            .bind(i64::from(item.gem_two))
+            .bind(i64::from(item.socket_one))
+            .bind(i64::from(item.socket_two))
+            .bind(i64::from(item.rarity))
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        if let Some(existing) = self.equipment.lock().iter_mut().find(|existing| existing.uid == item.uid) {
+            *existing = item;
+        }
+        self.inventory
+            .lock()
+            .retain(|owned| !catalysts.iter().any(|catalyst| catalyst.uid == owned.uid));
+        Ok(Some((item, catalysts)))
+    }
+
     pub async fn open_item_socket(
         &self,
         pool: &sqlx::SqlitePool,
@@ -2079,6 +2491,31 @@ impl Character {
     /// Reduces an equipped item's durability and returns its new state.
     /// Durability never becomes negative and the database update is the source
     /// of truth for concurrent combat actions.
+    /// Destroys the worn item at `position` (spent arrows).
+    pub async fn destroy_equipment_item(
+        &self,
+        pool: &sqlx::SqlitePool,
+        position: u8,
+    ) -> Result<Option<InventoryItem>, Error> {
+        let Some(item) = self.equipment_item(position) else {
+            return Ok(None);
+        };
+        let deleted = sqlx::query("DELETE FROM equipment_items WHERE character_id = ? AND item_uid = ?")
+            .bind(self.inner.character_id)
+            .bind(i64::from(item.uid))
+            .execute(pool)
+            .await?;
+        if deleted.rows_affected() != 1 {
+            return Ok(None);
+        }
+        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+            .bind(i64::from(item.uid))
+            .execute(pool)
+            .await?;
+        self.equipment.lock().retain(|owned| owned.uid != item.uid);
+        Ok(Some(item))
+    }
+
     pub async fn degrade_equipment_item(
         &self,
         pool: &sqlx::SqlitePool,
@@ -2552,6 +2989,9 @@ impl Character {
                 socket_one: u8::try_from(row.9).unwrap_or_default(),
                 socket_two: u8::try_from(row.10).unwrap_or_default(),
                 rarity_roll: u8::try_from(row.11).unwrap_or_default(),
+                bless: 0,
+                enchant_hp: 0,
+                color: 0,
             })
         };
         let mut left_items = Vec::with_capacity(offered_uids.len());
@@ -2822,10 +3262,14 @@ impl Character {
                         socket_one: u8::try_from(socket_one).ok()?,
                         socket_two: u8::try_from(socket_two).ok()?,
                         rarity_roll: u8::try_from(rarity_roll).ok()?,
+                        bless: 0,
+                        enchant_hp: 0,
+                        color: 0,
                     })
                 },
             )
             .collect();
+        self.apply_blessings(pool).await?;
         Ok(())
     }
 
@@ -3453,6 +3897,9 @@ impl Character {
                         socket_one: u8::try_from(socket_one).unwrap_or_default(),
                         socket_two: u8::try_from(socket_two).unwrap_or_default(),
                         rarity_roll: u8::try_from(rarity_roll).unwrap_or_default(),
+                        bless: 0,
+                        enchant_hp: 0,
+                        color: 0,
                     })
                 },
             )
@@ -3550,6 +3997,9 @@ impl Character {
             socket_one: u8::try_from(socket_one).unwrap_or_default(),
             socket_two: u8::try_from(socket_two).unwrap_or_default(),
             rarity_roll: u8::try_from(rarity_roll).unwrap_or_default(),
+            bless: 0,
+            enchant_hp: 0,
+            color: 0,
         };
         let withdrawn = InventoryItem { position, ..stored };
         self.inventory.lock().push(withdrawn);
@@ -3840,7 +4290,18 @@ impl Character {
     }
 
     pub fn cps(&self) -> u64 {
-        self.inner.cps as u64
+        self.cps.load(Ordering::Relaxed)
+    }
+
+    /// Adds Conquer Points and saves them.
+    pub async fn grant_cps(&self, pool: &sqlx::SqlitePool, amount: u64) -> Result<u64, Error> {
+        let total = self.cps.fetch_add(amount, Ordering::Relaxed).saturating_add(amount);
+        sqlx::query("UPDATE characters SET cps = ? WHERE character_id = ?")
+            .bind(i64::try_from(total).unwrap_or(i64::MAX))
+            .bind(self.inner.character_id)
+            .execute(pool)
+            .await?;
+        Ok(total)
     }
 
     pub fn experience(&self) -> u64 {
@@ -3850,7 +4311,7 @@ impl Character {
     pub fn activate_double_experience(&self, duration: Duration) {
         *self.double_experience_until.lock() = SystemTime::now().checked_add(duration);
         self.entity
-            .set_flags(self.entity.flags() | crate::entities::Flags::XP_CIRCLE);
+            .set_flags(self.entity.flags() | crate::entities::Flags::DOUBLE_EXPERIENCE);
     }
 
     pub fn activate_heaven_blessing(&self, duration: Duration) {
@@ -3872,7 +4333,7 @@ impl Character {
         };
         if expired {
             self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::XP_CIRCLE);
+                .set_flags(self.entity.flags() & !crate::entities::Flags::DOUBLE_EXPERIENCE);
         }
         expired
     }
@@ -3908,7 +4369,8 @@ impl Character {
     pub fn expire_temporary_effects(&self) -> bool {
         let double_experience_expired = self.clear_expired_double_experience();
         let heaven_blessing_expired = self.clear_expired_heaven_blessing();
-        double_experience_expired || heaven_blessing_expired
+        let pk_changed = self.expire_pk_effects();
+        double_experience_expired || heaven_blessing_expired || pk_changed
     }
 
     fn double_experience_until_unix(&self) -> i64 {
@@ -3937,34 +4399,68 @@ impl Character {
     /// per-level threshold is reached. Persistence is handled separately by
     /// the character save path; the atomic value keeps combat authoritative.
     pub fn grant_experience(&self, amount: u64) -> Option<u8> {
-        let multiplier = if self.double_experience_active() { 2 } else { 1 };
-        let amount = amount.saturating_mul(multiplier);
-        let amount = if self.heaven_blessing_active() {
-            amount.saturating_mul(13) / 10
-        } else {
-            amount
-        };
-        let gained = self.experience.fetch_add(amount, Ordering::Relaxed) + amount;
-        let mut level = self.entity.level().max(1) as u8;
-        let mut required = u64::from(level) * 100;
-        let mut leveled = false;
-        while level < 130 && gained >= required {
-            level = level.saturating_add(1);
-            required = u64::from(level) * 100;
-            leveled = true;
+        // Redux `GainExperience`: double experience doubles it, Heaven's
+        // Blessing adds a fifth, and the server rate multiplies it all.
+        let mut bonus = if self.double_experience_active() { 2.0 } else { 1.0 };
+        if self.heaven_blessing_active() {
+            bonus += 0.2;
         }
-        if leveled {
-            let levels_gained = u16::from(level.saturating_sub(self.entity.level().max(1) as u8));
-            if levels_gained > 0 {
+        let amount = (amount as f64 * bonus) as u64 * crate::leveling::EXP_RATE;
+        let level = self.entity.level().clamp(1, u16::from(u8::MAX)) as u8;
+        let (next_level, experience) = crate::leveling::advance(level, self.experience(), amount);
+        self.apply_level(level, next_level, experience)
+    }
+
+    /// An ExpBall worth `seconds` of the current level.
+    pub fn grant_exp_ball(&self, seconds: f64) -> Option<u8> {
+        let level = self.entity.level().clamp(1, u16::from(u8::MAX)) as u8;
+        let (next_level, experience) = crate::leveling::exp_ball(level, self.experience(), seconds);
+        self.apply_level(level, next_level, experience)
+    }
+
+    /// Stores the new experience and, on a level up, the new level.
+    /// Persistence is handled separately by the character save path.
+    fn apply_level(&self, level: u8, next_level: u8, experience: u64) -> Option<u8> {
+        self.experience.store(experience, Ordering::Relaxed);
+        if next_level <= level {
+            return None;
+        }
+        self.change_level(u16::from(next_level));
+        Some(next_level)
+    }
+
+    /// Redux `SetLevel`: before the first rebirth the attributes follow the
+    /// class table; reborn characters earn three points per level to allot.
+    /// Life and mana are recalculated and refilled.
+    pub fn change_level(&self, level: u16) {
+        let previous = self.entity.level();
+        self.entity.set_level(level);
+        if self.rebirths() == 0 {
+            if let Some((strength, vitality, agility, spirit)) = crate::stats::for_level(self.current_class(), level) {
                 let mut attributes = self.attributes.lock();
-                attributes.points = attributes.points.saturating_add(levels_gained.saturating_mul(3));
+                attributes.strength = strength;
+                attributes.vitality = vitality;
+                attributes.agility = agility;
+                attributes.spirit = spirit;
             }
-            self.entity.set_level(u16::from(level));
-            self.entity.restore_health();
-            Some(level)
-        } else {
-            None
+        } else if level > previous {
+            let mut attributes = self.attributes.lock();
+            attributes.points = attributes.points.saturating_add((level - previous).saturating_mul(3));
         }
+        self.recalculate_resources(true);
+    }
+
+    /// Life and mana capacities from the attributes and the class (Redux
+    /// `Recalculate`), with the equipment bonus on top.
+    pub fn recalculate_resources(&self, refill: bool) {
+        let class = u16::from(self.current_class());
+        let (strength, agility, vitality, spirit) = {
+            let attributes = self.attributes.lock();
+            (attributes.strength, attributes.agility, attributes.vitality, attributes.spirit)
+        };
+        let health = crate::entities::basic::health_from_attributes(strength, agility, vitality, spirit, class);
+        let mana = crate::entities::basic::max_mana_for(spirit, class);
+        self.entity.set_base_resources(health.max(1), mana, refill);
     }
 
     /// Spend available base-attribute points with one atomic database update.
@@ -4229,6 +4725,7 @@ impl Character {
         } else {
             defense
         };
+        let damage_reduction_percent = damage_reduction_percent.saturating_add(self.bless_reduction_percent());
         CombatStats {
             min_attack: level + strength.saturating_mul(2) + agility / 2 + equipment.0,
             max_attack: level.saturating_mul(2) + strength.saturating_mul(3) + agility + equipment.1,
@@ -4252,7 +4749,9 @@ impl Character {
                     .saturating_add(item_rarity_bonus_percent(owned.rarity));
                 let scaled = |value: u16| u32::from(value).saturating_mul(scale) / 100;
                 (
-                    health.saturating_add(scaled(item.health_add)),
+                    health
+                        .saturating_add(scaled(item.health_add))
+                        .saturating_add(u32::from(owned.enchant_hp)),
                     mana.saturating_add(scaled(item.mana_add)),
                 )
             })
@@ -4288,19 +4787,429 @@ impl Character {
     }
 
     pub fn kill_points(&self) -> u16 {
-        self.inner.kill_points as u16
+        self.kill_points.load(Ordering::Relaxed)
+    }
+
+    /// Sets the PK points and the red/black name that goes with them.
+    pub fn set_kill_points(&self, points: u16) {
+        let previous = self.kill_points.swap(points, Ordering::Relaxed);
+        if previous == 0 && points > 0 {
+            *self.next_pk_decay.lock() = Some(std::time::Instant::now() + crate::death::PK_DECAY);
+        }
+        let flags = self.entity.flags() & !(crate::entities::Flags::RED_NAME | crate::entities::Flags::BLACK_NAME);
+        self.entity.set_flags(flags | crate::death::name_flags(points));
+    }
+
+    /// The blue flashing name of a fresh killer.
+    pub fn flash_name(&self, duration: Duration) {
+        *self.flashing_until.lock() = Some(std::time::Instant::now() + duration);
+        self.entity
+            .set_flags(self.entity.flags() | crate::entities::Flags::BLUE_FLASHING_NAME);
+    }
+
+    pub fn stamina(&self) -> u8 {
+        self.stamina.load(Ordering::Relaxed)
+    }
+
+    /// Uses `amount` stamina; `false` (and nothing used) when short.
+    pub fn spend_stamina(&self, amount: u8) -> bool {
+        self.stamina
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |stamina| stamina.checked_sub(amount))
+            .is_ok()
+    }
+
+    pub fn xp_points(&self) -> u8 {
+        self.xp_points.load(Ordering::Relaxed)
+    }
+
+    /// A kill feeds the XP circle (Redux `owner.Xp++`).
+    pub fn add_xp_point(&self) {
+        if self.xp_ready_until.lock().is_none() {
+            let _ = self
+                .xp_points
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |xp| Some(xp.saturating_add(1).min(crate::vitals::MAX_XP)));
+            *self.last_xp_up.lock() = std::time::Instant::now();
+        }
+    }
+
+    /// Roar from a teammate: the XP circle is full and lights up at the
+    /// next regeneration step (when the character knows an XP skill).
+    pub fn fill_xp(&self) {
+        if self.xp_ready_until.lock().is_none() {
+            self.xp_points.store(crate::vitals::MAX_XP, Ordering::Relaxed);
+        }
+    }
+
+    pub fn xp_ready(&self) -> bool {
+        self.xp_ready_until.lock().is_some()
+    }
+
+    /// Uses the lit XP circle for an XP skill; `false` when it is not lit.
+    pub fn use_xp_circle(&self) -> bool {
+        if self.xp_ready_until.lock().take().is_none() {
+            return false;
+        }
+        self.reset_xp();
+        true
+    }
+
+    fn reset_xp(&self) {
+        *self.xp_ready_until.lock() = None;
+        self.xp_points.store(0, Ordering::Relaxed);
+        *self.last_xp_up.lock() = std::time::Instant::now();
+        self.entity
+            .set_flags(self.entity.flags() & !crate::entities::Flags::XP_CIRCLE);
+    }
+
+    /// Whether the character knows any XP skill of `catalog`.
+    pub fn has_xp_skill(&self, catalog: &crate::skills::SkillCatalog) -> bool {
+        self.skills
+            .lock()
+            .keys()
+            .any(|id| catalog.get(*id).is_some_and(|skill| skill.xp))
+    }
+
+    /// The once-a-second regeneration (Redux `On_Player_Timer`): stamina
+    /// +3 (+11 sitting), one XP point every 3 seconds, the XP circle at
+    /// 100 for 20 seconds. Nothing happens while dead.
+    pub fn regenerate(&self, has_xp_skill: bool) -> crate::vitals::Regeneration {
+        let now = std::time::Instant::now();
+        let mut change = crate::vitals::Regeneration::default();
+        {
+            let mut last = self.last_regeneration.lock();
+            if now.duration_since(*last) < crate::vitals::REGENERATION_PERIOD {
+                return change;
+            }
+            *last = now;
+        }
+        if self.entity.is_dead() {
+            return change;
+        }
+        let cap = if self.heaven_blessing_active() {
+            crate::vitals::BLESSED_MAX_STAMINA
+        } else {
+            crate::vitals::MAX_STAMINA
+        };
+        let stamina = self.stamina();
+        if stamina < cap {
+            let gain = crate::vitals::stamina_gain(self.entity.action());
+            self.stamina.store(stamina.saturating_add(gain).min(cap), Ordering::Relaxed);
+            change.stamina = true;
+        }
+        let ready_until = *self.xp_ready_until.lock();
+        match ready_until {
+            Some(until) if until <= now => {
+                self.reset_xp();
+                change.flags = true;
+            },
+            Some(_) => {},
+            None => {
+                let due = now.duration_since(*self.last_xp_up.lock()) >= crate::vitals::XP_PERIOD;
+                if due {
+                    let xp = self.xp_points().saturating_add(1).min(crate::vitals::MAX_XP);
+                    self.xp_points.store(xp, Ordering::Relaxed);
+                    *self.last_xp_up.lock() = now;
+                }
+                if self.xp_points() >= crate::vitals::MAX_XP && has_xp_skill {
+                    *self.xp_ready_until.lock() = Some(now + crate::vitals::XP_CIRCLE_TIME);
+                    self.entity
+                        .set_flags(self.entity.flags() | crate::entities::Flags::XP_CIRCLE);
+                    change.flags = true;
+                }
+            },
+        }
+        change
+    }
+
+    /// Revival refills stamina and empties the XP circle.
+    pub fn refresh_after_revive(&self) {
+        self.stamina.store(crate::vitals::MAX_STAMINA, Ordering::Relaxed);
+        self.reset_xp();
+    }
+
+    /// Records the death; `false` when it was already recorded.
+    pub fn mark_dead(&self) -> bool {
+        let mut died_at = self.died_at.lock();
+        if died_at.is_some() {
+            return false;
+        }
+        *died_at = Some(std::time::Instant::now());
+        true
+    }
+
+    /// Whether the dead character may press Revive already.
+    pub fn can_revive(&self) -> bool {
+        self.died_at
+            .lock()
+            .map_or(true, |died_at| died_at.elapsed() >= crate::death::REVIVE_DELAY)
+    }
+
+    pub fn clear_death(&self) {
+        *self.died_at.lock() = None;
+    }
+
+    /// Ends the blue name and wears off one PK point every six minutes.
+    fn expire_pk_effects(&self) -> bool {
+        let now = std::time::Instant::now();
+        let mut changed = false;
+        {
+            let mut flashing = self.flashing_until.lock();
+            if flashing.is_some_and(|until| until <= now) {
+                *flashing = None;
+                self.entity
+                    .set_flags(self.entity.flags() & !crate::entities::Flags::BLUE_FLASHING_NAME);
+                changed = true;
+            }
+        }
+        let points = self.kill_points();
+        let decay_due = {
+            let mut next = self.next_pk_decay.lock();
+            match *next {
+                Some(at) if points > 0 && at <= now => {
+                    *next = (points > 1).then(|| now + crate::death::PK_DECAY);
+                    true
+                },
+                _ => false,
+            }
+        };
+        if decay_due {
+            self.set_kill_points(points - 1);
+            changed = true;
+        }
+        changed
     }
 
     pub fn current_class(&self) -> u8 {
-        self.inner.current_class as u8
+        self.class.load(Ordering::Relaxed)
+    }
+
+    /// Promotes the character to `class` (for example 11 Trojan or 142 Fire
+    /// Taoist) and persists it.
+    pub async fn set_class(&self, pool: &sqlx::SqlitePool, class: u8) -> Result<(), Error> {
+        sqlx::query("UPDATE characters SET current_class = ? WHERE character_id = ?")
+            .bind(i64::from(class))
+            .bind(self.inner.character_id)
+            .execute(pool)
+            .await?;
+        self.class.store(class, Ordering::Relaxed);
+        // Trojan life and Taoist mana grow with the promotion.
+        self.recalculate_resources(false);
+        Ok(())
     }
 
     pub fn previous_class(&self) -> u8 {
-        self.inner.previous_class as u8
+        self.previous_class.load(Ordering::Relaxed)
     }
 
     pub fn rebirths(&self) -> u8 {
-        self.inner.rebirths as u8
+        self.rebirths.load(Ordering::Relaxed)
+    }
+
+    pub fn virtue(&self) -> u32 {
+        self.virtue.load(Ordering::Relaxed)
+    }
+
+    pub fn set_virtue(&self, points: u32) {
+        self.virtue.store(points, Ordering::Relaxed);
+    }
+
+    /// Spends `amount` virtue; `false` (nothing spent) when short.
+    pub fn spend_virtue(&self, amount: u32) -> bool {
+        self.virtue
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |virtue| virtue.checked_sub(amount))
+            .is_ok()
+    }
+
+    /// The first rebirth (Redux `[3600] Alex`): the new profession, level
+    /// 15 with no experience, the reborn attributes and their bonus points,
+    /// every skill back to level 1, and the path's skills learned or
+    /// forgotten. The caller saves the character afterwards.
+    pub async fn rebirth(
+        &self,
+        pool: &sqlx::SqlitePool,
+        new_class: u8,
+        bonus_points: u16,
+        learn: &[u32],
+        forget: &[u32],
+    ) -> Result<(), Error> {
+        let mut transaction = pool.begin().await?;
+        for skill_id in forget {
+            sqlx::query("DELETE FROM character_skills WHERE character_id = ? AND skill_id = ?")
+                .bind(self.inner.character_id)
+                .bind(i64::from(*skill_id))
+                .execute(&mut *transaction)
+                .await?;
+        }
+        sqlx::query("UPDATE character_skills SET level = 1, experience = 0, proficiency = 0 WHERE character_id = ?")
+            .bind(self.inner.character_id)
+            .execute(&mut *transaction)
+            .await?;
+        for skill_id in learn {
+            sqlx::query(
+                "INSERT INTO character_skills (character_id, skill_id, level, experience, proficiency)
+                 VALUES (?, ?, 1, 0, 0)
+                 ON CONFLICT(character_id, skill_id) DO NOTHING",
+            )
+            .bind(self.inner.character_id)
+            .bind(i64::from(*skill_id))
+            .execute(&mut *transaction)
+            .await?;
+        }
+        sqlx::query("UPDATE characters SET current_class = ?, previous_class = ?, rebirths = ? WHERE character_id = ?")
+            .bind(i64::from(new_class))
+            .bind(i64::from(self.current_class()))
+            .bind(i64::from(self.rebirths().saturating_add(1)))
+            .bind(self.inner.character_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+
+        self.previous_class.store(self.current_class(), Ordering::Relaxed);
+        self.class.store(new_class, Ordering::Relaxed);
+        self.rebirths.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut skills = self.skills.lock();
+            for skill_id in forget {
+                skills.remove(skill_id);
+            }
+            for progress in skills.values_mut() {
+                progress.level = 1;
+                progress.experience = 0;
+                progress.proficiency = 0;
+            }
+            for skill_id in learn {
+                skills.entry(*skill_id).or_insert(SkillProgress {
+                    skill_id: *skill_id,
+                    level: 1,
+                    experience: 0,
+                    proficiency: 0,
+                });
+            }
+        }
+        *self.attributes.lock() = BaseAttributes {
+            strength: 0,
+            agility: 2,
+            vitality: 8,
+            spirit: 0,
+            points: bonus_points,
+        };
+        self.entity.set_level(15);
+        self.experience.store(0, Ordering::Relaxed);
+        self.recalculate_resources(true);
+        Ok(())
+    }
+
+    /// Takes `count` items of `item_type` out of the inventory at once; on
+    /// `None` nothing was taken.
+    pub async fn consume_items(
+        &self,
+        pool: &sqlx::SqlitePool,
+        item_type: u32,
+        count: usize,
+    ) -> Result<Option<Vec<InventoryItem>>, Error> {
+        let items = self
+            .inventory_items()
+            .into_iter()
+            .filter(|owned| owned.item_type == item_type)
+            .take(count)
+            .collect::<Vec<_>>();
+        if items.len() != count {
+            return Ok(None);
+        }
+        let mut transaction = pool.begin().await?;
+        for item in &items {
+            let deleted =
+                sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+                    .bind(i64::from(item.uid))
+                    .bind(self.inner.character_id)
+                    .bind(i64::from(item_type))
+                    .execute(&mut *transaction)
+                    .await?;
+            if deleted.rows_affected() != 1 {
+                transaction.rollback().await?;
+                return Ok(None);
+            }
+        }
+        transaction.commit().await?;
+        self.inventory
+            .lock()
+            .retain(|owned| !items.iter().any(|item| item.uid == owned.uid));
+        Ok(Some(items))
+    }
+
+    pub fn count_items(&self, item_type: u32) -> usize {
+        self.inventory
+            .lock()
+            .iter()
+            .filter(|owned| owned.item_type == item_type)
+            .count()
+    }
+
+    /// The best proficiency of a weapon type (`item_type / 1000`).
+    pub fn weapon_type_proficiency(&self, weapon_type: u32) -> Option<WeaponProficiency> {
+        self.weapon_proficiencies()
+            .into_iter()
+            .filter(|progress| progress.weapon_family / 100 == weapon_type)
+            .max_by_key(|progress| (progress.level, progress.proficiency))
+    }
+
+    /// One proficiency level up for a weapon type (ProficiencyGod).
+    pub async fn raise_weapon_proficiency(
+        &self,
+        pool: &sqlx::SqlitePool,
+        weapon_type: u32,
+    ) -> Result<Option<WeaponProficiency>, Error> {
+        let Some(mut progress) = self.weapon_type_proficiency(weapon_type) else {
+            return Ok(None);
+        };
+        progress.level = progress.level.saturating_add(1);
+        progress.proficiency = 0;
+        sqlx::query(
+            "UPDATE character_weapon_proficiencies SET level = ?, proficiency = 0
+             WHERE character_id = ? AND weapon_family = ?",
+        )
+        .bind(i64::from(progress.level))
+        .bind(self.inner.character_id)
+        .bind(i64::from(progress.weapon_family))
+        .execute(pool)
+        .await?;
+        self.weapon_proficiencies.lock().insert(progress.weapon_family, progress);
+        Ok(Some(progress))
+    }
+
+    /// Opens the first or second socket of a worn item.
+    pub async fn open_equipment_socket(
+        &self,
+        pool: &sqlx::SqlitePool,
+        position: u8,
+        second: bool,
+    ) -> Result<Option<InventoryItem>, Error> {
+        let Some(mut item) = self.equipment_item(position) else {
+            return Ok(None);
+        };
+        if second {
+            item.socket_two = 1;
+        } else {
+            item.socket_one = 1;
+        }
+        sqlx::query(
+            "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(item_uid) DO UPDATE SET socket_one = excluded.socket_one, socket_two = excluded.socket_two",
+        )
+        .bind(i64::from(item.uid))
+        .bind(i64::from(item.plus))
+        .bind(i64::from(item.gem_one))
+        .bind(i64::from(item.gem_two))
+        .bind(i64::from(item.socket_one))
+        .bind(i64::from(item.socket_two))
+        .bind(i64::from(item.rarity))
+        .execute(pool)
+        .await?;
+        if let Some(existing) = self.equipment.lock().iter_mut().find(|owned| owned.uid == item.uid) {
+            *existing = item;
+        }
+        Ok(Some(item))
     }
 
     pub async fn kick_back(&self) -> Result<(), Error> {
@@ -4381,7 +5290,7 @@ impl Character {
             map_id: self.entity.map_id() as _,
             x: location.x as _,
             y: location.y as _,
-            virtue: self.inner.virtue,
+            virtue: self.virtue() as _,
             strength: self.strength() as _,
             agility: self.agility() as _,
             vitality: self.vitality() as _,
@@ -5068,9 +5977,10 @@ mod tests {
             required_weapon_skill: 1,
             level: 1,
             required_sex: 1,
-            required_strength: 4,
-            required_agility: 6,
-            required_vitality: 12,
+            // A new Trojan's level 1 attributes (5 Str, 3 Vit, 2 Agi).
+            required_strength: 5,
+            required_agility: 2,
+            required_vitality: 3,
             required_spirit: 0,
             ..Default::default()
         };
@@ -5517,15 +6427,16 @@ mod tests {
         let (_pool, character, _database_character_id) = test_character().await?;
         character.activate_double_experience(Duration::from_secs(60));
         assert!(character.double_experience_active());
-        assert!(character.entity().flags().contains(crate::entities::Flags::XP_CIRCLE));
+        assert!(character.entity().flags().contains(crate::entities::Flags::DOUBLE_EXPERIENCE));
+        // 10 doubled, times the server rate of 5.
         character.grant_experience(10);
-        assert_eq!(character.experience(), 20);
+        assert_eq!(character.experience(), 100);
 
         character.activate_double_experience(Duration::ZERO);
         assert!(!character.double_experience_active());
-        assert!(!character.entity().flags().contains(crate::entities::Flags::XP_CIRCLE));
-        character.grant_experience(10);
-        assert_eq!(character.experience(), 30);
+        assert!(!character.entity().flags().contains(crate::entities::Flags::DOUBLE_EXPERIENCE));
+        character.grant_experience(2);
+        assert_eq!(character.experience(), 110);
         Ok(())
     }
 
@@ -5538,6 +6449,7 @@ mod tests {
         let inner = tq_db::character::Character::by_id(&pool, database_character_id as i32).await?;
         let character = Character::new(original.owner(), inner);
         let old_health = character.maximum_health_points();
+        let start_vitality = character.vitality();
         let outcome = character.allocate_attribute(&pool, AttributeKind::Vitality, 2).await?;
         assert_eq!(
             outcome,
@@ -5547,7 +6459,7 @@ mod tests {
                 remaining: 3,
             }
         );
-        assert_eq!(character.vitality(), 14);
+        assert_eq!(character.vitality(), start_vitality + 2);
         assert_eq!(character.attribute_points(), 3);
         assert_eq!(character.maximum_health_points(), old_health + 48);
 
@@ -5555,17 +6467,26 @@ mod tests {
         assert_eq!(rejected, AttributeAllocation::InsufficientPoints { available: 3 });
         character.save(&crate::State::with_pool(pool.clone()).await?).await?;
         let persisted = tq_db::character::Character::by_id(&pool, database_character_id as i32).await?;
-        assert_eq!(persisted.vitality, 14);
+        assert_eq!(persisted.vitality as u16, start_vitality + 2);
         assert_eq!(persisted.attribute_points, 3);
         Ok(())
     }
 
     #[tokio::test]
-    async fn level_up_grants_three_attribute_points() -> Result<(), Error> {
+    async fn level_up_follows_the_class_table_before_rebirth() -> Result<(), Error> {
         let (_pool, character, _database_character_id) = test_character().await?;
         assert_eq!(character.attribute_points(), 0);
-        assert_eq!(character.grant_experience(100), Some(2));
-        assert_eq!(character.attribute_points(), 3);
+        let life_before = character.maximum_health_points();
+        // Level 1 needs 120 experience; 24 at the rate of 5.
+        assert_eq!(character.grant_experience(24), Some(2));
+        // A Trojan at level 2: the stats table, no free points.
+        assert_eq!(character.attribute_points(), 0);
+        assert_eq!(
+            Some((character.strength(), character.vitality(), character.agility(), character.spirit())),
+            crate::stats::for_level(character.current_class(), 2)
+        );
+        assert!(character.maximum_health_points() >= life_before);
+        assert_eq!(character.health_points(), character.maximum_health_points());
         Ok(())
     }
 
@@ -5579,7 +6500,7 @@ mod tests {
         let restored_inner = tq_db::character::Character::by_id(state.pool(), database_character_id as i32).await?;
         let restored = Character::new(character.owner(), restored_inner);
         assert!(restored.double_experience_active());
-        assert!(restored.entity().flags().contains(crate::entities::Flags::XP_CIRCLE));
+        assert!(restored.entity().flags().contains(crate::entities::Flags::DOUBLE_EXPERIENCE));
         assert!(restored.heaven_blessing_active());
         assert!(restored
             .entity()
@@ -5597,8 +6518,9 @@ mod tests {
             .entity()
             .flags()
             .contains(crate::entities::Flags::HEAVEN_BLESSING));
+        // A fifth more, times the server rate of 5.
         character.grant_experience(10);
-        assert_eq!(character.experience(), 13);
+        assert_eq!(character.experience(), 60);
 
         character.activate_heaven_blessing(Duration::ZERO);
         assert!(!character.heaven_blessing_active());
@@ -5607,7 +6529,7 @@ mod tests {
             .flags()
             .contains(crate::entities::Flags::HEAVEN_BLESSING));
         character.grant_experience(10);
-        assert_eq!(character.experience(), 23);
+        assert_eq!(character.experience(), 110);
         Ok(())
     }
 }

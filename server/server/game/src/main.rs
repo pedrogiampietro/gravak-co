@@ -121,12 +121,17 @@ Copyright 2020 Shady Khalifa (@shekohex)
     // it. This happens only once, so no one else can access.
     let state = unsafe { &*static_state };
     let ai_state = state;
+    game::guild_war::load(state).await;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
         loop {
             interval.tick().await;
             game::systems::temporary_effects::tick(ai_state).await;
             game::systems::status_effects::tick(ai_state).await;
+            game::vitals::tick(ai_state).await;
+            game::guild_war::tick(ai_state).await;
+            game::mining::tick(ai_state).await;
+            game::pets::tick(ai_state).await;
             game::systems::monster_ai::tick(ai_state).await;
             if let Err(error) = game::packets::expire_trades(ai_state).await {
                 tracing::warn!(%error, "trade timeout cleanup failed");

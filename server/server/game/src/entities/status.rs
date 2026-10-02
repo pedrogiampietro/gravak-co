@@ -10,6 +10,33 @@ pub enum StatusEffect {
     Superman,
     Stigma,
     Shield,
+    /// Monsters do not see the player.
+    Invisibility,
+    /// Melee monsters cannot reach the player.
+    Flying,
+    /// The next physical hit does double damage.
+    Intensify,
+    /// Accuracy and Star of Accuracy.
+    Accuracy,
+}
+
+impl StatusEffect {
+    /// The status flag the client shows for this effect.
+    pub fn flag(self) -> crate::entities::Flags {
+        use crate::entities::Flags;
+        match self {
+            Self::Burning => Flags::POISONED,
+            Self::Stunned => Flags::RESTRICT_MOVEMENT,
+            Self::Cyclone => Flags::CYCLONE,
+            Self::Superman => Flags::SUPERMAN,
+            Self::Stigma => Flags::STIGMA,
+            Self::Shield => Flags::SHIELD,
+            Self::Invisibility => Flags::INVISIBILITY,
+            Self::Flying => Flags::FLYING,
+            Self::Intensify => Flags::INTENSIFY,
+            Self::Accuracy => Flags::STAR_OF_ACCURACY,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

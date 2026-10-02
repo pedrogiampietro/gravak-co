@@ -74,11 +74,18 @@ impl PacketProcess for MsgWalk {
         let x = current_location.x.wrapping_add(offset.0);
         let y = current_location.y.wrapping_add(offset.1);
         let map = state.try_map(me.entity().map_id())?;
+        let gate_closed = crate::guild_war::path_blocked(
+            state,
+            me.entity().map_id(),
+            (current_location.x, current_location.y),
+            (x, y),
+        );
         match map.tile(x, y) {
-            Some(tile) if tile.access > TileType::Npc => {
+            Some(tile) if tile.access > TileType::Npc && !gate_closed => {
                 // The packet is valid. Assign character data:
                 // Send the movement back to the message server and client:
-                me.entity().set_location(Location::new(x, y, direction as _));
+                // Walking ends sitting (and its faster stamina).
+                me.entity().set_location(Location::new(x, y, direction as _)).set_action(100);
                 me.set_elevation(tile.elevation);
                 actor.send(self.clone()).await?;
                 map.update_region_for(actor.entity());

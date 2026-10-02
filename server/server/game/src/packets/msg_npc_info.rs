@@ -35,6 +35,16 @@ impl MsgNpcInfo {
         }
     }
 
+    /// An NPC shown with another look and, optionally, a name (the Guild
+    /// War pole and gates).
+    pub fn with_look(npc: &Npc, look: u16, name: Option<String>) -> Self {
+        let mut this = Self::new(npc);
+        this.look = look;
+        this.list_count = u8::from(name.is_some());
+        this.name = name;
+        this
+    }
+
     pub fn from_npc_with_name(npc: &Npc) -> Self {
         let mut this = Self::new(npc);
         this.list_count = 1;

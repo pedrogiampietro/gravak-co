@@ -46,6 +46,28 @@ pub struct Map {
     regions: MapRegions,
 }
 
+/// `WeaponGoal`, `MagicGoal`, `BowGoal` and `Target`: the training dummies.
+fn is_training_goal(kind: i8) -> bool {
+    (21..=24).contains(&kind)
+}
+
+/// Most instances a single spawn row may create; the monster id of an
+/// instance is derived from its spawn id and index within this block.
+const MONSTERS_PER_SPAWN: u32 = 32;
+/// How far an instance may be moved to leave a blocked cell.
+pub const MONSTER_RELOCATION_RADIUS: u16 = 12;
+
+/// Monster ids must be unique across every map, because the client keys its
+/// actors by id. Spawn ids are unique in the database, so each spawn owns a
+/// fixed block of `MONSTERS_PER_SPAWN` ids.
+fn monster_instance_id(spawn_id: i32, index: u32) -> Option<u32> {
+    let spawn_id = u32::try_from(spawn_id).ok()?;
+    let id = constants::MONSTER_ID_MIN
+        .checked_add(spawn_id.checked_mul(MONSTERS_PER_SPAWN)?)?
+        .checked_add(index)?;
+    (index < MONSTERS_PER_SPAWN && id <= constants::MONSTER_ID_MAX).then_some(id)
+}
+
 impl Map {
     pub fn new(
         inner: tq_db::map::Map,
@@ -56,17 +78,25 @@ impl Map {
         let portals = portals.into_iter().map(Portal::new).collect();
         let npcs = npcs
             .into_iter()
-            .filter(|npc| !constants::is_terrain_npc(npc.id as _))
+            // Dynamic NPC ids (terrain objects, gates, statues) stay out,
+            // except the training goals: the Stakes and Scarecrows of the
+            // training ground live in that id range too.
+            .filter(|npc| {
+                !constants::is_terrain_npc(npc.id as _)
+                    || is_training_goal(npc.kind)
+                    || crate::guild_war::is_war_structure(npc.id as _)
+            })
             .map(|v| (v.id as u32, Arc::new(GameEntity::from(Npc::from(v)))))
             .collect();
         let mut occupied_monster_tiles = HashSet::new();
         let mut monster_entities = HashMap::new();
         for (spawn, monster_type) in &monsters {
-            let amount = spawn.amount.max(1) as u32;
+            let amount = (spawn.amount.max(1) as u32).min(MONSTERS_PER_SPAWN);
             for index in 0..amount {
-                let id_seed = spawn.id.max(0) as u32 * 1000 + index;
-                let id =
-                    constants::MONSTER_ID_MIN + (id_seed % (constants::MONSTER_ID_MAX - constants::MONSTER_ID_MIN));
+                let Some(id) = monster_instance_id(spawn.id, index) else {
+                    tracing::warn!(spawn_id = spawn.id, "monster spawn id is outside the monster id range");
+                    break;
+                };
                 // Keep the first instance at the authored location and
                 // spread additional instances across the spawn area. The
                 // previous diagonal-only offset made an entire pack spawn
@@ -131,6 +161,11 @@ impl Map {
         self.inner.color as u32
     }
 
+    /// The map where a player who died here revives.
+    pub fn reborn_map(&self) -> u32 {
+        u32::try_from(self.inner.reborn_map).unwrap_or(self.inner.map_id as u32)
+    }
+
     pub fn revive_point(&self) -> Point<u32> {
         self.revive_point
     }
@@ -151,6 +186,11 @@ impl Map {
         self.floor.tile(x, y)
     }
 
+    /// Whether a character or monster can stand on this cell.
+    pub fn is_walkable(&self, x: u16, y: u16) -> bool {
+        self.tile(x, y).is_some_and(|tile| tile.access > TileType::Npc)
+    }
+
     /// Finds a nearby cell where a character can stand. Characters can be
     /// left on an NPC tile by older clients or by an interrupted teleport;
     /// accepting that persisted position would make the next login appear
@@ -160,9 +200,24 @@ impl Map {
             let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                 return false;
             };
-            self.tile(x, y).is_some_and(|tile| tile.access > TileType::Npc)
+            self.is_walkable(x, y)
         };
         nearest_walkable_candidate([i32::from(origin.x), i32::from(origin.y)], max_radius, walkable)
+            .map(|[x, y]| Location::new(x as u16, y as u16, origin.direction))
+    }
+
+    /// Where a teleport to `origin` lands: the cell itself when it is
+    /// walkable, otherwise the nearest walkable cell within `max_radius`.
+    /// Unlike [`Self::nearest_walkable_position`], which only reports a
+    /// correction, this never rejects a cell that is already valid.
+    pub fn landing_position(&self, origin: Location, max_radius: u16) -> Option<Location> {
+        let walkable = |x: i32, y: i32| {
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                return false;
+            };
+            self.is_walkable(x, y)
+        };
+        landing_candidate([i32::from(origin.x), i32::from(origin.y)], max_radius, walkable)
             .map(|[x, y]| Location::new(x as u16, y as u16, origin.direction))
     }
 
@@ -274,6 +329,17 @@ impl Map {
             *lock = regions;
         }
         self.insert_batch(self.npcs.values().cloned()).await?;
+        // Spawn areas come from another server's data and their spread is
+        // computed before the floor is known, so move any instance that
+        // landed on a wall or an NPC to the nearest free cell.
+        for monster in self.monster_entities.values() {
+            let location = monster.basic().location();
+            if !self.is_walkable(location.x, location.y) {
+                if let Some(free) = self.nearest_walkable_position(location, MONSTER_RELOCATION_RADIUS) {
+                    monster.basic().set_location(free);
+                }
+            }
+        }
         self.insert_batch(self.monster_entities.values().cloned()).await?;
         tracing::trace!("Map Loaded into memory");
         Ok(())
@@ -440,6 +506,18 @@ impl Map {
             self.update_region_for(e);
         }
         Ok(())
+    }
+}
+
+fn landing_candidate(
+    origin: [i32; 2],
+    max_radius: u16,
+    walkable: impl Fn(i32, i32) -> bool,
+) -> Option<[i32; 2]> {
+    if walkable(origin[0], origin[1]) {
+        Some(origin)
+    } else {
+        nearest_walkable_candidate(origin, max_radius, walkable)
     }
 }
 
@@ -693,6 +771,14 @@ mod tests {
     use crate::test_utils::*;
 
     #[test]
+    fn landing_keeps_a_walkable_destination_and_corrects_a_blocked_one() {
+        // Regression: teleports treated "already walkable" as "closed".
+        assert_eq!(landing_candidate([10, 10], 4, |_, _| true), Some([10, 10]));
+        assert_eq!(landing_candidate([10, 10], 4, |x, y| [x, y] == [8, 9]), Some([8, 9]));
+        assert_eq!(landing_candidate([10, 10], 4, |_, _| false), None);
+    }
+
+    #[test]
     fn nearest_walkable_candidate_recovers_from_a_blocked_spawn() {
         let candidate = nearest_walkable_candidate([10, 10], 4, |x, y| [x, y] == [8, 9]);
         assert_eq!(candidate, Some([8, 9]));
@@ -702,6 +788,18 @@ mod tests {
     fn nearest_walkable_candidate_keeps_a_valid_spawn() {
         let candidate = nearest_walkable_candidate([10, 10], 4, |x, y| [x, y] == [10, 10]);
         assert_eq!(candidate, None);
+    }
+
+    #[test]
+    fn monster_ids_are_unique_per_spawn_and_stay_in_range() {
+        assert_eq!(super::monster_instance_id(1, 0), Some(constants::MONSTER_ID_MIN + 32));
+        assert_eq!(super::monster_instance_id(1, 31), Some(constants::MONSTER_ID_MIN + 63));
+        assert_eq!(super::monster_instance_id(2, 0), Some(constants::MONSTER_ID_MIN + 64));
+        assert_eq!(super::monster_instance_id(1, 32), None);
+        assert_eq!(super::monster_instance_id(-1, 0), None);
+        assert_eq!(super::monster_instance_id(4000, 0), None);
+        // Every spawn of the imported catalog fits in the monster id range.
+        assert!(super::monster_instance_id(1265, 31).is_some());
     }
 
     #[tokio::test]
@@ -727,5 +825,13 @@ mod tests {
             .boxed()
         })
         .await
+    }
+
+    #[test]
+    fn training_dummies_are_kept_among_dynamic_npcs() {
+        assert!(is_training_goal(21));
+        assert!(is_training_goal(22));
+        assert!(!is_training_goal(2));
+        assert!(constants::is_terrain_npc(100_344));
     }
 }
