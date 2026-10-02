@@ -2293,7 +2293,43 @@ impl Renderer {
                     });
                 }
             }
-            if !actor.name.is_empty() {
+            // A hovered player shows their face, name and health instead
+            // of the plain name.
+            if hovered_player == Some(actor.id) && !actor.npc && !monster && !actor.name.is_empty() {
+                let name_colour = crate::labels::name_colour(actor.status_flags);
+                let key = format!(
+                    "@player-plate-{}-{}-{}-{}-{:?}",
+                    actor.id, actor.mesh, actor.health, actor.maximum_health, name_colour
+                );
+                if !self.textures.contains_key(&key) {
+                    let face = player_face(assets, actor.mesh);
+                    self.upload(
+                        &key,
+                        crate::labels::player_plate(
+                            face.as_ref(),
+                            &actor.name,
+                            name_colour,
+                            actor.health,
+                            actor.maximum_health,
+                        )?,
+                    );
+                }
+                if let Some(plate) = self.textures.get(&key) {
+                    draws.push(Draw {
+                        texture: key,
+                        vertices: quad(
+                            [
+                                (origin[0] - plate.size[0] * 0.5).round(),
+                                (origin[1] - 160.0).round(),
+                            ],
+                            plate.size,
+                            viewport,
+                        ),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
+            } else if !actor.name.is_empty() {
                 let name_colour = crate::labels::name_colour(actor.status_flags);
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
@@ -3620,49 +3656,6 @@ impl Renderer {
                 });
             }
         }
-        // A card by the cursor with the hovered player's model, name and level.
-        if let Some(id) = hovered_player
-            && let Some(actor) = remote_actors.get(&id)
-        {
-            let level = Some(actor.level).filter(|level| *level > 0);
-            let key = format!("@player-card-{}-{level:?}", actor.name);
-            if !self.textures.contains_key(&key) {
-                self.upload(
-                    &key,
-                    crate::original_panels::player_card(
-                        assets,
-                        &actor.name,
-                        level,
-                        crate::original_panels::HOVER_CARD_INNER,
-                    )?,
-                );
-            }
-            if let Some(texture) = self.textures.get(&key) {
-                let size = texture.size;
-                let position = [
-                    (cursor[0] + 24.0).min(viewport[0] - size[0] - 8.0).max(8.0),
-                    (cursor[1] + 16.0).min(viewport[1] - size[1] - 8.0).max(8.0),
-                ];
-                draws.push(Draw {
-                    texture: key,
-                    vertices: quad(position, size, viewport),
-                    depth_test: false,
-                    sort_depth: PREVIEW_SORT,
-                });
-                if let Some(model) = remote_models.get(&id) {
-                    let [top_center, model_size] = crate::original_panels::HOVER_CARD_MODEL;
-                    self.push_character_preview(
-                        assets,
-                        model,
-                        [position[0] + top_center[0], position[1] + top_center[1]],
-                        model_size,
-                        PREVIEW_SORT,
-                        viewport,
-                        &mut draws,
-                    );
-                }
-            }
-        }
         if let Some(prompt) = prompt {
             let hovered = prompt.button_at(cursor);
             let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, prompt.text));
@@ -4211,6 +4204,30 @@ fn quad_with_alpha(p: [f32; 2], size: [f32; 2], viewport: [f32; 2], alpha: f32) 
         })
         .to_vec()
 }
+/// A player's face portrait: the face id is the mesh's ten-thousands
+/// (`mesh = face * 10000 + body`), scaled to the nameplate's portrait box.
+fn player_face(assets: &mut crate::assets::Assets, mesh: u32) -> Option<image::RgbaImage> {
+    let face = mesh / 10_000;
+    if face == 0 {
+        return None;
+    }
+    let image = [
+        format!("data/faces/{face}.dds"),
+        format!("data/faces/{face:03}.dds"),
+        format!("data/face/{face}.dds"),
+        format!("data/Face/{face}.dds"),
+    ]
+    .iter()
+    .find_map(|path| assets.image(path).ok())?;
+    let size = crate::labels::PLAYER_FACE_SIZE;
+    Some(image::imageops::resize(
+        &image,
+        size,
+        size,
+        image::imageops::FilterType::Triangle,
+    ))
+}
+
 fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {

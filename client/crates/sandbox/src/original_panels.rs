@@ -781,9 +781,6 @@ pub const TRADE_PARTNER_INNER: u32 = 214;
 /// Where the partner's model stands on its card: [top centre, [max width,
 /// height]].
 pub const TRADE_PARTNER_MODEL: [[f32; 2]; 2] = [[97.0, 52.0], [70.0, 150.0]];
-/// The smaller card shown while hovering a player.
-pub const HOVER_CARD_INNER: u32 = 160;
-pub const HOVER_CARD_MODEL: [[f32; 2]; 2] = [[97.0, 48.0], [56.0, 108.0]];
 
 /// A player card: the name in the title band, room for their live model
 /// (drawn over it by the renderer) and their level at the bottom of the
