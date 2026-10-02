@@ -829,9 +829,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) if self.inventory_open => {
                         self.inventory_open = false;
                     }
-                    PhysicalKey::Code(KeyCode::Escape)
-                        if self.quick_panel == Some(shop::QuickPanel::TradeRequest) =>
-                    {
+                    PhysicalKey::Code(KeyCode::Escape) if self.trade_request_pending() => {
                         self.handle_trade_panel_action(shop::TradePanelAction::Cancel);
                     }
                     PhysicalKey::Code(KeyCode::Escape) if self.quick_panel.is_some() => {
@@ -948,7 +946,7 @@ impl ApplicationHandler for App {
                 let skill_hud = self.skill_hud();
                 let choice_menu = self.choice_menu();
                 let notice = self.target_pick.map(TargetPick::notice);
-                let prompt = self.team_prompt();
+                let prompt = self.prompt();
                 let hovered_player = self.hovered_player();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
@@ -1299,9 +1297,9 @@ impl App {
             self.held = false;
             return true;
         }
-        if let Some(prompt) = self.team_prompt() {
+        if let Some(prompt) = self.prompt() {
             if let Some(accept) = prompt.button_at(self.cursor) {
-                self.answer_team_prompt(accept);
+                self.answer_prompt(accept);
                 self.held = false;
                 return true;
             }
@@ -1397,21 +1395,6 @@ impl App {
                 self.player_shop_price_focused = true;
                 self.held = false;
                 return true;
-            }
-            if self.quick_panel == Some(shop::QuickPanel::TradeRequest) {
-                let action = shop::trade_request_action_at(viewport, self.cursor).or(
-                    shop::quick_panel_close_at(
-                        viewport,
-                        self.cursor,
-                        shop::QuickPanel::TradeRequest,
-                    )
-                    .then_some(shop::TradePanelAction::Cancel),
-                );
-                if let Some(action) = action {
-                    self.handle_trade_panel_action(action);
-                    self.held = false;
-                    return true;
-                }
             }
             if self
                 .quick_panel
@@ -1734,23 +1717,44 @@ impl App {
         self.shown_cursor = Some(wanted);
     }
 
-    /// The popup for a received team invite, or for a request to join the
-    /// hero's team.
-    fn team_prompt(&self) -> Option<shop::PromptDialog> {
-        let (id, text) = if let Some(leader) = self.pending_team_invite {
-            (leader, "invites you to the team")
+    /// A trade request received and not yet answered.
+    fn trade_request_pending(&self) -> bool {
+        self.trade.pending_request.is_some() && !self.trade.active
+    }
+
+    /// The popup for a received team invite, a request to join the hero's
+    /// team, or a trade request.
+    fn prompt(&self) -> Option<shop::PromptDialog> {
+        let (title, id, text) = if let Some(leader) = self.pending_team_invite {
+            ("Team", leader, "invites you to the team")
+        } else if let Some(requester) = self.pending_team_join_request {
+            ("Team", requester, "asks to join your team")
+        } else if self.trade_request_pending() {
+            ("Trade", self.trade.pending_request?, "wants to trade with you")
         } else {
-            (self.pending_team_join_request?, "asks to join your team")
+            return None;
         };
         let size = self.window.as_ref()?.inner_size();
         let name = self.actor_name(id);
         let name = if name.is_empty() { id.to_string() } else { name };
         Some(shop::PromptDialog::new(
             [size.width as f32, size.height as f32],
-            "Team",
+            title,
             name,
             text,
         ))
+    }
+
+    fn answer_prompt(&mut self, accept: bool) {
+        if self.pending_team_invite.is_some() || self.pending_team_join_request.is_some() {
+            self.answer_team_prompt(accept);
+        } else if self.trade_request_pending() {
+            self.handle_trade_panel_action(if accept {
+                shop::TradePanelAction::AcceptRequest
+            } else {
+                shop::TradePanelAction::Cancel
+            });
+        }
     }
 
     fn answer_team_prompt(&mut self, accept: bool) {
@@ -2155,9 +2159,7 @@ impl App {
                 };
                 network.send_trade(target_id, REQUEST, 0);
                 // The trade window opens once the server confirms the trade.
-                if self.quick_panel == Some(shop::QuickPanel::TradeRequest) {
-                    self.quick_panel = None;
-                }
+                self.trade.pending_request = None;
                 self.network_status = format!("online: aceitando trade de {target_id}");
             }
             shop::TradePanelAction::AddItem => {
@@ -2218,7 +2220,9 @@ impl App {
                 network.send_trade(target_id, CLOSE, 0);
                 self.trade = network::TradeView::default();
                 self.pending_trade_items.clear();
-                self.quick_panel = None;
+                if self.quick_panel == Some(shop::QuickPanel::Trade) {
+                    self.quick_panel = None;
+                }
             }
         }
     }
@@ -2429,7 +2433,6 @@ impl App {
                     self.trade.pending_request = Some(target_id);
                     self.trade.peer_name = self.actor_name(target_id);
                     self.trade.active = false;
-                    self.quick_panel = Some(shop::QuickPanel::TradeRequest);
                     self.network_status = format!("online: trade request from {target_id}");
                 }
                 3 => {
@@ -2446,10 +2449,7 @@ impl App {
                 5 | 17 => {
                     self.trade = network::TradeView::default();
                     self.pending_trade_items.clear();
-                    if matches!(
-                        self.quick_panel,
-                        Some(shop::QuickPanel::Trade | shop::QuickPanel::TradeRequest)
-                    ) {
+                    if self.quick_panel == Some(shop::QuickPanel::Trade) {
                         self.quick_panel = None;
                     }
                     self.network_status = "online: trade closed".into();
@@ -3570,7 +3570,7 @@ impl App {
         let viewport = [size.width as f32, size.height as f32];
         if hud::contains(viewport, self.cursor)
             || self.choice_menu().is_some_and(|menu| menu.contains(self.cursor))
-            || self.team_prompt().is_some_and(|prompt| prompt.contains(self.cursor))
+            || self.prompt().is_some_and(|prompt| prompt.contains(self.cursor))
         {
             return None;
         }

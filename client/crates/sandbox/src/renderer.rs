@@ -4204,21 +4204,20 @@ fn quad_with_alpha(p: [f32; 2], size: [f32; 2], viewport: [f32; 2], alpha: f32) 
         })
         .to_vec()
 }
-/// A player's face portrait: the face id is the mesh's ten-thousands
-/// (`mesh = face * 10000 + body`), scaled to the nameplate's portrait box.
+/// A player's face portrait from `data/PlayerFace/JPG/64`, scaled to the
+/// nameplate's portrait box. The face is the avatar part of the look
+/// (`look = body + avatar * 10000 + transformation * 10000000`).
 fn player_face(assets: &mut crate::assets::Assets, mesh: u32) -> Option<image::RgbaImage> {
-    let face = mesh / 10_000;
+    let face = mesh / 10_000 % 1_000;
     if face == 0 {
         return None;
     }
-    let image = [
-        format!("data/faces/{face}.dds"),
-        format!("data/faces/{face:03}.dds"),
-        format!("data/face/{face}.dds"),
-        format!("data/Face/{face}.dds"),
-    ]
-    .iter()
-    .find_map(|path| assets.image(path).ok())?;
+    let mut paths = player_face_ani_paths(assets, face);
+    for extension in ["dds", "jpg", "DDS", "JPG"] {
+        paths.push(format!("data/PlayerFace/JPG/64/{face}.{extension}"));
+        paths.push(format!("data/PlayerFace/JPG/64/{face:03}.{extension}"));
+    }
+    let image = paths.iter().find_map(|path| assets.image(path).ok())?;
     let size = crate::labels::PLAYER_FACE_SIZE;
     Some(image::imageops::resize(
         &image,
@@ -4226,6 +4225,64 @@ fn player_face(assets: &mut crate::assets::Assets, mesh: u32) -> Option<image::R
         size,
         image::imageops::FilterType::Triangle,
     ))
+}
+
+/// The 64px frames `ani/PlayerFace.ani` binds to `face`: sections whose
+/// name, or whose frame's file name, carries the face number.
+fn player_face_ani_paths(assets: &mut crate::assets::Assets, face: u32) -> Vec<String> {
+    let Ok(bytes) = assets.read("ani/PlayerFace.ani") else {
+        return Vec::new();
+    };
+    let number = |value: &str| {
+        let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+        digits.parse::<u32>().ok()
+    };
+    let mut section = String::new();
+    let mut paths = Vec::new();
+    for line in String::from_utf8_lossy(&bytes).lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+            section = name.to_owned();
+            continue;
+        }
+        let Some((key, path)) = line.split_once('=') else {
+            continue;
+        };
+        let path = path.trim().replace('\\', "/");
+        if !key.trim().eq_ignore_ascii_case("Frame0") || !path.to_ascii_lowercase().contains("/64/") {
+            continue;
+        }
+        let stem = path.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("");
+        if number(&section) == Some(face) || number(stem) == Some(face) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+#[cfg(test)]
+mod player_face_probe {
+    /// Prints how `ani/PlayerFace.ani` names the faces and which portrait
+    /// each of the first faces resolves to, against a local 5065 install.
+    #[test]
+    #[ignore = "Needs the 5065 install (GRAVAK_CLIENT, default R:/5065)"]
+    fn probe_player_faces() -> crate::assets::Result<()> {
+        let root = std::env::var("GRAVAK_CLIENT").unwrap_or_else(|_| "R:/5065".into());
+        let mut assets = crate::assets::Assets::open(std::path::Path::new(&root))?;
+        match assets.read("ani/PlayerFace.ani") {
+            Ok(bytes) => {
+                for line in String::from_utf8_lossy(&bytes).lines().take(40) {
+                    println!("ani: {line}");
+                }
+            }
+            Err(error) => println!("ani/PlayerFace.ani: {error}"),
+        }
+        for face in (1..=12).chain(201..=212) {
+            let paths = super::player_face_ani_paths(&mut assets, face);
+            let found = super::player_face(&mut assets, face * 10_000 + 1003).is_some();
+            println!("face {face}: ani {paths:?}, loaded {found}");
+        }
+        Ok(())
+    }
 }
 
 fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
