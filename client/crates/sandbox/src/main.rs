@@ -375,6 +375,8 @@ struct App {
     pending_guild_invite: Option<u32>,
     trade: network::TradeView,
     pending_trade_items: Vec<u32>,
+    /// The trade opened the inventory, so ending it closes it again.
+    trade_opened_inventory: bool,
     player_shop_items: Vec<network::PlayerShopItem>,
     player_shop_open: bool,
     player_shop_price: String,
@@ -1717,6 +1719,25 @@ impl App {
         self.shown_cursor = Some(wanted);
     }
 
+    /// The trade window comes with the inventory, as in the original
+    /// client, so items can be dragged onto the offer. The character
+    /// window would cover the trade on the left, so it closes.
+    fn open_trade_inventory(&mut self) {
+        self.status_open = false;
+        if !self.inventory_open {
+            self.inventory_open = true;
+            self.trade_opened_inventory = true;
+        }
+    }
+
+    /// Closes the inventory if the trade opened it.
+    fn close_trade_inventory(&mut self) {
+        if std::mem::take(&mut self.trade_opened_inventory) {
+            self.inventory_open = false;
+            self.selected_inventory_uid = None;
+        }
+    }
+
     /// A trade request received and not yet answered.
     fn trade_request_pending(&self) -> bool {
         self.trade.pending_request.is_some() && !self.trade.active
@@ -2223,6 +2244,7 @@ impl App {
                 if self.quick_panel == Some(shop::QuickPanel::Trade) {
                     self.quick_panel = None;
                 }
+                self.close_trade_inventory();
             }
         }
     }
@@ -2444,6 +2466,7 @@ impl App {
                     };
                     self.pending_trade_items.clear();
                     self.quick_panel = Some(shop::QuickPanel::Trade);
+                    self.open_trade_inventory();
                     self.network_status = format!("online: trade opened with {target_id}");
                 }
                 5 | 17 => {
@@ -2452,6 +2475,7 @@ impl App {
                     if self.quick_panel == Some(shop::QuickPanel::Trade) {
                         self.quick_panel = None;
                     }
+                    self.close_trade_inventory();
                     self.network_status = "online: trade closed".into();
                 }
                 8 => self.trade.peer_silver = data,
@@ -6423,6 +6447,7 @@ fn run() -> Result<()> {
         pending_guild_invite: None,
         trade: network::TradeView::default(),
         pending_trade_items: Vec::new(),
+        trade_opened_inventory: false,
         player_shop_items: Vec::new(),
         player_shop_open: false,
         player_shop_price: "1000".into(),

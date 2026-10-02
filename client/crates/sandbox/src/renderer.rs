@@ -29,6 +29,10 @@ struct Vertex {
 /// UI, but without the status panel's scissor that INFINITY depth-tested
 /// draws get, and before the INFINITY UI layered over it.
 const PREVIEW_SORT: f32 = f32::MAX;
+/// Sort depth of what floats over the world (names, nameplates, damage
+/// numbers, ground loot labels): above every world draw but below the UI,
+/// the trade partner card included, so a name never shows through a window.
+const WORLD_OVERLAY_SORT: f32 = f32::MAX / 2.0;
 
 struct Draw {
     texture: String,
@@ -2326,7 +2330,7 @@ impl Renderer {
                             viewport,
                         ),
                         depth_test: false,
-                        sort_depth: f32::INFINITY,
+                        sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
             } else if !actor.name.is_empty() {
@@ -2371,7 +2375,7 @@ impl Renderer {
                             viewport,
                         ),
                         depth_test: false,
-                        sort_depth: f32::INFINITY,
+                        sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
             }
@@ -2407,7 +2411,7 @@ impl Renderer {
                         viewport,
                     ),
                     depth_test: false,
-                    sort_depth: f32::INFINITY,
+                    sort_depth: WORLD_OVERLAY_SORT,
                 });
             }
         }
@@ -2490,7 +2494,7 @@ impl Renderer {
                         viewport,
                     ),
                     depth_test: false,
-                    sort_depth: f32::INFINITY,
+                    sort_depth: WORLD_OVERLAY_SORT,
                 });
             }
             let name_key = format!("@loot-name-{loot_id}-{item_id}");
@@ -2510,7 +2514,7 @@ impl Renderer {
                         viewport,
                     ),
                     depth_test: false,
-                    sort_depth: f32::INFINITY,
+                    sort_depth: WORLD_OVERLAY_SORT,
                 });
             }
         }
@@ -2539,7 +2543,7 @@ impl Renderer {
                     viewport,
                 ),
                 depth_test: false,
-                sort_depth: f32::INFINITY,
+                sort_depth: WORLD_OVERLAY_SORT,
             });
         }
         let build_key = "@build";
