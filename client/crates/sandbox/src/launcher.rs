@@ -115,7 +115,15 @@ pub struct LoginUi {
     pub busy: bool,
     pub hovered: Option<Target>,
     account: String,
-    portraits: std::collections::HashMap<(usize, bool), RgbaImage>,
+    /// The professions' heroes by (body, class), as they finish loading.
+    heroes: std::collections::HashMap<(usize, usize), crate::showcase::Hero>,
+    /// The columns not chosen, painted once per (class, state, place, body,
+    /// hero loaded, light tick).
+    column_cache: std::cell::RefCell<
+        std::collections::HashMap<(usize, crate::launcher_art::ColumnState, [i32; 4], usize, bool, i64), RgbaImage>,
+    >,
+    /// Still renders of the heroes not selected, by (body, class).
+    still_heroes: std::cell::RefCell<std::collections::HashMap<(usize, usize), RgbaImage>>,
 }
 
 /// What the screens ask the login session to do.
@@ -138,7 +146,9 @@ impl LoginUi {
             busy: false,
             hovered: None,
             account: last_account.unwrap_or_default(),
-            portraits: std::collections::HashMap::new(),
+            heroes: std::collections::HashMap::new(),
+            still_heroes: std::cell::RefCell::new(std::collections::HashMap::new()),
+            column_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         };
         ui.show(Screen::Login);
         ui
@@ -493,6 +503,7 @@ impl LoginUi {
         use crate::launcher_art as art;
         let size = [size[0].max(1), size[1].max(1)];
         let mut image = art::backdrop(size);
+        art::scene(&mut image, time);
         art::embers(&mut image, time);
         let layout = self.layout(size);
         if self.screen == Screen::CreateCharacter {
@@ -511,6 +522,7 @@ impl LoginUi {
             (68.0, py - 172)
         };
         art::gold_title(&mut image, "Gravak", title_size, centre, title_y);
+        art::title_shine(&mut image, "Gravak", title_size, centre, title_y, time);
         let subtitle_y = if compact { py - 26 } else { py - 50 };
         art::label(
             &mut image,
@@ -745,7 +757,6 @@ impl LoginUi {
             74,
             art::GOLD,
         );
-        let female = self.body >= 2;
         for (index, rect) in layout.classes.iter().enumerate() {
             let state = if index == self.class {
                 art::ColumnState::Selected
@@ -755,22 +766,43 @@ impl LoginUi {
                 art::ColumnState::Idle
             };
             let info = &CLASS_INFO[index];
-            art::class_column(
-                image,
-                *rect,
-                art::ClassColumn {
-                    class: index,
-                    name: CLASSES[index].0,
-                    tagline: info.tagline,
-                    weapons: info.weapons,
-                    description: info.description,
-                    skills: info.skills,
-                    stats: info.stats,
-                    portrait: self.portraits.get(&(index, female)),
-                },
-                state,
-                time,
-            );
+            let paint = |target: &mut RgbaImage, rect: [i32; 4], time: f32| {
+                let hero = self.hero_image(index, rect, time);
+                art::class_column(
+                    target,
+                    rect,
+                    art::ClassColumn {
+                        class: index,
+                        name: CLASSES[index].0,
+                        tagline: info.tagline,
+                        weapons: info.weapons,
+                        description: info.description,
+                        skills: info.skills,
+                        stats: info.stats,
+                        hero: hero.as_ref(),
+                    },
+                    state,
+                    time,
+                );
+            };
+            if index == self.class {
+                // The chosen column moves every frame (its hero turns).
+                paint(image, *rect, time);
+                continue;
+            }
+            // The others are opaque and nearly still: painted on their own
+            // and reused, their light rays stepping four times a second.
+            let tick = (time * 4.0).floor();
+            let key = (index, state, *rect, self.body, self.heroes.contains_key(&(self.body, index)), tick as i64);
+            let mut columns = self.column_cache.borrow_mut();
+            if !columns.contains_key(&key) {
+                columns.retain(|cached, _| cached.0 != index);
+                let [_, _, w, h] = *rect;
+                let mut column = RgbaImage::new(w.max(1) as u32, h.max(1) as u32);
+                paint(&mut column, [0, 0, w, h], tick / 4.0);
+                columns.insert(key, column);
+            }
+            image::imageops::overlay(image, &columns[&key], i64::from(rect[0]), i64::from(rect[1]));
         }
 
         let [bx, by, bw, bh] = layout.panel;
@@ -825,10 +857,30 @@ impl LoginUi {
         }
     }
 
-    /// Illustrations for the profession columns, by (class, female).
-    #[allow(dead_code)] // Wired once the installation's illustrations are found.
-    pub fn set_portrait(&mut self, class: usize, female: bool, portrait: RgbaImage) {
-        self.portraits.insert((class, female), portrait);
+    /// A profession's hero, loaded for one of the `BODIES`.
+    pub fn add_hero(&mut self, body: usize, class: usize, hero: crate::showcase::Hero) {
+        self.heroes.insert((body, class), hero);
+    }
+
+    /// The picture of profession `class` for its column: the chosen one
+    /// breathes and turns slowly from side to side, the others stand still
+    /// facing the camera.
+    fn hero_image(&self, class: usize, column: [i32; 4], time: f32) -> Option<RgbaImage> {
+        let hero = self.heroes.get(&(self.body, class))?;
+        let [_, _, width, height] = column;
+        let size = [(width - 28).max(1) as u32, (height * 56 / 100).max(1) as u32];
+        let tall = size[1] as f32 * 0.86;
+        if class == self.class {
+            let facing = (time * 0.4).sin() * 0.7;
+            return Some(hero.render(size, tall, time, facing));
+        }
+        let mut stills = self.still_heroes.borrow_mut();
+        Some(
+            stills
+                .entry((self.body, class))
+                .or_insert_with(|| hero.render(size, tall, 0.0, 0.0))
+                .clone(),
+        )
     }
 }
 
@@ -941,6 +993,10 @@ struct Launcher {
     started: Instant,
     entered: Option<NetworkHandle>,
     error: Option<String>,
+    /// Views of the game world arriving from `login_scenes`.
+    scenes: std::sync::mpsc::Receiver<RgbaImage>,
+    /// The professions' heroes arriving from `showcase`.
+    heroes: std::sync::mpsc::Receiver<(usize, usize, crate::showcase::Hero)>,
 }
 
 impl Launcher {
@@ -995,7 +1051,8 @@ impl ApplicationHandler for Launcher {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("Gravak - Login")
+            .with_title("Gravak")
+            .with_window_icon(crate::window_icon())
             .with_inner_size(LogicalSize::new(1024.0, 768.0));
         let result = event_loop
             .create_window(attributes)
@@ -1059,6 +1116,12 @@ impl ApplicationHandler for Launcher {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        while let Ok((body, class, hero)) = self.heroes.try_recv() {
+            self.ui.add_hero(body, class, hero);
+        }
+        while let Ok(view) = self.scenes.try_recv() {
+            crate::launcher_art::add_scene(view, self.started.elapsed().as_secs_f32());
+        }
         for event in self.client.drain() {
             self.ui.handle_event(&event);
             if let LoginEvent::Entered(handle) = event {
@@ -1099,6 +1162,8 @@ pub fn run(
         started: Instant::now(),
         entered: None,
         error: None,
+        scenes: crate::login_scenes::start(assets.root_path().to_path_buf()),
+        heroes: crate::showcase::start(assets.root_path().to_path_buf()),
     };
     event_loop
         .run_app_on_demand(&mut launcher)
