@@ -762,6 +762,16 @@ impl PacketProcess for MsgItem {
                         .await?;
                     return Ok(());
                 }
+                if state.trade_manager().session(character.id()).is_some() {
+                    dragdrop_log(format_args!(
+                        "ground drop rejected item_uid={} reason=trading",
+                        self.param0
+                    ));
+                    actor
+                        .send(reject("Item drop rejected: finish or cancel the trade first."))
+                        .await?;
+                    return Ok(());
+                }
                 let Some(item) = character.drop_inventory_item(state.pool(), self.param0).await? else {
                     dragdrop_log(format_args!(
                         "ground drop rejected item_uid={} reason=item_not_found",
