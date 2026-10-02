@@ -4734,10 +4734,11 @@ fn rarity_action_panel_image(
     inventory: &[crate::network::OwnedItem],
     animation_progress: Option<f32>,
 ) -> Result<RgbaImage> {
+    // Clear: the friend dialog's frame (see `framed`) shows around the cards.
     let mut image = RgbaImage::from_pixel(
         RARITY_PANEL_WIDTH as u32,
         RARITY_PANEL_HEIGHT as u32,
-        Rgba([5, 17, 25, 255]),
+        Rgba([0, 0, 0, 0]),
     );
     let font = labels::font()?;
     let next_rarity = panel.item.rarity.saturating_add(1).min(4);
