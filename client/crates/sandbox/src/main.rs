@@ -1612,7 +1612,7 @@ impl App {
         if let Some(button) = hud::quick_button_at(viewport, self.cursor) {
             match button {
                 0 => {
-                    self.status_open = !self.status_open;
+                    self.toggle_status();
                     self.inventory_open = false;
                     self.close_quick_panel_unless_trading();
                 }
@@ -1667,7 +1667,7 @@ impl App {
             return true;
         }
         if hud::status_button_at(viewport, self.cursor) {
-            self.status_open = !self.status_open;
+            self.toggle_status();
             self.inventory_open = false;
             self.chat_focused = false;
             self.held = false;
@@ -2123,6 +2123,15 @@ impl App {
             .get(&id)
             .map(|actor| actor.name.clone())
             .unwrap_or_default()
+    }
+
+    /// The Status button opens the Character window on its first tab,
+    /// Attributes, as the original does.
+    fn toggle_status(&mut self) {
+        self.status_open = !self.status_open;
+        if self.status_open {
+            self.status_tab = shop::StatusTab::Attributes;
+        }
     }
 
     fn selected_player_target(&self) -> Option<(u32, String)> {
@@ -6753,7 +6762,12 @@ fn run() -> Result<()> {
         nobility_ranking: Vec::new(),
         status_flags: 0,
         status_open: benchmark_character,
-        status_tab: shop::StatusTab::Equipment,
+        // The Character benchmark measures the equipment tab.
+        status_tab: if benchmark_character {
+            shop::StatusTab::Equipment
+        } else {
+            shop::StatusTab::Attributes
+        },
         weapon_filter: shop::WeaponFilter::OneHand,
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
