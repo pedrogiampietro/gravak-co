@@ -56,8 +56,19 @@ impl MsgRegister {
                 (i16::try_from(s).unwrap_or(0), i16::try_from(v).unwrap_or(0), i16::try_from(a).unwrap_or(0), i16::try_from(sp).unwrap_or(0))
             });
 
-        let health_points = (strength * 3) + (agility * 3) + (spirit * 3) + (vitality * 24);
-        let mana_points = spirit * 5;
+        // Start with full life and mana, from the same formulas the game
+        // uses for their capacities.
+        let attribute = |value: i16| u16::try_from(value).unwrap_or(0);
+        let health = crate::entities::health_from_attributes(
+            attribute(strength),
+            attribute(agility),
+            attribute(vitality),
+            attribute(spirit),
+            u16::from(class),
+        );
+        let mana = crate::entities::max_mana_for(attribute(spirit), u16::from(class));
+        let health_points = i16::try_from(health.max(1)).unwrap_or(i16::MAX);
+        let mana_points = i16::try_from(mana).unwrap_or(i16::MAX);
 
         let c = tq_db::character::Character {
             account_id: account_id as i32,
@@ -161,5 +172,36 @@ impl PacketProcess for MsgRegister {
             actor.send(super::MsgSkill::from(skill)).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_characters_keep_their_class_and_start_with_full_life() {
+        for class in [BaseClass::Trojan, BaseClass::Warrior, BaseClass::Archer, BaseClass::Taoist] {
+            let character =
+                MsgRegister::build_character_with("Hero".into(), BodyType::AgileFemale, class, 1, 1).unwrap();
+            assert_eq!(character.current_class, u16::from(class) as i16);
+            assert!(character.strength + character.agility + character.vitality + character.spirit > 0);
+            let health = crate::entities::health_from_attributes(
+                character.strength as u16,
+                character.agility as u16,
+                character.vitality as u16,
+                character.spirit as u16,
+                u16::from(class),
+            );
+            assert_eq!(character.health_points, health as i16);
+        }
+    }
+
+    #[test]
+    fn character_names_are_letters_and_digits() {
+        assert!(valid_character_name("Gravak01"));
+        assert!(!valid_character_name("ab"));
+        assert!(!valid_character_name("bad name"));
+        assert!(!valid_character_name("Pedro[GM]"));
     }
 }

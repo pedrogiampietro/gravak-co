@@ -9,6 +9,7 @@ pub use status::{StatusEffect, StatusEffects};
 
 mod basic;
 pub use basic::{Entity, Flags};
+pub(crate) use basic::{health_from_attributes, max_mana_for};
 
 mod character;
 pub use character::{

@@ -1,13 +1,13 @@
 //! Login, account registration, character creation and character
 //! selection, shown before the game window.
 //!
-//! The screens are painted by the client (dark teal panels with the gold
-//! rules of the game windows) into one image that is presented through
-//! `softbuffer`; the same layout drives painting and hit-testing.
+//! The screens are painted by the client (see [`crate::launcher_art`]) into
+//! one image that is presented through `softbuffer`; the same layout drives
+//! painting and hit-testing.
 
 use crate::login::{CharacterSummary, LoginClient, LoginCommand, LoginEvent};
 use crate::network::NetworkHandle;
-use image::{Pixel, Rgba, RgbaImage};
+use image::RgbaImage;
 use std::{
     num::NonZeroU32,
     rc::Rc,
@@ -23,29 +23,21 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const PANEL_WIDTH: i32 = 380;
-const FIELD_HEIGHT: i32 = 26;
-const BUTTON_HEIGHT: i32 = 28;
+const FIELD_HEIGHT: i32 = 32;
+const BUTTON_HEIGHT: i32 = 34;
+const CLASS_COLUMN: i32 = 300;
+const CLASS_CARD: i32 = 74;
 const MAX_INPUT: usize = 15;
 
-const BACKGROUND_TOP: [u8; 3] = [10, 24, 32];
-const BACKGROUND_BOTTOM: [u8; 3] = [24, 52, 62];
-const PANEL: [u8; 4] = [18, 44, 54, 235];
-const PANEL_BAND: [u8; 4] = [28, 66, 80, 255];
-const GOLD: [u8; 4] = [232, 206, 148, 255];
-const GOLD_BRIGHT: [u8; 4] = [255, 232, 170, 255];
-const GOLD_RULE: [u8; 4] = [196, 166, 96, 255];
-const TEAL_RULE: [u8; 4] = [92, 132, 140, 255];
-const WHITE: [u8; 4] = [240, 240, 236, 255];
-const GREY: [u8; 4] = [150, 160, 162, 255];
-const ERROR: [u8; 4] = [236, 120, 104, 255];
-const OK: [u8; 4] = [130, 214, 140, 255];
+const GREY: [u8; 4] = [150, 164, 166, 255];
+const ERROR: [u8; 4] = [240, 128, 108, 255];
+const OK: [u8; 4] = [136, 220, 146, 255];
 
 pub const BODIES: [(&str, u16); 4] = [
     ("Male", 1003),
-    ("Male (large)", 1004),
+    ("Male · Large", 1004),
     ("Female", 2001),
-    ("Female (large)", 2002),
+    ("Female · Large", 2002),
 ];
 pub const CLASSES: [(&str, u16); 4] = [
     ("Trojan", 10),
@@ -387,7 +379,7 @@ impl LoginUi {
             Screen::Login => "Login",
             Screen::Register => "Create Account",
             Screen::CreateCharacter => "Create Character",
-            Screen::Select(_) => "Character",
+            Screen::Select(_) => "Your Character",
         }
     }
 
@@ -398,76 +390,120 @@ impl LoginUi {
                 (Action::OpenRegister, "Register"),
                 (Action::Exit, "Exit"),
             ],
-            Screen::Register => vec![(Action::Register, "Create"), (Action::Back, "Back")],
+            Screen::Register => vec![(Action::Register, "Create Account"), (Action::Back, "Back")],
             Screen::CreateCharacter => vec![(Action::Create, "Create"), (Action::Logout, "Back")],
-            Screen::Select(_) => vec![(Action::Enter, "Enter"), (Action::Logout, "Back")],
+            Screen::Select(_) => vec![(Action::Enter, "Enter the World"), (Action::Logout, "Back")],
         }
     }
 
     fn layout(&self, size: [u32; 2]) -> Layout {
+        let [width, height] = [size[0] as i32, size[1] as i32];
         let mut targets = Vec::new();
-        let mut y = 52;
         let mut fields = Vec::new();
-        for index in 0..self.fields.len() {
-            let rect = [24, y + 18, PANEL_WIDTH - 48, FIELD_HEIGHT];
-            fields.push(rect);
-            targets.push((rect, Target::Field(index)));
-            y += 18 + FIELD_HEIGHT + 12;
-        }
-        let mut choices = Vec::new();
-        if self.screen == Screen::CreateCharacter {
-            for (row, count, kind) in [(0, BODIES.len(), 0), (1, CLASSES.len(), 1)] {
-                y += 18;
-                let width = (PANEL_WIDTH - 48 - 6 * (count as i32 - 1)) / count as i32;
-                for index in 0..count {
-                    let rect = [24 + index as i32 * (width + 6), y, width, 26];
-                    choices.push((row, index, rect));
-                    targets.push((
-                        rect,
-                        if kind == 0 {
-                            Target::Body(index)
-                        } else {
-                            Target::Class(index)
-                        },
-                    ));
+        let mut classes = Vec::new();
+        let mut bodies = Vec::new();
+        let panel_width;
+        let mut y;
+        match self.screen {
+            Screen::Login | Screen::Register => {
+                panel_width = 420;
+                y = 66;
+                for index in 0..self.fields.len() {
+                    y += 20;
+                    let rect = [36, y, panel_width - 72, FIELD_HEIGHT];
+                    fields.push(rect);
+                    targets.push((rect, Target::Field(index)));
+                    y += FIELD_HEIGHT + 14;
                 }
-                y += 26 + 12;
+            }
+            Screen::CreateCharacter => {
+                panel_width = (width - 40).clamp(640, 880);
+                let left = 28;
+                for index in 0..CLASSES.len() {
+                    let rect = [
+                        left,
+                        86 + index as i32 * (CLASS_CARD + 10),
+                        CLASS_COLUMN,
+                        CLASS_CARD,
+                    ];
+                    classes.push(rect);
+                    targets.push((rect, Target::Class(index)));
+                }
+                y = 86 + 4 * (CLASS_CARD + 10) + 30;
+                let name = [left, y, CLASS_COLUMN, FIELD_HEIGHT];
+                fields.push(name);
+                targets.push((name, Target::Field(0)));
+                let right = left + CLASS_COLUMN + 28;
+                let column = panel_width - right - 28;
+                let gap = 8;
+                let choice = (column - gap * 3) / 4;
+                for index in 0..BODIES.len() {
+                    let rect = [
+                        right + index as i32 * (choice + gap),
+                        y,
+                        choice,
+                        FIELD_HEIGHT,
+                    ];
+                    bodies.push(rect);
+                    targets.push((rect, Target::Body(index)));
+                }
+                y += FIELD_HEIGHT + 14;
+            }
+            Screen::Select(_) => {
+                panel_width = 540;
+                y = 196;
             }
         }
-        if let Screen::Select(_) = self.screen {
-            y += 96;
-        }
-        y += 8;
-        let status_y = y;
-        y += 26;
+        let status_y = y + 2;
+        y += 28;
         let buttons = self.buttons();
         let count = buttons.len() as i32;
-        let width = ((PANEL_WIDTH - 48 - 12 * (count - 1)) / count).min(110);
-        let total = width * count + 12 * (count - 1);
+        let button_width = match self.screen {
+            Screen::Login => 108,
+            _ => 150,
+        };
+        let total = button_width * count + 14 * (count - 1);
         let mut button_rects = Vec::new();
         for (index, (action, label)) in buttons.into_iter().enumerate() {
             let rect = [
-                (PANEL_WIDTH - total) / 2 + index as i32 * (width + 12),
+                (panel_width - total) / 2 + index as i32 * (button_width + 14),
                 y,
-                width,
+                button_width,
                 BUTTON_HEIGHT,
             ];
             button_rects.push((rect, action, label));
             targets.push((rect, Target::Button(action)));
         }
-        let height = y + BUTTON_HEIGHT + 22;
+        let panel_height = y + BUTTON_HEIGHT + 26;
+        // Room above the panel for the title; the login screens keep room
+        // below for the professions.
+        let (top_room, centre_shift) = match self.screen {
+            Screen::CreateCharacter => (112, 40),
+            Screen::Select(_) => (190, 30),
+            Screen::Login | Screen::Register => (190, -40),
+        };
         let origin = [
-            ((size[0] as i32 - PANEL_WIDTH) / 2).max(0),
-            ((size[1] as i32 - height) / 2 + 40).max(0),
+            ((width - panel_width) / 2).max(0),
+            ((height - panel_height) / 2 + centre_shift).max(top_room),
         ];
         let offset = |rect: [i32; 4]| [rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]];
+        let panel = [origin[0], origin[1], panel_width, panel_height];
+        // The four professions along the bottom of the login screens.
+        let mut showcase = Vec::new();
+        if matches!(self.screen, Screen::Login | Screen::Register)
+            && height - (panel[1] + panel[3]) >= 180
+        {
+            let spacing = (width / 4).min(210);
+            for index in 0..4 {
+                let centre = width / 2 + (index * 2 - 3) * spacing / 2;
+                showcase.push([centre - 34, height - 168, 68, 68]);
+            }
+        }
         Layout {
-            panel: [origin[0], origin[1], PANEL_WIDTH, height],
+            panel,
             fields: fields.into_iter().map(offset).collect(),
-            choices: choices
-                .into_iter()
-                .map(|(row, index, rect)| (row, index, offset(rect)))
-                .collect(),
+            classes: classes.into_iter().map(offset).collect(),
+            bodies: bodies.into_iter().map(offset).collect(),
             status_y: origin[1] + status_y,
             buttons: button_rects
                 .into_iter()
@@ -477,144 +513,120 @@ impl LoginUi {
                 .into_iter()
                 .map(|(rect, target)| (offset(rect), target))
                 .collect(),
+            showcase,
         }
     }
 
     /// Paints the whole window.
     pub fn image(&self, size: [u32; 2], time: f32) -> RgbaImage {
-        let [width, height] = [size[0].max(1), size[1].max(1)];
-        let mut image = RgbaImage::new(width, height);
-        for y in 0..height {
-            let t = y as f32 / height as f32;
-            let colour = Rgba([
-                lerp(BACKGROUND_TOP[0], BACKGROUND_BOTTOM[0], t),
-                lerp(BACKGROUND_TOP[1], BACKGROUND_BOTTOM[1], t),
-                lerp(BACKGROUND_TOP[2], BACKGROUND_BOTTOM[2], t),
-                255,
-            ]);
-            for x in 0..width {
-                image.put_pixel(x, y, colour);
-            }
-        }
+        use crate::launcher_art as art;
+        let size = [size[0].max(1), size[1].max(1)];
+        let mut image = art::backdrop(size);
+        art::embers(&mut image, time);
         let layout = self.layout(size);
-        let centre = width as i32 / 2;
-        decorative(
-            &mut image,
-            "Gravak",
-            56.0,
-            centre,
-            layout.panel[1] - 110,
-            GOLD_BRIGHT,
-        );
-        label(
-            &mut image,
-            "Conquer Online 5065",
-            15.0,
-            centre,
-            layout.panel[1] - 40,
-            GOLD,
-        );
-
+        let centre = size[0] as i32 / 2;
         let [px, py, pw, ph] = layout.panel;
-        fill(&mut image, layout.panel, PANEL);
-        fill(&mut image, [px + 3, py + 3, pw - 6, 34], PANEL_BAND);
-        outline(
-            &mut image,
-            [px - 1, py - 1, pw + 2, ph + 2],
-            [6, 14, 18, 255],
-        );
-        outline(&mut image, layout.panel, GOLD_RULE);
-        outline(&mut image, [px + 3, py + 3, pw - 6, ph - 6], TEAL_RULE);
-        fill(&mut image, [px + 4, py + 37, pw - 8, 1], TEAL_RULE);
-        label(&mut image, self.title(), 18.0, px + pw / 2, py + 10, GOLD);
+        let caret = (time * 2.0).fract() < 0.55;
 
-        for (index, (field, rect)) in self.fields.iter().zip(&layout.fields).enumerate() {
-            let [x, y, w, h] = *rect;
-            body_text(&mut image, field.label, x, y - 18, GOLD, w);
-            let focused = index == self.focus;
-            let hot = self.hovered == Some(Target::Field(index));
-            fill(&mut image, *rect, [8, 20, 26, 255]);
-            outline(
-                &mut image,
-                *rect,
-                if focused {
-                    GOLD_BRIGHT
-                } else if hot {
-                    GOLD_RULE
-                } else {
-                    [70, 100, 108, 255]
-                },
-            );
-            let shown = if field.secret {
-                "*".repeat(field.value.len())
-            } else {
-                field.value.clone()
-            };
-            let advance = body_text(&mut image, &shown, x + 8, y + 6, WHITE, w - 16);
-            if focused && (time * 2.0).fract() < 0.5 {
-                fill(&mut image, [x + 9 + advance, y + 6, 1, h - 12], WHITE);
-            }
+        // Title.
+        let compact = self.screen == Screen::CreateCharacter;
+        let (title_size, title_y) = if compact {
+            (44.0, py - 108)
+        } else {
+            (68.0, py - 172)
+        };
+        art::gold_title(&mut image, "Gravak", title_size, centre, title_y);
+        let subtitle_y = if compact { py - 26 } else { py - 50 };
+        art::label(
+            &mut image,
+            "CONQUER ONLINE  ·  5065",
+            13.0,
+            centre,
+            subtitle_y,
+            art::GOLD,
+        );
+        if !compact {
+            art::ornament_rule(&mut image, centre, subtitle_y + 22, 140);
         }
 
-        if self.screen == Screen::CreateCharacter {
-            let mut rows = [i32::MAX; 2];
-            for (row, index, rect) in &layout.choices {
-                rows[*row] = rows[*row].min(rect[1]);
-                let (text, selected, target) = if *row == 0 {
-                    (BODIES[*index].0, *index == self.body, Target::Body(*index))
-                } else {
-                    (
-                        CLASSES[*index].0,
-                        *index == self.class,
-                        Target::Class(*index),
-                    )
-                };
-                button(
+        art::panel(&mut image, layout.panel, Some(self.title()));
+
+        match &self.screen {
+            Screen::Login | Screen::Register => {
+                for (index, (field, rect)) in self.fields.iter().zip(&layout.fields).enumerate() {
+                    let shown = if field.secret {
+                        "•".repeat(field.value.len())
+                    } else {
+                        field.value.clone()
+                    };
+                    art::field(
+                        &mut image,
+                        *rect,
+                        field.label,
+                        &shown,
+                        index == self.focus,
+                        self.hovered == Some(Target::Field(index)),
+                        caret,
+                    );
+                }
+            }
+            Screen::CreateCharacter => self.paint_creation(&mut image, &layout, caret),
+            Screen::Select(summary) => {
+                let class = class_index(summary.class);
+                let emblem = art::emblem(class, 112, true);
+                art::radial_glow(&mut image, px + 96, py + 126, 84, [255, 200, 110, 70]);
+                image::imageops::overlay(
                     &mut image,
-                    *rect,
-                    text,
-                    selected,
-                    self.hovered == Some(target),
+                    &emblem,
+                    i64::from(px + 40),
+                    i64::from(py + 70),
+                );
+                let x = px + 180;
+                art::heading(
+                    &mut image,
+                    &summary.name,
+                    26.0,
+                    x,
+                    py + 74,
+                    art::GOLD_BRIGHT,
+                    false,
+                );
+                art::label_left(
+                    &mut image,
+                    &format!(
+                        "Level {}   ·   {}",
+                        summary.level,
+                        class_name(summary.class)
+                    ),
+                    16.0,
+                    x,
+                    py + 118,
+                    art::GOLD,
+                );
+                let sex = if summary.mesh % 10_000 >= 2000 {
+                    "Female"
+                } else {
+                    "Male"
+                };
+                art::label_left(&mut image, sex, 14.0, x, py + 142, art::GREY);
+                art::body(
+                    &mut image,
+                    CLASS_INFO[class].tagline,
                     12.0,
+                    x,
+                    py + 166,
+                    art::DIM,
+                    pw - 200,
                 );
             }
-            body_text(&mut image, "Body", px + 24, rows[0] - 18, GOLD, 200);
-            body_text(&mut image, "Profession", px + 24, rows[1] - 18, GOLD, 200);
-        }
-
-        if let Screen::Select(summary) = &self.screen {
-            let card = [px + 24, py + 56, pw - 48, 88];
-            fill(&mut image, card, [8, 20, 26, 255]);
-            outline(&mut image, card, GOLD_RULE);
-            label(
-                &mut image,
-                &summary.name,
-                20.0,
-                px + pw / 2,
-                card[1] + 12,
-                GOLD_BRIGHT,
-            );
-            label(
-                &mut image,
-                &format!("Level {}  ·  {}", summary.level, class_name(summary.class)),
-                14.0,
-                px + pw / 2,
-                card[1] + 44,
-                GOLD,
-            );
-            let sex = if summary.mesh % 10_000 >= 2000 {
-                "Female"
-            } else {
-                "Male"
-            };
-            label(&mut image, sex, 13.0, px + pw / 2, card[1] + 64, GREY);
         }
 
         if !self.status.is_empty() {
-            let width = text_width(&self.status, 12.0);
-            body_text(
+            let width = art::text_width(&self.status, 12.0);
+            art::body(
                 &mut image,
                 &self.status,
+                12.0,
                 px + (pw - width).max(0) / 2,
                 layout.status_y,
                 self.status_colour,
@@ -622,21 +634,291 @@ impl LoginUi {
             );
         }
 
-        for (rect, action, text) in &layout.buttons {
+        for (index, (rect, action, text)) in layout.buttons.iter().enumerate() {
             let hot = self.hovered == Some(Target::Button(*action)) && !self.busy;
-            button(&mut image, *rect, text, false, hot, 15.0);
+            let style = if index == 0 {
+                art::ButtonStyle::Primary
+            } else {
+                art::ButtonStyle::Secondary
+            };
+            art::button(
+                &mut image,
+                *rect,
+                text,
+                style,
+                hot,
+                self.busy && *action != Action::Exit,
+            );
         }
+
+        // Showcase of the professions.
+        let featured = (time / 3.5) as usize % 4;
+        for (index, rect) in layout.showcase.iter().enumerate() {
+            let lit = index == featured;
+            let [x, y, w, _] = *rect;
+            if lit {
+                art::radial_glow(&mut image, x + w / 2, y + w / 2, w, [255, 196, 100, 70]);
+            }
+            image::imageops::overlay(
+                &mut image,
+                &art::emblem(index, w as u32, lit),
+                i64::from(x),
+                i64::from(y),
+            );
+            let colour = if lit { art::GOLD_BRIGHT } else { art::GOLD };
+            art::heading(
+                &mut image,
+                CLASSES[index].0,
+                15.0,
+                x + w / 2,
+                y + w + 10,
+                colour,
+                true,
+            );
+            let tagline = CLASS_INFO[index].tagline;
+            let width = art::text_width(tagline, 11.0);
+            art::body(
+                &mut image,
+                tagline,
+                11.0,
+                x + w / 2 - width / 2,
+                y + w + 34,
+                if lit { art::GREY } else { art::DIM },
+                200,
+            );
+        }
+
+        let footer = "Gravak-CO";
+        let width = art::text_width(footer, 11.0);
+        art::body(
+            &mut image,
+            footer,
+            11.0,
+            size[0] as i32 - width - 14,
+            size[1] as i32 - 22,
+            art::DIM,
+            200,
+        );
+        let _ = ph;
         image
+    }
+
+    fn paint_creation(&self, image: &mut RgbaImage, layout: &Layout, caret: bool) {
+        use crate::launcher_art as art;
+        let [px, py, pw, _] = layout.panel;
+        art::label_left(
+            image,
+            "Choose your profession",
+            14.0,
+            px + 30,
+            py + 60,
+            art::GOLD,
+        );
+        for (index, rect) in layout.classes.iter().enumerate() {
+            let selected = index == self.class;
+            let hot = self.hovered == Some(Target::Class(index));
+            let [x, y, w, h] = *rect;
+            if selected {
+                art::glow(image, *rect, 6, [255, 200, 110, 110]);
+                art::gradient(image, *rect, [88, 66, 28, 255], [40, 30, 14, 255]);
+            } else {
+                art::gradient(
+                    image,
+                    *rect,
+                    if hot {
+                        [34, 70, 82, 255]
+                    } else {
+                        [16, 38, 46, 255]
+                    },
+                    if hot {
+                        [14, 34, 42, 255]
+                    } else {
+                        [6, 18, 24, 255]
+                    },
+                );
+            }
+            art::outline(
+                image,
+                *rect,
+                if selected {
+                    art::GOLD_BRIGHT
+                } else if hot {
+                    art::GOLD
+                } else {
+                    [70, 80, 64, 255]
+                },
+            );
+            let emblem = art::emblem(index, (h - 16) as u32, selected);
+            image::imageops::overlay(image, &emblem, i64::from(x + 8), i64::from(y + 8));
+            let text_x = x + h + 6;
+            art::heading(
+                image,
+                CLASSES[index].0,
+                17.0,
+                text_x,
+                y + 14,
+                if selected {
+                    art::GOLD_BRIGHT
+                } else {
+                    art::GOLD
+                },
+                false,
+            );
+            art::body(
+                image,
+                CLASS_INFO[index].tagline,
+                12.0,
+                text_x,
+                y + 42,
+                art::GREY,
+                w - h - 12,
+            );
+        }
+
+        // The selected profession in detail.
+        let info = &CLASS_INFO[self.class];
+        let x = px + 28 + CLASS_COLUMN + 28;
+        let column = pw - (x - px) - 28;
+        let top = py + 64;
+        let emblem = art::emblem(self.class, 104, true);
+        art::radial_glow(image, x + 52, top + 58, 80, [255, 200, 110, 60]);
+        image::imageops::overlay(image, &emblem, i64::from(x), i64::from(top + 6));
+        art::heading(
+            image,
+            CLASSES[self.class].0,
+            30.0,
+            x + 124,
+            top + 18,
+            art::GOLD_BRIGHT,
+            false,
+        );
+        art::label_left(image, info.tagline, 15.0, x + 126, top + 62, art::GOLD);
+        art::label_left(image, info.weapons, 13.0, x + 126, top + 84, art::GREY);
+        art::ornament_rule(image, x + column / 2, top + 124, column - 40);
+        let mut line_y = top + 138;
+        for line in art::wrap(info.description, 13.0, column) {
+            art::body(image, &line, 13.0, x, line_y, art::WHITE, column);
+            line_y += 18;
+        }
+        line_y += 10;
+        for (caption, value) in ["Attack", "Defense", "Range", "Magic"]
+            .into_iter()
+            .zip(info.stats)
+        {
+            art::stat_bar(image, x, line_y, caption, value);
+            line_y += 20;
+        }
+        line_y += 6;
+        art::label_left(image, "Signature skills", 13.0, x, line_y, art::GOLD);
+        art::body(
+            image,
+            info.skills,
+            12.0,
+            x + 112,
+            line_y + 1,
+            art::GREY,
+            column - 112,
+        );
+
+        // Name and body.
+        if let Some(rect) = layout.fields.first() {
+            let field = &self.fields[0];
+            art::field(
+                image,
+                *rect,
+                field.label,
+                &field.value,
+                self.focus == 0,
+                self.hovered == Some(Target::Field(0)),
+                caret,
+            );
+        }
+        if let Some(first) = layout.bodies.first() {
+            art::label_left(image, "Body", 13.0, first[0] + 2, first[1] - 19, art::GOLD);
+        }
+        for (index, rect) in layout.bodies.iter().enumerate() {
+            art::button(
+                image,
+                *rect,
+                BODIES[index].0,
+                art::ButtonStyle::Choice {
+                    selected: index == self.body,
+                },
+                self.hovered == Some(Target::Body(index)),
+                false,
+            );
+        }
     }
 }
 
 struct Layout {
     panel: [i32; 4],
     fields: Vec<[i32; 4]>,
-    choices: Vec<(usize, usize, [i32; 4])>,
+    classes: Vec<[i32; 4]>,
+    bodies: Vec<[i32; 4]>,
     status_y: i32,
     buttons: Vec<([i32; 4], Action, &'static str)>,
     targets: Vec<([i32; 4], Target)>,
+    showcase: Vec<[i32; 4]>,
+}
+
+/// What the creation screen tells about each profession.
+pub struct ClassInfo {
+    pub tagline: &'static str,
+    pub weapons: &'static str,
+    pub description: &'static str,
+    /// Attack, defense, range and magic, out of five.
+    pub stats: [u8; 4],
+    pub skills: &'static str,
+}
+
+pub const CLASS_INFO: [ClassInfo; 4] = [
+    ClassInfo {
+        tagline: "Master of the twin blades",
+        weapons: "Blades · Swords · Clubs",
+        description: "Trojans fight in the thick of battle with a weapon in each hand. Their \
+            vast life and furious strikes make them the most fearsome close-range fighters \
+            of the Twin City.",
+        stats: [5, 3, 1, 1],
+        skills: "Cyclone · Hercules · Golem",
+    },
+    ClassInfo {
+        tagline: "Unbreakable shield of the realm",
+        weapons: "Shields · Spears · Poleaxes",
+        description: "Warriors stand behind heavy armour and a shield, holding the line \
+            while their allies strike. No profession endures more punishment, and their \
+            roar can turn the tide of a guild war.",
+        stats: [4, 5, 1, 1],
+        skills: "Shield · Roar · Superman",
+    },
+    ClassInfo {
+        tagline: "Death from a distance",
+        weapons: "Bows · Arrows",
+        description: "Archers strike from afar and take to the skies to escape their foes. \
+            Quick and precise, they rain arrows on whole groups of monsters before they \
+            come close.",
+        stats: [4, 2, 5, 1],
+        skills: "Fly · Scatter · Rapid Fire",
+    },
+    ClassInfo {
+        tagline: "Keeper of fire and water",
+        weapons: "Backswords · Spells",
+        description: "Taoists bend the elements to their will. They call down thunder and \
+            fire on their enemies, and as Water Taoists they heal and revive their \
+            companions.",
+        stats: [2, 2, 4, 5],
+        skills: "Thunder · Cure · Meditation",
+    },
+];
+
+/// Index into [`CLASSES`] of a profession id, base or promoted.
+pub fn class_index(class: u8) -> usize {
+    match class {
+        20..=25 => 1,
+        40..=45 => 2,
+        100..=101 | 132..=135 | 142..=145 => 3,
+        _ => 0,
+    }
 }
 
 pub fn valid_account(name: &str) -> bool {
@@ -659,121 +941,11 @@ fn capitalise(text: &str) -> String {
         .unwrap_or_default()
 }
 
-fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8
-}
-
 fn inside(rect: [i32; 4], point: [i32; 2]) -> bool {
     point[0] >= rect[0]
         && point[0] < rect[0] + rect[2]
         && point[1] >= rect[1]
         && point[1] < rect[1] + rect[3]
-}
-
-fn fill(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
-    let [x, y, width, height] = rect;
-    for py in y.max(0)..(y + height).min(image.height() as i32) {
-        for px in x.max(0)..(x + width).min(image.width() as i32) {
-            image
-                .get_pixel_mut(px as u32, py as u32)
-                .blend(&Rgba(colour));
-        }
-    }
-}
-
-fn outline(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
-    let [x, y, width, height] = rect;
-    fill(image, [x, y, width, 1], colour);
-    fill(image, [x, y + height - 1, width, 1], colour);
-    fill(image, [x, y, 1, height], colour);
-    fill(image, [x + width - 1, y, 1, height], colour);
-}
-
-fn button(image: &mut RgbaImage, rect: [i32; 4], text: &str, selected: bool, hot: bool, size: f32) {
-    let [x, y, width, height] = rect;
-    fill(
-        image,
-        rect,
-        if selected {
-            [120, 90, 30, 200]
-        } else if hot {
-            [60, 70, 50, 200]
-        } else {
-            [8, 22, 28, 230]
-        },
-    );
-    outline(
-        image,
-        rect,
-        if selected || hot {
-            GOLD_BRIGHT
-        } else {
-            [150, 126, 74, 255]
-        },
-    );
-    outline(
-        image,
-        [x + 1, y + 1, width - 2, height - 2],
-        [40, 78, 90, 255],
-    );
-    let text_height = size as i32 + 2;
-    label(
-        image,
-        text,
-        size,
-        x + width / 2,
-        y + (height - text_height) / 2,
-        if selected || hot { GOLD_BRIGHT } else { GOLD },
-    );
-}
-
-fn label(image: &mut RgbaImage, text: &str, size: f32, centre_x: i32, y: i32, colour: [u8; 4]) {
-    if let Ok(font) = crate::main_hud::label_font() {
-        let width = crate::main_hud::text_width(font, text, size);
-        crate::main_hud::crisp_text(image, font, text, size, [centre_x - width / 2, y], colour);
-    }
-}
-
-fn decorative(
-    image: &mut RgbaImage,
-    text: &str,
-    size: f32,
-    centre_x: i32,
-    y: i32,
-    colour: [u8; 4],
-) {
-    let Ok(font) = crate::labels::decorative_font() else {
-        label(image, text, size, centre_x, y, colour);
-        return;
-    };
-    let width = crate::main_hud::text_width(&font, text, size);
-    crate::main_hud::text(
-        image,
-        &font,
-        text,
-        size,
-        [centre_x - width / 2, y],
-        colour,
-        None,
-    );
-}
-
-fn text_width(text: &str, size: f32) -> i32 {
-    crate::main_hud::font().map_or(0, |font| crate::main_hud::text_width(font, text, size))
-}
-
-/// Body text in the UI sans face; returns the advance.
-fn body_text(
-    image: &mut RgbaImage,
-    text: &str,
-    x: i32,
-    y: i32,
-    colour: [u8; 4],
-    max_width: i32,
-) -> i32 {
-    crate::main_hud::font().map_or(0, |font| {
-        crate::main_hud::text(image, font, text, 12.0, [x, y], colour, Some(max_width))
-    })
 }
 
 /// The screens as a winit application, until the world is entered or the
@@ -915,12 +1087,10 @@ impl ApplicationHandler for Launcher {
             }
             self.redraw();
         }
-        // Blink the caret and poll the login session.
-        if (self.started.elapsed().as_millis() / 500) % 2 == 0 {
-            self.redraw();
-        }
+        // Animate the embers and caret, and poll the login session.
+        self.redraw();
         event_loop.set_control_flow(ControlFlow::WaitUntil(
-            Instant::now() + Duration::from_millis(100),
+            Instant::now() + Duration::from_millis(33),
         ));
     }
 }

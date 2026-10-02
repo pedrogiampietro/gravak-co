@@ -10,6 +10,7 @@ mod debug_log;
 mod hud;
 mod labels;
 mod launcher;
+mod launcher_art;
 mod login;
 mod logo;
 mod main_hud;
@@ -6474,15 +6475,25 @@ fn run() -> Result<()> {
                 ready.health.min(u16::MAX as u32) as u16,
             )
         {
-            live_character.maximum_health = character
-                .maximum_health
-                .max(ready.maximum_health)
-                .max(ready.health);
             character = live_character;
         }
+        // The Ready event is consumed by wait_ready, so the server's
+        // profile is applied here; the sample profile's 1000 life and
+        // attributes are offline-only.
         character.name = ready.character_name.clone();
         character.guild.clear();
         character.guild_rank.clear();
+        character.health = ready.health;
+        character.maximum_health = ready.maximum_health.max(ready.health).max(1);
+        character.strength = ready.strength;
+        character.agility = ready.agility;
+        character.vitality = ready.vitality;
+        character.spirit = ready.spirit;
+        character.attribute_points = ready.attribute_points;
+        character.current_class = ready.current_class;
+        character.previous_class = ready.previous_class;
+        character.rebirths = ready.rebirths;
+        character.kill_points = ready.kill_points;
     }
     let requested_spawn = spawn;
     let preferred_spawn = requested_spawn
