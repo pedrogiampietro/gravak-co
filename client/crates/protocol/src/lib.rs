@@ -393,6 +393,18 @@ impl ActionPacket {
         }
     }
 
+    /// MsgAction 106: asks where teammate `member_id` is.
+    pub fn query_team_member(character_id: u32, member_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: member_id,
+            data2: 0,
+            details: 0,
+            action_type: 106,
+        }
+    }
+
     pub fn change_action(character_id: u32, action: u32) -> Self {
         Self {
             client_timestamp: unix_timestamp(),
@@ -1058,6 +1070,14 @@ impl WalkPacket {
             character_id,
             direction,
             movement_type: 0,
+        }
+    }
+
+    /// A step that observers animate as running (movement type 1).
+    pub fn run(character_id: u32, direction: u8) -> Self {
+        Self {
+            movement_type: 1,
+            ..Self::new(character_id, direction)
         }
     }
 }

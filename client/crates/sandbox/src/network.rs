@@ -305,6 +305,13 @@ pub enum NetworkEvent {
         position: [i32; 2],
         direction: u8,
     },
+    /// Where a teammate stands (MsgAction 106); `map_id` is 0 when it is
+    /// not on the local hero's map.
+    TeamMemberPosition {
+        id: u32,
+        map_id: u32,
+        position: [i32; 2],
+    },
     RemoteAction {
         id: u32,
         action: u16,
@@ -394,6 +401,8 @@ enum NetworkCommand {
     Walk {
         character_id: u32,
         direction: u8,
+        /// Sent as the movement type so other screens play the run cycle.
+        running: bool,
     },
     Jump {
         character_id: u32,
@@ -419,6 +428,10 @@ enum NetworkCommand {
     Action {
         character_id: u32,
         action: u32,
+    },
+    QueryTeamMember {
+        character_id: u32,
+        member_id: u32,
     },
     KillMode {
         character_id: u32,
@@ -623,6 +636,7 @@ impl NetworkHandle {
                 | NetworkEvent::NpcSpawn(_)
                 | NetworkEvent::Team { .. }
                 | NetworkEvent::TeamMember { .. }
+                | NetworkEvent::TeamMemberPosition { .. }
                 | NetworkEvent::Trade { .. }
                 | NetworkEvent::TradeItem(_)
                 | NetworkEvent::VendorItem { .. }
@@ -651,10 +665,11 @@ impl NetworkHandle {
         }
     }
 
-    pub fn send_walk(&self, character_id: u32, direction: u8) {
+    pub fn send_walk(&self, character_id: u32, direction: u8, running: bool) {
         let _ = self.commands.send(NetworkCommand::Walk {
             character_id,
             direction,
+            running,
         });
     }
 
@@ -682,6 +697,13 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Action {
             character_id,
             action,
+        });
+    }
+
+    pub fn query_team_member(&self, character_id: u32, member_id: u32) {
+        let _ = self.commands.send(NetworkCommand::QueryTeamMember {
+            character_id,
+            member_id,
         });
     }
 
@@ -1494,6 +1516,13 @@ async fn run(
                         direction: action.details as u8,
                     });
                 }
+                Some(GameEvent::Action(action)) if action.action_type == 106 => {
+                    let _ = events.send(NetworkEvent::TeamMemberPosition {
+                        id: action.character_id,
+                        map_id: action.data1,
+                        position: unpack_position(action.data2),
+                    });
+                }
                 Some(GameEvent::Action(action)) if action.action_type == 132 => {
                     let _ = events.send(NetworkEvent::RemoveActor(action.character_id));
                 }
@@ -1651,9 +1680,18 @@ async fn run(
                 None => return Ok(()),
             },
             command = commands.recv() => match command {
-                Some(NetworkCommand::Walk { character_id, direction }) => {
+                Some(NetworkCommand::Walk {
+                    character_id,
+                    direction,
+                    running,
+                }) => {
+                    let packet = if running {
+                        gravak_protocol::WalkPacket::run(character_id, direction)
+                    } else {
+                        gravak_protocol::WalkPacket::new(character_id, direction)
+                    };
                     session
-                        .send(&gravak_protocol::WalkPacket::new(character_id, direction))
+                        .send(&packet)
                         .await
                         .map_err(|error| error.to_string())?;
                 }
@@ -1704,6 +1742,15 @@ async fn run(
                 Some(NetworkCommand::Action { character_id, action }) => {
                     session
                         .send(&ActionPacket::change_action(character_id, action))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::QueryTeamMember {
+                    character_id,
+                    member_id,
+                }) => {
+                    session
+                        .send(&ActionPacket::query_team_member(character_id, member_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

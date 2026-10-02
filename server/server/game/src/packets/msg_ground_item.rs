@@ -77,6 +77,17 @@ impl PacketProcess for MsgGroundItem {
             return Ok(());
         }
 
+        // The picker kneels on its own screen; show the kneel to everyone
+        // around too (ChangeAction 220, the client's Pickup).
+        actor
+            .screen()
+            .send_message(super::MsgAction::from_character(
+                character,
+                220,
+                super::ActionType::ChangeAction,
+            ))
+            .await?;
+
         // Remove atomically before awarding the loot so two clients cannot
         // collect the same UID at the same time.
         let Some(ground_item) = state.take_ground_item(self.uid) else {

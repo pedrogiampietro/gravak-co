@@ -92,6 +92,15 @@ fn button_frames(button: MainHudButton) -> Option<[&'static str; 2]> {
     })
 }
 
+/// `Control.Ani` art of the kill-mode button for PK, PEACE, TEAM and
+/// CAPTURE: the button names the mode in force.
+const KILL_MODE_FRAMES: [[&str; 2]; 4] = [
+    ["data/main/PkFree.dds", "data/main/PkFreeClick.dds"],
+    ["data/main/PkSafe.dds", "data/main/PkSafeClick.dds"],
+    ["data/main/PkGroup.dds", "data/main/PkGroupClick.dds"],
+    ["data/main/PkArre.dds", "data/main/PkArreClick.dds"],
+];
+
 fn chat_frames(control: ChatStripControl) -> Option<[&'static str; 2]> {
     Some(match control {
         ChatStripControl::List => [
@@ -137,6 +146,8 @@ pub struct MainHudArt {
     mp: RgbaImage,
     stamina: RgbaImage,
     buttons: Vec<(MainHudButton, [RgbaImage; 2])>,
+    /// The Capture button's art for each kill mode, `shop::KILL_MODES` order.
+    kill_modes: Vec<[RgbaImage; 2]>,
     chat: Vec<(ChatStripControl, [RgbaImage; 2])>,
 }
 
@@ -168,6 +179,10 @@ impl MainHudArt {
                 ));
             }
         }
+        let kill_modes = KILL_MODE_FRAMES
+            .iter()
+            .map(|[normal, pressed]| Ok([visible(assets, normal)?, visible(assets, pressed)?]))
+            .collect::<Result<Vec<_>>>()?;
         let mut chat = Vec::new();
         for control in ChatStripControl::ALL {
             if let Some([normal, pressed]) = chat_frames(control) {
@@ -184,6 +199,7 @@ impl MainHudArt {
             mp: clipped(assets, MP_FILL, MP_CLIP)?,
             stamina: assets.image(STAMINA_FILL)?,
             buttons,
+            kill_modes,
             chat,
         })
     }
@@ -211,6 +227,8 @@ pub struct MainHudState<'a> {
     pub hovered_chat: Option<ChatStripControl>,
     pub chat_text: &'a str,
     pub chat_focused: bool,
+    /// The kill mode in force, `shop::KILL_MODES` order.
+    pub kill_mode: u8,
     /// Icon of the selected skill, painted over the "Skill" button.
     pub active_skill_icon: Option<RgbaImage>,
 }
@@ -299,6 +317,10 @@ pub fn draw(
         imageops::overlay(img, &icon, x, y);
     }
     for (button, frames) in &art.buttons {
+        let frames = match button {
+            MainHudButton::Capture => art.kill_modes.get(usize::from(state.kill_mode)).unwrap_or(frames),
+            _ => frames,
+        };
         let rect = button.local_rect();
         let frame = &frames[usize::from(state.hovered_button == Some(*button))];
         let [x, y] = at([rect.x as i64, rect.y as i64]);

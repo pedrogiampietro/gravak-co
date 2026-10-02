@@ -9,8 +9,12 @@ pub async fn tick(state: &State) {
         let GameEntity::Character(character) = entity.as_ref() else {
             continue;
         };
+        let points_before = character.kill_points();
         if !character.expire_temporary_effects() {
             continue;
+        }
+        if let Err(error) = crate::death::notify_name_change(character, points_before).await {
+            tracing::warn!(character = character.id(), ?error, "Failed to announce a name colour change");
         }
 
         let update = MsgPlayer::from(character);

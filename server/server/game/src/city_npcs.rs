@@ -126,6 +126,17 @@ fn minor_pairs(character: &Character) -> Vec<(u8, [u32; 2])> {
         .collect()
 }
 
+/// The Warden's answer to a black name: how many PK points still keep them
+/// here and how long those take to wear off while online.
+fn sentence_text(points: u16) -> String {
+    let left = points.saturating_sub(crate::death::BLACK_NAME_POINTS) + 1;
+    let minutes = u64::from(left) * crate::death::PK_DECAY.as_secs() / 60;
+    format!(
+        "You must stay and think about what you've done! You have {points} PK points;          I will let you out below {}. That is {left} more, about {minutes} minutes online.",
+        crate::death::BLACK_NAME_POINTS
+    )
+}
+
 fn gear_menu(group: u8) -> Options {
     let mut list = GEAR
         .iter()
@@ -152,7 +163,7 @@ pub fn opening(npc_id: u32, character: &Character) -> Option<(String, Options, u
         CAPTAIN_ID => {
             if character.kill_points() >= crate::death::BLACK_NAME_POINTS {
                 (
-                    "You must stay and think about what you've done!".into(),
+                    sentence_text(character.kill_points()),
                     options(&[(255, "I shall..")]),
                 )
             } else {
@@ -399,7 +410,7 @@ pub async fn answer(
             if character.kill_points() < crate::death::BLACK_NAME_POINTS {
                 teleport(state, character, JAIL_EXIT).await?;
             } else {
-                say(actor, npc_id, "You must stay and think about what you've done!", "I shall..").await?;
+                say(actor, npc_id, &sentence_text(character.kill_points()), "I shall..").await?;
             }
         },
         (CAPTAIN_LI_ID, 1) => {

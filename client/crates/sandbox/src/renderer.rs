@@ -1645,14 +1645,16 @@ impl Renderer {
             p[1] - self.config.height as f32 * 0.5,
         ]
     }
-    pub fn minimap_pointer(&mut self, position: [f32; 2], down: bool) -> bool {
-        self.minimap.as_mut().is_some_and(|minimap| {
-            minimap.pointer(
-                position,
-                down,
-                [self.config.width as f32, self.config.height as f32],
-            )
-        })
+    pub fn minimap_pointer(&mut self, position: [f32; 2]) -> bool {
+        let viewport = [self.config.width as f32, self.config.height as f32];
+        self.minimap
+            .as_mut()
+            .is_some_and(|minimap| minimap.pointer(position, viewport))
+    }
+
+    /// Closes the expanded minimap; false when it was not open.
+    pub fn collapse_minimap(&mut self) -> bool {
+        self.minimap.as_mut().is_some_and(crate::minimap::Minimap::collapse)
     }
     pub fn draw(
         &mut self,
@@ -1664,6 +1666,7 @@ impl Renderer {
         skill_hud: &crate::hud::SkillHud,
         team_members: &[crate::network::TeamMember],
         team_leader_id: Option<u32>,
+        team_pins: &[crate::minimap::TeamPin],
         pending_team_invite: Option<u32>,
         pending_team_join_request: Option<u32>,
         team_join_enabled: bool,
@@ -2580,7 +2583,7 @@ impl Renderer {
         // so world information remains available while the panel is open.
         if minimap_visible {
             if let Some(minimap) = &self.minimap {
-                for item in minimap.quads(map, player.position, camera, viewport) {
+                for item in minimap.quads(map, player.position, team_pins, camera, viewport) {
                     let mut vertices = quad(
                         [item.rect[0], item.rect[1]],
                         [item.rect[2], item.rect[3]],
@@ -2595,6 +2598,25 @@ impl Renderer {
                     draws.push(Draw {
                         texture: item.texture.into(),
                         vertices,
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
+            }
+            // Who a hovered teammate pin is, beside the cursor.
+            let hovered_pin = self.minimap.as_ref().and_then(|minimap| {
+                minimap.pin_at(map, player.position, team_pins, camera, viewport, cursor)
+            });
+            if let Some(pin) = hovered_pin.map(|index| &team_pins[index]) {
+                let key = format!("@minimap-pin-name-{}", pin.name);
+                if !self.textures.contains_key(&key) {
+                    self.upload(&key, crate::labels::tooltip_image(&pin.name)?);
+                }
+                if let Some(label) = self.textures.get(&key) {
+                    let x = (cursor[0] + 14.0).min(viewport[0] - label.size[0]);
+                    draws.push(Draw {
+                        texture: key,
+                        vertices: quad([x, cursor[1] + 14.0], label.size, viewport),
                         depth_test: false,
                         sort_depth: f32::INFINITY,
                     });

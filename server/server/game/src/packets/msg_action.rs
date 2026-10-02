@@ -345,6 +345,29 @@ impl MsgAction {
         Ok(())
     }
 
+    /// MsgAction 106: where a teammate stands, for the minimap pin. The
+    /// reply is about the member: data1 is the map (0 when it is not on the
+    /// asker's map) and data2 the packed cell.
+    async fn handle_query_team_member(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
+        let entity = actor.try_entity()?;
+        let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        if self.character_id != me.id() || !state.team_manager().same_team(me.id(), self.data1) {
+            return Ok(());
+        }
+        let map_id = me.entity().map_id();
+        let member = state.entity(self.data1);
+        let reply = match member
+            .as_ref()
+            .and_then(|member| member.as_character())
+            .filter(|member| member.entity().map_id() == map_id)
+        {
+            Some(member) => Self::from_character(member, map_id, ActionType::QueryTeamMember),
+            None => Self::new(self.data1, 0, 0, 0, ActionType::QueryTeamMember),
+        };
+        actor.send(reply).await?;
+        Ok(())
+    }
+
     #[tracing::instrument(skip_all)]
     async fn handle_query_entity(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
         let entity = actor.try_entity()?;
@@ -551,6 +574,7 @@ impl PacketProcess for MsgAction {
             ActionType::Jump => self.handle_jump(state, actor).await,
             ActionType::ChangeFacing => self.handle_change_facing(actor).await,
             ActionType::ChangeAction => self.handle_change_action(actor).await,
+            ActionType::QueryTeamMember => self.handle_query_team_member(state, actor).await,
             ActionType::Mine => {
                 let entity = actor.try_entity()?;
                 let character = entity.as_character().ok_or(Error::CharacterNotFound)?;

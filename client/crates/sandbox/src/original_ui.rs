@@ -65,11 +65,11 @@ pub fn inventory_base(assets: &mut Assets) -> Result<RgbaImage> {
     let source = assets.image(INVENTORY_ASSET)?;
     let mut base =
         imageops::crop_imm(&source, 0, 0, INVENTORY_RECT[2], INVENTORY_RECT[3]).to_image();
-    // GUI.ini [153-1561] money button, [153-1667] Help, [153-1128] Close.
+    // GUI.ini [153-1561] money button and [153-1128] Close. Help
+    // ([153-1667]) gives its place to the client's Sort button.
     overlay_asset(&mut base, assets, "data/main/MpcGoodsMoneyBtn.dds", 71, 390)?;
     // `[Dialog57]` CPs (晶石) icon beside the second field ([153-1562]).
     overlay_asset(&mut base, assets, "data/main/PublicBtnMoney.dds", 71, 422)?;
-    overlay_asset(&mut base, assets, "data/main/HelpBtn2.dds", 45, 447)?;
     overlay_asset(&mut base, assets, "data/main/CloseBtn2.dds", 170, 447)?;
     Ok(base)
 }

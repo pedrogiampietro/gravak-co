@@ -4,7 +4,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::entities::{Character, Flags};
-use crate::packets::{InteractAction, MapFlags, MsgGroundItem, MsgInteract, MsgItemInfo, MsgPlayer, MsgUserInfo};
+use crate::packets::{
+    InteractAction, MapFlags, MsgGroundItem, MsgInteract, MsgItemInfo, MsgPlayer, MsgTalk, MsgUserInfo, TalkChannel,
+};
 use crate::state::GroundItem;
 use crate::{Error, State};
 
@@ -12,6 +14,8 @@ use crate::{Error, State};
 pub const REVIVE_DELAY: Duration = Duration::from_secs(18);
 /// A killer's name flashes blue this long.
 pub const PK_FLASH: Duration = Duration::from_secs(180);
+/// Attacking a player who is not fair game flashes the name this long.
+pub const ATTACK_FLASH: Duration = Duration::from_secs(60);
 /// One PK point wears off this often while online.
 pub const PK_DECAY: Duration = Duration::from_secs(6 * 60);
 pub const RED_NAME_POINTS: u16 = 30;
@@ -51,6 +55,70 @@ pub fn pk_penalty(victim_flags: Flags) -> Option<u16> {
         Some(3)
     } else {
         Some(10)
+    }
+}
+
+/// An attack on a player who is not fair game: where PK counts, the
+/// attacker's name starts flashing blue at once, so everyone around sees who
+/// started the fight (Redux `CheckCrime`), not only after a kill.
+pub async fn check_crime(state: &State, attacker: &Character, victim: &Character) -> Result<(), Error> {
+    let map_flags = state
+        .try_map(attacker.entity().map_id())
+        .map(|map| map.flags())
+        .unwrap_or_default();
+    if !map_counts_pk(map_flags) || pk_penalty(victim.entity().flags()).is_none() {
+        return Ok(());
+    }
+    let already_flashing = attacker.entity().flags().contains(Flags::BLUE_FLASHING_NAME);
+    attacker.flash_name(ATTACK_FLASH);
+    if !already_flashing {
+        let update = MsgPlayer::from(attacker);
+        attacker.owner().send(update.clone()).await?;
+        if let Ok(screen) = attacker.try_screen() {
+            screen.send_message(update).await?;
+        }
+    }
+    Ok(())
+}
+
+/// What a character is told when PK points move their name to another
+/// colour; `None` while it keeps the same one.
+pub fn name_change_notice(points_before: u16, points_after: u16) -> Option<&'static str> {
+    let (before, after) = (name_flags(points_before), name_flags(points_after));
+    if before.bits() == after.bits() {
+        return None;
+    }
+    Some(if after.contains(Flags::BLACK_NAME) {
+        "Your name has turned black! The guards will hunt you, and if you die you will be sent to jail."
+    } else if after.contains(Flags::RED_NAME) && before.contains(Flags::BLACK_NAME) {
+        "Your name is red again."
+    } else if after.contains(Flags::RED_NAME) {
+        "Your name has turned red! If another player kills you, you may lose your equipment."
+    } else {
+        "Your name is white again."
+    })
+}
+
+/// Tells `character` that their name changed colour, if it did.
+pub async fn notify_name_change(character: &Character, points_before: u16) -> Result<(), Error> {
+    if let Some(notice) = name_change_notice(points_before, character.kill_points()) {
+        character
+            .owner()
+            .send(MsgTalk::from_system(character.id(), TalkChannel::System, notice))
+            .await?;
+    }
+    Ok(())
+}
+
+/// Chance, in percent, that a player killer makes each worn piece fall: 35
+/// for black names, 20 for red names, none otherwise.
+pub fn equipment_drop_percent(flags: Flags) -> u32 {
+    if flags.contains(Flags::BLACK_NAME) {
+        35
+    } else if flags.contains(Flags::RED_NAME) {
+        20
+    } else {
+        0
     }
 }
 
@@ -113,9 +181,15 @@ pub async fn kill_character(
             dropped.push(item.item_type);
         }
     }
-    // Red and black names also lose one piece of equipment.
-    if victim.entity().flags().intersects(Flags::RED_NAME | Flags::BLACK_NAME) {
-        if let Some(item) = (1..=9).find_map(|slot| victim.equipment_item(slot)) {
+    // Slain by a player where PK counts, red and black names may lose each
+    // piece they wear (Albetros `DropItems`).
+    let slain_by_player = killer.is_some_and(|killer| killer.id() != victim.id());
+    let equipment_percent = equipment_drop_percent(victim.entity().flags());
+    if slain_by_player && map_counts_pk(map_flags) && equipment_percent > 0 {
+        for item in (1..=9).filter_map(|slot| victim.equipment_item(slot)) {
+            if !roll_percent(equipment_percent) {
+                continue;
+            }
             if let Some(removed) = drop_equipment(state, victim, item).await? {
                 owner.send(MsgItemInfo::remove_equipment_item(item, item.position)).await?;
                 dropped.push(removed.item_type);
@@ -144,7 +218,9 @@ pub async fn kill_character(
     let killer = killer.filter(|killer| killer.id() != victim.id() && map_counts_pk(map_flags));
     let penalty = pk_penalty(victim.entity().flags());
     if let (Some(killer), Some(penalty)) = (killer, penalty) {
-        killer.set_kill_points(killer.kill_points().saturating_add(penalty));
+        let points_before = killer.kill_points();
+        killer.set_kill_points(points_before.saturating_add(penalty));
+        notify_name_change(killer, points_before).await?;
         killer.flash_name(PK_FLASH);
         killer.save(state).await?;
         killer.owner().send(MsgUserInfo::from(killer)).await?;
@@ -231,6 +307,24 @@ pub async fn revive(state: &State, character: &Character) -> Result<bool, Error>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worn_pieces_fall_by_name_colour() {
+        assert_eq!(equipment_drop_percent(Flags::NONE), 0);
+        assert_eq!(equipment_drop_percent(Flags::BLUE_FLASHING_NAME), 0);
+        assert_eq!(equipment_drop_percent(Flags::RED_NAME), 20);
+        assert_eq!(equipment_drop_percent(Flags::BLACK_NAME), 35);
+    }
+
+    #[test]
+    fn name_colour_changes_are_announced_once() {
+        assert_eq!(name_change_notice(20, 29), None);
+        assert!(name_change_notice(20, 30).is_some_and(|text| text.contains("red")));
+        assert!(name_change_notice(95, 105).is_some_and(|text| text.contains("black")));
+        assert_eq!(name_change_notice(100, 99), Some("Your name is red again."));
+        assert_eq!(name_change_notice(30, 29), Some("Your name is white again."));
+        assert_eq!(name_change_notice(105, 101), None);
+    }
 
     #[test]
     fn names_follow_pk_points() {

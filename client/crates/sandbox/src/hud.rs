@@ -47,6 +47,8 @@ pub struct SkillHud {
     pub bar_open: bool,
     pub active_skill: Option<u32>,
     pub kill_count: u32,
+    /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
+    pub kill_mode: u8,
     /// Skill under the cursor in the bar; filled in by the renderer.
     pub hovered: Option<u32>,
 }
@@ -765,6 +767,7 @@ pub fn image(
             hovered_chat,
             chat_text,
             chat_focused,
+            kill_mode: skills.kill_mode,
             active_skill_icon: skills
                 .active_skill
                 .and_then(|id| crate::main_hud::skill_icon(assets, id)),

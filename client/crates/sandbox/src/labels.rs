@@ -143,8 +143,9 @@ const BLUE_FLASHING_NAME: u64 = 1 << 0;
 const RED_NAME: u64 = 1 << 14;
 const BLACK_NAME: u64 = 1 << 15;
 
-/// The name colour the status flags give a player: blue while flashing
-/// after a kill (blinking twice a second), black or red by PK points.
+/// The name colour the status flags give a player: black or red by PK
+/// points, and while flashing (after an attack or a kill) blue blinking
+/// twice a second against red, or against black for a black name.
 pub fn name_colour(status_flags: u64) -> [u8; 3] {
     let blink_on = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -157,10 +158,14 @@ pub fn name_colour(status_flags: u64) -> [u8; 3] {
     } else {
         [255, 255, 255]
     };
-    if status_flags & BLUE_FLASHING_NAME != 0 && blink_on {
-        [0, 160, 255]
-    } else {
+    if status_flags & BLUE_FLASHING_NAME == 0 {
         pk_colour
+    } else if blink_on {
+        [0, 160, 255]
+    } else if status_flags & BLACK_NAME != 0 {
+        pk_colour
+    } else {
+        [255, 0, 0]
     }
 }
 
@@ -345,6 +350,21 @@ pub fn loot_image(value: u32) -> Result<RgbaImage> {
         &[(label.as_str(), [255, 225, 120])],
         [4.0, 1.0],
     );
+    Ok(image)
+}
+
+/// A small dark tooltip with a gold border, such as a minimap pin's name.
+pub fn tooltip_image(label: &str) -> Result<RgbaImage> {
+    let font = font()?;
+    let width = width(&font, label).ceil() as u32 + 12;
+    let mut image = RgbaImage::from_pixel(width.max(24), 20, image::Rgba([12, 10, 8, 220]));
+    let (w, h) = image.dimensions();
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        if x == 0 || y == 0 || x == w - 1 || y == h - 1 {
+            *pixel = image::Rgba([196, 160, 90, 255]);
+        }
+    }
+    text(&mut image, &font, &[(label, [255, 236, 170])], [6.0, 3.0]);
     Ok(image)
 }
 
