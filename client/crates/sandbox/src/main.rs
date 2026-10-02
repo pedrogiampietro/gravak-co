@@ -541,6 +541,12 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
+            WindowEvent::KeyboardInput { event, .. } if self.trade.editing.is_some() => {
+                if event.state == ElementState::Pressed {
+                    self.handle_trade_amount_key(&event);
+                }
+                return;
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if self.dialog.as_ref().is_some_and(|dialog| dialog.input_focused) =>
             {
@@ -1463,7 +1469,11 @@ impl App {
                 }
             }
             if self.quick_panel == Some(shop::QuickPanel::Trade) {
-                if let Some(action) = shop::trade_panel_action_at(viewport, self.cursor, &self.trade) {
+                let action = shop::trade_panel_action_at(viewport, self.cursor, &self.trade);
+                if !matches!(action, Some(shop::TradePanelAction::EditAmount(_))) {
+                    self.trade.editing = None;
+                }
+                if let Some(action) = action {
                     self.handle_trade_panel_action(action);
                     self.held = false;
                     return true;
@@ -2152,11 +2162,92 @@ impl App {
         }
     }
 
+    /// Digits, Backspace, Tab (switch box), Enter (offer) and Escape for
+    /// the trade's silver and CP boxes.
+    fn handle_trade_amount_key(&mut self, event: &winit::event::KeyEvent) {
+        let Some(amount) = self.trade.editing else {
+            return;
+        };
+        let input = match amount {
+            network::TradeAmount::Silver => &mut self.trade.silver_input,
+            network::TradeAmount::Cps => &mut self.trade.cps_input,
+        };
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::Escape) => self.trade.editing = None,
+            PhysicalKey::Code(KeyCode::Backspace) => {
+                input.pop();
+            }
+            PhysicalKey::Code(KeyCode::Tab) => {
+                let next = match amount {
+                    network::TradeAmount::Silver => network::TradeAmount::Cps,
+                    network::TradeAmount::Cps => network::TradeAmount::Silver,
+                };
+                self.handle_trade_panel_action(shop::TradePanelAction::EditAmount(next));
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                self.trade.editing = None;
+                self.commit_trade_amounts();
+            }
+            _ => {
+                if let Some(text) = event.text.as_ref() {
+                    for ch in text.chars().filter(char::is_ascii_digit) {
+                        if input.len() < 10 {
+                            input.push(ch);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Offers the typed silver and CPs, capped at what the character owns.
+    /// Only amounts that changed are sent: each change resets both sides'
+    /// agreement on the server.
+    fn commit_trade_amounts(&mut self) {
+        const SET_MONEY: u32 = 7;
+        const SET_CPS: u32 = 13;
+        let Some(network) = &self.network else {
+            return;
+        };
+        if !self.trade.active {
+            return;
+        }
+        let owned = [u64::from(self.silver), u64::from(self.cps)];
+        let mut capped = false;
+        for (index, (input, offered, subtype)) in [
+            (&mut self.trade.silver_input, &mut self.trade.own_silver, SET_MONEY),
+            (&mut self.trade.cps_input, &mut self.trade.own_cps, SET_CPS),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if input.is_empty() {
+                continue;
+            }
+            let typed = input.parse::<u64>().unwrap_or(u64::MAX);
+            let value = typed.min(owned[index]).min(u64::from(u32::MAX)) as u32;
+            capped |= u64::from(value) < typed;
+            input.clear();
+            if value != *offered {
+                network.send_trade(value, subtype, 0);
+                *offered = value;
+                self.trade.own_confirmed = false;
+            }
+        }
+        self.network_status = if capped {
+            "online: valor limitado ao que você possui".into()
+        } else {
+            format!(
+                "online: oferecendo {} silver e {} CPs",
+                self.trade.own_silver, self.trade.own_cps
+            )
+        };
+    }
+
     fn handle_trade_panel_action(&mut self, action: shop::TradePanelAction) {
         const REQUEST: u32 = 1;
         const CLOSE: u32 = 2;
         const ADD_ITEM: u32 = 6;
-        const SET_MONEY: u32 = 7;
         const REMOVE_ITEM: u32 = 11;
         const ACCEPT: u32 = 10;
         let Some(network) = &self.network else {
@@ -2216,16 +2307,25 @@ impl App {
                 self.pending_trade_items.retain(|uid| *uid != item.uid);
                 self.trade.own_confirmed = false;
             }
-            shop::TradePanelAction::SetMoney => {
-                if self.trade.own_silver == 0 && self.silver > 0 {
-                    network.send_trade(1, SET_MONEY, 0);
-                    self.trade.own_silver = 1;
-                    self.trade.own_confirmed = false;
-                    self.network_status = "online: 1 silver oferecido".into();
+            shop::TradePanelAction::EditAmount(amount) => {
+                self.trade.editing = Some(amount);
+                let (input, offered) = match amount {
+                    network::TradeAmount::Silver => (&mut self.trade.silver_input, self.trade.own_silver),
+                    network::TradeAmount::Cps => (&mut self.trade.cps_input, self.trade.own_cps),
+                };
+                if input.is_empty() && offered > 0 {
+                    *input = offered.to_string();
                 }
             }
+            shop::TradePanelAction::CommitAmounts => self.commit_trade_amounts(),
             shop::TradePanelAction::Confirm => {
                 let Some(target_id) = self.trade.peer_id else {
+                    return;
+                };
+                // Agree also offers what is typed, so the partner always
+                // sees the amounts being agreed to.
+                self.commit_trade_amounts();
+                let Some(network) = &self.network else {
                     return;
                 };
                 network.send_trade(target_id, ACCEPT, 1);
@@ -2479,7 +2579,15 @@ impl App {
                     self.network_status = "online: trade closed".into();
                 }
                 8 => self.trade.peer_silver = data,
-                10 => self.trade.peer_confirmed = data != 0,
+                12 => self.trade.peer_cps = data,
+                10 => {
+                    self.trade.peer_confirmed = data != 0;
+                    // The partner changed the offer: the server reset both
+                    // agreements.
+                    if data == 0 {
+                        self.trade.own_confirmed = false;
+                    }
+                }
                 11 => self.trade.peer_items.retain(|item| item.uid != data),
                 6 => {
                     self.pending_trade_items.retain(|uid| *uid != data);

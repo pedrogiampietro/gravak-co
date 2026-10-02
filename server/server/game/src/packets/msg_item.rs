@@ -424,7 +424,7 @@ impl PacketProcess for MsgItem {
                     return Ok(());
                 };
                 match seller
-                    .complete_trade(state.pool(), buyer, &[item.uid], &[], 0, listing.price)
+                    .complete_trade(state.pool(), buyer, &[item.uid], &[], 0, listing.price, 0, 0)
                     .await?
                 {
                     Some(transfer) => {

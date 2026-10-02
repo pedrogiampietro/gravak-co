@@ -3004,6 +3004,8 @@ impl Character {
         requested_uids: &[u32],
         offered_silver: u32,
         requested_silver: u32,
+        offered_cps: u32,
+        requested_cps: u32,
     ) -> Result<Option<TradeTransfer>, Error> {
         if self.database_id() == other.database_id() {
             return Ok(None);
@@ -3163,6 +3165,28 @@ impl Character {
                 return Ok(None);
             }
         }
+        for (payer, receiver, amount) in [
+            (self.database_id(), other.database_id(), offered_cps),
+            (other.database_id(), self.database_id(), requested_cps),
+        ] {
+            if amount == 0 {
+                continue;
+            }
+            let debited = sqlx::query("UPDATE characters SET cps = cps - ? WHERE character_id = ? AND cps >= ?")
+                .bind(i64::from(amount))
+                .bind(payer)
+                .bind(i64::from(amount))
+                .execute(&mut *transaction)
+                .await?;
+            if debited.rows_affected() != 1 {
+                return Ok(None);
+            }
+            sqlx::query("UPDATE characters SET cps = cps + ? WHERE character_id = ?")
+                .bind(i64::from(amount))
+                .bind(receiver)
+                .execute(&mut *transaction)
+                .await?;
+        }
         // Delete and reinsert the exchanged inventory rows inside the same
         // transaction. A direct UPDATE can hit the UNIQUE(character_id,
         // position) index while two full inventories exchange their slots;
@@ -3248,6 +3272,16 @@ impl Character {
             .saturating_add(u64::from(offered_silver));
         self.silver.store(left_silver, Ordering::Relaxed);
         other.silver.store(right_silver, Ordering::Relaxed);
+        let left_cps = self
+            .cps()
+            .saturating_sub(u64::from(offered_cps))
+            .saturating_add(u64::from(requested_cps));
+        let right_cps = other
+            .cps()
+            .saturating_sub(u64::from(requested_cps))
+            .saturating_add(u64::from(offered_cps));
+        self.cps.store(left_cps, Ordering::Relaxed);
+        other.cps.store(right_cps, Ordering::Relaxed);
         Ok(Some(TradeTransfer {
             left_removed: left_items,
             right_removed: right_items,

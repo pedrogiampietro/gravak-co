@@ -97,6 +97,8 @@ async fn complete_trade(state: &State, session: trade::TradeSession) -> Result<(
             &session.target_items,
             session.owner_silver,
             session.target_silver,
+            session.owner_cps,
+            session.target_cps,
         )
         .await?;
     match transfer {
@@ -172,6 +174,15 @@ async fn complete_trade(state: &State, session: trade::TradeSession) -> Result<(
                     0,
                     session.owner_silver,
                 );
+            }
+            for (from_id, to_id, amount) in [
+                (session.owner_id, session.target_id, session.owner_cps),
+                (session.target_id, session.owner_id, session.target_cps),
+            ] {
+                if amount > 0 {
+                    crate::audit::economic("trade_cps_out", from_id, to_id, 0, amount);
+                    crate::audit::economic("trade_cps_in", to_id, from_id, 0, amount);
+                }
             }
             send_trade(
                 state,
@@ -302,6 +313,14 @@ async fn send_change(state: &State, change: TradeChange) -> Result<(), Error> {
             send_trade(state, peer_id, MsgTrade::new(from_id, trade::SHOW_MONEY, amount)).await?;
             send_trade(state, peer_id, MsgTrade::new(from_id, trade::ACCEPT, 0)).await?;
         },
+        TradeChange::CpsSet {
+            from_id,
+            peer_id,
+            amount,
+        } => {
+            send_trade(state, peer_id, MsgTrade::new(from_id, trade::SHOW_CPS, amount)).await?;
+            send_trade(state, peer_id, MsgTrade::new(from_id, trade::ACCEPT, 0)).await?;
+        },
         TradeChange::Confirmed { from_id, peer_id } => {
             send_trade(state, peer_id, MsgTrade::new(from_id, trade::ACCEPT, 1)).await?;
         },
@@ -396,9 +415,22 @@ impl PacketProcess for MsgTrade {
                 .await?;
             return Ok(());
         }
-        let data = if matches!(self.subtype, trade::ADD_ITEM | trade::REMOVE_ITEM) {
-            self.target
-        } else if self.subtype == trade::SET_MONEY {
+        if self.subtype == trade::SET_CPS && u64::from(self.target) > character.cps() {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::Talk,
+                    "You do not have enough CPs for this trade.",
+                ))
+                .await?;
+            return Ok(());
+        }
+        // Items and amounts travel in the `target` field, as in the classic
+        // client.
+        let data = if matches!(
+            self.subtype,
+            trade::ADD_ITEM | trade::REMOVE_ITEM | trade::SET_MONEY | trade::SET_CPS
+        ) {
             self.target
         } else {
             self.data

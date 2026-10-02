@@ -988,6 +988,8 @@ async fn run_trade_smoke(
     const SET_MONEY: u32 = 7;
     const SHOW_MONEY: u32 = 8;
     const ACCEPT: u32 = 10;
+    const SHOW_CPS: u32 = 12;
+    const SET_CPS: u32 = 13;
 
     let (mut target_session, target_id, target_name, _, _) =
         connect_existing_session(address, target_username, target_password, realm).await?;
@@ -1003,6 +1005,9 @@ async fn run_trade_smoke(
     ] {
         target_session
             .send(&TalkPacket::public(id, name, "$tele 1002 430 378"))
+            .await?;
+        target_session
+            .send(&TalkPacket::public(id, name, "$cps 10"))
             .await?;
         target_session
             .send(&ActionPacket::send_location(id))
@@ -1045,6 +1050,12 @@ async fn run_trade_smoke(
         .await?;
     wait_for_trade(session, SHOW_MONEY, "target money preview").await?;
     wait_for_trade(&mut target_session, SHOW_MONEY, "primary money preview").await?;
+    session.send(&TradePacket::new(2, SET_CPS, 0)).await?;
+    target_session
+        .send(&TradePacket::new(3, SET_CPS, 0))
+        .await?;
+    wait_for_trade(session, SHOW_CPS, "target CP preview").await?;
+    wait_for_trade(&mut target_session, SHOW_CPS, "primary CP preview").await?;
 
     session
         .send(&TradePacket::new(target_id, ACCEPT, 1))
@@ -1085,7 +1096,7 @@ async fn run_trade_smoke(
     )
     .await?;
     println!(
-        "Trade smoke OK: primary={} target={} request/open/offer/money/dual-confirm/atomic swap",
+        "Trade smoke OK: primary={} target={} request/open/offer/money/CPs/dual-confirm/atomic swap",
         character_id, target_id
     );
     Ok(())

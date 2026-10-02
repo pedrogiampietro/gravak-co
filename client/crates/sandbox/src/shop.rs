@@ -629,7 +629,10 @@ pub enum TradePanelAction {
     AcceptRequest,
     AddItem,
     RemoveOwnItem(usize),
-    SetMoney,
+    /// Focus the own silver or CP box.
+    EditAmount(crate::network::TradeAmount),
+    /// Send the typed silver and CPs ([137-1145]).
+    CommitAmounts,
     Confirm,
     Cancel,
 }
@@ -1395,7 +1398,7 @@ pub fn quick_panel_image(
                     [272.0, 224.0],
                 );
                 team_button(&mut image, &font, 24, 250, "ADICIONAR ITEM");
-                team_button(&mut image, &font, 268, 250, "+1 SILVER");
+                team_button(&mut image, &font, 268, 250, "SILVER");
                 team_button(
                     &mut image,
                     &font,

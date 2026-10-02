@@ -133,6 +133,12 @@ pub struct NobilityEntry {
     pub rank: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TradeAmount {
+    Silver,
+    Cps,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct TradeView {
     pub active: bool,
@@ -142,10 +148,36 @@ pub struct TradeView {
     pub peer_items: Vec<OwnedItem>,
     pub own_silver: u32,
     pub peer_silver: u32,
+    pub own_cps: u32,
+    pub peer_cps: u32,
+    /// What is typed in the own silver and CP boxes; sent on Enter, the
+    /// confirm-amount button, or Agree.
+    pub silver_input: String,
+    pub cps_input: String,
+    /// The amount box holding the keyboard, if any.
+    pub editing: Option<TradeAmount>,
     pub own_confirmed: bool,
     pub peer_confirmed: bool,
     /// The partner's (or requester's) name, when the client knows it.
     pub peer_name: String,
+}
+
+impl TradeView {
+    /// The text an own amount box shows: what is being typed, else the
+    /// amount on offer.
+    pub fn amount_text(&self, amount: TradeAmount) -> String {
+        let (input, offered) = match amount {
+            TradeAmount::Silver => (&self.silver_input, self.own_silver),
+            TradeAmount::Cps => (&self.cps_input, self.own_cps),
+        };
+        if self.editing == Some(amount) {
+            format!("{input}_")
+        } else if input.is_empty() {
+            offered.to_string()
+        } else {
+            input.clone()
+        }
+    }
 }
 
 #[derive(Debug)]

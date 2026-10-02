@@ -3082,6 +3082,11 @@ impl Renderer {
             trade.peer_items.hash(&mut hasher);
             trade.own_silver.hash(&mut hasher);
             trade.peer_silver.hash(&mut hasher);
+            trade.own_cps.hash(&mut hasher);
+            trade.peer_cps.hash(&mut hasher);
+            trade.silver_input.hash(&mut hasher);
+            trade.cps_input.hash(&mut hasher);
+            trade.editing.hash(&mut hasher);
             trade.own_confirmed.hash(&mut hasher);
             trade.peer_confirmed.hash(&mut hasher);
             player_shop_items.hash(&mut hasher);

@@ -7,6 +7,7 @@
 //! two cannot drift apart.
 
 use crate::assets::{Assets, Result};
+use crate::network::TradeAmount;
 use crate::shop::{
     FriendsPanelAction, GuildPanelAction, QuickPanel, TeamPanelAction, TradePanelAction,
 };
@@ -488,6 +489,8 @@ const TRADE_OWN_GRID: [i32; 2] = [21, 168];
 const TRADE_SLOT_STEP: i32 = 43;
 const TRADE_SLOT: i32 = 40;
 const TRADE_SLOTS: usize = 6;
+const TRADE_OWN_SILVER: [i32; 4] = [211, 187, 88, 16];
+const TRADE_OWN_CPS: [i32; 4] = [211, 210, 88, 16];
 
 fn trade_slot_rect(grid: [i32; 2], index: usize) -> [i32; 4] {
     [
@@ -521,12 +524,22 @@ fn trade_controls(
             ));
         }
         controls.extend([
-            // [137-1570] own silver and [137-1145] "confirm amount".
-            control([211, 187, 88, 16], Face::Label(""), Some(A::SetMoney)),
+            // [137-1570] own silver, [137-1573] own CPs and [137-1145]
+            // "confirm amount".
+            control(
+                TRADE_OWN_SILVER,
+                Face::Label(""),
+                Some(A::EditAmount(TradeAmount::Silver)),
+            ),
+            control(
+                TRADE_OWN_CPS,
+                Face::Label(""),
+                Some(A::EditAmount(TradeAmount::Cps)),
+            ),
             control(
                 [186, 236, 64, 22],
                 Face::Art("data/main/AgreeBtn.dds"),
-                Some(A::SetMoney),
+                Some(A::CommitAmounts),
             ),
             // [137-1139] agree and [137-1571] cancel.
             control([112, 261, 62, 20], Face::Label("Agree"), Some(A::Confirm)),
@@ -988,14 +1001,24 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 WHITE,
                 84,
             );
-            text(
-                &mut image,
-                &trade.own_silver.to_string(),
-                215,
-                188,
-                WHITE,
-                84,
-            );
+            // [137-1150] partner CPs, [137-1573] own CPs.
+            text(&mut image, &trade.peer_cps.to_string(), 219, 101, WHITE, 84);
+            for (amount, rect) in [
+                (TradeAmount::Silver, TRADE_OWN_SILVER),
+                (TradeAmount::Cps, TRADE_OWN_CPS),
+            ] {
+                text(
+                    &mut image,
+                    &trade.amount_text(amount),
+                    rect[0] + 4,
+                    rect[1] + 1,
+                    WHITE,
+                    84,
+                );
+                if trade.editing == Some(amount) {
+                    outline(&mut image, rect, [255, 215, 108, 255]);
+                }
+            }
             if trade.own_confirmed {
                 outline(&mut image, [112, 261, 62, 20], [255, 215, 108, 255]);
             }
@@ -1093,6 +1116,18 @@ mod tests {
             viewport,
             at(QuickPanel::Trade, [20, 167, 128, 86])
         ));
+        assert_eq!(
+            trade_action_at(viewport, at(QuickPanel::Trade, TRADE_OWN_SILVER), &trade),
+            Some(TradePanelAction::EditAmount(TradeAmount::Silver))
+        );
+        assert_eq!(
+            trade_action_at(viewport, at(QuickPanel::Trade, TRADE_OWN_CPS), &trade),
+            Some(TradePanelAction::EditAmount(TradeAmount::Cps))
+        );
+        assert_eq!(
+            trade_action_at(viewport, at(QuickPanel::Trade, [186, 236, 64, 22]), &trade),
+            Some(TradePanelAction::CommitAmounts)
+        );
         assert!(!is_original(QuickPanel::Market));
     }
 

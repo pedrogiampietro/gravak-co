@@ -843,6 +843,48 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                 .await?;
             Ok(())
         },
+        SubCommands::GiveCps(info) => {
+            let amount = info.amount.unwrap_or(100_000).max(1);
+            let total = me.grant_cps(state.pool(), u64::from(amount)).await?;
+            crate::audit::economic("command_cps", me.id(), 0, 0, amount);
+            actor.send(MsgUserInfo::from(me)).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Added {amount} CPs. Total: {total}."),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::TradeKit(_) => {
+            // A few tradable items plus silver and CPs, so two local
+            // characters can exercise the whole trade window.
+            const KIT_ITEMS: [u32; 4] = [410003, 130003, 150003, 1_000_030];
+            const KIT_SILVER: u32 = 1_000_000;
+            const KIT_CPS: u32 = 10_000;
+            let mut created = 0;
+            for item_type in KIT_ITEMS {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                    break;
+                };
+                actor.send(MsgItemInfo::inventory_item(item)).await?;
+                created += 1;
+            }
+            me.grant_silver(state.pool(), KIT_SILVER).await?;
+            me.grant_cps(state.pool(), u64::from(KIT_CPS)).await?;
+            crate::audit::economic("command_silver", me.id(), 0, 0, KIT_SILVER);
+            crate::audit::economic("command_cps", me.id(), 0, 0, KIT_CPS);
+            actor.send(MsgUserInfo::from(me)).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Trade kit: {created} items, {KIT_SILVER} silver and {KIT_CPS} CPs added."),
+                ))
+                .await?;
+            Ok(())
+        },
         SubCommands::AddAttribute(info) => {
             let Some(kind) = AttributeKind::parse(&info.attribute) else {
                 actor
@@ -1012,6 +1054,8 @@ enum SubCommands {
     AddAttribute(AddAttributeCmd),
     UpgradeItem(UpgradeItemCmd),
     GiveSilver(GiveSilverCmd),
+    GiveCps(GiveCpsCmd),
+    TradeKit(TradeKitCmd),
     SetLevel(SetLevelCmd),
     SetPk(SetPkCmd),
     SetVirtue(SetVirtueCmd),
@@ -1062,6 +1106,20 @@ struct GiveSilverCmd {
     #[argh(positional)]
     amount: Option<u32>,
 }
+
+/// Add Conquer Points to the current character for local testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "cps")]
+struct GiveCpsCmd {
+    /// amount of CPs to add (default 100000)
+    #[argh(positional)]
+    amount: Option<u32>,
+}
+
+/// Create a few tradable items and add silver and CPs, for trade tests.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "trade-kit")]
+struct TradeKitCmd {}
 
 /// Disconnect From Server
 #[derive(Debug, Clone, PartialEq, FromArgs)]
@@ -1347,6 +1405,17 @@ mod tests {
         let command =
             Command::from_args(&["commands"], &["trade-fixture"]).expect("trade fixture command should parse");
         assert_eq!(command.commands, SubCommands::TradeFixture(super::TradeFixtureCmd {}));
+    }
+
+    #[test]
+    fn parses_trade_kit_and_cps_commands() {
+        let command = Command::from_args(&["commands"], &["trade-kit"]).expect("trade-kit command should parse");
+        assert_eq!(command.commands, SubCommands::TradeKit(super::TradeKitCmd {}));
+        let command = Command::from_args(&["commands"], &["cps", "500"]).expect("cps command should parse");
+        assert_eq!(
+            command.commands,
+            SubCommands::GiveCps(super::GiveCpsCmd { amount: Some(500) })
+        );
     }
 
     #[test]

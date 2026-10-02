@@ -11,6 +11,8 @@ pub const SET_MONEY: u32 = 7;
 pub const SHOW_MONEY: u32 = 8;
 pub const ACCEPT: u32 = 10;
 pub const REMOVE_ITEM: u32 = 11;
+pub const SHOW_CPS: u32 = 12;
+pub const SET_CPS: u32 = 13;
 pub const TIME_OUT: u32 = 17;
 pub const TRADE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -23,6 +25,8 @@ pub struct TradeSession {
     pub target_items: Vec<u32>,
     pub owner_silver: u32,
     pub target_silver: u32,
+    pub owner_cps: u32,
+    pub target_cps: u32,
     pub owner_confirmed: bool,
     pub target_confirmed: bool,
     last_activity: Instant,
@@ -38,6 +42,8 @@ impl TradeSession {
             target_items: Vec::new(),
             owner_silver: 0,
             target_silver: 0,
+            owner_cps: 0,
+            target_cps: 0,
             owner_confirmed: false,
             target_confirmed: false,
             last_activity: Instant::now(),
@@ -94,6 +100,18 @@ impl TradeSession {
             true
         } else if self.target_id == character_id {
             self.target_silver = amount;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_cps(&mut self, character_id: u32, amount: u32) -> bool {
+        if self.owner_id == character_id {
+            self.owner_cps = amount;
+            true
+        } else if self.target_id == character_id {
+            self.target_cps = amount;
             true
         } else {
             false
@@ -166,6 +184,7 @@ pub enum TradeChange {
     ItemAdded { from_id: u32, peer_id: u32, item_uid: u32 },
     ItemRemoved { from_id: u32, peer_id: u32, item_uid: u32 },
     MoneySet { from_id: u32, peer_id: u32, amount: u32 },
+    CpsSet { from_id: u32, peer_id: u32, amount: u32 },
     Confirmed { from_id: u32, peer_id: u32 },
     ReadyToComplete(TradeSession),
     Closed { owner_id: u32, target_id: u32 },
@@ -176,7 +195,7 @@ struct TradeBook {
     sessions: HashMap<u32, TradeSession>,
 }
 
-/// Ephemeral, server-authoritative trade sessions. Items and silver are only
+/// Ephemeral, server-authoritative trade sessions. Items, silver and CPs are only
 /// moved by the atomic Character::complete_trade operation after both sides
 /// confirm the exact same offer state.
 #[derive(Debug, Default)]
@@ -305,6 +324,19 @@ impl TradeManager {
                             amount: data,
                         })
                     },
+                    SET_CPS => {
+                        if !session.set_cps(actor_id, data) {
+                            return Err(TradeError::NotParticipant);
+                        }
+                        session.reset_confirmations();
+                        book.sessions.insert(session.owner_id, session.clone());
+                        book.sessions.insert(session.target_id, session);
+                        Ok(TradeChange::CpsSet {
+                            from_id: actor_id,
+                            peer_id,
+                            amount: data,
+                        })
+                    },
                     ACCEPT => {
                         if !session.set_confirmed(actor_id, true) {
                             return Err(TradeError::NotParticipant);
@@ -361,6 +393,25 @@ mod tests {
             manager.apply(1, 2, ACCEPT, 0),
             Ok(TradeChange::ReadyToComplete(_))
         ));
+    }
+
+    #[test]
+    fn conquer_points_are_kept_per_side_and_reset_confirmations() {
+        let manager = TradeManager::default();
+        manager.apply(1, 2, REQUEST, 0).unwrap();
+        manager.apply(2, 1, REQUEST, 0).unwrap();
+        manager.apply(2, 1, ACCEPT, 0).unwrap();
+        assert_eq!(
+            manager.apply(1, 2, SET_CPS, 300),
+            Ok(TradeChange::CpsSet {
+                from_id: 1,
+                peer_id: 2,
+                amount: 300
+            })
+        );
+        let session = manager.session(2).unwrap();
+        assert_eq!((session.owner_cps, session.target_cps), (300, 0));
+        assert!(!session.target_confirmed);
     }
 
     #[test]
