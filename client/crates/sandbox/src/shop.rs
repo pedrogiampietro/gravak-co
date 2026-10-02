@@ -4351,6 +4351,86 @@ impl ChoiceMenu {
     }
 }
 
+/// A yes/no question from another player, such as a team invite: the
+/// friend dialog's art with the player's name and Accept/Refuse.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PromptDialog {
+    pub title: &'static str,
+    /// The player asking, drawn bright under the title.
+    pub name: String,
+    pub text: &'static str,
+    /// Top-left corner in window pixels.
+    pub position: [i32; 2],
+}
+
+const PROMPT_INNER: u32 = 84;
+const PROMPT_BUTTONS: [[i32; 4]; 2] = [[28, 92, 70, 24], [110, 92, 70, 24]];
+
+impl PromptDialog {
+    /// A prompt centred across the window, in its upper third.
+    pub fn new(viewport: [f32; 2], title: &'static str, name: String, text: &'static str) -> Self {
+        let width = crate::original_panels::FRAMED_WIDTH as f32;
+        Self {
+            title,
+            name,
+            text,
+            position: [
+                ((viewport[0] - width) * 0.5).max(8.0) as i32,
+                (viewport[1] * 0.22).max(8.0) as i32,
+            ],
+        }
+    }
+
+    fn size() -> [i32; 2] {
+        [
+            crate::original_panels::FRAMED_WIDTH as i32,
+            (crate::original_panels::FRAMED_TOP + PROMPT_INNER + crate::original_panels::FRAMED_BOTTOM) as i32,
+        ]
+    }
+
+    pub fn contains(&self, cursor: [f32; 2]) -> bool {
+        let [left, top] = self.position.map(|value| value as f32);
+        let [width, height] = Self::size().map(|value| value as f32);
+        cursor[0] >= left && cursor[0] < left + width && cursor[1] >= top && cursor[1] < top + height
+    }
+
+    /// `Some(true)` over Accept, `Some(false)` over Refuse.
+    pub fn button_at(&self, cursor: [f32; 2]) -> Option<bool> {
+        let local = [cursor[0] - self.position[0] as f32, cursor[1] - self.position[1] as f32];
+        PROMPT_BUTTONS.iter().position(|&[x, y, width, height]| {
+            local[0] >= x as f32 && local[0] < (x + width) as f32 && local[1] >= y as f32 && local[1] < (y + height) as f32
+        })
+        .map(|index| index == 0)
+    }
+
+    pub fn image(&self, assets: &mut Assets, hovered: Option<bool>) -> Result<RgbaImage> {
+        use crate::original_panels::{LABEL_GOLD, fill, label_centered};
+        let mut image = crate::original_panels::framed_panel(assets, PROMPT_INNER)?;
+        let center = (crate::original_panels::FRAMED_LIST_X[0] + crate::original_panels::FRAMED_LIST_X[1]) / 2;
+        label_centered(&mut image, self.title, 14.0, center, 12, LABEL_GOLD);
+        label_centered(&mut image, &self.name, 14.0, center, 50, [255, 244, 214, 255]);
+        label_centered(&mut image, self.text, 13.0, center, 70, LABEL_GOLD);
+        for (index, ([x, y, width, height], label)) in PROMPT_BUTTONS.into_iter().zip(["Accept", "Refuse"]).enumerate() {
+            let hot = hovered == Some(index == 0);
+            fill(&mut image, [x, y, width, height], if hot { [120, 90, 30, 150] } else { [0, 0, 0, 90] });
+            ui_theme::outline(
+                &mut image,
+                UiRect::new(x, y, width, height),
+                if hot { [255, 214, 102, 255] } else { [168, 128, 52, 255] },
+            );
+            label_centered(
+                &mut image,
+                label,
+                13.0,
+                x + width / 2,
+                y + (height - 15) / 2,
+                if hot { [255, 244, 214, 255] } else { LABEL_GOLD },
+            );
+        }
+        Ok(image)
+    }
+}
+
 /// A one-line notice drawn at the top of the screen, such as "click a
 /// player" while a Friend/Trade button waits for its target: the panels'
 /// gold label on a dark band with gold rules.
@@ -7189,6 +7269,17 @@ mod icon_tests {
                 Some(index)
             );
         }
+    }
+
+    #[test]
+    fn prompt_dialog_maps_its_two_buttons() {
+        let prompt = super::PromptDialog::new([1024.0, 768.0], "Team", "Someone".into(), "invites you");
+        let [left, top] = prompt.position.map(|value| value as f32);
+        assert_eq!(prompt.button_at([left + 60.0, top + 104.0]), Some(true));
+        assert_eq!(prompt.button_at([left + 140.0, top + 104.0]), Some(false));
+        assert_eq!(prompt.button_at([left + 100.0, top + 60.0]), None);
+        assert!(prompt.contains([left + 100.0, top + 60.0]));
+        assert!(!prompt.contains([left - 1.0, top + 60.0]));
     }
 
     #[test]

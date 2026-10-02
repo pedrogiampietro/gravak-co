@@ -672,6 +672,8 @@ pub const FRAMED_BOTTOM: u32 = 20;
 pub const FRAMED_LIST_X: [i32; 2] = [22, 172];
 const GENERAL_BG: &str = "data/main/GeneralBG.dds";
 const GENERAL_BG_LIST: [u32; 2] = [40, 290];
+/// The dialog's drawn height; the DDS can be padded below it.
+const GENERAL_BG_HEIGHT: u32 = 375;
 
 /// A panel in the friend dialog's art at its native width, `inner` pixels
 /// tall between the title band and the bottom frame: the list area is
@@ -695,7 +697,7 @@ pub fn framed_panel(assets: &mut Assets, inner: u32) -> Result<RgbaImage> {
     let bottom = imageops::crop_imm(
         &source,
         0,
-        source.height().saturating_sub(FRAMED_BOTTOM),
+        source.height().min(GENERAL_BG_HEIGHT).saturating_sub(FRAMED_BOTTOM),
         width,
         FRAMED_BOTTOM,
     )
@@ -714,20 +716,24 @@ pub fn label_centered(image: &mut RgbaImage, value: &str, size: f32, center_x: i
 
 /// The trade dialog's width; the partner card sits to its right.
 pub const TRADE_WIDTH: f32 = 335.0;
-const TRADE_PARTNER_INNER: u32 = 214;
+pub const TRADE_PARTNER_INNER: u32 = 214;
 /// Where the partner's model stands on its card: [top centre, [max width,
 /// height]].
 pub const TRADE_PARTNER_MODEL: [[f32; 2]; 2] = [[97.0, 52.0], [70.0, 150.0]];
+/// The smaller card shown while hovering a player.
+pub const HOVER_CARD_INNER: u32 = 160;
+pub const HOVER_CARD_MODEL: [[f32; 2]; 2] = [[97.0, 48.0], [56.0, 108.0]];
 
-/// The card beside the trade window: the partner's name in the title band,
-/// the room for their live model, and their level.
-pub fn trade_partner_card(assets: &mut Assets, name: &str, level: Option<u16>) -> Result<RgbaImage> {
-    let mut image = framed_panel(assets, TRADE_PARTNER_INNER)?;
+/// A player card: the name in the title band, room for their live model
+/// (drawn over it by the renderer) and their level at the bottom of the
+/// `inner`-pixel list area.
+pub fn player_card(assets: &mut Assets, name: &str, level: Option<u16>, inner: u32) -> Result<RgbaImage> {
+    let mut image = framed_panel(assets, inner)?;
     let center = (FRAMED_LIST_X[0] + FRAMED_LIST_X[1]) / 2;
     label_centered(&mut image, name, 14.0, center, 12, LABEL_GOLD);
-    let bottom = (FRAMED_TOP + TRADE_PARTNER_INNER) as i32;
+    let bottom = (FRAMED_TOP + inner) as i32;
     fill(&mut image, [FRAMED_LIST_X[0], bottom - 30, FRAMED_LIST_X[1] - FRAMED_LIST_X[0], 24], [0, 0, 0, 110]);
-    let caption = level.map_or_else(|| "Trade partner".to_owned(), |level| format!("Level {level}"));
+    let caption = level.map_or_else(|| "Player".to_owned(), |level| format!("Level {level}"));
     label_centered(&mut image, &caption, 13.0, center, bottom - 26, [255, 220, 120, 255]);
     Ok(image)
 }

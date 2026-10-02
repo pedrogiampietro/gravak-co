@@ -943,6 +943,8 @@ impl ApplicationHandler for App {
                 let skill_hud = self.skill_hud();
                 let choice_menu = self.choice_menu();
                 let notice = self.target_pick.map(TargetPick::notice);
+                let prompt = self.team_prompt();
+                let hovered_player = self.hovered_player();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1023,6 +1025,8 @@ impl ApplicationHandler for App {
                         self.item_context.clone(),
                         choice_menu,
                         notice,
+                        prompt,
+                        hovered_player,
                         self.item_action_panel,
                         action_animation_progress,
                         self.gem_selection_panel,
@@ -1289,6 +1293,17 @@ impl App {
             self.cast_action_slot(slot);
             self.held = false;
             return true;
+        }
+        if let Some(prompt) = self.team_prompt() {
+            if let Some(accept) = prompt.button_at(self.cursor) {
+                self.answer_team_prompt(accept);
+                self.held = false;
+                return true;
+            }
+            if prompt.contains(self.cursor) {
+                self.held = false;
+                return true;
+            }
         }
         if let Some(player_menu) = self.player_menu.take() {
             if let Some(row) = player_menu.menu.row_at(self.cursor) {
@@ -1697,6 +1712,41 @@ impl App {
             }),
         }
         self.shown_cursor = Some(wanted);
+    }
+
+    /// The popup for a received team invite, or for a request to join the
+    /// hero's team.
+    fn team_prompt(&self) -> Option<shop::PromptDialog> {
+        let (id, text) = if let Some(leader) = self.pending_team_invite {
+            (leader, "invites you to the team")
+        } else {
+            (self.pending_team_join_request?, "asks to join your team")
+        };
+        let size = self.window.as_ref()?.inner_size();
+        let name = self.actor_name(id);
+        let name = if name.is_empty() { id.to_string() } else { name };
+        Some(shop::PromptDialog::new(
+            [size.width as f32, size.height as f32],
+            "Team",
+            name,
+            text,
+        ))
+    }
+
+    fn answer_team_prompt(&mut self, accept: bool) {
+        let invite = self.pending_team_invite.is_some();
+        match (invite, accept) {
+            (true, true) => self.handle_team_panel_action(shop::TeamPanelAction::AcceptInvite),
+            (false, true) => self.handle_team_panel_action(shop::TeamPanelAction::AcceptJoin),
+            (true, false) => {
+                self.pending_team_invite = None;
+                self.network_status = "convite de grupo recusado".into();
+            }
+            (false, false) => {
+                self.pending_team_join_request = None;
+                self.network_status = "pedido de entrada no grupo recusado".into();
+            }
+        }
     }
 
     /// The open choice menu: the kill modes or a player's Shift+click menu.
@@ -3465,13 +3515,12 @@ impl App {
         }
     }
 
-    fn select_actor_at_cursor(&mut self) -> bool {
-        let Some(renderer) = &self.renderer else {
-            return false;
-        };
+    /// The actor drawn under the cursor, nearest the camera first:
+    /// (id, npc, npc kind, name).
+    fn actor_at_cursor(&self) -> Option<(u32, bool, u16, String)> {
+        let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera(&self.map, &self.player);
-        let selected = self
-            .remote_actors
+        self.remote_actors
             .values()
             .filter_map(|actor| {
                 let projected = self.map.project(actor.position);
@@ -3483,7 +3532,29 @@ impl App {
                 within.then_some((actor.position[0] + actor.position[1], actor))
             })
             .min_by(|(left, _), (right, _)| left.total_cmp(right))
-            .map(|(_, actor)| (actor.id, actor.npc, actor.npc_kind, actor.name.clone()));
+            .map(|(_, actor)| (actor.id, actor.npc, actor.npc_kind, actor.name.clone()))
+    }
+
+    /// Another player under the cursor in the world (not over the HUD or a
+    /// menu), for the hover card.
+    fn hovered_player(&self) -> Option<u32> {
+        let size = self.window.as_ref()?.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        if hud::contains(viewport, self.cursor)
+            || self.choice_menu().is_some_and(|menu| menu.contains(self.cursor))
+            || self.team_prompt().is_some_and(|prompt| prompt.contains(self.cursor))
+        {
+            return None;
+        }
+        let (id, npc, _, name) = self.actor_at_cursor()?;
+        (!npc && !(400001..=499999).contains(&id) && !name.is_empty()).then_some(id)
+    }
+
+    fn select_actor_at_cursor(&mut self) -> bool {
+        if self.renderer.is_none() {
+            return false;
+        }
+        let selected = self.actor_at_cursor();
         if let Some((id, false, _, name)) = &selected
             && self.modifiers.shift_key()
             && !(400001..=499999).contains(id)

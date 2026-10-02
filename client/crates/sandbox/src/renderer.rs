@@ -24,6 +24,12 @@ struct Vertex {
     uv: [f32; 2],
     alpha: f32,
 }
+/// Sort depth of a UI model preview outside the status paper doll (the
+/// trade partner card) and of what it stands on: above the world like the
+/// UI, but without the status panel's scissor that INFINITY depth-tested
+/// draws get, and before the INFINITY UI layered over it.
+const PREVIEW_SORT: f32 = f32::MAX;
+
 struct Draw {
     texture: String,
     vertices: Vec<Vertex>,
@@ -1022,6 +1028,7 @@ impl Renderer {
             character,
             [panel[0] + 128.0, panel[1] + 82.0],
             [80.0, 230.0],
+            f32::INFINITY,
             viewport,
             draws,
         );
@@ -1035,6 +1042,7 @@ impl Renderer {
         character: &Character,
         top_center: [f32; 2],
         size: [f32; 2],
+        sort_depth: f32,
         viewport: [f32; 2],
         draws: &mut Vec<Draw>,
     ) {
@@ -1096,8 +1104,10 @@ impl Renderer {
                         center_x + (p[0] - (body_bounds[0][0] + body_bounds[1][0]) * 0.5) * scale,
                         top + (p[1] - body_bounds[0][1]) * scale,
                     ];
+                    // Nearer than any world actor (0.5 +- 0.5), so one
+                    // standing behind the panel cannot cut into the model.
                     Vertex {
-                        position: clip(screen, (0.5 + p[2] * 0.0005).clamp(0.001, 0.999), viewport),
+                        position: clip(screen, (0.05 + p[2] * 0.00005).clamp(0.001, 0.099), viewport),
                         uv,
                         alpha: 1.0,
                     }
@@ -1107,7 +1117,7 @@ impl Renderer {
                 texture: part.texture.clone(),
                 vertices: triangles,
                 depth_test: true,
-                sort_depth: f32::INFINITY,
+                sort_depth,
             });
         }
     }
@@ -1716,6 +1726,8 @@ impl Renderer {
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
+        prompt: Option<crate::shop::PromptDialog>,
+        hovered_player: Option<u32>,
         item_action_panel: Option<crate::shop::ItemActionPanel>,
         action_animation_progress: Option<f32>,
         gem_selection_panel: Option<crate::shop::GemSelectionPanel>,
@@ -3107,7 +3119,12 @@ impl Renderer {
                 if !self.textures.contains_key(&key) {
                     self.upload(
                         &key,
-                        crate::original_panels::trade_partner_card(assets, &name, level)?,
+                        crate::original_panels::player_card(
+                            assets,
+                            &name,
+                            level,
+                            crate::original_panels::TRADE_PARTNER_INNER,
+                        )?,
                     );
                 }
                 let [left, top] = crate::shop::quick_panel_position(viewport, panel);
@@ -3117,7 +3134,7 @@ impl Renderer {
                         texture: key,
                         vertices: quad(position, texture.size, viewport),
                         depth_test: false,
-                        sort_depth: f32::INFINITY,
+                        sort_depth: PREVIEW_SORT,
                     });
                 }
                 if let Some(model) = remote_models.get(&peer) {
@@ -3127,6 +3144,7 @@ impl Renderer {
                         model,
                         [position[0] + top_center[0], position[1] + top_center[1]],
                         size,
+                        PREVIEW_SORT,
                         viewport,
                         &mut draws,
                     );
@@ -3597,6 +3615,64 @@ impl Renderer {
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(menu.position.map(|value| value as f32), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // A card by the cursor with the hovered player's model, name and level.
+        if let Some(id) = hovered_player
+            && let Some(actor) = remote_actors.get(&id)
+        {
+            let level = Some(actor.level).filter(|level| *level > 0);
+            let key = format!("@player-card-{}-{level:?}", actor.name);
+            if !self.textures.contains_key(&key) {
+                self.upload(
+                    &key,
+                    crate::original_panels::player_card(
+                        assets,
+                        &actor.name,
+                        level,
+                        crate::original_panels::HOVER_CARD_INNER,
+                    )?,
+                );
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let size = texture.size;
+                let position = [
+                    (cursor[0] + 24.0).min(viewport[0] - size[0] - 8.0).max(8.0),
+                    (cursor[1] + 16.0).min(viewport[1] - size[1] - 8.0).max(8.0),
+                ];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, size, viewport),
+                    depth_test: false,
+                    sort_depth: PREVIEW_SORT,
+                });
+                if let Some(model) = remote_models.get(&id) {
+                    let [top_center, model_size] = crate::original_panels::HOVER_CARD_MODEL;
+                    self.push_character_preview(
+                        assets,
+                        model,
+                        [position[0] + top_center[0], position[1] + top_center[1]],
+                        model_size,
+                        PREVIEW_SORT,
+                        viewport,
+                        &mut draws,
+                    );
+                }
+            }
+        }
+        if let Some(prompt) = prompt {
+            let hovered = prompt.button_at(cursor);
+            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, prompt.text));
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, prompt.image(assets, hovered)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(prompt.position.map(|value| value as f32), texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
