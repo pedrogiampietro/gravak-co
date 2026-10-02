@@ -81,6 +81,7 @@ pub use msg_warehouse::MsgWarehouse;
 
 mod msg_interact;
 pub use msg_interact::{InteractAction, MsgInteract};
+pub(crate) use msg_interact::reward_monster_defeat;
 
 mod msg_skill_effect;
 pub use msg_skill_effect::{MsgSkillEffect, SkillTarget};
@@ -90,6 +91,33 @@ pub use msg_skill::MsgSkill;
 
 mod msg_weapon_skill;
 pub use msg_weapon_skill::MsgWeaponSkill;
+
+mod msg_user_attrib;
+pub use msg_user_attrib::{MsgUserAttrib, UserAttribute};
+
+/// After a cast was accepted: uses the XP circle of an XP skill and the
+/// skill's stamina, and tells the client.
+pub async fn spend_cast_costs(
+    actor: &tq_network::Actor<crate::ActorState>,
+    character: &crate::entities::Character,
+    skill: &crate::skills::SkillDefinition,
+) -> Result<(), crate::Error> {
+    if skill.xp && character.use_xp_circle() {
+        let update = MsgPlayer::from(character);
+        actor.send(update.clone()).await?;
+        actor.screen().send_message(update).await?;
+    }
+    if skill.stamina_cost > 0 && character.spend_stamina(skill.stamina_cost) {
+        actor
+            .send(MsgUserAttrib::new(
+                character.id(),
+                UserAttribute::Stamina,
+                u64::from(character.stamina()),
+            ))
+            .await?;
+    }
+    Ok(())
+}
 
 mod msg_ground_item;
 pub use msg_ground_item::MsgGroundItem;

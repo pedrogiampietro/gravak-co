@@ -64,6 +64,8 @@ impl From<&Character> for MsgPlayer {
             armor: c.equipment_item(3).map_or(0, |item| item.item_type as i32),
             right_hand: c.equipment_item(4).map_or(0, |item| item.item_type as i32),
             left_hand: c.equipment_item(5).map_or(0, |item| item.item_type as i32),
+            // Helmet, armor and shield dyes (Tinter).
+            reserved1: c.appearance_colors(),
             ..Default::default()
         }
     }

@@ -104,6 +104,31 @@ impl Npc {
         self.kind
     }
 
+    /// Stakes and Scarecrows of the training ground (`WeaponGoal`,
+    /// `MagicGoal`, `BowGoal`, `Target`).
+    pub fn is_training_goal(&self) -> bool {
+        matches!(
+            self.kind,
+            NpcKind::WeaponGoal | NpcKind::MagicGoal | NpcKind::BowGoal | NpcKind::Target
+        )
+    }
+
+    pub fn level(&self) -> u16 {
+        self.inner.level.clamp(0, i32::from(u16::MAX)) as u16
+    }
+
+    pub fn life(&self) -> u32 {
+        self.inner.life.max(0) as u32
+    }
+
+    pub fn defense(&self) -> u32 {
+        self.inner.defense.max(0) as u32
+    }
+
+    pub fn magic_defense(&self) -> u32 {
+        self.inner.magic_defense.max(0) as u32
+    }
+
     pub fn sort(&self) -> NpcSort {
         self.sort
     }
@@ -131,6 +156,21 @@ impl Npc {
 
     #[tracing::instrument(skip(self, to), fields(npc = self.entity.id()))]
     pub(super) async fn send_spawn(&self, to: &ActorHandle) -> Result<(), Error> {
+        if crate::guild_war::is_war_structure(self.id()) {
+            to.send(crate::guild_war::spawn_packet(self)).await?;
+            let id = self.id();
+            let life = crate::guild_war::life(id);
+            let max = if id == crate::guild_war::POLE_ID {
+                crate::guild_war::POLE_LIFE
+            } else {
+                crate::guild_war::GATE_LIFE
+            };
+            to.send(crate::packets::MsgUserAttrib::new(id, crate::packets::UserAttribute::MaxLife, u64::from(max)))
+                .await?;
+            to.send(crate::packets::MsgUserAttrib::new(id, crate::packets::UserAttribute::Life, u64::from(life)))
+                .await?;
+            return Ok(());
+        }
         let msg = MsgNpcInfo::from_npc_with_name(self);
         to.send(msg).await?;
         tracing::trace!("sent spawn");

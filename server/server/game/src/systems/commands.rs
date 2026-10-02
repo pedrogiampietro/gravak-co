@@ -343,6 +343,24 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             map.change_weather(weather.kind.into()).await?;
             Ok(())
         },
+        SubCommands::GiveItem(info) if info.count > 1 => {
+            let mut created = 0;
+            for _ in 0..info.count.min(40) {
+                let Some(item) = me.add_ground_item(state.pool(), info.item_type, 100, 100).await? else {
+                    break;
+                };
+                actor.send(MsgItemInfo::inventory_item(item)).await?;
+                created += 1;
+            }
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Created {created} of item {}.", info.item_type),
+                ))
+                .await?;
+            Ok(())
+        },
         SubCommands::GiveItem(info) => {
             let Some(item) = me.add_ground_item(state.pool(), info.item_type, 100, 100).await? else {
                 actor
@@ -760,6 +778,71 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                 .await?;
             Ok(())
         },
+        SubCommands::SetLevel(info) => {
+            let level = info.level.clamp(1, 130);
+            me.change_level(level);
+            me.save(state).await?;
+            actor.send(MsgUserInfo::from(me)).await?;
+            actor.screen().send_message(crate::packets::MsgPlayer::from(me)).await?;
+            actor
+                .send(MsgTalk::from_system(me.id(), TalkChannel::System, format!("Level set to {level}.")))
+                .await?;
+            Ok(())
+        },
+        SubCommands::GuildWar(info) => {
+            match info.action.as_str() {
+                "start" => crate::guild_war::start(state, true).await,
+                "end" => crate::guild_war::end(state).await,
+                _ => {
+                    actor
+                        .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Use $gw start or $gw end."))
+                        .await?;
+                },
+            }
+            Ok(())
+        },
+        SubCommands::SetVirtue(info) => {
+            me.set_virtue(info.points);
+            me.save(state).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Virtue set to {}.", info.points),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::SetPk(info) => {
+            me.set_kill_points(info.points);
+            me.save(state).await?;
+            actor.send(MsgUserInfo::from(me)).await?;
+            let update = crate::packets::MsgPlayer::from(me);
+            actor.send(update.clone()).await?;
+            actor.screen().send_message(update).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("PK points set to {}.", info.points),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::GiveSilver(info) => {
+            let amount = info.amount.unwrap_or(1_000_000).max(1);
+            let total = me.grant_silver(state.pool(), amount).await?;
+            crate::audit::economic("command_silver", me.id(), 0, 0, amount);
+            actor.send(MsgUserInfo::from(me)).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Added {amount} silver. Total: {total}."),
+                ))
+                .await?;
+            Ok(())
+        },
         SubCommands::AddAttribute(info) => {
             let Some(kind) = AttributeKind::parse(&info.attribute) else {
                 actor
@@ -928,6 +1011,56 @@ enum SubCommands {
     TestSkillBook(TestSkillBookCmd),
     AddAttribute(AddAttributeCmd),
     UpgradeItem(UpgradeItemCmd),
+    GiveSilver(GiveSilverCmd),
+    SetLevel(SetLevelCmd),
+    SetPk(SetPkCmd),
+    SetVirtue(SetVirtueCmd),
+    GuildWar(GuildWarCmd),
+}
+
+/// Start or end the Guild War now (it also runs on Saturdays 20:00-22:00).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "gw")]
+struct GuildWarCmd {
+    /// start or end
+    #[argh(positional)]
+    action: String,
+}
+
+/// Set the current character's virtue points for local testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "virtue")]
+struct SetVirtueCmd {
+    /// virtue points (Simon asks 2000 for the Labyrinth)
+    #[argh(positional)]
+    points: u32,
+}
+
+/// Set the current character's PK points for local testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "pk")]
+struct SetPkCmd {
+    /// PK points (30 red name, 100 black name)
+    #[argh(positional)]
+    points: u16,
+}
+
+/// Set the current character's level for local testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "level")]
+struct SetLevelCmd {
+    /// new level (1-130)
+    #[argh(positional)]
+    level: u16,
+}
+
+/// Add silver to the current character for local testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "silver")]
+struct GiveSilverCmd {
+    /// amount of silver to add (default 1000000)
+    #[argh(positional)]
+    amount: Option<u32>,
 }
 
 /// Disconnect From Server
@@ -1054,6 +1187,9 @@ struct GiveItemCmd {
     /// custom rarity: 0 common, 1 rare, 2 epic, 3 legendary, 4 mythic
     #[argh(option, default = "0")]
     rarity: u8,
+    /// how many to create (up to 40)
+    #[argh(option, default = "1")]
+    count: u8,
 }
 
 /// Change the custom rarity of an owned inventory, equipment, or warehouse
@@ -1327,6 +1463,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_level_command() {
+        let command = Command::from_args(&["commands"], &["level", "70"]).expect("level command should parse");
+        assert_eq!(command.commands, SubCommands::SetLevel(super::SetLevelCmd { level: 70 }));
+    }
+
+    #[test]
+    fn parses_silver_command_with_optional_amount() {
+        let command = Command::from_args(&["commands"], &["silver", "5000"]).expect("silver command should parse");
+        assert_eq!(
+            command.commands,
+            SubCommands::GiveSilver(super::GiveSilverCmd { amount: Some(5_000) })
+        );
+        let command = Command::from_args(&["commands"], &["silver"]).expect("silver without amount should parse");
+        assert_eq!(command.commands, SubCommands::GiveSilver(super::GiveSilverCmd { amount: None }));
+    }
+
+    #[test]
     fn parses_attribute_command_with_optional_amount() {
         let command =
             Command::from_args(&["commands"], &["add-stat", "vitality", "3"]).expect("add-stat command should parse");
@@ -1371,6 +1524,7 @@ mod tests {
             SubCommands::GiveItem(super::GiveItemCmd {
                 item_type: 410003,
                 rarity: 3,
+                count: 1,
             })
         );
     }

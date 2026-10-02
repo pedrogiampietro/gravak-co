@@ -203,6 +203,31 @@ impl PacketProcess for MsgTaskDialog {
             .ok()
             .and_then(|map| map.npc(self.task_id));
         if let Some(npc) = npc.as_ref() {
+            let player = character.entity().location();
+            let location = npc.entity().location();
+            let near = player.x.abs_diff(location.x) <= 12 && player.y.abs_diff(location.y) <= 12;
+            if near && crate::artisans::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::trainers::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::market_npcs::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::quest_npcs::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::guild_war::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            if near && crate::offline_tg::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
+            let typed = self.msgs.iter().next().map_or("", String::as_str);
+            if near && crate::city_npcs::answer(_state, actor, character, npc.id(), self.option_id, typed).await? {
+                return Ok(());
+            }
             if let Some(teleport) = crate::teleports::resolve(self.task_id, self.option_id) {
                 let player = character.entity().location();
                 let location = npc.entity().location();
@@ -941,7 +966,7 @@ async fn city_teleport(
     npc_id: u32,
     teleport: crate::teleports::Teleport,
 ) -> Result<(), crate::Error> {
-    use crate::teleports::{Teleport, MARKET_MAP, TWIN_CITY_CENTER, TWIN_CITY_MAP};
+    use crate::teleports::{Teleport, TWIN_CITY_CENTER, TWIN_CITY_MAP};
 
     let origin = character.entity().location();
     let origin_map = character.entity().map_id();
@@ -958,10 +983,11 @@ async fn city_teleport(
             records_market_return,
         ),
         Teleport::Free(destination) => (destination.map_id, destination.position, destination.name, 0, false),
-        Teleport::LeaveMarket => {
+        Teleport::LeaveMarket | Teleport::LeaveTrainingGround => {
+            let current = character.entity().map_id();
             let (map_id, position) = character
                 .take_market_return()
-                .filter(|(map_id, _)| *map_id != MARKET_MAP)
+                .filter(|(map_id, _)| *map_id != current)
                 .unwrap_or((TWIN_CITY_MAP, TWIN_CITY_CENTER));
             (map_id, position, "your previous location", 0, false)
         },
@@ -972,14 +998,7 @@ async fn city_teleport(
     let mut target = origin;
     target.x = position.0;
     target.y = position.1;
-    // `nearest_walkable_position` only answers for blocked cells: it returns
-    // `None` when the requested cell is already free.
-    let target = if new_map.is_walkable(target.x, target.y) {
-        Some(target)
-    } else {
-        new_map.nearest_walkable_position(target, 4)
-    };
-    let Some(target) = target else {
+    let Some(target) = new_map.landing_position(target, 4) else {
         tracing::warn!(map_id, ?position, "city teleport destination is not walkable");
         actor
             .send(super::MsgTalk::from_system(
@@ -993,13 +1012,20 @@ async fn city_teleport(
 
     if fee > 0 {
         if character.spend_silver(state.pool(), fee).await?.is_none() {
-            actor
-                .send(super::MsgTalk::from_system(
-                    character.id(),
-                    super::TalkChannel::TopLeft,
-                    format!("The trip to {name} costs {fee} silver."),
-                ))
-                .await?;
+            // The reference scripts answer in the dialog itself.
+            let text = if fee == crate::teleports::CONDUCTRESS_FEE {
+                format!("Sorry, you do not have {fee} silver.")
+            } else {
+                "Sorry, you do not have enough.".to_owned()
+            };
+            let dialog = MsgTaskDialog::builder()
+                .text(text)
+                .with_option(255, "I see.")
+                .and()
+                .with_avatar(crate::teleports::opening(npc_id).map_or(1, |(_, _, face)| face))
+                .task_id(npc_id)
+                .build();
+            actor.send_all(dialog).await?;
             return Ok(());
         }
         crate::audit::economic("npc_teleport", character.id(), npc_id, 0, fee);
@@ -1021,7 +1047,7 @@ async fn city_teleport(
         return Err(error);
     }
 
-    if records_market_return && origin_map != MARKET_MAP {
+    if records_market_return && origin_map != map_id {
         character.set_market_return(origin_map, (origin.x, origin.y));
     }
     if fee > 0 {

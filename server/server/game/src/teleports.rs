@@ -22,6 +22,17 @@ pub const TWIN_CITY_CENTER: (u16, u16) = (430, 380);
 /// Option shown by the Market controller to leave the Market.
 pub const LEAVE_MARKET_OPTION: u8 = 1;
 
+/// The training ground (`playground.cmap`) reached through the Boxers.
+pub const TRAINING_GROUND_MAP: u32 = 1039;
+const TRAINING_GROUND_ENTRY: (u16, u16) = (217, 215);
+/// The Boxers' fee for non-guild members (Redux `[101617] Boxer`).
+pub const BOXER_FEE: u32 = 1_000;
+/// The city Boxers: Twin City, Desert City, Phoenix Castle, Ape Mountain
+/// and Bird Island, by their ids in our NPC table.
+const BOXER_IDS: [u32; 5] = [805, 1000, 1001, 1002, 1003];
+/// BoxerHuang, inside the training ground.
+const BOXER_HUANG_ID: u32 = 600_075;
+
 const MARKET_CONTROLLER_ID: u32 = 45;
 const KNOW_IT_ALL_ID: u32 = 10010;
 const KNOW_IT_ALL_TWIN_CITY_OPTION: u8 = 3;
@@ -99,6 +110,70 @@ pub fn is_market_controller(npc_id: u32) -> bool {
     npc_id == MARKET_CONTROLLER_ID
 }
 
+pub fn is_boxer(npc_id: u32) -> bool {
+    BOXER_IDS.contains(&npc_id)
+}
+
+pub fn is_boxer_huang(npc_id: u32) -> bool {
+    npc_id == BOXER_HUANG_ID
+}
+
+/// Opening dialog of the teleport NPCs, word for word from the reference
+/// server scripts: text lines, `(option, label)` pairs and the NPC face.
+pub fn opening(npc_id: u32) -> Option<(Vec<&'static str>, Vec<(u8, String)>, u16)> {
+    const PASSING_BY: (u8, &str) = (255, "Just passing by.");
+    if let Some(conductress) = conductress(npc_id) {
+        let text = if conductress.city == "Phoenix Castle" {
+            "Where are you heading for? I can teleport you anywhere for 100 silver."
+        } else {
+            "Where are you heading for? I can teleport you for a price of 100 silver."
+        };
+        let mut options = conductress
+            .destinations
+            .iter()
+            .zip(1u8..)
+            .map(|(destination, option)| (option, destination.name.to_owned()))
+            .collect::<Vec<_>>();
+        options.push((PASSING_BY.0, PASSING_BY.1.to_owned()));
+        return Some((vec![text], options, 1));
+    }
+    if is_market_controller(npc_id) {
+        return Some((
+            vec!["Do you want to leave the market? I can teleport you for free."],
+            vec![
+                (LEAVE_MARKET_OPTION, "Yeah. Thanks".to_owned()),
+                (255, "No. I shall stay here.".to_owned()),
+            ],
+            1,
+        ));
+    }
+    if is_boxer(npc_id) {
+        return Some((
+            vec![
+                "If you are level 20 or above, you may level up at the training grounds. it does",
+                "not consume any durability, life and mana. Do you want me to teleport you",
+                "there? It is free for my guild members, and 1000 silver for others.",
+            ],
+            vec![
+                (1, "Please teleport me there.".to_owned()),
+                (PASSING_BY.0, PASSING_BY.1.to_owned()),
+            ],
+            20,
+        ));
+    }
+    if is_boxer_huang(npc_id) {
+        return Some((
+            vec![
+                "Although nothing will be consumed here, you cannot level up as fast as",
+                " killing the monsters. Shall I teleport you out?",
+            ],
+            vec![(1, "Yeah, please.".to_owned()), (255, "No, thanks.".to_owned())],
+            20,
+        ));
+    }
+    None
+}
+
 /// A teleport resolved from an NPC dialog answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Teleport {
@@ -111,6 +186,9 @@ pub enum Teleport {
     },
     /// The Market controller sends the player back to where they came from.
     LeaveMarket,
+    /// BoxerHuang sends the player back to where they entered the training
+    /// ground.
+    LeaveTrainingGround,
     /// A free trip offered by the newbie guide.
     Free(Destination),
 }
@@ -130,6 +208,21 @@ pub fn resolve(npc_id: u32, option_id: u8) -> Option<Teleport> {
     }
     if is_market_controller(npc_id) && option_id == LEAVE_MARKET_OPTION {
         return Some(Teleport::LeaveMarket);
+    }
+    if is_boxer(npc_id) && option_id == 1 {
+        return Some(Teleport::Paid {
+            destination: dest(
+                "the training grounds",
+                TRAINING_GROUND_MAP,
+                TRAINING_GROUND_ENTRY.0,
+                TRAINING_GROUND_ENTRY.1,
+            ),
+            fee: BOXER_FEE,
+            records_market_return: true,
+        });
+    }
+    if is_boxer_huang(npc_id) && option_id == 1 {
+        return Some(Teleport::LeaveTrainingGround);
     }
     if npc_id == KNOW_IT_ALL_ID && option_id == KNOW_IT_ALL_TWIN_CITY_OPTION {
         return Some(Teleport::Free(dest(
@@ -196,6 +289,35 @@ mod tests {
         assert_eq!(resolve(5, 1), None);
         assert_eq!(resolve(42, 1), None);
         assert_eq!(resolve(140, 1), None);
+    }
+
+    #[test]
+    fn boxers_take_players_to_the_training_ground_and_back() {
+        for boxer in BOXER_IDS {
+            let Some(Teleport::Paid {
+                destination,
+                fee,
+                records_market_return,
+            }) = resolve(boxer, 1)
+            else {
+                panic!("boxer {boxer} must offer the training ground");
+            };
+            assert_eq!(destination.map_id, TRAINING_GROUND_MAP);
+            assert_eq!(fee, BOXER_FEE);
+            assert!(records_market_return);
+            assert!(opening(boxer).is_some());
+        }
+        assert_eq!(resolve(BOXER_HUANG_ID, 1), Some(Teleport::LeaveTrainingGround));
+        assert_eq!(resolve(BOXER_HUANG_ID, 255), None);
+    }
+
+    #[test]
+    fn opening_dialogs_follow_the_reference_scripts() {
+        let (text, options, face) = opening(10050).expect("twin city conductress");
+        assert_eq!(text, ["Where are you heading for? I can teleport you for a price of 100 silver."]);
+        assert_eq!(options.last(), Some(&(255, "Just passing by.".to_owned())));
+        assert_eq!(face, 1);
+        assert_eq!(opening(10052).expect("phoenix castle").0[0].contains("anywhere"), true);
     }
 
     #[test]

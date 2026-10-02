@@ -46,6 +46,11 @@ pub struct Map {
     regions: MapRegions,
 }
 
+/// `WeaponGoal`, `MagicGoal`, `BowGoal` and `Target`: the training dummies.
+fn is_training_goal(kind: i8) -> bool {
+    (21..=24).contains(&kind)
+}
+
 /// Most instances a single spawn row may create; the monster id of an
 /// instance is derived from its spawn id and index within this block.
 const MONSTERS_PER_SPAWN: u32 = 32;
@@ -73,7 +78,14 @@ impl Map {
         let portals = portals.into_iter().map(Portal::new).collect();
         let npcs = npcs
             .into_iter()
-            .filter(|npc| !constants::is_terrain_npc(npc.id as _))
+            // Dynamic NPC ids (terrain objects, gates, statues) stay out,
+            // except the training goals: the Stakes and Scarecrows of the
+            // training ground live in that id range too.
+            .filter(|npc| {
+                !constants::is_terrain_npc(npc.id as _)
+                    || is_training_goal(npc.kind)
+                    || crate::guild_war::is_war_structure(npc.id as _)
+            })
             .map(|v| (v.id as u32, Arc::new(GameEntity::from(Npc::from(v)))))
             .collect();
         let mut occupied_monster_tiles = HashSet::new();
@@ -149,6 +161,11 @@ impl Map {
         self.inner.color as u32
     }
 
+    /// The map where a player who died here revives.
+    pub fn reborn_map(&self) -> u32 {
+        u32::try_from(self.inner.reborn_map).unwrap_or(self.inner.map_id as u32)
+    }
+
     pub fn revive_point(&self) -> Point<u32> {
         self.revive_point
     }
@@ -186,6 +203,21 @@ impl Map {
             self.is_walkable(x, y)
         };
         nearest_walkable_candidate([i32::from(origin.x), i32::from(origin.y)], max_radius, walkable)
+            .map(|[x, y]| Location::new(x as u16, y as u16, origin.direction))
+    }
+
+    /// Where a teleport to `origin` lands: the cell itself when it is
+    /// walkable, otherwise the nearest walkable cell within `max_radius`.
+    /// Unlike [`Self::nearest_walkable_position`], which only reports a
+    /// correction, this never rejects a cell that is already valid.
+    pub fn landing_position(&self, origin: Location, max_radius: u16) -> Option<Location> {
+        let walkable = |x: i32, y: i32| {
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                return false;
+            };
+            self.is_walkable(x, y)
+        };
+        landing_candidate([i32::from(origin.x), i32::from(origin.y)], max_radius, walkable)
             .map(|[x, y]| Location::new(x as u16, y as u16, origin.direction))
     }
 
@@ -477,6 +509,18 @@ impl Map {
     }
 }
 
+fn landing_candidate(
+    origin: [i32; 2],
+    max_radius: u16,
+    walkable: impl Fn(i32, i32) -> bool,
+) -> Option<[i32; 2]> {
+    if walkable(origin[0], origin[1]) {
+        Some(origin)
+    } else {
+        nearest_walkable_candidate(origin, max_radius, walkable)
+    }
+}
+
 fn nearest_walkable_candidate(
     origin: [i32; 2],
     max_radius: u16,
@@ -727,6 +771,14 @@ mod tests {
     use crate::test_utils::*;
 
     #[test]
+    fn landing_keeps_a_walkable_destination_and_corrects_a_blocked_one() {
+        // Regression: teleports treated "already walkable" as "closed".
+        assert_eq!(landing_candidate([10, 10], 4, |_, _| true), Some([10, 10]));
+        assert_eq!(landing_candidate([10, 10], 4, |x, y| [x, y] == [8, 9]), Some([8, 9]));
+        assert_eq!(landing_candidate([10, 10], 4, |_, _| false), None);
+    }
+
+    #[test]
     fn nearest_walkable_candidate_recovers_from_a_blocked_spawn() {
         let candidate = nearest_walkable_candidate([10, 10], 4, |x, y| [x, y] == [8, 9]);
         assert_eq!(candidate, Some([8, 9]));
@@ -773,5 +825,13 @@ mod tests {
             .boxed()
         })
         .await
+    }
+
+    #[test]
+    fn training_dummies_are_kept_among_dynamic_npcs() {
+        assert!(is_training_goal(21));
+        assert!(is_training_goal(22));
+        assert!(!is_training_goal(2));
+        assert!(constants::is_terrain_npc(100_344));
     }
 }

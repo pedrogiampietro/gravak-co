@@ -204,6 +204,8 @@ pub struct MainHudState<'a> {
     pub max_health: u32,
     pub mana: u32,
     pub max_mana: u32,
+    pub stamina: u32,
+    pub max_stamina: u32,
     pub experience: f32,
     pub hovered_button: Option<MainHudButton>,
     pub hovered_chat: Option<ChatStripControl>,
@@ -263,7 +265,7 @@ pub fn draw(
     let [x, y] = at(MP_ORIGIN);
     draw_gauge(img, &art.mp, [x, y], ratio(state.mana, state.max_mana));
     let [x, y] = at(STAMINA_ORIGIN);
-    draw_gauge(img, &art.stamina, [x, y], 1.0);
+    draw_gauge(img, &art.stamina, [x, y], ratio(state.stamina, state.max_stamina));
     imageops::overlay(img, &art.base, origin[0], origin[1]);
 
     // Experience: a four-row gold gradient sampled from the original.

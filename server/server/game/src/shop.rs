@@ -165,14 +165,31 @@ impl ShopCatalog {
             160..=169 => Some(8),
             180..=189 => Some(9),
             410..=499 => Some(4),
+            // Two-handed weapons: bows, glaives, poleaxes, spears...
+            500..=599 => Some(4),
             900..=909 => Some(5),
+            // Arrows, beside a bow.
+            1_050 => Some(5),
             _ => None,
         }
+    }
+
+    pub fn is_two_handed(item_id: u32) -> bool {
+        (500..=599).contains(&(item_id / 1_000))
+    }
+
+    pub fn is_bow(item_id: u32) -> bool {
+        item_id / 1_000 == 500
+    }
+
+    pub fn is_arrow(item_id: u32) -> bool {
+        item_id / 1_000 == 1_050
     }
 
     pub fn weapon_family(item_id: u32) -> Option<u32> {
         Self::equipment_slot_for_item(item_id)
             .filter(|slot| matches!(slot, 4 | 5))
+            .filter(|_| !Self::is_arrow(item_id))
             .map(|_| item_id / 10)
     }
 
@@ -214,6 +231,9 @@ impl ShopCatalog {
             720_015 => Some((1_001_040, 3)),
             720_016 => Some((1_002_030, 3)),
             720_017 | 721_332 => Some((1_002_040, 3)),
+            // MeteorScroll and DBScroll (MillionaireLee's packs).
+            720_027 => Some((1_088_001, 10)),
+            720_028 => Some((1_088_000, 10)),
             _ => None,
         }
     }
@@ -252,6 +272,23 @@ impl ShopCatalog {
             / 10;
         Some(u32::try_from(cost.max(1)).unwrap_or(u32::MAX))
     }
+}
+
+/// Two-handed weapons need the left hand free, except a bow with its
+/// arrows; arrows go only beside a bow. `None` when the item fits.
+pub fn hand_conflict(item_id: u32, position: u8, right: Option<u32>, left: Option<u32>) -> Option<&'static str> {
+    let two_handed = ShopCatalog::is_two_handed(item_id);
+    if ShopCatalog::is_arrow(item_id) {
+        return (!right.is_some_and(ShopCatalog::is_bow)).then_some("Arrows can only be used with a bow.");
+    }
+    if two_handed && position == 4 {
+        let left_ok = left.is_none_or(|left| ShopCatalog::is_bow(item_id) && ShopCatalog::is_arrow(left));
+        return (!left_ok).then_some("Take off the left-hand item to hold a two-handed weapon.");
+    }
+    if position == 5 && right.is_some_and(ShopCatalog::is_two_handed) {
+        return Some("Your two-handed weapon needs both hands.");
+    }
+    None
 }
 
 fn decrypt_itemtype(bytes: &mut [u8]) {
@@ -310,6 +347,22 @@ fn parse_item_templates(bytes: &[u8]) -> HashMap<u32, ItemTemplate> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hands_follow_the_two_handed_rules() {
+        use super::{hand_conflict, ShopCatalog};
+        assert_eq!(ShopCatalog::equipment_slot_for_item(500_003), Some(4));
+        assert_eq!(ShopCatalog::equipment_slot_for_item(1_050_000), Some(5));
+        assert_eq!(ShopCatalog::weapon_family(1_050_000), None);
+        // Bow with arrows is fine; arrows without a bow are not.
+        assert_eq!(hand_conflict(500_003, 4, None, Some(1_050_000)), None);
+        assert!(hand_conflict(1_050_000, 5, Some(410_001), None).is_some());
+        assert_eq!(hand_conflict(1_050_000, 5, Some(500_003), None), None);
+        // A glaive needs the left hand free; a shield cannot join it.
+        assert!(hand_conflict(510_003, 4, None, Some(900_000)).is_some());
+        assert!(hand_conflict(900_000, 5, Some(510_003), None).is_some());
+        assert_eq!(hand_conflict(410_001, 4, None, Some(900_000)), None);
+    }
+
     use super::{parse_item_templates, ItemTemplate, ShopCatalog, TemporaryEffect};
     use std::time::Duration;
 

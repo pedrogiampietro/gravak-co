@@ -13,10 +13,14 @@ pub enum Action {
     /// Conquer's action 220 (Kneel), used by the original client while
     /// collecting an item from the ground.
     Pickup,
+    /// `3dmotion.ini` 401: falling dead; the last frame is the corpse.
+    Die,
+    /// `3dmotion.ini` 250: sitting down; the last frame is held.
+    Sit,
 }
 
 impl Action {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Idle,
         Self::WalkLeft,
         Self::WalkRight,
@@ -26,6 +30,8 @@ impl Action {
         Self::Attack,
         Self::Hit,
         Self::Pickup,
+        Self::Die,
+        Self::Sit,
     ];
 
     pub const fn index(self) -> usize {
@@ -39,6 +45,8 @@ impl Action {
             Self::Attack => 6,
             Self::Hit => 7,
             Self::Pickup => 8,
+            Self::Die => 9,
+            Self::Sit => 10,
         }
     }
 
@@ -58,6 +66,8 @@ impl Action {
             // Action.dat/3dmotion.ini in the original 5065 client names this
             // motion Kneel (220); it is the pickup pose.
             Self::Pickup => 220,
+            Self::Die => 401,
+            Self::Sit => 250,
         }
     }
 
@@ -76,10 +86,10 @@ mod tests {
 
     #[test]
     fn actions_keep_their_catalog_and_storage_order() {
-        assert_eq!(Action::ALL.map(Action::index), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(Action::ALL.map(Action::index), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         assert_eq!(
             Action::ALL.map(Action::catalog_id),
-            [100, 110, 111, 120, 121, 130, 140, 100, 220]
+            [100, 110, 111, 120, 121, 130, 140, 100, 220, 401, 250]
         );
     }
 }

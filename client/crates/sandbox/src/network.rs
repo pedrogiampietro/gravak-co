@@ -56,6 +56,7 @@ pub struct ReadyState {
     pub current_class: u8,
     pub previous_class: u8,
     pub rebirths: u8,
+    pub kill_points: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,6 +74,12 @@ pub struct OwnedItem {
     pub gem_two: u8,
     /// Server-persisted seed for the item's custom rarity bonus slots.
     pub rarity_roll: u8,
+    /// Blessing: 1, 3, 5 or 7 percent less damage taken.
+    pub bless: u8,
+    /// Life added by a WuxingOven enchantment.
+    pub enchant_hp: u8,
+    /// Tinter dye (3-9; 0 is the default).
+    pub color: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,6 +152,16 @@ pub enum NetworkEvent {
     Ready(ReadyState),
     Silver(u32),
     Cps(u32),
+    Stamina(u8),
+    /// MsgUserAttrib life (0) or maximum life (1) of another entity: the
+    /// Guild War pole and gates, whose life does not fit the spawn packet.
+    ActorLife {
+        id: u32,
+        maximum: bool,
+        value: u32,
+    },
+    /// MsgAction 109 (DropMagic): a rebirth took this skill away.
+    SkillForgotten(u32),
     Vitals {
         health: u32,
         maximum_health: u32,
@@ -162,6 +179,8 @@ pub enum NetworkEvent {
         current_class: u8,
         previous_class: u8,
         rebirths: u8,
+        kill_points: u16,
+        spouse: String,
     },
     Nobility {
         character_id: u32,
@@ -292,7 +311,10 @@ pub enum NetworkEvent {
     Error(String),
 }
 
+/// The XP circle: XP skills are ready.
 pub const XP_CIRCLE_FLAG: u64 = 1 << 4;
+/// Gravak extension bit for double experience.
+pub const DOUBLE_EXPERIENCE_FLAG: u64 = 1 << 48;
 pub const POISONED_FLAG: u64 = 1 << 1;
 pub const STUNNED_FLAG: u64 = 1 << 5;
 pub const CYCLONE_FLAG: u64 = 1 << 23;
@@ -339,6 +361,17 @@ enum NetworkCommand {
         character_id: u32,
         target: [i32; 2],
         current: [i32; 2],
+    },
+    Revive {
+        character_id: u32,
+    },
+    Mine {
+        character_id: u32,
+    },
+    ChangeMap {
+        character_id: u32,
+        x: u16,
+        y: u16,
     },
     Action {
         character_id: u32,
@@ -387,6 +420,11 @@ enum NetworkCommand {
     NpcDialogAnswer {
         task_id: u32,
         option_id: u8,
+    },
+    NpcDialogText {
+        task_id: u32,
+        option_id: u8,
+        text: String,
     },
     BuyItem {
         character_id: u32,
@@ -521,10 +559,13 @@ impl NetworkHandle {
                 | NetworkEvent::RemoteJump { .. }
                 | NetworkEvent::RemoteAction { .. }
                 | NetworkEvent::LevelUp { .. }
+                | NetworkEvent::SkillForgotten(_)
                 | NetworkEvent::RemoteCombat { .. }
                 | NetworkEvent::SkillEffect { .. }
                 | NetworkEvent::Skill { .. }
                 | NetworkEvent::WeaponSkill { .. }
+                | NetworkEvent::Stamina(_)
+                | NetworkEvent::ActorLife { .. }
                 | NetworkEvent::EquipmentItem(_)
                 | NetworkEvent::EquipmentItemRemoved { .. }
                 | NetworkEvent::GroundItem { .. }
@@ -612,6 +653,20 @@ impl NetworkHandle {
         });
     }
 
+    /// Asks to revive after death (MsgAction 94).
+    /// Asks the server to take the hero through the portal at (x, y).
+    pub fn change_map(&self, character_id: u32, x: u16, y: u16) {
+        let _ = self.commands.send(NetworkCommand::ChangeMap { character_id, x, y });
+    }
+
+    pub fn mine(&self, character_id: u32) {
+        let _ = self.commands.send(NetworkCommand::Mine { character_id });
+    }
+
+    pub fn revive(&self, character_id: u32) {
+        let _ = self.commands.send(NetworkCommand::Revive { character_id });
+    }
+
     pub fn player_shop_query(&self, character_id: u32, owner_id: u32) {
         let _ = self.commands.send(NetworkCommand::PlayerShopAction {
             packet: ItemActionPacket::booth_query(character_id, owner_id),
@@ -686,6 +741,12 @@ impl NetworkHandle {
         let _ = self
             .commands
             .send(NetworkCommand::NpcInteract { npc_id, kind });
+    }
+
+    pub fn send_npc_dialog_text(&self, task_id: u32, option_id: u8, text: String) {
+        let _ = self
+            .commands
+            .send(NetworkCommand::NpcDialogText { task_id, option_id, text });
     }
 
     pub fn send_npc_dialog_answer(&self, task_id: u32, option_id: u8) {
@@ -992,7 +1053,7 @@ async fn run(
         .await
         .map_err(|error| error.to_string())?;
 
-    let (map_id, position) = load_location(&mut session, user.character_id)
+    let (map_id, position, deferred_events) = load_location(&mut session, user.character_id)
         .await
         .map_err(|error| error.to_string())?;
     let local_character_id = user.character_id;
@@ -1031,8 +1092,12 @@ async fn run(
             current_class: user.current_class,
             previous_class: user.previous_class,
             rebirths: user.rebirths,
+            kill_points: user.kill_points,
         }))
         .map_err(|error| error.to_string())?;
+    for event in deferred_events {
+        let _ = events.send(event);
+    }
     send_status(&events, "connected");
 
     session
@@ -1121,6 +1186,9 @@ async fn run(
                             gem_one: packet.gem_one,
                             gem_two: packet.gem_two,
                             rarity_roll: 0,
+                            bless: 0,
+                            enchant_hp: 0,
+                            color: 0,
                         },
                     });
                 }
@@ -1183,6 +1251,8 @@ async fn run(
                         current_class: info.current_class,
                         previous_class: info.previous_class,
                         rebirths: info.rebirths,
+                        kill_points: info.kill_points,
+                        spouse: info.spouse.clone(),
                     });
                 }
                 Some(GameEvent::Nobility(info)) if info.character_id == local_character_id => {
@@ -1222,7 +1292,10 @@ async fn run(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.enchant,
+                        rarity_roll: info.reserved3 as u8,
+                        bless: info.reserved2,
+                        enchant_hp: info.enchant,
+                        color: info.reserved4 as u8,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.position >= 80 && info.action == 5 => {
@@ -1261,7 +1334,10 @@ async fn run(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.enchant,
+                        rarity_roll: info.reserved3 as u8,
+                        bless: info.reserved2,
+                        enchant_hp: info.enchant,
+                        color: info.reserved4 as u8,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.position >= 40 && info.action == 5 => {
@@ -1286,7 +1362,10 @@ async fn run(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.enchant,
+                        rarity_roll: info.reserved3 as u8,
+                        bless: info.reserved2,
+                        enchant_hp: info.enchant,
+                        color: info.reserved4 as u8,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 9 => {
@@ -1314,7 +1393,10 @@ async fn run(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.enchant,
+                        rarity_roll: info.reserved3 as u8,
+                        bless: info.reserved2,
+                        enchant_hp: info.enchant,
+                        color: info.reserved4 as u8,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 1 => {
@@ -1332,7 +1414,10 @@ async fn run(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.enchant,
+                        rarity_roll: info.reserved3 as u8,
+                        bless: info.reserved2,
+                        enchant_hp: info.enchant,
+                        color: info.reserved4 as u8,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 5 => {
@@ -1351,6 +1436,11 @@ async fn run(
                 }
                 Some(GameEvent::Action(action)) if action.action_type == 132 => {
                     let _ = events.send(NetworkEvent::RemoveActor(action.character_id));
+                }
+                Some(GameEvent::Action(action))
+                    if action.action_type == 109 && action.character_id == local_character_id =>
+                {
+                    let _ = events.send(NetworkEvent::SkillForgotten(action.data1));
                 }
                 Some(GameEvent::Action(action))
                     if action.action_type == 92 && action.character_id == local_character_id =>
@@ -1456,6 +1546,21 @@ async fn run(
                         experience: skill.experience,
                     });
                 }
+                Some(GameEvent::UserAttrib(packet))
+                    if packet.character_id == local_character_id
+                        && packet.attribute == gravak_protocol::UserAttribPacket::STAMINA =>
+                {
+                    let _ = events.send(NetworkEvent::Stamina(packet.value.min(255) as u8));
+                }
+                Some(GameEvent::UserAttrib(packet))
+                    if packet.character_id != local_character_id && packet.attribute <= 1 =>
+                {
+                    let _ = events.send(NetworkEvent::ActorLife {
+                        id: packet.character_id,
+                        maximum: packet.attribute == 1,
+                        value: packet.value.min(u64::from(u32::MAX)) as u32,
+                    });
+                }
                 Some(GameEvent::WeaponSkill(packet)) => {
                     let _ = events.send(NetworkEvent::WeaponSkill {
                         weapon_type: packet.weapon_type,
@@ -1494,6 +1599,24 @@ async fn run(
                 }) => {
                     session
                         .send(&ActionPacket::jump(character_id, target, current))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::ChangeMap { character_id, x, y }) => {
+                    session
+                        .send(&ActionPacket::change_map(character_id, x, y))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Mine { character_id }) => {
+                    session
+                        .send(&ActionPacket::mine(character_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Revive { character_id }) => {
+                    session
+                        .send(&ActionPacket::reborn(character_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
@@ -1553,6 +1676,12 @@ async fn run(
                 Some(NetworkCommand::NpcInteract { npc_id, kind }) => {
                     session
                         .send(&NpcPacket::activate(npc_id, kind))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::NpcDialogText { task_id, option_id, text }) => {
+                    session
+                        .send(&NpcDialogPacket::answer_text(task_id, option_id, &text))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
@@ -1711,11 +1840,12 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         direction: player.direction,
         mesh: player.mesh.max(0) as u32,
         body: body_from_mesh(player.mesh.max(0) as u32),
-        armor: player.armor.max(0) as u32,
-        helmet: player.helment.max(0) as u32,
+        // The dyes ride in reserved1: armor, helmet, shield (one byte each).
+        armor: crate::character::dyed(player.armor.max(0) as u32, (player.reserved1 & 0xff) as u8),
+        helmet: crate::character::dyed(player.helment.max(0) as u32, ((player.reserved1 >> 8) & 0xff) as u8),
         hair_style: player.hair_style.max(0) as u16,
         right_weapon: player.right_hand.max(0) as u32,
-        left_weapon: player.left_hand.max(0) as u32,
+        left_weapon: crate::character::dyed(player.left_hand.max(0) as u32, ((player.reserved1 >> 16) & 0xff) as u8),
         action: player.action,
         health: player.health_points,
         maximum_health: player.health_points,
@@ -1783,17 +1913,36 @@ fn unpack_position(value: u32) -> [i32; 2] {
     [(value & 0xffff) as i32, (value >> 16) as i32]
 }
 
+/// Reads packets until the map arrives. Skill and weapon proficiency
+/// packets sent during login are kept and returned, so they are delivered
+/// after `Ready` instead of being lost.
 async fn load_location(
     session: &mut GameSession,
     _character_id: u32,
-) -> Result<(u32, [i32; 2]), gravak_protocol::ProtocolError> {
+) -> Result<(u32, [i32; 2], Vec<NetworkEvent>), gravak_protocol::ProtocolError> {
     let mut location = None;
+    let mut deferred = Vec::new();
     let map_id = loop {
         match session.next_event().await? {
             Some(GameEvent::Action(action)) => {
                 location = Some(unpack_position(action.data2));
             }
             Some(GameEvent::MapInfo(info)) => break info.map_id,
+            Some(GameEvent::Skill(skill)) => deferred.push(NetworkEvent::Skill {
+                skill_id: skill.skill_id,
+                level: skill.level,
+                experience: skill.experience,
+            }),
+            Some(GameEvent::WeaponSkill(packet)) => deferred.push(NetworkEvent::WeaponSkill {
+                weapon_type: packet.weapon_type,
+                level: packet.level,
+                experience: packet.experience,
+            }),
+            Some(GameEvent::UserAttrib(packet))
+                if packet.attribute == gravak_protocol::UserAttribPacket::STAMINA =>
+            {
+                deferred.push(NetworkEvent::Stamina(packet.value.min(255) as u8))
+            }
             Some(_) => {}
             None => {
                 return Err(gravak_protocol::ProtocolError::MalformedResponse(
@@ -1807,6 +1956,7 @@ async fn load_location(
         location.ok_or(gravak_protocol::ProtocolError::MalformedResponse(
             "game server did not send location",
         ))?,
+        deferred,
     ))
 }
 

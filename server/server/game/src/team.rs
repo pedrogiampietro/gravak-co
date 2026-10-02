@@ -379,6 +379,13 @@ impl TeamManager {
         }
     }
 
+    /// The leader of the character's team, if it is in one.
+    pub fn leader_for(&self, character_id: u32) -> Option<u32> {
+        let book = self.book.lock();
+        let team_id = book.membership.get(&character_id)?;
+        book.teams.get(team_id).map(|team| team.leader_id)
+    }
+
     pub fn snapshot(&self, character_id: u32) -> Option<Vec<u32>> {
         let book = self.book.lock();
         let team_id = book.membership.get(&character_id)?;

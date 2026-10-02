@@ -100,7 +100,8 @@ pub async fn tick(state: &State) {
                 }
                 continue;
             }
-            let Some((target, distance)) = nearest_target(&characters, mloc) else {
+            let guard = is_guard(monster_ref.monster_type().id);
+            let Some((target, distance)) = nearest_target(&characters, mloc, guard) else {
                 let can_move = next_move
                     .lock()
                     .unwrap()
@@ -164,12 +165,27 @@ pub async fn tick(state: &State) {
     }
 }
 
-fn nearest_target(characters: &[Arc<GameEntity>], location: Location) -> Option<(Arc<GameEntity>, i16)> {
+/// City guards (Guard1, Guard2): they punish crime instead of hunting.
+fn is_guard(monster_type_id: i32) -> bool {
+    matches!(monster_type_id, 900 | 910 | 911)
+}
+
+fn nearest_target(characters: &[Arc<GameEntity>], location: Location, guard: bool) -> Option<(Arc<GameEntity>, i16)> {
     characters
         .iter()
         .filter_map(|entity| {
             let character = entity.as_character()?;
-            if character.entity().is_dead() {
+            // Dead, invisible or flying players are out of reach.
+            let flags = character.entity().flags();
+            if character.entity().is_dead()
+                || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
+            {
+                return None;
+            }
+            // Guards only go after fresh killers and black names.
+            if guard
+                && !flags.intersects(crate::entities::Flags::BLUE_FLASHING_NAME | crate::entities::Flags::BLACK_NAME)
+            {
                 return None;
             }
             let target = character.entity().location();
@@ -291,5 +307,10 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
     let _ = character.owner().send(packet.clone()).await;
     if let Ok(screen) = character.try_screen() {
         let _ = screen.send_message(packet).await;
+    }
+    if character.entity().is_dead() {
+        if let Err(error) = crate::death::kill_character(state, character, monster.id(), None).await {
+            tracing::warn!(character = character.id(), ?error, "Failed to process character death");
+        }
     }
 }

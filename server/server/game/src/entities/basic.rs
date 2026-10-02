@@ -19,6 +19,11 @@ bitflags::bitflags! {
     /// Gravak runtime flag for the classic Heaven's Blessing timer. It uses
     /// an extension bit so it cannot collide with the 5065 status flags.
     const HEAVEN_BLESSING = 1 << 49;
+    /// Gravak runtime flag for double experience, so the XP circle (bit 4)
+    /// keeps its classic meaning: XP skills ready.
+    const DOUBLE_EXPERIENCE = 1 << 48;
+    /// Gravak runtime flag: Intensify is charged for the next shot.
+    const INTENSIFY = 1 << 47;
     const RESTRICT_MOVEMENT = 1 << 5;
     const TEAM_LEADER = 1 << 6;
     const STAR_OF_ACCURACY = 1 << 7;
@@ -79,9 +84,12 @@ pub struct Entity {
     mp: Atomic<Gauge>,
     base_hp_max: AtomicU16,
     base_mp_max: AtomicU16,
+    /// Life and mana the worn equipment adds on top of the base.
+    equipment_hp_bonus: AtomicU32,
+    equipment_mp_bonus: AtomicU32,
 }
 
-fn max_mana_for(spirit: u16, profession: u16) -> u16 {
+pub(crate) fn max_mana_for(spirit: u16, profession: u16) -> u16 {
     let base = u32::from(spirit).saturating_mul(5);
     base.saturating_mul(u32::from(taoist_mana_bonus_percent(profession)))
         .saturating_div(100)
@@ -156,6 +164,8 @@ impl Entity {
             mp: Atomic::new(Gauge::default()),
             base_hp_max: AtomicU16::new(monster_type.life.max(1).min(u16::MAX as i32) as u16),
             base_mp_max: AtomicU16::new(0),
+            equipment_hp_bonus: AtomicU32::new(0),
+            equipment_mp_bonus: AtomicU32::new(0),
         }
     }
 
@@ -317,7 +327,29 @@ impl Entity {
         mana
     }
 
+    /// New base life and mana capacities (attributes, level, class); the
+    /// equipment bonus stays. With `refill` both gauges become full,
+    /// otherwise they keep their value inside the new capacity.
+    pub fn set_base_resources(&self, health: u16, mana: u16, refill: bool) {
+        self.base_hp_max.store(health, Ordering::Relaxed);
+        self.base_mp_max.store(mana, Ordering::Relaxed);
+        let health_bonus = self.equipment_hp_bonus.load(Ordering::Relaxed);
+        let mana_bonus = self.equipment_mp_bonus.load(Ordering::Relaxed);
+        self.set_equipment_resource_bonuses(health_bonus, mana_bonus);
+        if refill {
+            let mut gauge = self.hp();
+            gauge.current = gauge.max;
+            self.hp.store(gauge, Ordering::Relaxed);
+            let mut gauge = self.mp();
+            gauge.current = gauge.max;
+            self.mp.store(gauge, Ordering::Relaxed);
+            self.set_flags(self.flags() & !Flags::DEAD);
+        }
+    }
+
     pub fn set_equipment_resource_bonuses(&self, health_bonus: u32, mana_bonus: u32) {
+        self.equipment_hp_bonus.store(health_bonus, Ordering::Relaxed);
+        self.equipment_mp_bonus.store(mana_bonus, Ordering::Relaxed);
         let max_resource =
             |base: u16, bonus: u32| u32::from(base).saturating_add(bonus).min(u32::from(u16::MAX)) as u16;
 
@@ -402,7 +434,9 @@ impl From<&tq_db::character::Character> for Entity {
             v.spirit.max(0) as u16,
             v.current_class.max(0) as u16,
         );
-        let base_health = stored_health.max(derived_health);
+        // Redux `Recalculate`: the capacity comes from the attributes; the
+        // stored value only rescues a character without any attributes.
+        let base_health = if derived_health > 0 { derived_health } else { stored_health };
         let base_mana = max_mana_for(v.spirit.max(0) as u16, v.current_class.max(0) as u16);
         Self {
             id: (v.character_id as u32) + constants::CHARACTER_ID_MIN,
@@ -426,6 +460,8 @@ impl From<&tq_db::character::Character> for Entity {
             }),
             base_hp_max: AtomicU16::new(base_health),
             base_mp_max: AtomicU16::new(base_mana),
+            equipment_hp_bonus: AtomicU32::new(0),
+            equipment_mp_bonus: AtomicU32::new(0),
         }
     }
 }
@@ -447,6 +483,8 @@ impl From<&tq_db::npc::Npc> for Entity {
             mp: Atomic::new(Gauge::default()),
             base_hp_max: AtomicU16::new(0),
             base_mp_max: AtomicU16::new(0),
+            equipment_hp_bonus: AtomicU32::new(0),
+            equipment_mp_bonus: AtomicU32::new(0),
         }
     }
 }
@@ -506,6 +544,8 @@ mod tests {
             mp: Atomic::new(Gauge { current: 25, max: 50 }),
             base_hp_max: AtomicU16::new(100),
             base_mp_max: AtomicU16::new(50),
+            equipment_hp_bonus: AtomicU32::new(0),
+            equipment_mp_bonus: AtomicU32::new(0),
         };
 
         assert_eq!(entity.spend_mana(20).map(|gauge| gauge.current), Some(5));

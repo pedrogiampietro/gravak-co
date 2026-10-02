@@ -43,6 +43,7 @@ pub const MSG_GROUND_ITEM: u16 = 1101;
 pub const MSG_SKILL_EFFECT: u16 = 1105;
 pub const MSG_SKILL: u16 = 1103;
 pub const MSG_WEAPON_SKILL: u16 = 1025;
+pub const MSG_USER_ATTRIB: u16 = 1017;
 pub const MSG_NPC_INFO: u16 = 2030;
 pub const MSG_NPC: u16 = 2031;
 pub const MSG_TASK_DIALOG: u16 = 2032;
@@ -257,6 +258,21 @@ pub struct WeaponSkillPacket {
     pub experience: u32,
 }
 
+/// One changed attribute of a character (1017); `attribute` 9 is stamina.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 1017)]
+pub struct UserAttribPacket {
+    pub character_id: u32,
+    pub count: u32,
+    pub attribute: u32,
+    pub value: u64,
+    pub reserved: u64,
+}
+
+impl UserAttribPacket {
+    pub const STAMINA: u32 = 9;
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
 #[packet(id = 1103)]
 pub struct SkillPacket {
@@ -407,6 +423,30 @@ impl ActionPacket {
             data2: 0,
             details: 0,
             action_type: 75,
+        }
+    }
+
+    /// MsgAction 85: the hero stepped on a map portal at (x, y).
+    pub fn change_map(character_id: u32, x: u16, y: u16) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: u32::from(x) | (u32::from(y) << 16),
+            data2: 0,
+            details: 0,
+            action_type: 85,
+        }
+    }
+
+    /// MsgAction 99: start mining with a PickAxe.
+    pub fn mine(character_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: 0,
+            details: 0,
+            action_type: 99,
         }
     }
 
@@ -859,6 +899,17 @@ pub struct NpcDialogPacket {
 }
 
 impl NpcDialogPacket {
+    /// The answer to a dialog text box, carrying what was typed.
+    pub fn answer_text(task_id: u32, option_id: u8, text: &str) -> Self {
+        Self {
+            task_id,
+            avatar: 0,
+            option_id,
+            action: 101,
+            msgs: vec![text.to_owned()].into(),
+        }
+    }
+
     pub fn answer(task_id: u32, option_id: u8) -> Self {
         Self {
             task_id,
@@ -1186,6 +1237,7 @@ pub enum GameEvent {
     SkillEffect(SkillEffect),
     Skill(SkillPacket),
     WeaponSkill(WeaponSkillPacket),
+    UserAttrib(UserAttribPacket),
     RefineryInfo(RefineryInfoPacket),
     NpcInfo(ServerNpcInfo),
     TaskDialog(TaskDialog),
@@ -1312,6 +1364,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_SKILL_EFFECT => Ok(GameEvent::SkillEffect(decode_skill_effect(body)?)),
         MSG_WEAPON_SKILL => Ok(GameEvent::WeaponSkill(
             WeaponSkillPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_USER_ATTRIB => Ok(GameEvent::UserAttrib(
+            UserAttribPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_SKILL => Ok(GameEvent::Skill(
             SkillPacket::decode(body).map_err(ProtocolError::Decode)?,

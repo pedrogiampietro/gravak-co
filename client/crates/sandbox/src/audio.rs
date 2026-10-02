@@ -11,7 +11,7 @@ use std::{collections::HashMap, io::Cursor};
 
 pub struct MovementAudio {
     device: Option<MixerDeviceSink>,
-    paths: [Option<String>; 9],
+    paths: [Option<String>; 11],
     clips: HashMap<String, SamplesBuffer>,
     voices: HashMap<String, rodio::Player>,
     last_action: Option<(Action, u64)>,

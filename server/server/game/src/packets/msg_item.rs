@@ -572,6 +572,22 @@ impl PacketProcess for MsgItem {
                     actor.send(reject("Use rejected: item is not in inventory.")).await?;
                     return Ok(());
                 };
+                if item.item_type == crate::leveling::EXP_BALL {
+                    if character.entity().level() >= u16::from(crate::leveling::MAX_LEVEL) {
+                        actor.send(reject("You are already at the highest level.")).await?;
+                        return Ok(());
+                    }
+                    let Some(used) = character.consume_items(state.pool(), item.item_type, 1).await? else {
+                        actor.send(reject("Use rejected: item is not in inventory.")).await?;
+                        return Ok(());
+                    };
+                    for ball in used {
+                        actor.send(MsgItemInfo::remove_inventory_item(ball)).await?;
+                    }
+                    crate::leveling::use_exp_ball(state, actor, character, crate::leveling::EXP_BALL_SECONDS).await?;
+                    item_audit_log("exp_ball", character.id(), item.uid, item.item_type, format_args!("level={}", character.entity().level()));
+                    return Ok(());
+                }
                 if let Some(skill) = state.skill_catalog().skill_for_book(item.item_type) {
                     if character.has_skill(skill.id) {
                         actor.send(reject("This skill is already learned.")).await?;
@@ -890,7 +906,22 @@ impl PacketProcess for MsgItem {
                         .await?;
                     return Ok(());
                 };
-                if expected_slot != position && !(expected_slot == 4 && position == 5) {
+                if let Some(problem) = crate::shop::hand_conflict(
+                    source.item_type,
+                    position,
+                    character.equipment_item(4).map(|item| item.item_type),
+                    character.equipment_item(5).map(|item| item.item_type),
+                ) {
+                    dragdrop_log(format_args!(
+                        "equip rejected: item_uid={} item_type={} slot={} {problem}",
+                        source.uid, source.item_type, position
+                    ));
+                    actor.send(reject(problem)).await?;
+                    return Ok(());
+                }
+                if expected_slot != position
+                    && !(expected_slot == 4 && position == 5 && !crate::shop::ShopCatalog::is_two_handed(source.item_type))
+                {
                     dragdrop_log(format_args!(
                         "equip rejected: item_uid={} item_type={} expected_slot={} requested_slot={}",
                         source.uid, source.item_type, expected_slot, position

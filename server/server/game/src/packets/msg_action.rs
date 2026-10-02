@@ -279,8 +279,9 @@ impl MsgAction {
         }
 
         let direction = tq_math::get_direction_sector((loc.x, loc.y), (new_x, new_y));
+        let gate_closed = crate::guild_war::path_blocked(state, mymap_id, (loc.x, loc.y), (new_x, new_y));
         match mymap.tile(new_x, new_y) {
-            Some(tile) if tile.access > TileType::Npc => {
+            Some(tile) if tile.access > TileType::Npc && !gate_closed => {
                 // I guess everything seems to be valid .. send the jump.
                 me.entity()
                     .set_location(Location::new(new_x, new_y, direction))
@@ -434,7 +435,7 @@ impl MsgAction {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn handle_reborn(&self, _state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
+    async fn handle_reborn(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
         let entity = actor.try_entity()?;
         let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
         if self.character_id != character.id() {
@@ -453,7 +454,16 @@ impl MsgAction {
             return Ok(());
         }
 
-        character.entity().restore_health();
+        if !crate::death::revive(state, character).await? {
+            actor
+                .send(super::MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::TopLeft,
+                    "You can`t revive at the moment!",
+                ))
+                .await?;
+            return Ok(());
+        }
         let reborn = MsgAction::from_character(character, 0, ActionType::Reborn);
         let player = MsgPlayer::from(character);
         actor.send(MsgUserInfo::from(character)).await?;
@@ -492,25 +502,44 @@ impl PacketProcess for MsgAction {
             },
             ActionType::Reborn => self.handle_reborn(state, actor).await,
             ActionType::SendAssociates => {
-                // Friends.
-                // TODO: send MsgFriend
+                // Friends and the ignore list.
+                let entity = actor.try_entity()?;
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                super::msg_friend::send_friend_list(state, actor, character.id()).await?;
+                super::msg_friend::send_ignore_list(state, actor, character.id()).await?;
                 actor.send(self.clone()).await?;
                 Ok(())
             },
             ActionType::SendProficiencies => {
-                // Skils
-                // TODO: send MsgWeaponSkill
+                // Weapon proficiencies.
+                let entity = actor.try_entity()?;
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                for packet in super::MsgWeaponSkill::for_all(character.weapon_proficiencies()) {
+                    actor.send(packet).await?;
+                }
                 actor.send(self.clone()).await?;
                 Ok(())
             },
             ActionType::SendSpells => {
-                // Magic Spells
-                // TODO: send MsgMagicInfo
+                // Magic spells.
+                let entity = actor.try_entity()?;
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                for skill in character.skills() {
+                    actor.send(super::MsgSkill::from(skill)).await?;
+                }
                 actor.send(self.clone()).await?;
                 Ok(())
             },
             ActionType::ConfirmGuild => {
-                // TODO: send MsgSyndicateAttributeInfo
+                // The guild and its members.
+                let entity = actor.try_entity()?;
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                if let Some(guild) = state.guild_manager().guild_for(character.id()) {
+                    actor
+                        .send(super::MsgGuild::new(super::SET_GUILD, guild.id).with_strings([guild.name.clone()]))
+                        .await?;
+                    super::send_guild_members(state, character.id(), &guild).await?;
+                }
                 actor.send(self.clone()).await?;
                 Ok(())
             },
@@ -518,6 +547,14 @@ impl PacketProcess for MsgAction {
             ActionType::Jump => self.handle_jump(state, actor).await,
             ActionType::ChangeFacing => self.handle_change_facing(actor).await,
             ActionType::ChangeAction => self.handle_change_action(actor).await,
+            ActionType::Mine => {
+                let entity = actor.try_entity()?;
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                if self.character_id == character.id() {
+                    crate::mining::start(state, character).await?;
+                }
+                Ok(())
+            },
             ActionType::QueryEntity => self.handle_query_entity(state, actor).await,
             ActionType::ChangeMap => self.handle_change_map(state, actor).await,
             _ => {

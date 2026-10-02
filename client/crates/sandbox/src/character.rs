@@ -17,7 +17,7 @@ pub struct Part {
 pub struct Character {
     pub parts: Vec<Part>,
     actions: Vec<C3Document>,
-    intervals: [f32; 9],
+    intervals: [f32; 11],
     pub body_id: u32,
     pub armor_id: u32,
     pub helmet_id: u32,
@@ -38,6 +38,9 @@ pub struct Character {
     pub current_class: u8,
     pub previous_class: u8,
     pub rebirths: u8,
+    /// PK points: red name from 30, black from 100.
+    pub kill_points: u16,
+    pub spouse: String,
 }
 
 #[derive(Clone)]
@@ -162,6 +165,10 @@ impl Character {
         health: u32,
         maximum_health: u32,
     ) -> Result<Self> {
+        // Tinter dyes come folded into the ids (see `dyed`).
+        let (armor_id, armor_color) = undyed(armor_id);
+        let (helmet_id, helmet_color) = undyed(helmet_id);
+        let (left, left_color) = undyed(left);
         let armor = SectionCatalog::parse(&assets.read("ini/armor.ini")?);
         let entry = armor
             .section(&(body * 1_000_000 + armor_id / 10 * 10).to_string())
@@ -170,7 +177,11 @@ impl Character {
         let textures = IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?);
         let motions = IdPathCatalog::parse(&assets.read("ini/3dmotion.ini")?);
         let model_id = entry.first("Mesh0").ok_or("Missing Mesh0")?.parse()?;
-        let texture_id = entry.first("Texture0").ok_or("Missing Texture0")?.parse()?;
+        let texture_id = dyed_texture(
+            &textures,
+            entry.first("Texture0").ok_or("Missing Texture0")?.parse()?,
+            armor_color,
+        );
         let doc = C3Document::parse(
             &assets.read(models.get(model_id).ok_or("Body model missing")?.as_str())?,
         )?;
@@ -200,9 +211,13 @@ impl Character {
                 .ok_or("Body action missing")?;
             Ok(C3Document::parse(&assets.read(path.as_str())?)?)
         };
+        // A body without a death motion falls back to standing.
         let actions = Action::ALL
             .into_iter()
-            .map(&mut motion)
+            .map(|action| match action {
+                Action::Die | Action::Sit => motion(action).or_else(|_| motion(Action::Idle)),
+                _ => motion(action),
+            })
             .collect::<Result<Vec<_>>>()?;
         let mut parts = vec![Part {
             mesh,
@@ -229,7 +244,7 @@ impl Character {
             }
         }
         if helmet_id != 0 {
-            if let Ok(part) = load_attachment(
+            if let Ok(part) = load_dyed_attachment(
                 assets,
                 &models,
                 &textures,
@@ -237,15 +252,16 @@ impl Character {
                 "ini/armet.ini",
                 body * 1_000_000 + helmet_id / 10 * 10,
                 "v_armet",
+                helmet_color,
             ) {
                 parts.push(part);
             }
         }
-        for (weapon, attachment) in [(right, "v_r_weapon"), (left, "v_l_weapon")] {
+        for (weapon, attachment, color) in [(right, "v_r_weapon", 0), (left, "v_l_weapon", left_color)] {
             if weapon == 0 {
                 continue;
             }
-            if let Ok(part) = load_attachment(
+            if let Ok(part) = load_dyed_attachment(
                 assets,
                 &models,
                 &textures,
@@ -253,6 +269,7 @@ impl Character {
                 "ini/weapon.ini",
                 weapon,
                 attachment,
+                color,
             ) {
                 parts.push(part);
             }
@@ -315,6 +332,8 @@ impl Character {
             current_class: 0,
             previous_class: 0,
             rebirths: 0,
+            kill_points: 0,
+            spouse: String::new(),
         })
     }
 
@@ -683,6 +702,33 @@ impl NpcModel {
     }
 }
 
+/// Folds a Tinter dye into an item id for the model loader.
+pub fn dyed(item_id: u32, color: u8) -> u32 {
+    if item_id == 0 || !(3..=9).contains(&color) {
+        item_id
+    } else {
+        item_id + u32::from(color) * DYE_UNIT
+    }
+}
+
+const DYE_UNIT: u32 = 10_000_000;
+
+/// The item id and dye folded by [`dyed`].
+fn undyed(item_id: u32) -> (u32, u8) {
+    (item_id % DYE_UNIT, (item_id / DYE_UNIT) as u8)
+}
+
+/// The 5065 dye textures replace the hundreds digit of the texture id
+/// (1130330 is colour 3, 1130430 colour 4...); missing ones keep the
+/// default.
+fn dyed_texture(textures: &IdPathCatalog, texture: u32, color: u8) -> u32 {
+    if !(3..=9).contains(&color) {
+        return texture;
+    }
+    let candidate = texture - (texture / 100 % 10) * 100 + u32::from(color) * 100;
+    if textures.get(candidate).is_some() { candidate } else { texture }
+}
+
 fn load_attachment(
     assets: &mut Assets,
     models: &IdPathCatalog,
@@ -692,15 +738,30 @@ fn load_attachment(
     key: u32,
     attachment: &str,
 ) -> Result<Part> {
+    load_dyed_attachment(assets, models, textures, body, catalog, key, attachment, 0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_dyed_attachment(
+    assets: &mut Assets,
+    models: &IdPathCatalog,
+    textures: &IdPathCatalog,
+    body: &C3Document,
+    catalog: &str,
+    key: u32,
+    attachment: &str,
+    color: u8,
+) -> Result<Part> {
     let definition = SectionCatalog::parse(&assets.read(catalog)?);
     let entry = definition
         .section(&key.to_string())
         .ok_or_else(|| format!("Missing part {key} in {catalog}"))?;
     let model = entry.first("Mesh0").ok_or("Part Mesh0 missing")?.parse()?;
-    let texture = entry
+    let texture: u32 = entry
         .first("Texture0")
         .ok_or("Part Texture0 missing")?
         .parse()?;
+    let texture = dyed_texture(textures, texture, color);
     let part =
         C3Document::parse(&assets.read(models.get(model).ok_or("Part model missing")?.as_str())?)?;
     let track = body

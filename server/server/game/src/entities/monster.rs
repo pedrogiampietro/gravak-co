@@ -62,31 +62,10 @@ impl Monster {
 
     pub fn apply_status(&self, effect: StatusEffect, duration: std::time::Duration) {
         self.statuses.apply(effect, duration);
-        match effect {
-            StatusEffect::Burning => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::POISONED);
-            },
-            StatusEffect::Stunned => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::RESTRICT_MOVEMENT);
-            },
-            StatusEffect::Cyclone => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::CYCLONE);
-            },
-            StatusEffect::Superman => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::SUPERMAN);
-            },
-            StatusEffect::Stigma => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::STIGMA);
-            },
-            StatusEffect::Shield => {
-                self.entity
-                    .set_flags(self.entity.flags() | crate::entities::Flags::SHIELD);
-            },
+        if duration.is_zero() {
+            self.entity.set_flags(self.entity.flags() & !effect.flag());
+        } else {
+            self.entity.set_flags(self.entity.flags() | effect.flag());
         }
     }
 
@@ -109,41 +88,10 @@ impl Monster {
 
     pub fn expire_statuses(&self, now: std::time::Instant) -> bool {
         let expired = self.statuses.expire(now);
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Burning))
-            && !self.statuses.contains(StatusEffect::Burning)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::POISONED);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Stunned))
-            && !self.statuses.contains(StatusEffect::Stunned)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::RESTRICT_MOVEMENT);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Cyclone))
-            && !self.statuses.contains(StatusEffect::Cyclone)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::CYCLONE);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Superman))
-            && !self.statuses.contains(StatusEffect::Superman)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::SUPERMAN);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Stigma))
-            && !self.statuses.contains(StatusEffect::Stigma)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::STIGMA);
-        }
-        if expired.iter().any(|effect| matches!(effect, StatusEffect::Shield))
-            && !self.statuses.contains(StatusEffect::Shield)
-        {
-            self.entity
-                .set_flags(self.entity.flags() & !crate::entities::Flags::SHIELD);
+        for effect in &expired {
+            if !self.statuses.contains(*effect) {
+                self.entity.set_flags(self.entity.flags() & !effect.flag());
+            }
         }
         !expired.is_empty()
     }

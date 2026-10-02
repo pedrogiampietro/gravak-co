@@ -44,7 +44,7 @@ impl PacketProcess for MsgNpc {
             "MsgNpc received"
         );
         let me = actor.entity();
-        me.as_character().ok_or(crate::Error::CharacterNotFound)?;
+        let character = me.as_character().ok_or(crate::Error::CharacterNotFound)?;
         let mymap = state.try_map(me.basic().map_id())?;
         let npc = match mymap.npc(self.npc_id) {
             Some(npc) => npc,
@@ -68,23 +68,35 @@ impl PacketProcess for MsgNpc {
             return Ok(());
         }
         let npc_id = npc.id();
+        // The pole and the gates only talk to the winning guild.
+        if crate::guild_war::is_war_structure(npc_id) && crate::guild_war::opening(state, npc_id, character).is_none() {
+            return Ok(());
+        }
         let npc_name = npc.entity().name();
         let shop_items = state
             .shop_catalog()
             .offer(npc_id)
             .map_or(0, |offer| offer.item_ids.len());
-        let (text, options, avatar) =
-            teleport_script(npc_id).unwrap_or_else(|| npc_script(npc_name, npc.kind(), shop_items));
+        let (text, options, avatar) = crate::teleports::opening(npc_id)
+            .map(|(lines, options, face)| (lines.concat(), options, face))
+            .or_else(|| crate::trainers::opening(npc_id, character))
+            .or_else(|| crate::market_npcs::opening(npc_id, character))
+            .or_else(|| crate::quest_npcs::opening(npc_id, character))
+            .or_else(|| crate::guild_war::opening(state, npc_id, character))
+            .or_else(|| crate::city_npcs::opening(npc_id, character))
+            .or_else(|| crate::offline_tg::opening(npc_id))
+            .or_else(|| crate::artisans::opening(npc_id))
+            .or_else(|| teleport_script(npc_id))
+            .unwrap_or_else(|| npc_script(npc_name, npc.kind(), shop_items));
+        let closes_itself = options.iter().any(|(option_id, _)| *option_id == 255);
         let mut builder = MsgTaskDialog::builder().text(text);
         for (option_id, option_text) in options {
             builder = builder.with_option(option_id, option_text);
         }
-        let dialog = builder
-            .with_option(255, "Leave.")
-            .and()
-            .with_avatar(avatar)
-            .task_id(npc_id)
-            .build();
+        if !closes_itself {
+            builder = builder.with_option(255, "Leave.");
+        }
+        let dialog = builder.and().with_avatar(avatar).task_id(npc_id).build();
         actor.send_all(dialog).await?;
         Ok(())
     }

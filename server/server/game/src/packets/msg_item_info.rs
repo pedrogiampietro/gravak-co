@@ -66,7 +66,12 @@ impl MsgItemInfo {
             gem_two: Self::gem_wire(item.socket_two, item.gem_two),
             plus: item.plus,
             blees: item.rarity,
-            enchant: item.rarity_roll,
+            enchant: item.enchant_hp,
+            reserved2: item.bless,
+            // The custom rarity seed rides in a reserved word so the
+            // classic enchant byte carries the HP enchantment.
+            reserved3: u32::from(item.rarity_roll),
+            reserved4: u32::from(item.color),
             ..Self::default()
         }
     }
@@ -85,7 +90,12 @@ impl MsgItemInfo {
             gem_two: Self::gem_wire(item.socket_two, item.gem_two),
             plus: item.plus,
             blees: item.rarity,
-            enchant: item.rarity_roll,
+            enchant: item.enchant_hp,
+            reserved2: item.bless,
+            // The custom rarity seed rides in a reserved word so the
+            // classic enchant byte carries the HP enchantment.
+            reserved3: u32::from(item.rarity_roll),
+            reserved4: u32::from(item.color),
             ..Self::default()
         }
     }
@@ -122,7 +132,12 @@ impl MsgItemInfo {
             gem_two: Self::gem_wire(item.socket_two, item.gem_two),
             plus: item.plus,
             blees: item.rarity,
-            enchant: item.rarity_roll,
+            enchant: item.enchant_hp,
+            reserved2: item.bless,
+            // The custom rarity seed rides in a reserved word so the
+            // classic enchant byte carries the HP enchantment.
+            reserved3: u32::from(item.rarity_roll),
+            reserved4: u32::from(item.color),
             ..Self::default()
         }
     }
@@ -139,7 +154,12 @@ impl MsgItemInfo {
             gem_two: Self::gem_wire(item.socket_two, item.gem_two),
             plus: item.plus,
             blees: item.rarity,
-            enchant: item.rarity_roll,
+            enchant: item.enchant_hp,
+            reserved2: item.bless,
+            // The custom rarity seed rides in a reserved word so the
+            // classic enchant byte carries the HP enchantment.
+            reserved3: u32::from(item.rarity_roll),
+            reserved4: u32::from(item.color),
             ..Self::default()
         }
     }
@@ -166,7 +186,12 @@ impl MsgItemInfo {
             gem_two: Self::gem_wire(item.socket_two, item.gem_two),
             plus: item.plus,
             blees: item.rarity,
-            enchant: item.rarity_roll,
+            enchant: item.enchant_hp,
+            reserved2: item.bless,
+            // The custom rarity seed rides in a reserved word so the
+            // classic enchant byte carries the HP enchantment.
+            reserved3: u32::from(item.rarity_roll),
+            reserved4: u32::from(item.color),
             ..Self::default()
         }
     }

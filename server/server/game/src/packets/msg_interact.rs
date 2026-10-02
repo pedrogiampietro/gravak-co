@@ -112,6 +112,30 @@ impl MsgInteract {
         InteractAction::from(self.action)
     }
 
+    /// Experience for a hit (Redux `GainExperience` after each attack),
+    /// with the level-up effect and the leader's virtue.
+    async fn grant_hit_experience(
+        &self,
+        state: &State,
+        actor: &Actor<ActorState>,
+        character: &crate::entities::Character,
+        experience: u64,
+    ) -> Result<(), Error> {
+        if experience == 0 {
+            return Ok(());
+        }
+        let leveled = character.grant_experience(experience);
+        actor.send(MsgUserInfo::from(character)).await?;
+        if let Some(level) = leveled {
+            character.save(state).await?;
+            let level_up = MsgAction::new(character.id(), character.entity().map_id(), 0, 0, ActionType::LevelUp);
+            actor.send(level_up.clone()).await?;
+            actor.screen().send_message(level_up).await?;
+            crate::leveling::after_level_up(state, character, level).await?;
+        }
+        Ok(())
+    }
+
     async fn degrade_used_weapons(
         &self,
         state: &State,
@@ -120,6 +144,16 @@ impl MsgInteract {
     ) -> Result<(), Error> {
         for position in [4_u8, 5_u8] {
             if let Some(item) = character.degrade_equipment_item(state.pool(), position, 1).await? {
+                // A quiver that runs out is gone (Redux deletes it).
+                if item.durability == 0 && crate::shop::ShopCatalog::is_arrow(item.item_type) {
+                    if let Some(spent) = character.destroy_equipment_item(state.pool(), position).await? {
+                        actor.send(MsgItemInfo::remove_equipment_item(spent, position)).await?;
+                        let update = MsgPlayer::from(character);
+                        actor.send(update.clone()).await?;
+                        actor.screen().send_message(update).await?;
+                    }
+                    continue;
+                }
                 actor.send(MsgItemInfo::equipment_item(item)).await?;
                 tracing::debug!(
                     character_id = character.id(),
@@ -136,115 +170,168 @@ impl MsgInteract {
     async fn reward_monster_defeat(
         &self,
         state: &State,
-        actor: &Actor<ActorState>,
+        _actor: &Actor<ActorState>,
         character: &crate::entities::Character,
         monster: &crate::entities::Monster,
     ) -> Result<(), Error> {
-        let level = monster.monster_type().level.max(1) as u32;
-        let silver_drop = level + next_roll() % (level.saturating_mul(104).saturating_add(1));
-        let experience = monster.monster_type().level.max(1) as u64 * 25;
-        let recipients = team_reward_recipients(state, character);
-        let recipient_count = recipients.len().max(1) as u64;
-        let base_share = experience / recipient_count;
-        let remainder = experience % recipient_count;
-        let monster_type_id = u32::try_from(monster.monster_type().id).unwrap_or_default();
-        let shared_reward = recipients.len() > 1;
+        reward_monster_defeat(state, character, monster, self.character_id).await
+    }
 
-        for (index, entity) in recipients.iter().enumerate() {
-            let Some(recipient) = entity.as_character() else {
-                continue;
-            };
-            let share = base_share + u64::from((index as u64) < remainder);
-            let leveled = recipient.grant_experience(share.max(1));
-            let quest_completions =
-                crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
-            let quest_leveled = quest_completions.iter().filter_map(|quest| quest.leveled_to).max();
-            recipient.save(state).await?;
-            let owner = recipient.owner();
-            owner.send(MsgUserInfo::from(recipient)).await?;
-            owner
+    /// A hit on a training ground dummy: the damage is shown, the player
+    /// earns experience and weapon or skill proficiency, and nothing is
+    /// consumed (no durability, life or mana; the dummy keeps its life).
+    async fn train_on_dummy(
+        &self,
+        state: &State,
+        actor: &Actor<ActorState>,
+        character: &crate::entities::Character,
+        npc: &crate::entities::Npc,
+        skill: Option<&crate::skills::SkillDefinition>,
+    ) -> Result<(), Error> {
+        let player = character.entity();
+        let level = player.level();
+        if !player.is_alive() {
+            return Ok(());
+        }
+        let war_structure = crate::guild_war::is_war_structure(npc.id());
+        if let Some(reason) = war_structure.then(|| crate::guild_war::refuses_hit(npc.id())).flatten() {
+            actor
+                .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, reason))
+                .await?;
+            return Ok(());
+        }
+        if !war_structure && !crate::training::can_train(level, npc) {
+            // The reference server ignores the hit silently, which looks like
+            // a frozen attack; say why instead.
+            actor
                 .send(MsgTalk::from_system(
-                    recipient.id(),
-                    TalkChannel::System,
-                    if shared_reward {
-                        format!("Team reward: {share} experience.")
-                    } else {
-                        format!("Experience gained: {share}.")
+                    character.id(),
+                    TalkChannel::TopLeft,
+                    format!("You must be level {} to train on {}.", npc.level(), npc.entity().name()),
+                ))
+                .await?;
+            return Ok(());
+        }
+        let location = player.location();
+        let target = npc.entity().location();
+        let distance = location.x.abs_diff(target.x).max(location.y.abs_diff(target.y));
+        let reach = match skill {
+            Some(skill) => skill.range,
+            None => f32::from(character.attack_range_with_catalog(Some(state.shop_catalog()))),
+        };
+        if npc.entity().map_id() != player.map_id() || f32::from(distance) > reach.max(1.0) {
+            return Ok(());
+        }
+
+        // The same cadence as real combat, keyed like real attacks/skills.
+        let now = Instant::now();
+        let (cooldowns, key, cooldown) = match skill {
+            Some(skill) => (
+                NEXT_PLAYER_SKILL.get_or_init(|| Mutex::new(HashMap::new())),
+                skill_cooldown_key(character.id(), skill.id),
+                skill.cooldown,
+            ),
+            None => (
+                NEXT_PLAYER_SKILL.get_or_init(|| Mutex::new(HashMap::new())),
+                skill_cooldown_key(character.id(), 0),
+                Duration::from_millis(u64::from(
+                    character.attack_speed_with_catalog(Some(state.shop_catalog())),
+                )),
+            ),
+        };
+        {
+            let mut cooldowns = cooldowns
+                .lock()
+                .map_err(|_| Error::Other("training cooldown lock poisoned".to_owned()))?;
+            if cooldowns.get(&key).is_some_and(|next| *next > now) {
+                return Ok(());
+            }
+            cooldowns.insert(key, now + cooldown);
+        }
+
+        let attacker = character.combat_stats_with_catalog(Some(state.shop_catalog()));
+        let attacker = match skill {
+            Some(skill) => {
+                let progress = character.skill_progress(skill.id);
+                let power = skill_power_percent(
+                    skill.power_percent,
+                    progress.map_or(1, |progress| progress.level),
+                    progress.map_or(0, |progress| progress.proficiency),
+                );
+                let bonus = character.magic_attack_bonus_with_catalog(Some(state.shop_catalog()));
+                let spirit = u32::from(character.spirit());
+                scale_skill_power(
+                    CombatStats {
+                        min_attack: attacker.min_attack.saturating_add(spirit * 3).saturating_add(bonus),
+                        max_attack: attacker.max_attack.saturating_add(spirit * 4).saturating_add(bonus),
+                        ..attacker
                     },
-                ))
-                .await?;
-            if leveled.or(quest_leveled).is_some() {
-                owner
-                    .send(MsgAction::new(
-                        recipient.id(),
-                        recipient.entity().map_id(),
-                        0,
-                        0,
-                        ActionType::LevelUp,
-                    ))
-                    .await?;
-            }
-            for quest in quest_completions {
-                owner
-                    .send(MsgTalk::from_system(
-                        recipient.id(),
-                        TalkChannel::System,
-                        format!(
-                            "Quest complete: {}. Reward: {} silver and {} experience.",
-                            quest.definition.name, quest.reward_silver, quest.reward_experience
-                        ),
-                    ))
-                    .await?;
-            }
+                    power,
+                )
+            },
+            None => scale_skill_power(attacker, 100 + character.weapon_proficiency_bonus_percent()),
+        };
+        let damage = resolve_physical_hit(
+            attacker,
+            crate::training::dummy_stats(npc, skill.is_some()),
+            npc.life(),
+            next_roll(),
+        )
+        .damage;
+
+        match skill {
+            Some(skill) => {
+                let mut effect = MsgSkillEffect::new(
+                    character.id(),
+                    skill.id as u16,
+                    vec![super::SkillTarget::hit(npc.id(), damage)],
+                );
+                effect.target_x = target.x;
+                effect.target_y = target.y;
+                actor.send(effect.clone()).await?;
+                actor.screen().send_message(effect).await?;
+            },
+            None => {
+                let mut hit = self.clone();
+                hit.value = damage;
+                actor.send(hit.clone()).await?;
+                actor.screen().send_message(hit).await?;
+            },
+        }
+        if war_structure {
+            return crate::guild_war::hit(state, actor, character, npc, damage).await;
         }
 
-        for entity in &recipients {
-            let Some(recipient) = entity.as_character() else {
-                continue;
-            };
-            recipient
-                .owner()
-                .send(MsgTalk::from_system(
-                    recipient.id(),
-                    TalkChannel::System,
-                    format!("Loot: {silver_drop} silver dropped."),
-                ))
-                .await?;
+        let experience = crate::training::experience(level, npc.level(), npc.life(), damage);
+        self.grant_hit_experience(state, actor, character, experience).await?;
+        let practice = u32::try_from(experience).unwrap_or(u32::MAX).max(1);
+        match skill {
+            Some(skill) => {
+                if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
+                    actor.send(super::MsgSkill::from(progress)).await?;
+                }
+            },
+            None => {
+                if let Some(weapon_type) = character
+                    .equipment_item(4)
+                    .or_else(|| character.equipment_item(5))
+                    .map(|item| item.item_type)
+                {
+                    let practiced = character
+                        .practice_weapon_proficiency(state.pool(), weapon_type, practice)
+                        .await?;
+                    if practiced.is_some() {
+                        let weapon_type = weapon_type / 1_000;
+                        if let Some(packet) = super::MsgWeaponSkill::for_all(character.weapon_proficiencies())
+                            .into_iter()
+                            .find(|packet| packet.weapon_type == weapon_type)
+                        {
+                            actor.send(packet).await?;
+                        }
+                    }
+                }
+            },
         }
-        let location = monster.entity().location();
-        let monster_level = monster.monster_type().level.max(0) as u16;
-        let mut drops = vec![(silver_item_id(silver_drop), silver_drop)];
-        drops.extend(
-            state
-                .drop_catalog()
-                .roll(monster_type_id, monster_level)
-                .into_iter()
-                .map(|item_id| (item_id, 0)),
-        );
-        for (index, item_id) in drops.into_iter().enumerate() {
-            let (offset_x, offset_y) = drop_offset(index);
-            let item_uid = state.next_ground_item_uid();
-            let x = offset_coordinate(location.x, offset_x);
-            let y = offset_coordinate(location.y, offset_y);
-            state.insert_ground_item(GroundItem {
-                uid: item_uid,
-                item_id: item_id.0,
-                map_id: character.entity().map_id(),
-                x,
-                y,
-                owner_id: character.id(),
-                silver: item_id.1,
-            });
-            let item_drop = MsgGroundItem::new(item_uid, item_id.0, x, y);
-            actor.send(item_drop.clone()).await?;
-            actor.screen().send_message(item_drop).await?;
-        }
-        let mut kill = self.clone();
-        kill.target_id = monster.id();
-        kill.action = InteractAction::Kill as u32;
-        kill.value = silver_drop;
-        actor.send(kill.clone()).await?;
-        actor.screen().send_message(kill).await?;
         Ok(())
     }
 
@@ -277,16 +364,28 @@ impl MsgInteract {
             );
             return Ok(());
         }
+        if skill.xp && !character.xp_ready() {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::TopLeft,
+                    format!("{} needs a full XP circle.", skill.name),
+                ))
+                .await?;
+            return Ok(());
+        }
+        if skill.stamina_cost > 0 && character.stamina() < skill.stamina_cost {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::TopLeft,
+                    format!("{} needs {} stamina.", skill.name, skill.stamina_cost),
+                ))
+                .await?;
+            return Ok(());
+        }
 
-        if matches!(
-            skill.status,
-            Some(
-                crate::skills::SkillStatus::Cyclone
-                    | crate::skills::SkillStatus::Superman
-                    | crate::skills::SkillStatus::Stigma
-                    | crate::skills::SkillStatus::Shield,
-            )
-        ) {
+        if skill.status.is_some_and(|status| status.is_self_buff()) {
             let now = Instant::now();
             let next_skill = NEXT_PLAYER_SKILL.get_or_init(|| Mutex::new(HashMap::new()));
             let can_cast = {
@@ -313,12 +412,9 @@ impl MsgInteract {
             if let Ok(mut skills) = next_skill.lock() {
                 skills.insert(skill_cooldown_key(character.id(), skill.id), now + skill.cooldown);
             }
-            let effect = match skill.status {
-                Some(crate::skills::SkillStatus::Cyclone) => crate::entities::StatusEffect::Cyclone,
-                Some(crate::skills::SkillStatus::Superman) => crate::entities::StatusEffect::Superman,
-                Some(crate::skills::SkillStatus::Stigma) => crate::entities::StatusEffect::Stigma,
-                Some(crate::skills::SkillStatus::Shield) => crate::entities::StatusEffect::Shield,
-                _ => unreachable!("self buff status was validated above"),
+            super::spend_cast_costs(actor, character, &skill).await?;
+            let Some(effect) = skill.status.map(|status| status.effect()) else {
+                return Ok(());
             };
             character.apply_status(effect, skill.status_duration);
             actor.send(MsgUserInfo::from(character)).await?;
@@ -346,7 +442,230 @@ impl MsgInteract {
             return Ok(());
         }
 
+        // Support skills aim at another player in range, or the caster.
+        let ally = (self.target_id != character.id())
+            .then(|| {
+                state
+                    .entities()
+                    .into_iter()
+                    .find(|entity| entity.id() == self.target_id && entity.as_character().is_some())
+            })
+            .flatten()
+            .filter(|entity| {
+                let target = entity.basic();
+                let here = character.entity().location();
+                let there = target.location();
+                target.map_id() == character.entity().map_id()
+                    && f32::from(here.x.abs_diff(there.x).max(here.y.abs_diff(there.y))) <= skill.range.max(1.0)
+            });
+        if skill.revive {
+            let Some(dead) = ally.as_ref().and_then(|entity| entity.as_character()).filter(|target| target.entity().is_dead())
+            else {
+                actor
+                    .send(MsgTalk::from_system(
+                        character.id(),
+                        TalkChannel::TopLeft,
+                        format!("{} needs a dead player as its target.", skill.name),
+                    ))
+                    .await?;
+                return Ok(());
+            };
+            if !self.begin_cast(actor, character, &skill).await? {
+                return Ok(());
+            }
+            let location = dead.entity().location();
+            let mut effect = MsgSkillEffect::new(character.id(), skill.id as u16, vec![super::SkillTarget::hit(dead.id(), 0)]);
+            effect.target_x = location.x;
+            effect.target_y = location.y;
+            actor.send(effect.clone()).await?;
+            actor.screen().send_message(effect).await?;
+            crate::death::revive_here(dead).await?;
+            return Ok(());
+        }
+        if skill.needs_shield
+            && !character
+                .equipment_item(5)
+                .is_some_and(|item| item.item_type / 1_000 == 900)
+        {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::TopLeft,
+                    format!("{} needs a shield.", skill.name),
+                ))
+                .await?;
+            return Ok(());
+        }
+        if skill.dispatch_xp || skill.mana_heal > 0 {
+            if !self.begin_cast(actor, character, &skill).await? {
+                return Ok(());
+            }
+            let mut touched = vec![super::SkillTarget::hit(character.id(), skill.mana_heal)];
+            if skill.mana_heal > 0 {
+                character
+                    .entity()
+                    .restore_mana(u16::try_from(skill.mana_heal).unwrap_or(u16::MAX));
+                actor.send(MsgUserInfo::from(character)).await?;
+            }
+            if skill.dispatch_xp {
+                let here = character.entity().location();
+                for member_id in state.team_manager().members_for(character.id()) {
+                    if member_id == character.id() {
+                        continue;
+                    }
+                    let Some(member) = state.entities().into_iter().find(|entity| entity.id() == member_id) else {
+                        continue;
+                    };
+                    let Some(member) = member.as_character() else {
+                        continue;
+                    };
+                    let there = member.entity().location();
+                    if member.entity().map_id() == character.entity().map_id()
+                        && here.x.abs_diff(there.x).max(here.y.abs_diff(there.y)) <= 18
+                    {
+                        member.fill_xp();
+                        touched.push(super::SkillTarget::hit(member.id(), 0));
+                    }
+                }
+            }
+            let location = character.entity().location();
+            let mut effect = MsgSkillEffect::new(character.id(), skill.id as u16, touched);
+            effect.target_x = location.x;
+            effect.target_y = location.y;
+            actor.send(effect.clone()).await?;
+            actor.screen().send_message(effect).await?;
+            if let Some(progress) = character.practice_skill(state.pool(), skill.id, 1).await? {
+                actor.send(super::MsgSkill::from(progress)).await?;
+            }
+            return Ok(());
+        }
+        if !skill.summon.is_empty() {
+            if !self.begin_cast(actor, character, &skill).await? {
+                return Ok(());
+            }
+            let level = character.skill_progress(skill.id).map_or(1, |progress| progress.level);
+            let index = usize::from(level.saturating_sub(1)).min(skill.summon.len() - 1);
+            let duration = skill.status_duration + Duration::from_secs(5 * u64::from(level.saturating_sub(1)));
+            crate::pets::summon(state, character, skill.summon[index], duration).await?;
+            if let Some(progress) = character.practice_skill(state.pool(), skill.id, 1).await? {
+                actor.send(super::MsgSkill::from(progress)).await?;
+            }
+            return Ok(());
+        }
+        if skill.heal > 0 {
+            let healed = ally
+                .as_ref()
+                .and_then(|entity| entity.as_character())
+                .filter(|target| target.entity().is_alive())
+                .unwrap_or(character);
+            if !self.begin_cast(actor, character, &skill).await? {
+                return Ok(());
+            }
+            let health = healed.entity().heal_health(u16::try_from(skill.heal).unwrap_or(u16::MAX));
+            let mut effect = MsgSkillEffect::new(
+                character.id(),
+                skill.id as u16,
+                vec![super::SkillTarget::hit(healed.id(), skill.heal)],
+            );
+            let location = healed.entity().location();
+            effect.target_x = location.x;
+            effect.target_y = location.y;
+            actor.send(effect.clone()).await?;
+            actor.screen().send_message(effect).await?;
+            actor.send(MsgUserInfo::from(character)).await?;
+            if healed.id() != character.id() {
+                healed.owner().send(MsgUserInfo::from(healed)).await?;
+            }
+            if let Some(progress) = character.practice_skill(state.pool(), skill.id, 1).await? {
+                actor.send(super::MsgSkill::from(progress)).await?;
+            }
+            tracing::debug!(character_id = character.id(), skill_id = skill.id, life = health.current, "Healed");
+            return Ok(());
+        }
+
         let map = state.try_map(character.entity().map_id())?;
+        if !skill.centered {
+            if let Some(npc) = map
+                .npc(self.target_id)
+                .filter(|npc| npc.is_training_goal() || crate::guild_war::is_war_structure(npc.id()))
+            {
+                return self.train_on_dummy(state, actor, character, npc, Some(&skill)).await;
+            }
+        }
+        let character_location = character.entity().location();
+        let targets = if skill.line > 0 || skill.sector > 0 {
+            // Toward the aimed monster or the clicked cell.
+            let toward = map
+                .monster_entity(self.target_id)
+                .map(|entity| {
+                    let location = entity.basic().location();
+                    (i32::from(location.x), i32::from(location.y))
+                })
+                .unwrap_or((i32::from(self.x), i32::from(self.y)));
+            let from = (i32::from(character_location.x), i32::from(character_location.y));
+            if toward == from {
+                return Ok(());
+            }
+            let cells = crate::skills::line_cells(from, toward, skill.line);
+            let mut hit = map
+                .monster_entities()
+                .into_iter()
+                .filter(|candidate| {
+                    let entity = candidate.basic();
+                    let location = entity.location();
+                    let cell = (i32::from(location.x), i32::from(location.y));
+                    entity.map_id() == character.entity().map_id()
+                        && !entity.is_dead()
+                        && if skill.line > 0 {
+                            cells.contains(&cell)
+                        } else {
+                            crate::skills::in_sector(from, toward, cell, skill.sector)
+                        }
+                })
+                .collect::<Vec<_>>();
+            hit.sort_by_key(|target| target.id());
+            hit
+        } else if skill.centered {
+            // Around the caster: every living monster within the radius.
+            let mut around = map
+                .monster_entities()
+                .into_iter()
+                .filter(|candidate| {
+                    let entity = candidate.basic();
+                    let location = entity.location();
+                    entity.map_id() == character.entity().map_id()
+                        && !entity.is_dead()
+                        && f32::from(
+                            location
+                                .x
+                                .abs_diff(character_location.x)
+                                .max(location.y.abs_diff(character_location.y)),
+                        ) <= skill.radius.max(1.0)
+                })
+                .collect::<Vec<_>>();
+            around.sort_by_key(|target| target.id());
+            around
+        } else {
+            let Some(targets) = self.aimed_targets(state, &map, character, &skill) else {
+                return Ok(());
+            };
+            targets
+        };
+        if !self.begin_cast(actor, character, &skill).await? {
+            return Ok(());
+        }
+        self.cast_on_targets(state, actor, character, &map, &skill, targets).await
+    }
+
+    /// The target the skill was aimed at and, for area skills, the
+    /// monsters around it. `None` when the target is invalid.
+    fn aimed_targets(
+        &self,
+        state: &State,
+        map: &crate::world::Map,
+        character: &crate::entities::Character,
+        skill: &crate::skills::SkillDefinition,
+    ) -> Option<Vec<Arc<crate::entities::GameEntity>>> {
         let Some(primary) = map.monster_entity(self.target_id).cloned().or_else(|| {
             state
                 .entities()
@@ -354,7 +673,7 @@ impl MsgInteract {
                 .find(|entity| entity.id() == self.target_id)
         }) else {
             tracing::debug!(target_id = self.target_id, "Skill target was not found");
-            return Ok(());
+            return None;
         };
         let character_location = character.entity().location();
         let primary_entity = primary.basic();
@@ -368,7 +687,10 @@ impl MsgInteract {
                 .max(character_location.y.abs_diff(primary_location.y)),
         );
         let target_character = primary.as_character();
-        let pvp_allowed = target_character.is_none_or(|target| character.can_attack_character(target));
+        let pvp_allowed = match target_character {
+            Some(target) => character.can_attack_character(target) && !team_mode_spares(state, character, target),
+            None => true,
+        };
         let valid_target = primary_entity.map_id() == character.entity().map_id()
             && tq_math::in_screen(character_location.into(), primary_location.into())
             && distance <= skill.range
@@ -391,7 +713,7 @@ impl MsgInteract {
                 pvp_allowed,
                 "Rejected invalid skill target"
             );
-            return Ok(());
+            return None;
         }
 
         let primary_is_monster = primary.as_monster().is_some();
@@ -412,24 +734,32 @@ impl MsgInteract {
             area_targets.sort_by_key(|target| target.id());
             targets.extend(area_targets);
         }
+        Some(targets)
+    }
 
+    /// Cooldown, mana, stamina and the XP circle of a cast; `false` when it
+    /// cannot be cast now.
+    async fn begin_cast(
+        &self,
+        actor: &Actor<ActorState>,
+        character: &crate::entities::Character,
+        skill: &crate::skills::SkillDefinition,
+    ) -> Result<bool, Error> {
         let now = Instant::now();
         let next_skill = NEXT_PLAYER_SKILL.get_or_init(|| Mutex::new(HashMap::new()));
         let can_cast = {
             let skills = next_skill
                 .lock()
                 .map_err(|_| Error::Other("player skill cooldown lock poisoned".to_owned()))?;
-            let can_cast = skills
+            skills
                 .get(&skill_cooldown_key(character.id(), skill.id))
-                .is_none_or(|next| *next <= now);
-            can_cast
+                .is_none_or(|next| *next <= now)
         };
         if !can_cast {
             tracing::trace!(character_id = character.id(), "Rejected skill during cooldown");
-            return Ok(());
+            return Ok(false);
         }
-
-        let Some(mana) = character.entity().spend_mana(skill.mana_cost) else {
+        if character.entity().spend_mana(skill.mana_cost).is_none() {
             actor
                 .send(MsgTalk::from_system(
                     character.id(),
@@ -437,13 +767,27 @@ impl MsgInteract {
                     format!("{} requires {} MP.", skill.name, skill.mana_cost),
                 ))
                 .await?;
-            return Ok(());
-        };
+            return Ok(false);
+        }
         if let Ok(mut skills) = next_skill.lock() {
             skills.insert(skill_cooldown_key(character.id(), skill.id), now + skill.cooldown);
         }
         actor.send(MsgUserInfo::from(character)).await?;
+        super::spend_cast_costs(actor, character, skill).await?;
+        Ok(true)
+    }
 
+    async fn cast_on_targets(
+        &self,
+        state: &State,
+        actor: &Actor<ActorState>,
+        character: &crate::entities::Character,
+        map: &crate::world::Map,
+        skill: &crate::skills::SkillDefinition,
+        targets: Vec<Arc<crate::entities::GameEntity>>,
+    ) -> Result<(), Error> {
+        let mana = character.entity().mp();
+        let skill = skill.clone();
         let attacker = character.combat_stats_with_catalog(Some(state.shop_catalog()));
         let progress = character
             .skill_progress(skill.id)
@@ -467,8 +811,16 @@ impl MsgInteract {
             ..attacker
         };
         let attacker_stats = scale_skill_power(attacker_stats, skill_power);
+        // Weapon skills: the physical attack, proficiency bonus included.
+        let physical_stats = attacker;
+        let physical_power = u16::try_from(
+            u32::from(skill_power) * u32::from(100 + character.weapon_proficiency_bonus_percent()) / 100,
+        )
+        .unwrap_or(u16::MAX);
         let mut effects = Vec::with_capacity(targets.len());
         let mut defeated = Vec::new();
+        let mut defeated_players = Vec::new();
+        let mut hit_experience = 0_u64;
         let mut player_owners = Vec::new();
         for target in targets {
             let target_entity = target.basic();
@@ -497,33 +849,48 @@ impl MsgInteract {
             };
             let magic_attack = target_attacker_stats
                 .min_attack
-                .saturating_add(target_attacker_stats.attack_flat);
-            let outcome = resolve_magic_damage(
-                magic_attack,
-                magic_defense,
-                0,
-                target_stats.damage_reduction_percent,
-                u32::from(health_before.current),
-                target_stats.max_health,
-                fire_resistance,
-            );
+                .saturating_add(target_attacker_stats.attack_flat)
+                .saturating_add(skill.flat_power);
+            let outcome = if skill.physical {
+                resolve_physical_hit(
+                    scale_skill_power(physical_stats, physical_power),
+                    target_stats,
+                    u32::from(health_before.current),
+                    next_roll(),
+                )
+            } else {
+                resolve_magic_damage(
+                    magic_attack,
+                    magic_defense,
+                    0,
+                    target_stats.damage_reduction_percent,
+                    u32::from(health_before.current),
+                    target_stats.max_health,
+                    fire_resistance,
+                )
+            };
             let health_after = target_entity.apply_damage(outcome.damage);
+            if let Some(monster) = target.as_monster() {
+                hit_experience += crate::leveling::combat_experience(
+                    character.entity().level(),
+                    u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
+                    u32::from(health_before.current),
+                    outcome.damage,
+                    false,
+                );
+            }
             if !outcome.defeated {
                 if let Some(status) = skill.status {
-                    let effect = match status {
-                        crate::skills::SkillStatus::Burning => crate::entities::StatusEffect::Burning,
-                        crate::skills::SkillStatus::Stunned => crate::entities::StatusEffect::Stunned,
-                        crate::skills::SkillStatus::Cyclone => crate::entities::StatusEffect::Cyclone,
-                        crate::skills::SkillStatus::Superman => crate::entities::StatusEffect::Superman,
-                        crate::skills::SkillStatus::Stigma => crate::entities::StatusEffect::Stigma,
-                        crate::skills::SkillStatus::Shield => crate::entities::StatusEffect::Shield,
-                    };
+                    let effect = status.effect();
                     target.apply_status(effect, skill.status_duration);
                 }
             }
             effects.push(SkillTarget::hit(target.id(), outcome.damage));
             if outcome.defeated {
                 defeated.push(target.id());
+                if target.as_character().is_some() {
+                    defeated_players.push(target.clone());
+                }
             }
             let player_update = if let Some(monster) = target.as_monster() {
                 MsgPlayer::from_monster(monster)
@@ -575,8 +942,165 @@ impl MsgInteract {
                 self.reward_monster_defeat(state, actor, character, monster).await?;
             }
         }
+        self.grant_hit_experience(state, actor, character, hit_experience).await?;
+        for victim in defeated_players {
+            if let Some(victim) = victim.as_character() {
+                crate::death::kill_character(state, victim, character.id(), Some(character)).await?;
+            }
+        }
         Ok(())
     }
+}
+
+/// Experience, drops and the death blow when `character` (or their pet,
+/// `killer_id`) defeats a monster.
+/// Team PK mode does not hit teammates, guildmates or allied guilds.
+fn team_mode_spares(state: &State, attacker: &crate::entities::Character, target: &crate::entities::Character) -> bool {
+    if attacker.kill_mode() != 2 {
+        return false;
+    }
+    if state.team_manager().same_team(attacker.id(), target.id()) || state.guild_manager().same_guild(attacker.id(), target.id()) {
+        return true;
+    }
+    let (Some(mine), Some(theirs)) = (
+        state.guild_manager().guild_for(attacker.id()),
+        state.guild_manager().guild_for(target.id()),
+    ) else {
+        return false;
+    };
+    state
+        .guild_manager()
+        .relation(mine.id, theirs.id)
+        .is_some_and(|kind| kind == "ally")
+}
+
+pub(crate) async fn reward_monster_defeat(
+    state: &State,
+    character: &crate::entities::Character,
+    monster: &crate::entities::Monster,
+    killer_id: u32,
+) -> Result<(), Error> {
+    character.add_xp_point();
+    let level = monster.monster_type().level.max(1) as u32;
+    let silver_drop = level + next_roll() % (level.saturating_mul(104).saturating_add(1));
+    let experience = monster.monster_type().level.max(1) as u64 * 25;
+    let recipients = team_reward_recipients(state, character);
+    let recipient_count = recipients.len().max(1) as u64;
+    let base_share = experience / recipient_count;
+    let remainder = experience % recipient_count;
+    let monster_type_id = u32::try_from(monster.monster_type().id).unwrap_or_default();
+    let shared_reward = recipients.len() > 1;
+
+    for (index, entity) in recipients.iter().enumerate() {
+        let Some(recipient) = entity.as_character() else {
+            continue;
+        };
+        let share = base_share + u64::from((index as u64) < remainder);
+        let leveled = recipient.grant_experience(share.max(1));
+        if let Some(level) = leveled {
+            crate::leveling::after_level_up(state, recipient, level).await?;
+        }
+        let quest_completions =
+            crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
+        let quest_leveled = quest_completions.iter().filter_map(|quest| quest.leveled_to).max();
+        recipient.save(state).await?;
+        let owner = recipient.owner();
+        owner.send(MsgUserInfo::from(recipient)).await?;
+        owner
+            .send(MsgTalk::from_system(
+                recipient.id(),
+                TalkChannel::System,
+                if shared_reward {
+                    format!("Team reward: {share} experience.")
+                } else {
+                    format!("Experience gained: {share}.")
+                },
+            ))
+            .await?;
+        if leveled.or(quest_leveled).is_some() {
+            owner
+                .send(MsgAction::new(
+                    recipient.id(),
+                    recipient.entity().map_id(),
+                    0,
+                    0,
+                    ActionType::LevelUp,
+                ))
+                .await?;
+        }
+        for quest in quest_completions {
+            owner
+                .send(MsgTalk::from_system(
+                    recipient.id(),
+                    TalkChannel::System,
+                    format!(
+                        "Quest complete: {}. Reward: {} silver and {} experience.",
+                        quest.definition.name, quest.reward_silver, quest.reward_experience
+                    ),
+                ))
+                .await?;
+        }
+    }
+
+    for entity in &recipients {
+        let Some(recipient) = entity.as_character() else {
+            continue;
+        };
+        recipient
+            .owner()
+            .send(MsgTalk::from_system(
+                recipient.id(),
+                TalkChannel::System,
+                format!("Loot: {silver_drop} silver dropped."),
+            ))
+            .await?;
+    }
+    let location = monster.entity().location();
+    let monster_level = monster.monster_type().level.max(0) as u16;
+    let mut drops = vec![(silver_item_id(silver_drop), silver_drop)];
+    drops.extend(
+        state
+            .drop_catalog()
+            .roll(monster_type_id, monster_level)
+            .into_iter()
+            .map(|item_id| (item_id, 0)),
+    );
+    for (index, item_id) in drops.into_iter().enumerate() {
+        let (offset_x, offset_y) = drop_offset(index);
+        let item_uid = state.next_ground_item_uid();
+        let x = offset_coordinate(location.x, offset_x);
+        let y = offset_coordinate(location.y, offset_y);
+        state.insert_ground_item(GroundItem {
+            uid: item_uid,
+            item_id: item_id.0,
+            map_id: character.entity().map_id(),
+            x,
+            y,
+            owner_id: character.id(),
+            silver: item_id.1,
+        });
+        let item_drop = MsgGroundItem::new(item_uid, item_id.0, x, y);
+        character.owner().send(item_drop.clone()).await?;
+        if let Ok(screen) = character.try_screen() {
+            screen.send_message(item_drop).await?;
+        }
+    }
+    let location = monster.entity().location();
+    let kill = MsgInteract {
+        timestamp: 0,
+        character_id: killer_id,
+        target_id: monster.id(),
+        x: location.x,
+        y: location.y,
+        action: InteractAction::Kill as u32,
+        value: silver_drop,
+        reserved: [0; 12],
+    };
+    character.owner().send(kill.clone()).await?;
+    if let Ok(screen) = character.try_screen() {
+        screen.send_message(kill).await?;
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -618,7 +1142,27 @@ impl PacketProcess for MsgInteract {
             return Ok(());
         }
 
+        let bow = character
+            .equipment_item(4)
+            .is_some_and(|weapon| crate::shop::ShopCatalog::is_bow(weapon.item_type));
+        let arrows = character.equipment_item(5).filter(|item| {
+            crate::shop::ShopCatalog::is_arrow(item.item_type) && item.durability > 0
+        });
+        if bow && arrows.is_none() {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::TopLeft,
+                    "Please equip arrows.",
+                ))
+                .await?;
+            return Ok(());
+        }
+
         let map = state.try_map(character.entity().map_id())?;
+        if let Some(npc) = map.npc(self.target_id).filter(|npc| npc.is_training_goal() || crate::guild_war::is_war_structure(npc.id())) {
+            return self.train_on_dummy(state, actor, character, npc, None).await;
+        }
         let Some(target) = map.monster_entity(self.target_id).cloned().or_else(|| {
             state
                 .entities()
@@ -639,7 +1183,7 @@ impl PacketProcess for MsgInteract {
                 .is_some_and(|target| target.id() == character.id())
             || target
                 .as_character()
-                .is_some_and(|target| !character.can_attack_character(target))
+                .is_some_and(|target| !character.can_attack_character(target) || team_mode_spares(state, character, target))
         {
             tracing::debug!(target_id = self.target_id, "Rejected invalid player attack target");
             return Ok(());
@@ -692,15 +1236,18 @@ impl PacketProcess for MsgInteract {
         } else {
             attacker_stats
         };
+        // Intensify: the charged shot hits twice as hard and is spent.
+        let attacker_stats = if character.has_status(crate::entities::StatusEffect::Intensify) {
+            character.apply_status(crate::entities::StatusEffect::Intensify, Duration::ZERO);
+            scale_skill_power(attacker_stats, 200)
+        } else {
+            attacker_stats
+        };
         // Derive the roll on the authoritative server. The old implementation
         // used the client timestamp directly, which made damage repeatable and
         // often pinned it to the minimum value.
-        let outcome = resolve_physical_hit(
-            attacker_stats,
-            target_stats,
-            u32::from(target_entity.hp().current()),
-            next_roll(),
-        );
+        let life_before = u32::from(target_entity.hp().current());
+        let outcome = resolve_physical_hit(attacker_stats, target_stats, life_before, next_roll());
         target_entity.apply_damage(outcome.damage);
         tracing::debug!(
             character_id = character.id(),
@@ -735,8 +1282,18 @@ impl PacketProcess for MsgInteract {
             .or_else(|| character.equipment_item(5))
             .map(|item| item.item_type)
         {
+            // Redux `AddProficiencyExperience(WeaponType, expGain)`: the
+            // weapon learns as much as the hit's experience.
+            let practice = target.as_monster().map_or(1, |monster| {
+                crate::training::experience(
+                    character.entity().level(),
+                    u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
+                    life_before,
+                    outcome.damage,
+                )
+            });
             let practiced = character
-                .practice_weapon_proficiency(state.pool(), weapon_type, 1)
+                .practice_weapon_proficiency(state.pool(), weapon_type, u32::try_from(practice).unwrap_or(u32::MAX).max(1))
                 .await?;
             if practiced.is_some() {
                 // Send the type's aggregate, which may come from another family.
@@ -749,7 +1306,21 @@ impl PacketProcess for MsgInteract {
                 }
             }
         }
+        if let Some(monster) = target.as_monster() {
+            let experience = crate::leveling::combat_experience(
+                character.entity().level(),
+                u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
+                life_before,
+                outcome.damage,
+                false,
+            );
+            self.grant_hit_experience(state, actor, character, experience).await?;
+        }
         if outcome.defeated {
+            if let Some(victim) = target.as_character() {
+                crate::death::kill_character(state, victim, character.id(), Some(character)).await?;
+                return Ok(());
+            }
             let Some(monster) = target.as_monster() else {
                 return Ok(());
             };

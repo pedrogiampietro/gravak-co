@@ -38,6 +38,8 @@ impl PacketProcess for MsgConnect {
                 let me = Character::new(actor.handle(), character);
                 me.load_skills(state.pool(), state.skill_catalog()).await?;
                 me.load_weapon_proficiencies(state.pool()).await?;
+                me.load_spouse(state.pool()).await?;
+                crate::offline_tg::logged_in(me.id());
                 me.load_inventory(state.pool()).await?;
                 me.load_equipment(state.pool()).await?;
                 me.load_refineries(state.pool()).await?;
@@ -91,6 +93,13 @@ impl PacketProcess for MsgConnect {
                 actor.send(msg).await?;
                 actor.send(nobility).await?;
                 super::send_nobility_ranking(state, actor).await?;
+                actor
+                    .send(super::MsgUserAttrib::new(
+                        actor.entity().id(),
+                        super::UserAttribute::Stamina,
+                        u64::from(crate::vitals::MAX_STAMINA),
+                    ))
+                    .await?;
                 for skill in skills {
                     actor.send(super::MsgSkill::from(skill)).await?;
                 }

@@ -20,6 +20,33 @@ pub enum SkillStatus {
     Superman,
     Stigma,
     Shield,
+    Invisibility,
+    Flying,
+    Intensify,
+    Accuracy,
+}
+
+impl SkillStatus {
+    pub fn effect(self) -> crate::entities::StatusEffect {
+        use crate::entities::StatusEffect;
+        match self {
+            Self::Burning => StatusEffect::Burning,
+            Self::Stunned => StatusEffect::Stunned,
+            Self::Cyclone => StatusEffect::Cyclone,
+            Self::Superman => StatusEffect::Superman,
+            Self::Stigma => StatusEffect::Stigma,
+            Self::Shield => StatusEffect::Shield,
+            Self::Invisibility => StatusEffect::Invisibility,
+            Self::Flying => StatusEffect::Flying,
+            Self::Intensify => StatusEffect::Intensify,
+            Self::Accuracy => StatusEffect::Accuracy,
+        }
+    }
+
+    /// Statuses the caster puts on themselves instead of a target.
+    pub fn is_self_buff(self) -> bool {
+        !matches!(self, Self::Burning | Self::Stunned)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +64,36 @@ pub struct SkillDefinition {
     pub learn_item: Option<u32>,
     pub training_cost: u32,
     pub required_level: u16,
+    /// XP skill: castable only while the XP circle is up, and it uses it.
+    pub xp: bool,
+    /// Stamina used per cast (MagicType `UseStamina`).
+    pub stamina_cost: u8,
+    /// Magic power added to the caster's magic attack (MagicType `Power`
+    /// below 30000), like Fire, Bomb or FireMeteor.
+    pub flat_power: u32,
+    /// A weapon skill: the physical attack scaled by `power_percent`
+    /// (FastBlade, Hercules, RapidFire...).
+    pub physical: bool,
+    /// Hits everything within `radius` of the caster instead of around a
+    /// target (Hercules, Volcano, FireCircle...).
+    pub centered: bool,
+    /// Life restored to the caster or the ally aimed at (Cure, Nectar...).
+    pub heal: u32,
+    /// Brings a dead player back where they lie (Revive, Pray).
+    pub revive: bool,
+    /// Monster types summoned as a pet, one per skill level (Golem...).
+    pub summon: Vec<u32>,
+    /// A line this many cells long toward the target (FastBlade).
+    pub line: u16,
+    /// A half circle of this radius toward the target (Scatter).
+    pub sector: u16,
+    /// Roar (MagicType `DispatchXp`): fills the XP circle of the
+    /// teammates around the caster.
+    pub dispatch_xp: bool,
+    /// Mana restored to the caster (Meditation).
+    pub mana_heal: u32,
+    /// Needs a shield in the left hand (Dash).
+    pub needs_shield: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +196,19 @@ impl SkillCatalog {
                         learn_item: None,
                         training_cost: 0,
                         required_level: 1,
+                        xp: false,
+                        stamina_cost: 0,
+                        flat_power: 0,
+                        physical: false,
+                        centered: false,
+                        heal: 0,
+                        revive: false,
+                        summon: Vec::new(),
+                        line: 0,
+                        sector: 0,
+                        dispatch_xp: false,
+                        mana_heal: 0,
+                        needs_shield: false,
                     });
                 }
                 continue;
@@ -200,6 +270,10 @@ impl SkillCatalog {
                         "superman" => Some(SkillStatus::Superman),
                         "stigma" => Some(SkillStatus::Stigma),
                         "shield" | "magicshield" => Some(SkillStatus::Shield),
+                        "invisibility" => Some(SkillStatus::Invisibility),
+                        "fly" | "flying" => Some(SkillStatus::Flying),
+                        "intensify" => Some(SkillStatus::Intensify),
+                        "accuracy" => Some(SkillStatus::Accuracy),
                         "" | "none" => None,
                         _ => return Err(format!("invalid skill status at line {}", line_number + 1)),
                     };
@@ -231,6 +305,85 @@ impl SkillCatalog {
                         .parse()
                         .map_err(|_| format!("invalid skill training cost at line {}", line_number + 1))?;
                 },
+                "FlatPower" => {
+                    skill.flat_power = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill flat power at line {}", line_number + 1))?;
+                },
+                "Physical" => {
+                    skill.physical = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill physical flag at line {}", line_number + 1))?;
+                },
+                "Centered" => {
+                    skill.centered = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill centered flag at line {}", line_number + 1))?;
+                },
+                "DispatchXp" => {
+                    skill.dispatch_xp = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid dispatch flag at line {}", line_number + 1))?;
+                },
+                "ManaHeal" => {
+                    skill.mana_heal = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid mana heal at line {}", line_number + 1))?;
+                },
+                "NeedsShield" => {
+                    skill.needs_shield = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid shield flag at line {}", line_number + 1))?;
+                },
+                "Line" => {
+                    skill.line = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill line at line {}", line_number + 1))?;
+                },
+                "Sector" => {
+                    skill.sector = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill sector at line {}", line_number + 1))?;
+                },
+                "Summon" => {
+                    skill.summon = value
+                        .split(',')
+                        .map(|id| id.trim().parse())
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| format!("invalid summon list at line {}", line_number + 1))?;
+                },
+                "Revive" => {
+                    skill.revive = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill revive flag at line {}", line_number + 1))?;
+                },
+                "Heal" => {
+                    skill.heal = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill heal at line {}", line_number + 1))?;
+                },
+                "Xp" => {
+                    skill.xp = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill XP flag at line {}", line_number + 1))?;
+                },
+                "Stamina" => {
+                    skill.stamina_cost = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill stamina at line {}", line_number + 1))?;
+                },
                 "RequiredLevel" => {
                     skill.required_level = value
                         .trim()
@@ -252,6 +405,41 @@ impl SkillCatalog {
     }
 }
 
+/// Cells of a line from `from` toward `to`, `length` steps long (Redux
+/// `GetLinePoints`).
+pub fn line_cells(from: (i32, i32), to: (i32, i32), length: u16) -> Vec<(i32, i32)> {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let steps = dx.abs().max(dy.abs());
+    if steps == 0 {
+        return Vec::new();
+    }
+    let (sx, sy) = (dx as f32 / steps as f32, dy as f32 / steps as f32);
+    (0..=i32::from(length))
+        .map(|k| {
+            (
+                (from.0 as f32 + sx * k as f32).round() as i32,
+                (from.1 as f32 + sy * k as f32).round() as i32,
+            )
+        })
+        .collect()
+}
+
+/// Whether `target` lies in the half circle from `from` toward `toward`
+/// (Redux `IsInArc`: 90 degrees each side, closer than `range`).
+pub fn in_sector(from: (i32, i32), toward: (i32, i32), target: (i32, i32), range: u16) -> bool {
+    let distance = (((target.0 - from.0).pow(2) + (target.1 - from.1).pow(2)) as f32).sqrt();
+    if distance >= f32::from(range) || target == from {
+        return false;
+    }
+    let center = ((toward.1 - from.1) as f32).atan2((toward.0 - from.0) as f32);
+    let angle = ((target.1 - from.1) as f32).atan2((target.0 - from.0) as f32);
+    let mut delta = (center - angle).abs();
+    if delta > std::f32::consts::PI {
+        delta = 2.0 * std::f32::consts::PI - delta;
+    }
+    delta <= std::f32::consts::FRAC_PI_2
+}
+
 impl Default for SkillCatalog {
     fn default() -> Self {
         let mut skills = HashMap::new();
@@ -271,6 +459,19 @@ impl Default for SkillCatalog {
                 learn_item: None,
                 training_cost: 0,
                 required_level: 1,
+                xp: false,
+                stamina_cost: 0,
+                flat_power: 0,
+                physical: false,
+                centered: false,
+                heal: 0,
+                revive: false,
+                summon: Vec::new(),
+                line: 0,
+                sector: 0,
+                dispatch_xp: false,
+                mana_heal: 0,
+                needs_shield: false,
             },
         );
         skills.insert(
@@ -289,6 +490,19 @@ impl Default for SkillCatalog {
                 learn_item: None,
                 training_cost: 0,
                 required_level: 1,
+                xp: false,
+                stamina_cost: 0,
+                flat_power: 0,
+                physical: false,
+                centered: false,
+                heal: 0,
+                revive: false,
+                summon: Vec::new(),
+                line: 0,
+                sector: 0,
+                dispatch_xp: false,
+                mana_heal: 0,
+                needs_shield: false,
             },
         );
         skills.insert(
@@ -307,6 +521,19 @@ impl Default for SkillCatalog {
                 learn_item: Some(WHIRLWIND_BOOK_ITEM),
                 training_cost: 500,
                 required_level: 10,
+                xp: false,
+                stamina_cost: 0,
+                flat_power: 0,
+                physical: false,
+                centered: false,
+                heal: 0,
+                revive: false,
+                summon: Vec::new(),
+                line: 0,
+                sector: 0,
+                dispatch_xp: false,
+                mana_heal: 0,
+                needs_shield: false,
             },
         );
         skills.insert(
@@ -325,6 +552,19 @@ impl Default for SkillCatalog {
                 learn_item: None,
                 training_cost: 1_000,
                 required_level: 15,
+                xp: true,
+                stamina_cost: 0,
+                flat_power: 0,
+                physical: false,
+                centered: false,
+                heal: 0,
+                revive: false,
+                summon: Vec::new(),
+                line: 0,
+                sector: 0,
+                dispatch_xp: false,
+                mana_heal: 0,
+                needs_shield: false,
             },
         );
         skills.insert(
@@ -343,6 +583,19 @@ impl Default for SkillCatalog {
                 learn_item: None,
                 training_cost: 5_000,
                 required_level: 40,
+                xp: true,
+                stamina_cost: 0,
+                flat_power: 0,
+                physical: false,
+                centered: false,
+                heal: 0,
+                revive: false,
+                summon: Vec::new(),
+                line: 0,
+                sector: 0,
+                dispatch_xp: false,
+                mana_heal: 0,
+                needs_shield: false,
             },
         );
         skills.insert(
@@ -361,6 +614,19 @@ impl Default for SkillCatalog {
                 learn_item: None,
                 training_cost: 3_000,
                 required_level: 40,
+                xp: false,
+                stamina_cost: 0,
+                flat_power: 0,
+                physical: false,
+                centered: false,
+                heal: 0,
+                revive: false,
+                summon: Vec::new(),
+                line: 0,
+                sector: 0,
+                dispatch_xp: false,
+                mana_heal: 0,
+                needs_shield: false,
             },
         );
         skills.insert(
@@ -379,6 +645,19 @@ impl Default for SkillCatalog {
                 learn_item: None,
                 training_cost: 3_000,
                 required_level: 40,
+                xp: false,
+                stamina_cost: 0,
+                flat_power: 0,
+                physical: false,
+                centered: false,
+                heal: 0,
+                revive: false,
+                summon: Vec::new(),
+                line: 0,
+                sector: 0,
+                dispatch_xp: false,
+                mana_heal: 0,
+                needs_shield: false,
             },
         );
         Self { skills }
@@ -391,6 +670,27 @@ mod tests {
         SkillCatalog, SkillStatus, BASIC_FIRE_ID, CYCLONE_ID, FLAME_BURST_ID, MAGIC_SHIELD_ID, STIGMA_ID, SUPERMAN_ID,
         WHIRLWIND_BOOK_ITEM, WHIRLWIND_ID,
     };
+
+    #[test]
+    fn lines_and_sectors_follow_the_reference() {
+        let line = super::line_cells((10, 10), (14, 10), 3);
+        assert_eq!(line, vec![(10, 10), (11, 10), (12, 10), (13, 10)]);
+        assert!(super::line_cells((5, 5), (5, 5), 3).is_empty());
+        assert!(super::in_sector((10, 10), (20, 10), (14, 12), 8));
+        assert!(!super::in_sector((10, 10), (20, 10), (6, 10), 8));
+        assert!(!super::in_sector((10, 10), (20, 10), (19, 10), 8));
+    }
+
+    #[test]
+    fn the_shipped_catalog_parses() {
+        let contents = include_str!("../data/skills.dat");
+        let catalog = SkillCatalog::parse(contents).expect("skills.dat parses");
+        let fast_blade = catalog.get(1_045).expect("FastBlade");
+        assert!(fast_blade.physical && fast_blade.stamina_cost == 20);
+        let volcano = catalog.get(1_125).expect("Volcano");
+        assert!(volcano.xp && volcano.centered && volcano.flat_power == 300);
+        assert_eq!(catalog.get(1_005).expect("Cure").heal, 20);
+    }
 
     #[test]
     fn built_in_catalog_contains_initial_skills() {
