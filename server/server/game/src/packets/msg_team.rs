@@ -45,7 +45,9 @@ impl MsgTeamMember {
             reserved_header: [0; 3],
             name: character.entity().name().to_owned().into(),
             member_id: character.id(),
-            mesh: character.entity().mesh(),
+            // The look with the face, as in MsgPlayer: the team window draws
+            // the member's portrait from it.
+            mesh: character.entity().mesh() + u32::from(character.avatar()) * 10_000,
             max_health: character.maximum_health_points(),
             health: character.entity().hp().current(),
             action,
