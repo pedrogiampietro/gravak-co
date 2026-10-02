@@ -856,6 +856,9 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
             paint(&mut image, assets, &team_controls(&data.team))?;
             for (member, x) in data.team_members.iter().zip(TEAM_PORTRAITS) {
                 let rect = [x, 10, 47, 47];
+                if let Some(face) = crate::renderer::player_face(assets, member.mesh, 43) {
+                    imageops::overlay(&mut image, &face, (x + 2).into(), 12);
+                }
                 let name = if member.name.is_empty() {
                     member.member_id.to_string()
                 } else {

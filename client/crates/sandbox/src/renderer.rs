@@ -2306,7 +2306,7 @@ impl Renderer {
                     actor.id, actor.mesh, actor.health, actor.maximum_health, name_colour
                 );
                 if !self.textures.contains_key(&key) {
-                    let face = player_face(assets, actor.mesh);
+                    let face = player_face(assets, actor.mesh, crate::labels::PLAYER_FACE_SIZE);
                     self.upload(
                         &key,
                         crate::labels::player_plate(
@@ -4208,10 +4208,14 @@ fn quad_with_alpha(p: [f32; 2], size: [f32; 2], viewport: [f32; 2], alpha: f32) 
         })
         .to_vec()
 }
-/// A player's face portrait from `data/PlayerFace/JPG/64`, scaled to the
-/// nameplate's portrait box. The face is the avatar part of the look
+/// A player's face portrait from `data/PlayerFace/JPG/64`, scaled to `size`
+/// pixels square. The face is the avatar part of the look
 /// (`look = body + avatar * 10000 + transformation * 10000000`).
-fn player_face(assets: &mut crate::assets::Assets, mesh: u32) -> Option<image::RgbaImage> {
+pub(crate) fn player_face(
+    assets: &mut crate::assets::Assets,
+    mesh: u32,
+    size: u32,
+) -> Option<image::RgbaImage> {
     let face = mesh / 10_000 % 1_000;
     if face == 0 {
         return None;
@@ -4222,7 +4226,6 @@ fn player_face(assets: &mut crate::assets::Assets, mesh: u32) -> Option<image::R
         paths.push(format!("data/PlayerFace/JPG/64/{face:03}.{extension}"));
     }
     let image = paths.iter().find_map(|path| assets.image(path).ok())?;
-    let size = crate::labels::PLAYER_FACE_SIZE;
     Some(image::imageops::resize(
         &image,
         size,
@@ -4282,7 +4285,8 @@ mod player_face_probe {
         }
         for face in (1..=12).chain(201..=212) {
             let paths = super::player_face_ani_paths(&mut assets, face);
-            let found = super::player_face(&mut assets, face * 10_000 + 1003).is_some();
+            let found = super::player_face(&mut assets, face * 10_000 + 1003, crate::labels::PLAYER_FACE_SIZE)
+                .is_some();
             println!("face {face}: ani {paths:?}, loaded {found}");
         }
         Ok(())
