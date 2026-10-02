@@ -2661,11 +2661,18 @@ impl App {
                         target,
                         self.character.duration(Action::Jump),
                     );
+                    // Face the way the jump goes; the packet's direction is
+                    // only a fallback for a jump in place (older servers
+                    // forwarded 0 there).
+                    actor.direction = if target == actor.position {
+                        direction
+                    } else {
+                        direction_towards(actor.position, target)
+                    };
                     actor.movement_from = actor.position;
                     actor.movement_to = target;
                     actor.movement_started = now;
                     actor.movement_until = now + motion.duration.as_secs_f32();
-                    actor.direction = direction;
                     actor.action = 130;
                     actor.animation_started = now;
                     actor.animation_until = actor.movement_until;

@@ -18,6 +18,21 @@ set "SERVER_DIR=%~dp0server"
 set "AUTH_EXE=%SERVER_DIR%\target\debug\auth-server.exe"
 set "GAME_EXE=%SERVER_DIR%\target\release\game-server.exe"
 
+rem -- Build -------------------------------------------------------
+rem Rebuild before every start (not for stop/status) so a git pull takes
+rem effect; cargo only recompiles what changed, and the build script stops
+rem running servers before relinking.
+if /I not "%~1"=="stop" if /I not "%~1"=="status" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-server.ps1"
+    if errorlevel 1 (
+        echo.
+        echo [ERRO] Falha ao compilar os servidores; veja o erro acima.
+        pause
+        exit /b 1
+    )
+    echo.
+)
+
 rem -- Check binaries ----------------------------------------------
 if not exist "%AUTH_EXE%" (
     echo [ERRO] Auth server nao encontrado em:
