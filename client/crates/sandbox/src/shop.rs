@@ -1002,14 +1002,10 @@ pub fn quick_panel_image(
             },
         );
     }
+    // Clear: `framed` puts the game's frame, title and close button
+    // around the contents, like the item and trade windows.
     let mut image =
         RgbaImage::from_pixel(QUICK_PANEL_WIDTH, QUICK_PANEL_HEIGHT, Rgba([0, 0, 0, 0]));
-    crate::components::draw_window_rect(
-        &mut image,
-        UiRect::new(0, 0, QUICK_PANEL_WIDTH as i32, QUICK_PANEL_HEIGHT as i32),
-        panel.title(),
-        crate::components::WidgetState::Normal,
-    )?;
     let font = labels::font()?;
     match panel {
         QuickPanel::Skills => {
@@ -1484,11 +1480,12 @@ pub fn quick_panel_image(
                 team_button(&mut image, &font, 24, 112, "FECHAR BANCA");
                 team_button(&mut image, &font, 268, 112, "ADICIONAR ITEM");
             } else {
+                // Beside the button, which sits where this line was.
                 labels::text(
                     &mut image,
                     &font,
                     &[("Preço padrão: 1000 silver", [170, 164, 143])],
-                    [24.0, 104.0],
+                    [268.0, 116.0],
                 );
                 team_button(&mut image, &font, 24, 112, "ABRIR BANCA");
             }
@@ -1744,13 +1741,9 @@ pub fn quick_panel_image(
             );
         }
     }
-    labels::text(
-        &mut image,
-        &font,
-        &[("Click X or press ESC to close", [150, 150, 150])],
-        [24.0, 340.0],
-    );
-    Ok(image)
+    // The frame's close button replaces the old "Click X or press ESC"
+    // line, which sat on the Skills window's action bar.
+    framed(assets, image, &title_case(panel.title()), false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
