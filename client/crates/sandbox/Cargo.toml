@@ -15,6 +15,7 @@ image.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
 arboard = "3.6"
+softbuffer = "0.4"
 tokio = { version = "1.48", features = ["net", "rt", "sync", "time"] }
 fontdb = "0.23"
 fontdue = "0.9"

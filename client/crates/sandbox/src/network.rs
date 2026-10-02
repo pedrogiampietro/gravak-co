@@ -3,7 +3,7 @@ use gravak_protocol::{
     GroundItemPacket, GuildPacket, GuildWarehouseActionPacket, InteractionPacket, ItemActionPacket,
     ItemRarityPacket, ItemRarityRerollPacket, NpcDialogPacket, NpcPacket, RefineryPacket,
     RegisterCharacter, ServerNpcInfo, ServerPlayer, SocketGemPacket, TalkPacket, TaskDialog,
-    TeamActionPacket, TeamMemberPacket, TradePacket, WarehouseActionPacket, authenticate,
+    TeamActionPacket, TeamMemberPacket, TradePacket, UserInfo, WarehouseActionPacket, authenticate,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -399,7 +399,7 @@ pub struct RemoteActor {
     pub level: u16,
 }
 
-enum NetworkCommand {
+pub(crate) enum NetworkCommand {
     Walk {
         character_id: u32,
         direction: u8,
@@ -600,6 +600,14 @@ impl NetworkHandle {
             })
             .expect("network thread should start");
         Self { events, commands }
+    }
+
+    /// A handle plus the network-side ends of its channels, for a session
+    /// driven by [`play`] on another thread.
+    pub(crate) fn channels() -> (Self, Sender<NetworkEvent>, UnboundedReceiver<NetworkCommand>) {
+        let (events_tx, events) = mpsc::channel();
+        let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
+        (Self { events, commands }, events_tx, commands_rx)
     }
 
     pub fn drain(&self) -> Vec<NetworkEvent> {
@@ -1058,7 +1066,7 @@ impl NetworkHandle {
 async fn run(
     config: NetworkConfig,
     events: Sender<NetworkEvent>,
-    mut commands: UnboundedReceiver<NetworkCommand>,
+    commands: UnboundedReceiver<NetworkCommand>,
 ) -> Result<(), String> {
     send_status(&events, "authenticating");
     let server = match authenticate(
@@ -1143,6 +1151,18 @@ async fn run(
         }
     };
 
+    play(session, user, events, commands).await
+}
+
+/// The in-game half of a session: `session` has reached `user`'s
+/// MsgUserInfo; this loads the map and then serves events and commands
+/// until the connection ends.
+pub(crate) async fn play(
+    mut session: GameSession,
+    user: UserInfo,
+    events: Sender<NetworkEvent>,
+    mut commands: UnboundedReceiver<NetworkCommand>,
+) -> Result<(), String> {
     send_status(&events, &format!("loading {}", user.character_name));
     session
         .send(&ActionPacket::send_location(user.character_id))

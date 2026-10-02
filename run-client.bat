@@ -26,10 +26,12 @@ if not exist "%CLIENT_EXE%" (
 
 pushd "%~dp0client"
 if /I "%~1"=="offline" goto offline
+if /I "%~1"=="login" goto login
 
 rem One account per client: the same account cannot be online twice.
 rem   run-client.bat            opens two clients (test1 and shekohex)
 rem   run-client.bat <account>  opens one client with that account
+rem   run-client.bat login      opens the login screens (register/create)
 if not "%~1"=="" (
     call :client "%~1"
     popd
@@ -46,6 +48,11 @@ exit /b
 rem cmd /c ... || pause keeps the window open when the client exits with an
 rem error (for example, the game server is not running), so it can be read.
 start "Gravak-CO - %~1" cmd /c ""%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username %~1 --password 123456 --realm CoEmu || pause"
+exit /b
+
+:login
+start "Gravak-CO - Login" cmd /c ""%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --realm CoEmu || pause"
+popd
 exit /b
 
 :offline

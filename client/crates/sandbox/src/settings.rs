@@ -174,3 +174,29 @@ mod tests {
         assert_eq!(restored.skill_id(2), Some(1_045));
     }
 }
+
+/// The account last used on the login screen.
+pub fn load_last_account() -> Option<String> {
+    let text = std::fs::read_to_string(login_path()?).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("account="))
+        .map(|account| account.trim().to_owned())
+        .filter(|account| !account.is_empty())
+}
+
+pub fn save_last_account(account: &str) {
+    let Some(path) = login_path() else {
+        return;
+    };
+    let result = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, format!("account={account}\n")));
+    if let Err(error) = result {
+        eprintln!("Could not save the last account: {error}");
+    }
+}
+
+fn login_path() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("settings").join("login.ini"))
+}

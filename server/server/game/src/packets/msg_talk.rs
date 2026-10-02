@@ -111,6 +111,14 @@ impl MsgTalk {
         Self::from_system(0, TalkChannel::Register, crate::constants::ANSWER_OK.to_owned())
     }
 
+    pub fn register_invalid_name() -> Self {
+        Self::from_system(
+            0,
+            TalkChannel::Register,
+            String::from("Names must be 3-15 letters or digits."),
+        )
+    }
+
     pub fn register_name_taken() -> Self {
         Self::from_system(
             0,

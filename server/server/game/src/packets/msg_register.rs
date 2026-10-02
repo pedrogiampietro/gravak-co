@@ -103,6 +103,11 @@ pub enum BaseClass {
     Taoist = 100,
 }
 
+/// Character names are 3-15 ASCII letters or digits.
+pub fn valid_character_name(name: &str) -> bool {
+    (3..=15).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
 #[async_trait::async_trait]
 impl PacketProcess for MsgRegister {
     type ActorState = ActorState;
@@ -110,17 +115,20 @@ impl PacketProcess for MsgRegister {
     type State = State;
 
     async fn process(&self, state: &Self::State, actor: &Actor<Self::ActorState>) -> Result<(), Self::Error> {
-        let info = state
-            .remove_creation_token(self.token)
-            .map_err(|_| MsgTalk::register_invalid().error_packet())?;
-
+        // Validate before spending the creation token, so the client can
+        // retry with another name on the same connection.
+        if !valid_character_name(&self.character_name) {
+            return Err(MsgTalk::register_invalid_name().error_packet().into());
+        }
+        BodyType::try_from(self.mesh).map_err(|_| MsgTalk::register_invalid().error_packet())?;
+        BaseClass::try_from(self.class).map_err(|_| MsgTalk::register_invalid().error_packet())?;
         if tq_db::character::Character::name_taken(state.pool(), &self.character_name).await? {
             return Err(MsgTalk::register_name_taken().error_packet().into());
         }
 
-        // Validate Data.
-        BodyType::try_from(self.mesh).map_err(|_| MsgTalk::register_invalid().error_packet())?;
-        BaseClass::try_from(self.class).map_err(|_| MsgTalk::register_invalid().error_packet())?;
+        let info = state
+            .remove_creation_token(self.token)
+            .map_err(|_| MsgTalk::register_invalid().error_packet())?;
 
         let character_id = self
             .build_character(info.account_id, info.realm_id)?

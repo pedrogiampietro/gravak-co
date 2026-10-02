@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod linker;
+pub mod register;
 pub mod state;
 
 use bytes::Bytes;
@@ -36,6 +37,7 @@ impl PacketHandler for Runtime {
         let packet_len = packet.1.len();
 
         let mut store = wasmtime::Store::new(&runtime.engine, runtime.state.clone());
+        let session = actor;
         let actor = wasmtime::ExternRef::new(actor.handle());
         match packet.0 {
             msg_connect::MsgConnect::PACKET_ID => {
@@ -105,6 +107,10 @@ impl PacketHandler for Runtime {
                         Err(crate::error::Error::Other(format!("Unknown error: {}", code)))
                     },
                 }
+            },
+            register::MsgRegisterAccount::PACKET_ID => {
+                let msg = <register::MsgRegisterAccount as tq_network::PacketDecode>::decode(&packet.1)?;
+                register::process(msg, runtime.state.pool(), session).await
             },
             _ => {
                 tracing::warn!("Unknown packet: {:#?}", packet);

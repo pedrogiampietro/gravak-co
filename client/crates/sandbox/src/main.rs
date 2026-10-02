@@ -9,6 +9,8 @@ mod components;
 mod debug_log;
 mod hud;
 mod labels;
+mod launcher;
+mod login;
 mod logo;
 mod main_hud;
 mod magic;
@@ -42,6 +44,7 @@ use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
+    platform::run_on_demand::EventLoopExtRunOnDemand,
     window::{CursorIcon, CustomCursor, Window, WindowId},
 };
 const LEVEL_UP_DURATION: f32 = 61.0 / 30.0;
@@ -6321,7 +6324,8 @@ fn run() -> Result<()> {
     let mut check = false;
     let mut online = false;
     let mut auth_address = "127.0.0.1:9958".to_owned();
-    let mut username = "test1".to_owned();
+    // Without --username, online mode opens the login screens.
+    let mut username = None;
     let mut password = "123456".to_owned();
     let mut realm = "CoEmu".to_owned();
     let mut character_name = None;
@@ -6376,12 +6380,13 @@ fn run() -> Result<()> {
                 online = true;
             }
             "--username" => {
-                username = args
-                    .next()
-                    .ok_or("--username requires a value")?
-                    .to_str()
-                    .ok_or("Invalid username")?
-                    .to_owned();
+                username = Some(
+                    args.next()
+                        .ok_or("--username requires a value")?
+                        .to_str()
+                        .ok_or("Invalid username")?
+                        .to_owned(),
+                );
             }
             "--password" => {
                 password = args
@@ -6410,7 +6415,7 @@ fn run() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "You must supply your own Conquer Online 5065 installation.\ngravak-co --assets <installation> [--online|--auth HOST:PORT] [--username USER] [--password PASS] [--realm REALM] [--character NAME] [--map ID] [--spawn X Y] [--body 1..4] [--check-assets]\nOffline by default. In online mode the client authenticates and loads the server character/map. Click to move; Space stops; Escape exits. No bundled assets."
+                    "You must supply your own Conquer Online 5065 installation.\ngravak-co --assets <installation> [--online|--auth HOST:PORT] (opens the login screens) [--username USER] [--password PASS] [--realm REALM] [--character NAME] [--map ID] [--spawn X Y] [--body 1..4] [--check-assets]\nOffline by default. In online mode the client authenticates and loads the server character/map. Click to move; Space stops; Escape exits. No bundled assets."
                 );
                 return Ok(());
             }
@@ -6419,14 +6424,25 @@ fn run() -> Result<()> {
     }
     let mut network = None;
     let mut server_ready = None;
+    let mut event_loop = None;
     if online {
-        let handle = NetworkHandle::start(NetworkConfig {
-            auth_address,
-            username,
-            password,
-            realm,
-            character_name,
-        });
+        let handle = match username {
+            Some(username) => NetworkHandle::start(NetworkConfig {
+                auth_address,
+                username,
+                password,
+                realm,
+                character_name,
+            }),
+            None => {
+                let mut screens = EventLoop::new()?;
+                let Some(handle) = launcher::run(&mut screens, auth_address, realm)? else {
+                    return Ok(());
+                };
+                event_loop = Some(screens);
+                handle
+            }
+        };
         let ready = handle.wait_ready()?;
         if map_id.is_none() {
             map_id = Some(ready.map_id);
@@ -6835,7 +6851,10 @@ fn run() -> Result<()> {
         app.team_join_enabled = saved.team_join_enabled;
         app.saved_hud = Some(saved);
     }
-    EventLoop::new()?.run_app(&mut app)?;
+    match event_loop {
+        Some(mut event_loop) => event_loop.run_app_on_demand(&mut app)?,
+        None => EventLoop::new()?.run_app(&mut app)?,
+    }
     if let Some(error) = app.error {
         return Err(error.into());
     }

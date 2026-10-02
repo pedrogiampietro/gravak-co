@@ -95,13 +95,60 @@ pub struct RegisterCharacter {
 
 impl RegisterCharacter {
     pub fn new(username: &str, character_name: &str, token: u32) -> Self {
+        Self::with_look(username, character_name, 1003, 10, token)
+    }
+
+    /// `mesh` is the body (1003/1004 male, 2001/2002 female) and `class`
+    /// the base profession (10 Trojan, 20 Warrior, 40 Archer, 100 Taoist).
+    pub fn with_look(
+        username: &str,
+        character_name: &str,
+        mesh: u16,
+        class: u16,
+        token: u32,
+    ) -> Self {
         Self {
             username: username.to_owned().into(),
             character_name: character_name.to_owned().into(),
             password: "********".to_owned().into(),
-            mesh: 1003,
-            class: 10,
+            mesh,
+            class,
             token,
+        }
+    }
+}
+
+/// Account registration request (project extension, not part of 5065),
+/// answered by [`MSG_REGISTER_ACCOUNT_RESULT`].
+#[derive(Debug, Serialize, PacketID)]
+#[packet(id = 9001)]
+pub struct RegisterAccount {
+    pub username: String16,
+    pub password: TQPassword,
+}
+
+pub const MSG_REGISTER_ACCOUNT_RESULT: u16 = 9002;
+
+/// Outcome of [`register_account`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterAccountResult {
+    Created,
+    UsernameTaken,
+    InvalidUsername,
+    InvalidPassword,
+    TryAgainLater,
+    Unknown(u32),
+}
+
+impl RegisterAccountResult {
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            0 => Self::Created,
+            1 => Self::UsernameTaken,
+            2 => Self::InvalidUsername,
+            3 => Self::InvalidPassword,
+            4 => Self::TryAgainLater,
+            other => Self::Unknown(other),
         }
     }
 }
@@ -1609,6 +1656,38 @@ pub async fn authenticate(
     Err(ProtocolError::Io(std::io::Error::new(
         std::io::ErrorKind::UnexpectedEof,
         "auth server closed the connection without a response",
+    )))
+}
+
+/// Creates an account on the account server (`9001`/`9002`).
+pub async fn register_account(
+    address: &str,
+    username: &str,
+    password: &str,
+) -> Result<RegisterAccountResult, ProtocolError> {
+    let stream = TcpStream::connect(address).await?;
+    let (mut encoder, mut decoder) = TQCodec::new(stream, CQCipher::new()).split();
+    let packet = RegisterAccount {
+        username: username.to_owned().into(),
+        password: password.to_owned().into(),
+    }
+    .encode()
+    .map_err(ProtocolError::Encode)?;
+    encoder.send(packet).await?;
+    while let Some(packet) = decoder.next().await {
+        let (id, body) = packet?;
+        if id != MSG_REGISTER_ACCOUNT_RESULT {
+            return Err(ProtocolError::UnexpectedPacket(id));
+        }
+        if body.len() < 4 {
+            return Err(ProtocolError::MalformedResponse("missing registration result"));
+        }
+        let code = u32::from_le_bytes(body[..4].try_into().expect("four bytes"));
+        return Ok(RegisterAccountResult::from_code(code));
+    }
+    Err(ProtocolError::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "account server closed the connection without a registration result",
     )))
 }
 
