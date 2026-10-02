@@ -103,6 +103,15 @@ async fn complete_trade(state: &State, session: trade::TradeSession) -> Result<(
         .await?;
     match transfer {
         Some(transfer) => {
+            tracing::info!(
+                target: "trade",
+                items = transfer.left_removed.len() + transfer.right_removed.len(),
+                silver = session.owner_silver + session.target_silver,
+                cps = session.owner_cps + session.target_cps,
+                "{} and {} traded",
+                left.entity().name(),
+                right.entity().name()
+            );
             for item in &transfer.left_removed {
                 crate::audit::item(
                     "trade_out",

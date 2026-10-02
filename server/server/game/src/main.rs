@@ -31,6 +31,7 @@ impl TQServer for GameServer {
         if let Ok(entity) = actor.try_entity() {
             let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
             let mymap_id = me.entity().map_id();
+            tracing::info!(target: "login", map = mymap_id, "{} left the world", me.entity().name());
             me.save(state).await?;
             me.try_screen()?.remove_from_observers().await?;
             ActorState::dispose(&actor, actor.handle()).await?;
@@ -92,25 +93,12 @@ async fn main() -> Result<(), Error> {
     let log_verbosity = env::var("LOG_VERBOSITY")
         .map(|s| s.parse::<i32>().unwrap_or(2))
         .unwrap_or(2);
+    let started = std::time::Instant::now();
+    #[cfg(not(feature = "console"))]
+    let _logs = tq_logging::init("game", log_verbosity);
+    #[cfg(feature = "console")]
     setup_logger(log_verbosity)?;
-    println!(
-        r#"
- _____         _____                  
-/  __ \       |  ___|                 
-| /  \/  ___  | |__  _ __ ___   _   _ 
-| |     / _ \ |  __|| '_ ` _ \ | | | |
-| \__/\| (_) || |___| | | | | || |_| |
- \____/ \___/ \____/|_| |_| |_| \__,_|
-                                      
-                                       
-Copyright 2020 Shady Khalifa (@shekohex)
-     All Rights Reserved.
- "#
-    );
-    tracing::info!("Starting Game Server");
-    tracing::info!("Initializing server...");
-
-    tracing::info!("Initializing State ..");
+    tracing::debug!(target: "server", "Loading the world");
 
     let static_state = {
         let state = State::init().await?;
@@ -155,7 +143,20 @@ Copyright 2020 Shady Khalifa (@shekohex)
         .await?
         .ok_or(Error::RealmNotFound)?;
     let game_port = realm.game_port;
-    tracing::info!("Game Server will be available on {}", game_port);
+    tq_logging::banner(
+        "GRAVAK  ·  GAME SERVER",
+        concat!("v", env!("CARGO_PKG_VERSION")),
+        &[
+            ("Listening", format!("0.0.0.0:{game_port}")),
+            ("Realm", format!("{} (clients are sent to {}:{})", realm.name, realm.game_ip_address, realm.game_port)),
+            ("Database", env::var("DATA_LOCATION").unwrap_or_else(|_| "./data".into())),
+            ("Log level", log_level_name(log_verbosity).to_owned()),
+            ("Log files", "logs/game.log.<date>".to_owned()),
+            ("Started in", format!("{:.2} s", started.elapsed().as_secs_f32())),
+        ],
+    );
+    tracing::info!(target: "server", port = game_port, "Ready for players");
+    game::status::start(state, started);
 
     GameServer::run(format!("0.0.0.0:{}", game_port), state).await?;
     unsafe {
@@ -166,10 +167,23 @@ Copyright 2020 Shady Khalifa (@shekohex)
         state.clean_up().await?;
         // State dropped here.
     };
-    tracing::info!("Shutdown.");
+    tracing::info!(target: "server", "Shut down");
     Ok(())
 }
 
+/// `LOG_VERBOSITY` in words, for the startup box.
+fn log_level_name(verbosity: i32) -> &'static str {
+    match verbosity {
+        i32::MIN..=0 => "errors",
+        1 => "warnings",
+        2 => "information",
+        3 => "debug",
+        _ => "trace",
+    }
+}
+
+/// The tokio-console build keeps the plain subscriber with its layer.
+#[cfg(feature = "console")]
 fn setup_logger(verbosity: i32) -> Result<(), Error> {
     use tracing::Level;
     use tracing_subscriber::prelude::*;

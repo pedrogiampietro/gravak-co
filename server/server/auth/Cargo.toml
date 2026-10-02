@@ -20,6 +20,7 @@ bytes.workspace = true
 tq-db = { workspace = true, features = ["sqlx"] }
 tq-network.workspace = true
 tq-serde.workspace = true
+tq-logging = { workspace = true, optional = true }
 async-trait.workspace = true
 tracing.workspace = true
 dotenvy.workspace = true
@@ -84,4 +85,5 @@ server = [
   "dep:tq-server",
   "sqlx/runtime-tokio",
   "dep:tracing-subscriber",
+  "dep:tq-logging",
 ]

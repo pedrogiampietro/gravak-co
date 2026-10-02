@@ -35,6 +35,14 @@ impl PacketProcess for MsgConnect {
         let maybe_character = tq_db::character::Character::from_account(state.pool(), info.account_id).await?;
         match maybe_character {
             Some(character) => {
+                tracing::info!(
+                    target: "login",
+                    account = info.account_id,
+                    map = character.map_id,
+                    level = character.level,
+                    "{} entered the world",
+                    character.name
+                );
                 let me = Character::new(actor.handle(), character);
                 me.load_skills(state.pool(), state.skill_catalog()).await?;
                 me.load_weapon_proficiencies(state.pool()).await?;
@@ -121,6 +129,7 @@ impl PacketProcess for MsgConnect {
                 actor.send(MsgData::now()).await?;
             },
             None => {
+                tracing::info!(target: "login", account = info.account_id, "New account, sent to character creation");
                 state.store_creation_token(self.token as u32, info.account_id, info.realm_id)?;
                 actor.send(MsgTalk::login_new_role()).await?;
             },

@@ -28,6 +28,7 @@ tq-crypto = { path = "crates/crypto" }
 tq-codec = { path = "crates/codec" }
 tq-db = { path = "crates/db", default-features = false }
 tq-server = { path = "crates/server" }
+tq-logging = { path = "crates/logging" }
 tq-bindings = { path = "crates/bindings" }
 tq-wasm-builder = { path = "crates/wasm-builder" }
 tracing-wasm = { path = "crates/tracing-wasm" }

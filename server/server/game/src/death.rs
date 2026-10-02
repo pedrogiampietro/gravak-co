@@ -163,7 +163,16 @@ pub async fn kill_character(
         screen.send_message(blow).await?;
         screen.send_message(MsgPlayer::from(victim)).await?;
     }
-    tracing::info!(victim = victim.id(), killer = killer_id, "Character died");
+    let killer_name = state
+        .entity(killer_id)
+        .map_or_else(|| format!("#{killer_id}"), |killer| killer.basic().name().to_owned());
+    tracing::info!(
+        target: "pk",
+        map = victim.entity().map_id(),
+        "{} was killed by {}",
+        victim.entity().name(),
+        killer_name
+    );
 
     let map_id = victim.entity().map_id();
     if map_id == ARENA_MAP {

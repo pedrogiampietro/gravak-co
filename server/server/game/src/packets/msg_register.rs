@@ -205,9 +205,10 @@ impl PacketProcess for MsgRegister {
             .await?;
 
         tracing::info!(
-            "Account #{} Created Character #{} with Name {}",
-            info.account_id,
-            character_id,
+            target: "login",
+            account = info.account_id,
+            character = character_id,
+            "{} was created",
             self.character_name
         );
         actor.send(MsgTalk::register_ok()).await?;

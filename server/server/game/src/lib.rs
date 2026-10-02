@@ -15,6 +15,7 @@ pub mod leveling;
 pub mod market_npcs;
 pub mod mining;
 pub mod nobility;
+pub mod status;
 pub mod systems;
 pub mod titles;
 pub mod utils;
