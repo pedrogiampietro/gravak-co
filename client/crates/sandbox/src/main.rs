@@ -2642,17 +2642,33 @@ impl App {
                 direction,
             } => {
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
-                    actor.position = position.map(|value| value as f32);
+                    // Fly from where the actor is drawn now to the landing
+                    // cell over the same time the local player's jump takes;
+                    // the renderer lifts it along the arc while action is 130.
+                    let now = self.started.elapsed().as_secs_f32();
+                    if actor.movement_until > actor.movement_started && now < actor.movement_until {
+                        let t = ((now - actor.movement_started)
+                            / (actor.movement_until - actor.movement_started))
+                            .clamp(0.0, 1.0);
+                        actor.position[0] = actor.movement_from[0]
+                            + (actor.movement_to[0] - actor.movement_from[0]) * t;
+                        actor.position[1] = actor.movement_from[1]
+                            + (actor.movement_to[1] - actor.movement_from[1]) * t;
+                    }
+                    let target = position.map(|value| value as f32);
+                    let motion = motion_math::jump_motion(
+                        actor.position,
+                        target,
+                        self.character.duration(Action::Jump),
+                    );
                     actor.movement_from = actor.position;
-                    actor.movement_to = actor.position;
-                    actor.movement_started = 0.0;
-                    actor.movement_until = 0.0;
+                    actor.movement_to = target;
+                    actor.movement_started = now;
+                    actor.movement_until = now + motion.duration.as_secs_f32();
                     actor.direction = direction;
                     actor.action = 130;
-                    let now = self.started.elapsed().as_secs_f32();
                     actor.animation_started = now;
-                    actor.animation_until =
-                        now + self.character.duration(Action::Jump).as_secs_f32();
+                    actor.animation_until = actor.movement_until;
                 }
             }
             NetworkEvent::RemoteAction { id, action } => {
@@ -2944,11 +2960,28 @@ impl App {
                     self.remote_models.remove(&id);
                     return;
                 }
+                // The server re-sends MsgPlayer when a player changes gear;
+                // rebuild the model then. The old one stays drawn until the
+                // new one loads, and results apply in request order.
+                let appearance_changed = !actor.npc
+                    && self.remote_actors.get(&id).is_some_and(|old| {
+                        (old.body, old.armor, old.helmet, old.hair_style, old.right_weapon, old.left_weapon)
+                            != (
+                                actor.body,
+                                actor.armor,
+                                actor.helmet,
+                                actor.hair_style,
+                                actor.right_weapon,
+                                actor.left_weapon,
+                            )
+                    });
                 if !actor.npc
                     && actor.body != 0
-                    && !self.remote_models.contains_key(&id)
-                    && self.remote_models_loading.insert(id)
+                    && (appearance_changed
+                        || (!self.remote_models.contains_key(&id)
+                            && !self.remote_models_loading.contains(&id)))
                 {
+                    self.remote_models_loading.insert(id);
                     let job = RemoteModelJob::Player {
                         id,
                         body: actor.body,
@@ -5575,20 +5608,21 @@ fn run() -> Result<()> {
     let mut character = character::Character::load(&mut assets, body)?;
     if let Some(ready) = &server_ready {
         if ready.body != 0
+            // Start bare: the server's equipment and guild packets dress the
+            // character. The sample profile's gear and guild are offline-only,
+            // and other clients never see them.
             && let Ok(mut live_character) = character::Character::load_remote(
                 &mut assets,
                 ready.body,
-                character.armor_id,
-                character.helmet_id,
+                0,
+                0,
                 ready.hair_style,
-                character.right_weapon_id,
-                character.left_weapon_id,
+                0,
+                0,
                 ready.character_name.clone(),
                 ready.health.min(u16::MAX as u32) as u16,
             )
         {
-            live_character.guild = character.guild.clone();
-            live_character.guild_rank = character.guild_rank.clone();
             live_character.maximum_health = character
                 .maximum_health
                 .max(ready.maximum_health)
@@ -5596,6 +5630,8 @@ fn run() -> Result<()> {
             character = live_character;
         }
         character.name = ready.character_name.clone();
+        character.guild.clear();
+        character.guild_rank.clear();
     }
     let requested_spawn = spawn;
     let preferred_spawn = requested_spawn

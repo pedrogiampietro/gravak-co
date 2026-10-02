@@ -2033,7 +2033,22 @@ impl Renderer {
                 })
             };
             let projected = map.project(actor.position);
-            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            let mut origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            // A remote jump (action 130) follows the local player's arc.
+            if actor.action == 130
+                && actor.movement_until > actor.movement_started
+                && time < actor.movement_until
+            {
+                let progress = (time - actor.movement_started)
+                    / (actor.movement_until - actor.movement_started);
+                let peak = crate::motion_math::jump_motion(
+                    actor.movement_from,
+                    actor.movement_to,
+                    std::time::Duration::ZERO,
+                )
+                .peak_screen_pixels;
+                origin[1] -= crate::motion_math::jump_screen_height(peak, progress);
+            }
             let visibility_margin = if monster {
                 384.0
             } else if actor.npc {
