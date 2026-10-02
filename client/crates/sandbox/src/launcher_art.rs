@@ -754,7 +754,14 @@ pub fn button(
     fill(image, [x + 1, y + 1, w - 2, 1], [255, 255, 255, 40]);
     outline(image, rect, border);
     outline(image, [x - 1, y - 1, w + 2, h + 2], [0, 0, 0, 140]);
-    let size = if h >= 30 { 15.0 } else { 13.0 };
+    let mut size = if h >= 30 { 15.0 } else { 13.0 };
+    while size > 10.0
+        && crate::main_hud::label_font()
+            .map_or(0, |font| crate::main_hud::text_width(font, text, size))
+            > w - 10
+    {
+        size -= 1.0;
+    }
     let colour = if disabled {
         with_alpha(colour, 0.5)
     } else {
@@ -816,5 +823,255 @@ pub fn stat_bar(image: &mut RgbaImage, x: i32, y: i32, caption: &str, value: u8)
             fill(image, rect, [6, 16, 20, 255]);
             outline(image, rect, [52, 74, 80, 255]);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profession columns
+
+/// Each profession's colour: Trojan crimson, Warrior steel, Archer forest,
+/// Taoist azure.
+const CLASS_TINTS: [[f32; 3]; 4] = [
+    [150.0, 46.0, 34.0],
+    [70.0, 96.0, 132.0],
+    [64.0, 116.0, 58.0],
+    [72.0, 92.0, 170.0],
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ColumnState {
+    Idle,
+    Hovered,
+    Selected,
+}
+
+pub struct ClassColumn<'a> {
+    pub class: usize,
+    pub name: &'a str,
+    pub tagline: &'a str,
+    pub description: &'a str,
+    pub skills: &'a str,
+    pub stats: [u8; 4],
+    /// The game's illustration, when the installation has one.
+    pub portrait: Option<&'a RgbaImage>,
+}
+
+/// Overlays `source` with its alpha scaled by `alpha`.
+pub fn overlay_faded(image: &mut RgbaImage, source: &RgbaImage, x: i32, y: i32, alpha: f32) {
+    for (sx, sy, pixel) in source.enumerate_pixels() {
+        let [r, g, b, a] = pixel.0;
+        if a > 0 {
+            blend(
+                image,
+                x + sx as i32,
+                y + sy as i32,
+                with_alpha([r, g, b, a], alpha),
+            );
+        }
+    }
+}
+
+/// A tall profession column: the illustration (or a lit emblem) above,
+/// the name, motto, description and skills below; dimmed unless chosen.
+pub fn class_column(
+    image: &mut RgbaImage,
+    rect: [i32; 4],
+    column: ClassColumn,
+    state: ColumnState,
+    time: f32,
+) {
+    let [x, y, w, h] = rect;
+    let tint = CLASS_TINTS[column.class % 4];
+    // Body: the profession's colour fading to night.
+    for row in 0..h {
+        let t = row as f32 / h as f32;
+        let strength = (1.0 - t * 1.35).max(0.0);
+        let c = [
+            (12.0 + tint[0] * 0.55 * strength) as u8,
+            (18.0 + tint[1] * 0.55 * strength) as u8,
+            (24.0 + tint[2] * 0.55 * strength) as u8,
+            235,
+        ];
+        fill(image, [x, y + row, w, 1], c);
+    }
+    let art_height = h * 56 / 100;
+    match column.portrait {
+        Some(portrait) => {
+            // Cover the upper part, cropped to the column's width.
+            let scale = (w as f32 / portrait.width() as f32)
+                .max(art_height as f32 / portrait.height() as f32);
+            let scaled = image::imageops::resize(
+                portrait,
+                (portrait.width() as f32 * scale).ceil() as u32,
+                (portrait.height() as f32 * scale).ceil() as u32,
+                image::imageops::FilterType::Triangle,
+            );
+            let crop_x = (scaled.width() as i32 - w) / 2;
+            for py in 0..art_height.min(scaled.height() as i32) {
+                for px in 0..w {
+                    let pixel = scaled.get_pixel((px + crop_x).max(0) as u32, py as u32).0;
+                    blend(image, x + px, y + py, pixel);
+                }
+            }
+        }
+        None => {
+            // Light falling from above, and the emblem lit in it.
+            for ray in 0..3 {
+                let offset = (time * 0.15 + ray as f32 * 2.1).sin() * w as f32 * 0.12;
+                let centre = x as f32 + w as f32 * (0.3 + ray as f32 * 0.2) + offset;
+                for py in 0..art_height {
+                    let spread = 10.0 + py as f32 * 0.25;
+                    let fade = (1.0 - py as f32 / art_height as f32) * 0.16;
+                    for px in (centre - spread) as i32..(centre + spread) as i32 {
+                        if px >= x && px < x + w {
+                            let d = (px as f32 - centre).abs() / spread;
+                            let colour = [
+                                (tint[0] * 0.5 + 128.0) as u8,
+                                (tint[1] * 0.5 + 118.0) as u8,
+                                (tint[2] * 0.5 + 100.0) as u8,
+                                255,
+                            ];
+                            blend(image, px, y + py, with_alpha(colour, fade * (1.0 - d)));
+                        }
+                    }
+                }
+            }
+            let size = ((w as f32 * 0.62) as u32)
+                .min(art_height.max(68) as u32 - 20)
+                .max(48);
+            let cx = x + w / 2;
+            let cy = y + art_height / 2 + 6;
+            radial_glow(
+                image,
+                cx,
+                cy,
+                size as i32,
+                [
+                    tint[0] as u8 / 2 + 128,
+                    tint[1] as u8 / 2 + 110,
+                    tint[2] as u8 / 2 + 80,
+                    70,
+                ],
+            );
+            let emblem = emblem(column.class, size, true);
+            overlay_faded(
+                image,
+                &emblem,
+                cx - size as i32 / 2,
+                cy - size as i32 / 2,
+                1.0,
+            );
+        }
+    }
+    // Fade the art into the text area.
+    for row in 0..60 {
+        let alpha = row as f32 / 60.0;
+        fill(
+            image,
+            [x, y + art_height - 60 + row, w, 1],
+            [8, 12, 16, (alpha * 200.0) as u8],
+        );
+    }
+    fill(
+        image,
+        [x, y + art_height, w, h - art_height],
+        [8, 12, 16, 200],
+    );
+
+    // Medallion, name and motto.
+    let medal = 54;
+    let medal_y = y + art_height - medal / 2;
+    let lit = state != ColumnState::Idle;
+    // With an illustration the emblem becomes a medallion on its edge.
+    if column.portrait.is_some() {
+        overlay_faded(
+            image,
+            &emblem(column.class, medal as u32, lit),
+            x + w / 2 - medal / 2,
+            medal_y,
+            1.0,
+        );
+    }
+    let mut line_y = medal_y + medal + 8;
+    heading(
+        image,
+        column.name,
+        22.0,
+        x + w / 2,
+        line_y,
+        if state == ColumnState::Selected {
+            GOLD_BRIGHT
+        } else {
+            GOLD
+        },
+        true,
+    );
+    line_y += 32;
+    label(image, column.tagline, 13.0, x + w / 2, line_y, GOLD);
+    line_y += 24;
+    for line in wrap(column.description, 12.0, w - 30) {
+        let width = text_width(&line, 12.0);
+        body(
+            image,
+            &line,
+            12.0,
+            x + (w - width) / 2,
+            line_y,
+            WHITE,
+            w - 20,
+        );
+        line_y += 16;
+    }
+    line_y += 8;
+    if state == ColumnState::Selected && line_y + 72 < y + h {
+        let pips_x = x + (w - 208) / 2;
+        for (caption, value) in ["Attack", "Defense", "Range", "Magic"]
+            .into_iter()
+            .zip(column.stats)
+        {
+            stat_bar(image, pips_x, line_y, caption, value);
+            line_y += 18;
+        }
+    } else {
+        let width = text_width(column.skills, 11.0);
+        body(
+            image,
+            column.skills,
+            11.0,
+            x + (w - width) / 2,
+            line_y,
+            GREY,
+            w - 20,
+        );
+    }
+
+    // Dim the professions not chosen.
+    match state {
+        ColumnState::Idle => fill(image, rect, [4, 8, 12, 150]),
+        ColumnState::Hovered => fill(image, rect, [4, 8, 12, 70]),
+        ColumnState::Selected => {}
+    }
+    // Rules between columns, and the gold frame of the chosen one.
+    for row in 0..h {
+        let t = row as f32 / h as f32;
+        let alpha = (1.0 - (t - 0.5).abs() * 2.0).max(0.0);
+        blend(image, x, y + row, with_alpha(GOLD_DEEP, alpha * 0.8));
+        blend(
+            image,
+            x + w - 1,
+            y + row,
+            with_alpha(GOLD_DEEP, alpha * 0.8),
+        );
+    }
+    if state == ColumnState::Selected {
+        glow(image, rect, 8, [255, 200, 110, 120]);
+        outline(image, rect, GOLD_BRIGHT);
+        outline(
+            image,
+            [x + 3, y + 3, w - 6, h - 6],
+            with_alpha(GOLD_DEEP, 0.8),
+        );
+        diamond(image, x + w / 2, y, 5, GOLD_BRIGHT);
+        diamond(image, x + w / 2, y + h - 1, 5, GOLD_BRIGHT);
     }
 }

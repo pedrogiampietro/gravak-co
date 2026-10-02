@@ -25,8 +25,6 @@ use winit::{
 
 const FIELD_HEIGHT: i32 = 32;
 const BUTTON_HEIGHT: i32 = 34;
-const CLASS_COLUMN: i32 = 300;
-const CLASS_CARD: i32 = 74;
 const MAX_INPUT: usize = 15;
 
 const GREY: [u8; 4] = [150, 164, 166, 255];
@@ -117,6 +115,7 @@ pub struct LoginUi {
     pub busy: bool,
     pub hovered: Option<Target>,
     account: String,
+    portraits: std::collections::HashMap<(usize, bool), RgbaImage>,
 }
 
 /// What the screens ask the login session to do.
@@ -139,6 +138,7 @@ impl LoginUi {
             busy: false,
             hovered: None,
             account: last_account.unwrap_or_default(),
+            portraits: std::collections::HashMap::new(),
         };
         ui.show(Screen::Login);
         ui
@@ -397,6 +397,9 @@ impl LoginUi {
     }
 
     fn layout(&self, size: [u32; 2]) -> Layout {
+        if self.screen == Screen::CreateCharacter {
+            return self.creation_layout(size);
+        }
         let [width, height] = [size[0] as i32, size[1] as i32];
         let mut targets = Vec::new();
         let mut fields = Vec::new();
@@ -416,39 +419,7 @@ impl LoginUi {
                     y += FIELD_HEIGHT + 14;
                 }
             }
-            Screen::CreateCharacter => {
-                panel_width = (width - 40).clamp(640, 880);
-                let left = 28;
-                for index in 0..CLASSES.len() {
-                    let rect = [
-                        left,
-                        86 + index as i32 * (CLASS_CARD + 10),
-                        CLASS_COLUMN,
-                        CLASS_CARD,
-                    ];
-                    classes.push(rect);
-                    targets.push((rect, Target::Class(index)));
-                }
-                y = 86 + 4 * (CLASS_CARD + 10) + 30;
-                let name = [left, y, CLASS_COLUMN, FIELD_HEIGHT];
-                fields.push(name);
-                targets.push((name, Target::Field(0)));
-                let right = left + CLASS_COLUMN + 28;
-                let column = panel_width - right - 28;
-                let gap = 8;
-                let choice = (column - gap * 3) / 4;
-                for index in 0..BODIES.len() {
-                    let rect = [
-                        right + index as i32 * (choice + gap),
-                        y,
-                        choice,
-                        FIELD_HEIGHT,
-                    ];
-                    bodies.push(rect);
-                    targets.push((rect, Target::Body(index)));
-                }
-                y += FIELD_HEIGHT + 14;
-            }
+            Screen::CreateCharacter => unreachable!("laid out by creation_layout"),
             Screen::Select(_) => {
                 panel_width = 540;
                 y = 196;
@@ -524,12 +495,16 @@ impl LoginUi {
         let mut image = art::backdrop(size);
         art::embers(&mut image, time);
         let layout = self.layout(size);
+        if self.screen == Screen::CreateCharacter {
+            self.paint_creation(&mut image, &layout, time);
+            return image;
+        }
         let centre = size[0] as i32 / 2;
         let [px, py, pw, ph] = layout.panel;
         let caret = (time * 2.0).fract() < 0.55;
 
         // Title.
-        let compact = self.screen == Screen::CreateCharacter;
+        let compact = false;
         let (title_size, title_y) = if compact {
             (44.0, py - 108)
         } else {
@@ -570,7 +545,7 @@ impl LoginUi {
                     );
                 }
             }
-            Screen::CreateCharacter => self.paint_creation(&mut image, &layout, caret),
+            Screen::CreateCharacter => {}
             Screen::Select(summary) => {
                 let class = class_index(summary.class);
                 let emblem = art::emblem(class, 112, true);
@@ -703,124 +678,103 @@ impl LoginUi {
         image
     }
 
-    fn paint_creation(&self, image: &mut RgbaImage, layout: &Layout, caret: bool) {
+    /// The creation screen fills the window: a tall column per profession
+    /// above a bar with the name, body and buttons.
+    fn creation_layout(&self, size: [u32; 2]) -> Layout {
+        let [width, height] = [size[0] as i32, size[1] as i32];
+        let margin = 20;
+        let bar = [margin, height - 132, width - margin * 2, 112];
+        let top = 102;
+        let column_width = (width - margin * 2) / CLASSES.len() as i32;
+        let column_height = (bar[1] - 18 - top).max(120);
+        let mut targets = Vec::new();
+        let mut classes = Vec::new();
+        for index in 0..CLASSES.len() {
+            let rect = [
+                margin + index as i32 * column_width,
+                top,
+                column_width,
+                column_height,
+            ];
+            classes.push(rect);
+            targets.push((rect, Target::Class(index)));
+        }
+        let row = bar[1] + 40;
+        let name = [bar[0] + 28, row, 240, FIELD_HEIGHT];
+        targets.push((name, Target::Field(0)));
+        let mut bodies = Vec::new();
+        let mut x = name[0] + name[2] + 24;
+        for index in 0..BODIES.len() {
+            let rect = [x, row, 96, FIELD_HEIGHT];
+            bodies.push(rect);
+            targets.push((rect, Target::Body(index)));
+            x += 96 + 6;
+        }
+        let mut buttons = Vec::new();
+        let mut right = bar[0] + bar[2] - 24;
+        for (action, label) in self.buttons().into_iter().rev() {
+            let width = if action == Action::Create { 124 } else { 100 };
+            right -= width;
+            let rect = [right, row - 1, width, BUTTON_HEIGHT];
+            buttons.push((rect, action, label));
+            targets.push((rect, Target::Button(action)));
+            right -= 10;
+        }
+        buttons.reverse();
+        Layout {
+            panel: bar,
+            fields: vec![name],
+            classes,
+            bodies,
+            status_y: bar[1] + 84,
+            buttons,
+            targets,
+            showcase: Vec::new(),
+        }
+    }
+
+    fn paint_creation(&self, image: &mut RgbaImage, layout: &Layout, time: f32) {
         use crate::launcher_art as art;
-        let [px, py, pw, _] = layout.panel;
-        art::label_left(
+        let [width, _] = [image.width() as i32, image.height() as i32];
+        art::gold_title(image, "Choose your Profession", 34.0, width / 2, 14);
+        art::label(
             image,
-            "Choose your profession",
+            "Your profession shapes your journey through the Twin City.",
             14.0,
-            px + 30,
-            py + 60,
+            width / 2,
+            74,
             art::GOLD,
         );
+        let female = self.body >= 2;
         for (index, rect) in layout.classes.iter().enumerate() {
-            let selected = index == self.class;
-            let hot = self.hovered == Some(Target::Class(index));
-            let [x, y, w, h] = *rect;
-            if selected {
-                art::glow(image, *rect, 6, [255, 200, 110, 110]);
-                art::gradient(image, *rect, [88, 66, 28, 255], [40, 30, 14, 255]);
+            let state = if index == self.class {
+                art::ColumnState::Selected
+            } else if self.hovered == Some(Target::Class(index)) {
+                art::ColumnState::Hovered
             } else {
-                art::gradient(
-                    image,
-                    *rect,
-                    if hot {
-                        [34, 70, 82, 255]
-                    } else {
-                        [16, 38, 46, 255]
-                    },
-                    if hot {
-                        [14, 34, 42, 255]
-                    } else {
-                        [6, 18, 24, 255]
-                    },
-                );
-            }
-            art::outline(
+                art::ColumnState::Idle
+            };
+            let info = &CLASS_INFO[index];
+            art::class_column(
                 image,
                 *rect,
-                if selected {
-                    art::GOLD_BRIGHT
-                } else if hot {
-                    art::GOLD
-                } else {
-                    [70, 80, 64, 255]
+                art::ClassColumn {
+                    class: index,
+                    name: CLASSES[index].0,
+                    tagline: info.tagline,
+                    description: info.description,
+                    skills: info.skills,
+                    stats: info.stats,
+                    portrait: self.portraits.get(&(index, female)),
                 },
-            );
-            let emblem = art::emblem(index, (h - 16) as u32, selected);
-            image::imageops::overlay(image, &emblem, i64::from(x + 8), i64::from(y + 8));
-            let text_x = x + h + 6;
-            art::heading(
-                image,
-                CLASSES[index].0,
-                17.0,
-                text_x,
-                y + 14,
-                if selected {
-                    art::GOLD_BRIGHT
-                } else {
-                    art::GOLD
-                },
-                false,
-            );
-            art::body(
-                image,
-                CLASS_INFO[index].tagline,
-                12.0,
-                text_x,
-                y + 42,
-                art::GREY,
-                w - h - 12,
+                state,
+                time,
             );
         }
 
-        // The selected profession in detail.
-        let info = &CLASS_INFO[self.class];
-        let x = px + 28 + CLASS_COLUMN + 28;
-        let column = pw - (x - px) - 28;
-        let top = py + 64;
-        let emblem = art::emblem(self.class, 104, true);
-        art::radial_glow(image, x + 52, top + 58, 80, [255, 200, 110, 60]);
-        image::imageops::overlay(image, &emblem, i64::from(x), i64::from(top + 6));
-        art::heading(
-            image,
-            CLASSES[self.class].0,
-            30.0,
-            x + 124,
-            top + 18,
-            art::GOLD_BRIGHT,
-            false,
-        );
-        art::label_left(image, info.tagline, 15.0, x + 126, top + 62, art::GOLD);
-        art::label_left(image, info.weapons, 13.0, x + 126, top + 84, art::GREY);
-        art::ornament_rule(image, x + column / 2, top + 124, column - 40);
-        let mut line_y = top + 138;
-        for line in art::wrap(info.description, 13.0, column) {
-            art::body(image, &line, 13.0, x, line_y, art::WHITE, column);
-            line_y += 18;
-        }
-        line_y += 10;
-        for (caption, value) in ["Attack", "Defense", "Range", "Magic"]
-            .into_iter()
-            .zip(info.stats)
-        {
-            art::stat_bar(image, x, line_y, caption, value);
-            line_y += 20;
-        }
-        line_y += 6;
-        art::label_left(image, "Signature skills", 13.0, x, line_y, art::GOLD);
-        art::body(
-            image,
-            info.skills,
-            12.0,
-            x + 112,
-            line_y + 1,
-            art::GREY,
-            column - 112,
-        );
-
-        // Name and body.
+        let [bx, by, bw, bh] = layout.panel;
+        art::panel(image, [bx, by, bw, bh], None);
+        let caret = (time * 2.0).fract() < 0.55;
         if let Some(rect) = layout.fields.first() {
             let field = &self.fields[0];
             art::field(
@@ -848,6 +802,31 @@ impl LoginUi {
                 false,
             );
         }
+        if !self.status.is_empty() {
+            art::body(
+                image,
+                &self.status,
+                12.0,
+                bx + 30,
+                layout.status_y,
+                self.status_colour,
+                bw - 60,
+            );
+        }
+        for (rect, action, text) in &layout.buttons {
+            let hot = self.hovered == Some(Target::Button(*action)) && !self.busy;
+            let style = if *action == Action::Create {
+                art::ButtonStyle::Primary
+            } else {
+                art::ButtonStyle::Secondary
+            };
+            art::button(image, *rect, text, style, hot, self.busy);
+        }
+    }
+
+    /// Illustrations for the profession columns, by (class, female).
+    pub fn set_portrait(&mut self, class: usize, female: bool, portrait: RgbaImage) {
+        self.portraits.insert((class, female), portrait);
     }
 }
 
@@ -1230,5 +1209,170 @@ mod tests {
             Some(Request::Send(LoginCommand::Logout))
         );
         assert_eq!(ui.screen, Screen::Login);
+    }
+}
+
+#[cfg(test)]
+mod art_probe {
+    //! Finds the original client's login and character-creation artwork so
+    //! the screens can use it.
+
+    const KEYWORDS: [&str; 16] = [
+        "login",
+        "logon",
+        "regist",
+        "role",
+        "select",
+        "create",
+        "newrole",
+        "prof",
+        "taoist",
+        "trojan",
+        "archer",
+        "warrior",
+        "choose",
+        "entry",
+        "serverlist",
+        "sex",
+    ];
+
+    fn interesting(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        KEYWORDS.iter().any(|keyword| lower.contains(keyword))
+    }
+
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if let Ok(relative) = path.strip_prefix(root) {
+                out.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    /// Lists loose files and ani/ini entries that look like login or
+    /// character-creation art, and exports each image it can read as PNG.
+    /// GRAVAK_CLIENT (default R:/5065) is the installation and
+    /// GRAVAK_PROBE_OUT (default ./login-art-probe) the output folder.
+    #[test]
+    #[ignore = "Needs the 5065 installation"]
+    fn probe_login_art() -> crate::assets::Result<()> {
+        let root = std::path::PathBuf::from(
+            std::env::var("GRAVAK_CLIENT").unwrap_or_else(|_| "R:/5065".into()),
+        );
+        let out = std::path::PathBuf::from(
+            std::env::var("GRAVAK_PROBE_OUT").unwrap_or_else(|_| "login-art-probe".into()),
+        );
+        std::fs::create_dir_all(&out)?;
+        let mut assets = crate::assets::Assets::open(&root)?;
+        let mut report = Vec::new();
+        let mut candidates = Vec::new();
+
+        let mut files = Vec::new();
+        walk(&root, &root, &mut files);
+        files.sort();
+        report.push(format!(
+            "# {} loose files under {}",
+            files.len(),
+            root.display()
+        ));
+        for file in &files {
+            let lower = file.to_ascii_lowercase();
+            let image = [".dds", ".jpg", ".jpeg", ".bmp", ".tga", ".png"]
+                .iter()
+                .any(|ext| lower.ends_with(ext));
+            if image && interesting(file) {
+                report.push(format!("loose image: {file}"));
+                candidates.push(file.clone());
+            }
+        }
+
+        // Config files, loose or in the archives.
+        let mut configs: Vec<String> = files
+            .iter()
+            .filter(|file| {
+                let lower = file.to_ascii_lowercase();
+                lower.ends_with(".ani") || lower.ends_with(".ini")
+            })
+            .cloned()
+            .collect();
+        for known in [
+            "ani/Control.Ani",
+            "ani/Common.Ani",
+            "ani/Login.Ani",
+            "ani/Register.Ani",
+            "ini/GUI.ini",
+            "ini/info.ini",
+        ] {
+            if !configs.iter().any(|file| file.eq_ignore_ascii_case(known)) {
+                configs.push(known.to_owned());
+            }
+        }
+        for config in &configs {
+            let Ok(bytes) = assets.read(config) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&bytes);
+            let mut section = String::new();
+            let mut hits = 0;
+            for line in text.lines().map(str::trim) {
+                if let Some(name) = line
+                    .strip_prefix('[')
+                    .and_then(|line| line.strip_suffix(']'))
+                {
+                    section = name.to_owned();
+                    continue;
+                }
+                if !(interesting(&section) || interesting(line)) {
+                    continue;
+                }
+                hits += 1;
+                if hits <= 400 {
+                    report.push(format!("{config} [{section}] {line}"));
+                }
+                if let Some((_, value)) = line.split_once('=') {
+                    let value = value.trim().replace('\\', "/");
+                    let lower = value.to_ascii_lowercase();
+                    if [".dds", ".jpg", ".jpeg", ".bmp", ".tga"]
+                        .iter()
+                        .any(|ext| lower.ends_with(ext))
+                    {
+                        candidates.push(value);
+                    }
+                }
+            }
+            if hits > 0 {
+                report.push(format!("# {config}: {hits} matching lines"));
+            }
+        }
+
+        candidates.sort();
+        candidates.dedup();
+        for (index, path) in candidates.iter().enumerate() {
+            match assets.image(path) {
+                Ok(image) => {
+                    let name = format!("{index:03}_{}.png", path.replace(['/', '\\', ':'], "_"));
+                    report.push(format!(
+                        "exported {path} {}x{} -> {name}",
+                        image.width(),
+                        image.height()
+                    ));
+                    image.save(out.join(name))?;
+                }
+                Err(error) => report.push(format!("unreadable {path}: {error}")),
+            }
+        }
+        std::fs::write(out.join("report.txt"), report.join("\n"))?;
+        println!(
+            "{} candidates; report in {}",
+            candidates.len(),
+            out.join("report.txt").display()
+        );
+        Ok(())
     }
 }
