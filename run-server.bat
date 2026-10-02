@@ -18,7 +18,7 @@ set "SERVER_DIR=%~dp0server"
 set "AUTH_EXE=%SERVER_DIR%\target\debug\auth-server.exe"
 set "GAME_EXE=%SERVER_DIR%\target\release\game-server.exe"
 
-rem ++€++€ Check binaries ++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€
+rem -- Check binaries ----------------------------------------------
 if not exist "%AUTH_EXE%" (
     echo [ERRO] Auth server nao encontrado em:
     echo        %AUTH_EXE%
@@ -37,11 +37,11 @@ if not exist "%GAME_EXE%" (
     exit /b 1
 )
 
-rem ++€++€ Parse arguments ++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€
+rem -- Parse arguments ---------------------------------------------
 if /I "%~1"=="stop" goto stop
 if /I "%~1"=="status" goto status
 
-rem ++€++€ Start servers ++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€
+rem -- Start servers -----------------------------------------------
 echo [1/2] Iniciando Auth Server...
 pushd "%SERVER_DIR%"
 rem cmd /k keeps the window open if the server exits, so its error stays visible.
@@ -77,10 +77,10 @@ if defined FAILED (
 )
 
 echo.
-echo   +++++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€+++
-echo   ++‚  Auth Server  ++€  porta 9958  (login)    ++‚
-echo   ++‚  Game Server  ++€  porta 5816  (jogo)     ++‚
-echo   +++++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€+++
+echo   +-----------------------------------------+
+echo   |  Auth Server  -  porta 9958  (login)    |
+echo   |  Game Server  -  porta 5816  (jogo)     |
+echo   +-----------------------------------------+
 echo.
 echo   Ambos os servidores foram iniciados em janelas
 echo   minimizadas. Use  run-server.bat stop  para
@@ -91,7 +91,7 @@ echo   Para conectar o cliente:  run-client.bat
 echo.
 goto :eof
 
-rem ++€++€ Stop servers ++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€
+rem -- Stop servers ------------------------------------------------
 :stop
 echo Encerrando servidores...
 taskkill /IM auth-server.exe /F >nul 2>&1 && (
@@ -111,19 +111,19 @@ echo.
 echo Servidores encerrados.
 goto :eof
 
-rem ++€++€ Status check ++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€++€
+rem -- Status check ------------------------------------------------
 :status
 echo Verificando servidores...
 echo.
 tasklist /FI "IMAGENAME eq auth-server.exe" 2>nul | find /I "auth-server.exe" >nul && (
-    echo   [OK] Auth Server  ++€  RODANDO
+    echo   [OK] Auth Server  -  RODANDO
 ) || (
-    echo   [XX] Auth Server  ++€  PARADO
+    echo   [XX] Auth Server  -  PARADO
 )
 tasklist /FI "IMAGENAME eq game-server.exe" 2>nul | find /I "game-server.exe" >nul && (
-    echo   [OK] Game Server  ++€  RODANDO
+    echo   [OK] Game Server  -  RODANDO
 ) || (
-    echo   [XX] Game Server  ++€  PARADO
+    echo   [XX] Game Server  -  PARADO
 )
 echo.
 goto :eof
