@@ -278,7 +278,7 @@ impl MsgAction {
             return Ok(());
         }
 
-        let direction = tq_math::get_direction_sector((loc.x, loc.y), (new_x, new_y));
+        let direction = walk_direction((loc.x, loc.y), (new_x, new_y));
         let gate_closed = crate::guild_war::path_blocked(state, mymap_id, (loc.x, loc.y), (new_x, new_y));
         match mymap.tile(new_x, new_y) {
             Some(tile) if tile.access > TileType::Npc && !gate_closed => {
@@ -288,9 +288,13 @@ impl MsgAction {
                     .set_action(100);
                 me.set_elevation(tile.elevation);
                 mymap.update_region_for(entity.clone());
-                actor.send(self.clone()).await?;
+                // The client leaves the direction out; observers turn the
+                // jumper by it.
+                let mut jump = self.clone();
+                jump.details = u16::from(direction);
+                actor.send(jump.clone()).await?;
                 let myscreen = actor.screen();
-                myscreen.send_movement(state, self.clone()).await?;
+                myscreen.send_movement(state, jump).await?;
             },
             Some(_) | None => {
                 // Invalid Location move them back
@@ -570,5 +574,64 @@ impl PacketProcess for MsgAction {
                 Ok(())
             },
         }
+    }
+}
+
+/// The direction from `from` towards `to` in the MsgWalk convention
+/// (`WALK_XCOORDS`/`WALK_YCOORDS`: 0 is +y, 2 is -x, 4 is -y, 6 is +x), so
+/// observers and later MsgPlayer spawns face a jumper the way it jumped.
+/// Mirrors the client's `direction_towards`.
+fn walk_direction(from: (u16, u16), to: (u16, u16)) -> u8 {
+    let dx = i32::from(to.0) - i32::from(from.0);
+    let dy = i32::from(to.1) - i32::from(from.1);
+    if dx == 0 && dy == 0 {
+        return 3;
+    }
+    if dx == 0 {
+        return if dy > 0 { 0 } else { 4 };
+    }
+    if dy == 0 {
+        return if dx > 0 { 6 } else { 2 };
+    }
+    // tan(22.5°) ~ 0.41 and tan(67.5°) ~ 2.41 split the eight sectors.
+    let signed_y = dy * 100 * dx.signum();
+    let abs_x = dx.abs();
+    let east = dx > 0;
+    if (-241 * abs_x..-41 * abs_x).contains(&signed_y) {
+        if east { 5 } else { 1 }
+    } else if (-41 * abs_x..41 * abs_x).contains(&signed_y) {
+        if east { 6 } else { 2 }
+    } else if (41 * abs_x..241 * abs_x).contains(&signed_y) {
+        if east { 7 } else { 3 }
+    } else if dy > 0 {
+        0
+    } else {
+        4
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::walk_direction;
+    use crate::constants::{WALK_XCOORDS, WALK_YCOORDS};
+
+    #[test]
+    fn jump_direction_matches_the_walk_direction() {
+        for direction in 0..8u8 {
+            let dx = i32::from(WALK_XCOORDS[usize::from(direction)]);
+            let dy = i32::from(WALK_YCOORDS[usize::from(direction)]);
+            for distance in [1, 5, 16] {
+                let to = ((100 + dx * distance) as u16, (100 + dy * distance) as u16);
+                assert_eq!(walk_direction((100, 100), to), direction, "{dx},{dy} x{distance}");
+            }
+        }
+    }
+
+    #[test]
+    fn jump_direction_rounds_to_the_nearest_sector() {
+        // Mostly +x with a little +y is still +x.
+        assert_eq!(walk_direction((100, 100), (110, 102)), 6);
+        // Mostly -y with a little +x is still -y.
+        assert_eq!(walk_direction((100, 100), (102, 90)), 4);
     }
 }

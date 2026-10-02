@@ -311,6 +311,10 @@ pub fn items_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Items)
 }
 
+pub fn capture_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Capture)
+}
+
 pub fn status_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Status)
 }

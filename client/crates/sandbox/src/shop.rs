@@ -621,6 +621,8 @@ pub enum FriendsPanelAction {
     Whisper(usize),
     RemoveFriend(usize),
     RemoveIgnore(usize),
+    AcceptRequest,
+    RefuseRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -689,9 +691,8 @@ pub fn trade_panel_action_at(
     viewport: [f32; 2],
     cursor: [f32; 2],
     trade: &crate::network::TradeView,
-    has_selected_target: bool,
 ) -> Option<TradePanelAction> {
-    crate::original_panels::trade_action_at(viewport, cursor, trade, has_selected_target)
+    crate::original_panels::trade_action_at(viewport, cursor, trade)
 }
 
 pub fn trade_request_action_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<TradePanelAction> {
@@ -830,14 +831,14 @@ pub fn friends_panel_action_at(
     cursor: [f32; 2],
     friends: &[crate::network::SocialEntry],
     ignores: &[crate::network::SocialEntry],
-    has_selected_target: bool,
+    pending_request: bool,
 ) -> Option<FriendsPanelAction> {
     crate::original_panels::friends_action_at(
         viewport,
         cursor,
         friends.len(),
         ignores.len(),
-        has_selected_target,
+        pending_request,
     )
 }
 
@@ -983,6 +984,7 @@ pub fn quick_panel_image(
     pending_guild_invite: Option<u32>,
     friends: &[crate::network::SocialEntry],
     ignores: &[crate::network::SocialEntry],
+    pending_friend_name: Option<&str>,
     selected_target_name: Option<&str>,
     inventory: &[crate::network::OwnedItem],
     trade: &crate::network::TradeView,
@@ -1011,6 +1013,7 @@ pub fn quick_panel_image(
                 pending_guild_invite,
                 friends,
                 ignores,
+                pending_friend_name,
                 selected_target_name,
                 trade,
             },
@@ -4225,6 +4228,246 @@ pub fn item_context_image(
     Ok(image)
 }
 
+/// MsgAction 96 kill modes, indexed by the mode the server expects:
+/// free PK, peace (monsters only), team and capture (black names only).
+pub const KILL_MODES: [&str; 4] = ["PK", "PEACE", "TEAM", "CAPTURE"];
+
+const CHOICE_MENU_WIDTH: f32 = crate::original_panels::FRAMED_WIDTH as f32;
+const CHOICE_MENU_HEADER: f32 = crate::original_panels::FRAMED_TOP as f32 + 4.0;
+const CHOICE_MENU_ROW: f32 = 26.0;
+
+/// A small list of choices in the friend dialog's art: the kill-mode menu
+/// above Capture and the Shift+click player menu.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChoiceMenu {
+    pub title: String,
+    pub labels: Vec<&'static str>,
+    /// A row drawn as the current choice.
+    pub marked: Option<usize>,
+    /// Top-left corner in window pixels.
+    pub position: [i32; 2],
+}
+
+impl ChoiceMenu {
+    fn inner(rows: usize) -> f32 {
+        rows.max(1) as f32 * CHOICE_MENU_ROW + 8.0
+    }
+
+    fn height(rows: usize) -> f32 {
+        (crate::original_panels::FRAMED_TOP + crate::original_panels::FRAMED_BOTTOM) as f32
+            + Self::inner(rows)
+    }
+
+    /// The kill-mode menu, opened above the Capture button.
+    pub fn kill_modes(viewport: [f32; 2], current: u8) -> Self {
+        let button = crate::original_ui_layout::main_hud_button_rect(
+            viewport,
+            crate::original_ui_layout::MainHudButton::Capture,
+        );
+        let height = Self::height(KILL_MODES.len());
+        Self {
+            title: "PK Mode".into(),
+            labels: KILL_MODES.to_vec(),
+            marked: Some(usize::from(current)),
+            position: [
+                button.x.min(viewport[0] - CHOICE_MENU_WIDTH - 8.0).max(8.0) as i32,
+                (button.y - height - 4.0).max(8.0) as i32,
+            ],
+        }
+    }
+
+    /// A menu opened at `anchor` (the click), kept inside the window.
+    pub fn at(viewport: [f32; 2], anchor: [f32; 2], title: String, labels: Vec<&'static str>) -> Self {
+        let height = Self::height(labels.len());
+        Self {
+            title,
+            labels,
+            marked: None,
+            position: [
+                (anchor[0] + 8.0).min((viewport[0] - CHOICE_MENU_WIDTH - 8.0).max(8.0)) as i32,
+                (anchor[1] + 8.0).min((viewport[1] - height - 8.0).max(8.0)) as i32,
+            ],
+        }
+    }
+
+    pub fn contains(&self, cursor: [f32; 2]) -> bool {
+        let [left, top] = self.position.map(|value| value as f32);
+        cursor[0] >= left
+            && cursor[0] < left + CHOICE_MENU_WIDTH
+            && cursor[1] >= top
+            && cursor[1] < top + Self::height(self.labels.len())
+    }
+
+    fn row_rect(row: usize) -> [i32; 4] {
+        let [left, right] = crate::original_panels::FRAMED_LIST_X;
+        [
+            left,
+            (CHOICE_MENU_HEADER + row as f32 * CHOICE_MENU_ROW) as i32,
+            right - left,
+            CHOICE_MENU_ROW as i32,
+        ]
+    }
+
+    /// The row under the cursor, if any.
+    pub fn row_at(&self, cursor: [f32; 2]) -> Option<usize> {
+        let [left, top] = self.position.map(|value| value as f32);
+        let local = [cursor[0] - left, cursor[1] - top];
+        (0..self.labels.len()).find(|&row| {
+            let [x, y, width, height] = Self::row_rect(row).map(|value| value as f32);
+            local[0] >= x && local[0] < x + width && local[1] >= y && local[1] < y + height
+        })
+    }
+
+    pub fn image(&self, assets: &mut Assets, hovered: Option<usize>) -> Result<RgbaImage> {
+        use crate::original_panels::{LABEL_GOLD, label_centered};
+        let mut image = crate::original_panels::framed_panel(assets, Self::inner(self.labels.len()) as u32)?;
+        let center = (crate::original_panels::FRAMED_LIST_X[0] + crate::original_panels::FRAMED_LIST_X[1]) / 2;
+        label_centered(&mut image, &self.title, 14.0, center, 12, LABEL_GOLD);
+        for (row, label) in self.labels.iter().enumerate() {
+            let [x, y, width, height] = Self::row_rect(row);
+            let marked = self.marked == Some(row);
+            if hovered == Some(row) {
+                // The panels' gold highlight: a warm wash framed in gold.
+                crate::original_panels::fill(&mut image, [x, y + 1, width, height - 2], [120, 90, 30, 110]);
+                ui_theme::outline(&mut image, UiRect::new(x, y + 1, width, height - 2), [222, 178, 66, 255]);
+            } else if marked {
+                crate::original_panels::fill(&mut image, [x, y + 1, width, height - 2], [10, 40, 60, 150]);
+            }
+            let colour = if hovered == Some(row) {
+                [255, 244, 214, 255]
+            } else if marked {
+                [255, 220, 120, 255]
+            } else {
+                LABEL_GOLD
+            };
+            label_centered(&mut image, label, 13.0, center, y + (height - 15) / 2, colour);
+            if marked {
+                // A gold diamond beside the current choice.
+                let cy = y + height / 2;
+                for d in 0..4 {
+                    for px in (x + 8 - d)..=(x + 8 + d) {
+                        for py in [cy - (3 - d), cy + (3 - d)] {
+                            if px >= 0 && py >= 0 && (px as u32) < image.width() && (py as u32) < image.height() {
+                                image.put_pixel(px as u32, py as u32, Rgba([255, 214, 102, 255]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(image)
+    }
+}
+
+/// A yes/no question from another player, such as a team invite: the
+/// friend dialog's art with the player's name and Accept/Refuse.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PromptDialog {
+    pub title: &'static str,
+    /// The player asking, drawn bright under the title.
+    pub name: String,
+    pub text: &'static str,
+    /// Top-left corner in window pixels.
+    pub position: [i32; 2],
+}
+
+const PROMPT_INNER: u32 = 84;
+const PROMPT_BUTTONS: [[i32; 4]; 2] = [[28, 92, 70, 24], [110, 92, 70, 24]];
+
+impl PromptDialog {
+    /// A prompt centred across the window, in its upper third.
+    pub fn new(viewport: [f32; 2], title: &'static str, name: String, text: &'static str) -> Self {
+        let width = crate::original_panels::FRAMED_WIDTH as f32;
+        Self {
+            title,
+            name,
+            text,
+            position: [
+                ((viewport[0] - width) * 0.5).max(8.0) as i32,
+                (viewport[1] * 0.22).max(8.0) as i32,
+            ],
+        }
+    }
+
+    fn size() -> [i32; 2] {
+        [
+            crate::original_panels::FRAMED_WIDTH as i32,
+            (crate::original_panels::FRAMED_TOP + PROMPT_INNER + crate::original_panels::FRAMED_BOTTOM) as i32,
+        ]
+    }
+
+    pub fn contains(&self, cursor: [f32; 2]) -> bool {
+        let [left, top] = self.position.map(|value| value as f32);
+        let [width, height] = Self::size().map(|value| value as f32);
+        cursor[0] >= left && cursor[0] < left + width && cursor[1] >= top && cursor[1] < top + height
+    }
+
+    /// `Some(true)` over Accept, `Some(false)` over Refuse.
+    pub fn button_at(&self, cursor: [f32; 2]) -> Option<bool> {
+        let local = [cursor[0] - self.position[0] as f32, cursor[1] - self.position[1] as f32];
+        PROMPT_BUTTONS.iter().position(|&[x, y, width, height]| {
+            local[0] >= x as f32 && local[0] < (x + width) as f32 && local[1] >= y as f32 && local[1] < (y + height) as f32
+        })
+        .map(|index| index == 0)
+    }
+
+    pub fn image(&self, assets: &mut Assets, hovered: Option<bool>) -> Result<RgbaImage> {
+        use crate::original_panels::{LABEL_GOLD, fill, label_centered};
+        let mut image = crate::original_panels::framed_panel(assets, PROMPT_INNER)?;
+        let center = (crate::original_panels::FRAMED_LIST_X[0] + crate::original_panels::FRAMED_LIST_X[1]) / 2;
+        label_centered(&mut image, self.title, 14.0, center, 12, LABEL_GOLD);
+        label_centered(&mut image, &self.name, 14.0, center, 50, [255, 244, 214, 255]);
+        label_centered(&mut image, self.text, 13.0, center, 70, LABEL_GOLD);
+        for (index, ([x, y, width, height], label)) in PROMPT_BUTTONS.into_iter().zip(["Accept", "Refuse"]).enumerate() {
+            let hot = hovered == Some(index == 0);
+            fill(&mut image, [x, y, width, height], if hot { [120, 90, 30, 150] } else { [0, 0, 0, 90] });
+            ui_theme::outline(
+                &mut image,
+                UiRect::new(x, y, width, height),
+                if hot { [255, 214, 102, 255] } else { [168, 128, 52, 255] },
+            );
+            label_centered(
+                &mut image,
+                label,
+                13.0,
+                x + width / 2,
+                y + (height - 15) / 2,
+                if hot { [255, 244, 214, 255] } else { LABEL_GOLD },
+            );
+        }
+        Ok(image)
+    }
+}
+
+/// A one-line notice drawn at the top of the screen, such as "click a
+/// player" while a Friend/Trade button waits for its target: the panels'
+/// gold label on a dark band with gold rules.
+pub fn notice_image(text: &str) -> Result<RgbaImage> {
+    let font = crate::main_hud::label_font()?;
+    let text_width = crate::main_hud::text_width(font, text, 14.0).max(0) as u32;
+    let width = (text_width + 48).clamp(160, 900);
+    let mut image = RgbaImage::from_pixel(width, 32, Rgba([8, 22, 32, 225]));
+    for x in 0..width {
+        let fade = (x.min(width - 1 - x) as f32 / 40.0).min(1.0);
+        let alpha = (fade * 255.0) as u8;
+        image.put_pixel(x, 0, Rgba([222, 178, 66, alpha]));
+        image.put_pixel(x, 31, Rgba([222, 178, 66, alpha]));
+        for y in 1..31 {
+            let pixel = image.get_pixel_mut(x, y);
+            pixel.0[3] = (f32::from(pixel.0[3]) * fade) as u8;
+        }
+    }
+    crate::main_hud::crisp_text(
+        &mut image,
+        font,
+        text,
+        14.0,
+        [((width - text_width) / 2) as i32, 8],
+        crate::original_panels::LABEL_GOLD,
+    );
+    Ok(image)
+}
+
 pub fn item_action_panel_position(viewport: [f32; 2], action: ItemContextAction) -> [f32; 2] {
     let (width, height) = item_action_panel_size(action);
     [
@@ -7034,6 +7277,38 @@ mod icon_tests {
                 Some(index)
             );
         }
+    }
+
+    #[test]
+    fn prompt_dialog_maps_its_two_buttons() {
+        let prompt = super::PromptDialog::new([1024.0, 768.0], "Team", "Someone".into(), "invites you");
+        let [left, top] = prompt.position.map(|value| value as f32);
+        assert_eq!(prompt.button_at([left + 60.0, top + 104.0]), Some(true));
+        assert_eq!(prompt.button_at([left + 140.0, top + 104.0]), Some(false));
+        assert_eq!(prompt.button_at([left + 100.0, top + 60.0]), None);
+        assert!(prompt.contains([left + 100.0, top + 60.0]));
+        assert!(!prompt.contains([left - 1.0, top + 60.0]));
+    }
+
+    #[test]
+    fn choice_menu_maps_rows_and_stays_in_the_window() {
+        let viewport = [1024.0, 768.0];
+        // Opened near the bottom-right corner, it moves back inside.
+        let menu = super::ChoiceMenu::at(viewport, [1020.0, 760.0], "x".into(), vec!["A", "B", "C"]);
+        let [left, top] = menu.position.map(|value| value as f32);
+        let height = 40.0 + 3.0 * 26.0 + 8.0 + 20.0;
+        assert!(left + 208.0 <= viewport[0] && top + height <= viewport[1]);
+        assert_eq!(menu.row_at([left + 90.0, top + 12.0]), None);
+        for row in 0..3 {
+            let y = top + 44.0 + row as f32 * 26.0 + 13.0;
+            assert_eq!(menu.row_at([left + 90.0, y]), Some(row));
+        }
+        // The frame beside the rows is not a row.
+        assert_eq!(menu.row_at([left + 5.0, top + 57.0]), None);
+        assert!(menu.contains([left + 5.0, top + 57.0]));
+        assert!(!menu.contains([left + 90.0, top + height + 1.0]));
+        let modes = super::ChoiceMenu::kill_modes(viewport, 1);
+        assert_eq!((modes.labels.len(), modes.marked), (4, Some(1)));
     }
 
     #[test]

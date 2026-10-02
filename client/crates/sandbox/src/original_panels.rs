@@ -228,8 +228,10 @@ fn friend_remove_rect(row: usize) -> [i32; 4] {
     [x + width - 12, y, 12, FRIEND_ROW]
 }
 
-fn friend_controls(has_target: bool) -> Vec<Control<FriendsPanelAction>> {
-    vec![
+/// "Make Friends" and "Enemy" are always live: with no player selected they
+/// wait for the next player clicked. A received request adds Accept/Refuse.
+fn friend_controls(pending_request: bool) -> Vec<Control<FriendsPanelAction>> {
+    let mut controls = vec![
         control(
             [70, 10, 80, 17],
             Face::Art("data/main/DialogFriend.dds"),
@@ -254,14 +256,29 @@ fn friend_controls(has_target: bool) -> Vec<Control<FriendsPanelAction>> {
         control(
             [70, 308, 63, 20],
             Face::Art("data/main/FriendBtnAdd.dds"),
-            has_target.then_some(FriendsPanelAction::AddFriend),
+            Some(FriendsPanelAction::AddFriend),
         ),
         control(
             [80, 340, 43, 20],
             Face::Art("data/interface/Style01/Teacher/but-Enemy1.dds"),
-            has_target.then_some(FriendsPanelAction::AddIgnore),
+            Some(FriendsPanelAction::AddIgnore),
         ),
-    ]
+    ];
+    if pending_request {
+        controls.extend([
+            control(
+                [140, 308, 52, 20],
+                Face::Label("Accept"),
+                Some(FriendsPanelAction::AcceptRequest),
+            ),
+            control(
+                [140, 340, 52, 20],
+                Face::Label("Refuse"),
+                Some(FriendsPanelAction::RefuseRequest),
+            ),
+        ]);
+    }
+    controls
 }
 
 pub fn friends_action_at(
@@ -269,10 +286,10 @@ pub fn friends_action_at(
     cursor: [f32; 2],
     friends: usize,
     ignores: usize,
-    has_target: bool,
+    pending_request: bool,
 ) -> Option<FriendsPanelAction> {
     let point = local(QuickPanel::Friends, viewport, cursor)?;
-    if let Some(action) = hit(&friend_controls(has_target), point) {
+    if let Some(action) = hit(&friend_controls(pending_request), point) {
         return Some(action);
     }
     for (row, entry) in friend_rows(friends, ignores).into_iter().enumerate() {
@@ -493,7 +510,6 @@ fn trade_slot_rect(grid: [i32; 2], index: usize) -> [i32; 4] {
 fn trade_controls(
     active: bool,
     pending_request: bool,
-    has_target: bool,
     own_items: usize,
 ) -> Vec<Control<TradePanelAction>> {
     use TradePanelAction as A;
@@ -534,7 +550,8 @@ fn trade_controls(
             ),
             control([222, 261, 46, 20], Face::Label("Refuse"), Some(A::Cancel)),
         ]);
-    } else if has_target {
+    } else {
+        // With no player selected, Request waits for the next one clicked.
         controls.push(control(
             [112, 261, 62, 20],
             Face::Label("Request"),
@@ -548,13 +565,11 @@ pub fn trade_action_at(
     viewport: [f32; 2],
     cursor: [f32; 2],
     trade: &crate::network::TradeView,
-    has_target: bool,
 ) -> Option<TradePanelAction> {
     hit(
         &trade_controls(
             trade.active,
             trade.pending_request.is_some(),
-            has_target,
             trade.own_items.len(),
         ),
         local(QuickPanel::Trade, viewport, cursor)?,
@@ -707,6 +722,87 @@ fn mail_controls() -> Vec<Control<()>> {
 }
 
 // ---------------------------------------------------------------------------
+// Framed panels built from the friend dialog art
+
+/// `GeneralBG.dds` (the friend dialog) is 208 px wide; its frame band is
+/// the top 40 px (title) and the bottom 20 px, and its list area spans
+/// x 22..172 from y 40.
+pub const FRAMED_WIDTH: u32 = 208;
+pub const FRAMED_TOP: u32 = 40;
+pub const FRAMED_BOTTOM: u32 = 20;
+pub const FRAMED_LIST_X: [i32; 2] = [22, 172];
+const GENERAL_BG: &str = "data/main/GeneralBG.dds";
+const GENERAL_BG_LIST: [u32; 2] = [40, 290];
+/// The dialog's drawn height; the DDS can be padded below it.
+const GENERAL_BG_HEIGHT: u32 = 375;
+
+/// A panel in the friend dialog's art at its native width, `inner` pixels
+/// tall between the title band and the bottom frame: the list area is
+/// stretched vertically and the frame bands are kept as drawn.
+pub fn framed_panel(assets: &mut Assets, inner: u32) -> Result<RgbaImage> {
+    let source = assets.image(GENERAL_BG)?;
+    let width = source.width().min(FRAMED_WIDTH);
+    let mut image = RgbaImage::new(FRAMED_WIDTH, FRAMED_TOP + inner + FRAMED_BOTTOM);
+    let top = imageops::crop_imm(&source, 0, 0, width, FRAMED_TOP).to_image();
+    imageops::overlay(&mut image, &top, 0, 0);
+    let list = imageops::crop_imm(
+        &source,
+        0,
+        GENERAL_BG_LIST[0],
+        width,
+        GENERAL_BG_LIST[1] - GENERAL_BG_LIST[0],
+    )
+    .to_image();
+    let list = imageops::resize(&list, width, inner.max(1), imageops::FilterType::Triangle);
+    imageops::overlay(&mut image, &list, 0, i64::from(FRAMED_TOP));
+    let bottom = imageops::crop_imm(
+        &source,
+        0,
+        source.height().min(GENERAL_BG_HEIGHT).saturating_sub(FRAMED_BOTTOM),
+        width,
+        FRAMED_BOTTOM,
+    )
+    .to_image();
+    imageops::overlay(&mut image, &bottom, 0, i64::from(FRAMED_TOP + inner));
+    Ok(image)
+}
+
+/// The panels' gold label text, centred on `center_x`.
+pub fn label_centered(image: &mut RgbaImage, value: &str, size: f32, center_x: i32, y: i32, colour: [u8; 4]) {
+    if let Ok(font) = crate::main_hud::label_font() {
+        let width = crate::main_hud::text_width(font, value, size);
+        crate::main_hud::crisp_text(image, font, value, size, [center_x - width / 2, y], colour);
+    }
+}
+
+/// The trade dialog's width; the partner card sits to its right.
+pub const TRADE_WIDTH: f32 = 335.0;
+pub const TRADE_PARTNER_INNER: u32 = 214;
+/// Where the partner's model stands on its card: [top centre, [max width,
+/// height]].
+pub const TRADE_PARTNER_MODEL: [[f32; 2]; 2] = [[97.0, 52.0], [70.0, 150.0]];
+/// The smaller card shown while hovering a player.
+pub const HOVER_CARD_INNER: u32 = 160;
+pub const HOVER_CARD_MODEL: [[f32; 2]; 2] = [[97.0, 48.0], [56.0, 108.0]];
+
+/// A player card: the name in the title band, room for their live model
+/// (drawn over it by the renderer) and their level at the bottom of the
+/// `inner`-pixel list area.
+pub fn player_card(assets: &mut Assets, name: &str, level: Option<u16>, inner: u32) -> Result<RgbaImage> {
+    let mut image = framed_panel(assets, inner)?;
+    let center = (FRAMED_LIST_X[0] + FRAMED_LIST_X[1]) / 2;
+    label_centered(&mut image, name, 14.0, center, 12, LABEL_GOLD);
+    let bottom = (FRAMED_TOP + inner) as i32;
+    fill(&mut image, [FRAMED_LIST_X[0], bottom - 30, FRAMED_LIST_X[1] - FRAMED_LIST_X[0], 24], [0, 0, 0, 110]);
+    let caption = level.map_or_else(|| "Player".to_owned(), |level| format!("Level {level}"));
+    label_centered(&mut image, &caption, 13.0, center, bottom - 26, [255, 220, 120, 255]);
+    Ok(image)
+}
+
+/// The colour of the original panels' text buttons.
+pub const LABEL_GOLD: [u8; 4] = [232, 206, 148, 255];
+
+// ---------------------------------------------------------------------------
 // Painting
 
 pub struct PanelData<'a> {
@@ -718,6 +814,8 @@ pub struct PanelData<'a> {
     pub pending_guild_invite: Option<u32>,
     pub friends: &'a [crate::network::SocialEntry],
     pub ignores: &'a [crate::network::SocialEntry],
+    /// The player whose friend request waits for Accept/Refuse.
+    pub pending_friend_name: Option<&'a str>,
     pub selected_target_name: Option<&'a str>,
     pub trade: &'a crate::network::TradeView,
 }
@@ -751,7 +849,8 @@ fn outline(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
     }
 }
 
-fn fill(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
+/// Blends `colour` over the rectangle.
+pub fn fill(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
     let [x, y, width, height] = rect;
     for py in y.max(0)..(y + height).min(image.height() as i32) {
         for px in x.max(0)..(x + width).min(image.width() as i32) {
@@ -785,7 +884,7 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
             paint(
                 &mut image,
                 assets,
-                &friend_controls(data.selected_target_name.is_some()),
+                &friend_controls(data.pending_friend_name.is_some()),
             )?;
             for (row, entry) in friend_rows(data.friends.len(), data.ignores.len())
                 .into_iter()
@@ -814,7 +913,9 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                     12,
                 );
             }
-            if let Some(target) = data.selected_target_name {
+            if let Some(name) = data.pending_friend_name {
+                text(&mut image, &format!("Request: {name}"), 24, 292, GOLD, 150);
+            } else if let Some(target) = data.selected_target_name {
                 text(&mut image, &format!("Target: {target}"), 24, 292, GOLD, 150);
             }
         }
@@ -918,11 +1019,11 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 &trade_controls(
                     trade.active,
                     trade.pending_request.is_some(),
-                    data.selected_target_name.is_some(),
                     trade.own_items.len(),
                 ),
             )?;
             let partner = match (trade.peer_id, trade.pending_request) {
+                _ if !trade.peer_name.is_empty() => trade.peer_name.clone(),
                 (Some(peer), _) => peer.to_string(),
                 (None, Some(requester)) => requester.to_string(),
                 (None, None) => data.selected_target_name.unwrap_or("").to_owned(),
@@ -978,11 +1079,14 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 );
             }
             let trade = data.trade;
-            let requester = trade
-                .pending_request_name
-                .clone()
-                .or_else(|| trade.pending_request.map(|id| id.to_string()))
-                .unwrap_or_default();
+            let requester = if trade.peer_name.is_empty() {
+                trade
+                    .pending_request
+                    .map(|id| id.to_string())
+                    .unwrap_or_default()
+            } else {
+                trade.peer_name.clone()
+            };
             let centred = |image: &mut RgbaImage, value: &str, y: i32, colour: [u8; 4]| {
                 if let Ok(font) = crate::main_hud::font() {
                     let max = TRADE_REQUEST_SIZE[0] as i32 - 24;
@@ -1059,6 +1163,13 @@ mod tests {
             ),
             Some(FriendsPanelAction::AddFriend)
         );
+        // Accept answers a received request and is not there without one.
+        let accept = at(QuickPanel::Friends, [140, 308, 52, 20]);
+        assert_eq!(
+            friends_action_at(viewport, accept, 0, 0, true),
+            Some(FriendsPanelAction::AcceptRequest)
+        );
+        assert_eq!(friends_action_at(viewport, accept, 0, 0, false), None);
         assert_eq!(
             friends_action_at(
                 viewport,
@@ -1103,8 +1214,7 @@ mod tests {
             trade_action_at(
                 viewport,
                 at(QuickPanel::Trade, trade_slot_rect(TRADE_OWN_GRID, 0)),
-                &trade,
-                false
+                &trade
             ),
             Some(TradePanelAction::AddItem)
         );
@@ -1178,6 +1288,7 @@ mod tests {
                 pending_guild_invite: None,
                 friends: &friends,
                 ignores: &ignores,
+                pending_friend_name: None,
                 selected_target_name: Some("Sheko"),
                 trade: &trade,
             };
