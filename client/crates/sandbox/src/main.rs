@@ -60,6 +60,15 @@ fn configured_frame_interval() -> Option<std::time::Duration> {
     frame_interval_for(max_fps)
 }
 
+/// What the next click on a player does after a Friend/Trade button was
+/// pressed with no player selected, like the original targeting cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetPick {
+    Friend,
+    Ignore,
+    Trade,
+}
+
 enum RemoteModelJob {
     Player {
         id: u32,
@@ -191,6 +200,14 @@ struct App {
     action_bar: action_bar::ActionBar,
     action_context_slot: Option<usize>,
     item_context: Option<shop::ItemContext>,
+    /// A Friend/Trade button waiting for the player to click its target.
+    target_pick: Option<TargetPick>,
+    /// A received friend request (requester id, name) awaiting Accept/Refuse.
+    pending_friend_request: Option<(u32, String)>,
+    /// The kill-mode menu above the Capture button is open.
+    pk_menu_open: bool,
+    /// The server's kill mode (MsgAction 96): 0 PK, 1 peace, 2 team, 3 capture.
+    kill_mode: u8,
     item_action_panel: Option<shop::ItemActionPanel>,
     action_animation_started: Option<Instant>,
     gem_selection_panel: Option<shop::GemSelectionPanel>,
@@ -920,6 +937,7 @@ impl ApplicationHandler for App {
                         &self.network_status,
                         &self.friends,
                         &self.ignores,
+                        self.pending_friend_request.as_ref().map(|(_, name)| name.as_str()),
                         self.silver,
                         self.cps,
                         self.mana,
@@ -943,6 +961,7 @@ impl ApplicationHandler for App {
                         &self.player_shop_price,
                         self.player_shop_price_focused,
                         self.item_context.clone(),
+                        self.pk_menu_open.then_some(self.kill_mode),
                         self.item_action_panel,
                         action_animation_progress,
                         self.gem_selection_panel,
@@ -1210,6 +1229,29 @@ impl App {
             self.held = false;
             return true;
         }
+        if self.pk_menu_open {
+            if let Some(mode) = shop::pk_menu_mode_at(viewport, self.cursor) {
+                self.pk_menu_open = false;
+                self.set_kill_mode(mode);
+                self.held = false;
+                return true;
+            }
+            if shop::pk_menu_contains(viewport, self.cursor) {
+                self.held = false;
+                return true;
+            }
+            // Any click elsewhere closes the menu and is handled as usual.
+            self.pk_menu_open = false;
+            if hud::capture_button_at(viewport, self.cursor) {
+                self.held = false;
+                return true;
+            }
+        } else if hud::capture_button_at(viewport, self.cursor) {
+            self.pk_menu_open = true;
+            self.chat_focused = false;
+            self.held = false;
+            return true;
+        }
         let skill_hud = self.skill_hud();
         if let Some(skill_id) = hud::skill_bar_at(&mut self.assets, viewport, self.cursor, &skill_hud)
         {
@@ -1313,13 +1355,12 @@ impl App {
                 }
             }
             if self.quick_panel == Some(shop::QuickPanel::Friends) {
-                let has_selected_target = self.selected_player_target().is_some();
                 if let Some(action) = shop::friends_panel_action_at(
                     viewport,
                     self.cursor,
                     &self.friends,
                     &self.ignores,
-                    has_selected_target,
+                    self.pending_friend_request.is_some(),
                 ) {
                     self.handle_friends_panel_action(action);
                     self.held = false;
@@ -1327,13 +1368,7 @@ impl App {
                 }
             }
             if self.quick_panel == Some(shop::QuickPanel::Trade) {
-                let has_selected_target = self.selected_player_target().is_some();
-                if let Some(action) = shop::trade_panel_action_at(
-                    viewport,
-                    self.cursor,
-                    &self.trade,
-                    has_selected_target,
-                ) {
+                if let Some(action) = shop::trade_panel_action_at(viewport, self.cursor, &self.trade) {
                     self.handle_trade_panel_action(action);
                     self.held = false;
                     return true;
@@ -1447,6 +1482,21 @@ impl App {
                     self.inventory_open = false;
                     self.quick_panel = None;
                 }
+                // Trade, as in the original client, turns the cursor into a
+                // trade request: the next player clicked is asked. An open
+                // or requested trade shows its panel instead.
+                6 if !self.trade.active
+                    && self.trade.pending_request.is_none()
+                    && self.quick_panel != Some(shop::QuickPanel::Trade) =>
+                {
+                    if self.target_pick == Some(TargetPick::Trade) {
+                        self.target_pick = None;
+                        self.network_status = "seleção de alvo cancelada".into();
+                    } else {
+                        self.target_pick = Some(TargetPick::Trade);
+                        self.network_status = "clique no jogador para negociar".into();
+                    }
+                }
                 // "Skill" toggles the bar with the learned skills above the
                 // HUD, as in the original client.
                 2 => {
@@ -1523,6 +1573,16 @@ impl App {
         false
     }
 
+    fn set_kill_mode(&mut self, mode: u8) {
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            self.network_status = "modo PK requer conexão online".into();
+            return;
+        };
+        // The server answers with the same MsgAction 96 and a notice.
+        network.send_kill_mode(character_id, mode);
+        self.network_status = format!("online: modo {}", shop::KILL_MODES[usize::from(mode)]);
+    }
+
     fn submit_chat(&mut self) {
         let message = self.chat_text.trim().to_owned();
         if !message.is_empty()
@@ -1570,7 +1630,12 @@ impl App {
         match action {
             shop::FriendsPanelAction::AddFriend | shop::FriendsPanelAction::AddIgnore => {
                 let Some((target_id, target_name)) = self.selected_player_target() else {
-                    self.network_status = "selecione um jogador próximo primeiro".into();
+                    self.target_pick = Some(if action == shop::FriendsPanelAction::AddFriend {
+                        TargetPick::Friend
+                    } else {
+                        TargetPick::Ignore
+                    });
+                    self.network_status = "clique no jogador".into();
                     return;
                 };
                 let action_code = match action {
@@ -1587,6 +1652,24 @@ impl App {
                     };
                 } else {
                     self.network_status = "social indisponível: servidor offline".into();
+                }
+            }
+            shop::FriendsPanelAction::AcceptRequest => {
+                let Some((requester_id, name)) = self.pending_friend_request.take() else {
+                    return;
+                };
+                // The server makes the friendship when the requested player
+                // applies back to the requester.
+                if let Some(network) = &self.network {
+                    network.send_friend_action(10, requester_id, &name);
+                    self.network_status = format!("online: amizade com {name} aceita");
+                } else {
+                    self.network_status = "social indisponível: servidor offline".into();
+                }
+            }
+            shop::FriendsPanelAction::RefuseRequest => {
+                if let Some((_, name)) = self.pending_friend_request.take() {
+                    self.network_status = format!("pedido de amizade de {name} recusado");
                 }
             }
             shop::FriendsPanelAction::Whisper(index) => {
@@ -1774,8 +1857,9 @@ impl App {
         };
         match action {
             shop::TradePanelAction::Request => {
-                let Some(target_id) = self.selected_target else {
-                    self.network_status = "selecione um jogador para negociar".into();
+                let Some((target_id, _)) = self.selected_player_target() else {
+                    self.target_pick = Some(TargetPick::Trade);
+                    self.network_status = "clique no jogador para negociar".into();
                     return;
                 };
                 network.send_trade(target_id, REQUEST, 0);
@@ -2125,6 +2209,16 @@ impl App {
             } => {
                 let state = if online { "online" } else { "offline" };
                 match action {
+                    // Someone asked to be our friend: Accept/Refuse in the
+                    // friends panel.
+                    10 => {
+                        self.pending_friend_request = Some((friend_id, name.clone()));
+                        self.quick_panel = Some(shop::QuickPanel::Friends);
+                        self.status_open = false;
+                        self.inventory_open = false;
+                        self.network_status = format!("{name} quer ser seu amigo");
+                        return;
+                    }
                     12 | 13 | 15 => {
                         self.friends.retain(|entry| entry.friend_id != friend_id);
                         self.friends.push(SocialEntry {
@@ -2629,6 +2723,11 @@ impl App {
                         };
                     self.network_status =
                         format!("online: actor {id} moved dir {direction} type {movement_type}");
+                }
+            }
+            NetworkEvent::KillMode(mode) => {
+                if usize::from(mode) < shop::KILL_MODES.len() {
+                    self.kill_mode = mode;
                 }
             }
             NetworkEvent::RemoteFacing { id, direction } => {
@@ -3170,6 +3269,10 @@ impl App {
             .min_by(|(left, _), (right, _)| left.total_cmp(right))
             .map(|(_, actor)| (actor.id, actor.npc, actor.npc_kind, actor.name.clone()));
         let Some((id, npc, npc_kind, name)) = selected else {
+            // Clicking the ground cancels a pending target pick.
+            if self.target_pick.take().is_some() {
+                self.network_status = "seleção de alvo cancelada".into();
+            }
             return false;
         };
         // Training ground Stakes and Scarecrows are attacked, not talked to;
@@ -3207,6 +3310,17 @@ impl App {
             self.selected_target = Some(id);
         }
         self.network_status = format!("online: selected {kind} {label} ({id})");
+        if !npc && !monster && let Some(pick) = self.target_pick.take() {
+            match pick {
+                TargetPick::Friend => {
+                    self.handle_friends_panel_action(shop::FriendsPanelAction::AddFriend);
+                }
+                TargetPick::Ignore => {
+                    self.handle_friends_panel_action(shop::FriendsPanelAction::AddIgnore);
+                }
+                TargetPick::Trade => self.handle_trade_panel_action(shop::TradePanelAction::Request),
+            }
+        }
         if let Some(window) = &self.window {
             window.set_title(&format!("gravak-co — {}", self.network_status));
         }
@@ -5857,6 +5971,11 @@ fn run() -> Result<()> {
         action_bar: action_bar::ActionBar::default(),
         action_context_slot: None,
         item_context: None,
+        target_pick: None,
+        pending_friend_request: None,
+        pk_menu_open: false,
+        // The game server starts every character in peace mode.
+        kill_mode: 1,
         item_action_panel: None,
         action_animation_started: None,
         gem_selection_panel: None,

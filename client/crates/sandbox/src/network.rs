@@ -264,6 +264,8 @@ pub enum NetworkEvent {
         id: u32,
         direction: u8,
     },
+    /// The server confirmed the local hero's kill mode (MsgAction 96).
+    KillMode(u8),
     RemoteJump {
         id: u32,
         position: [i32; 2],
@@ -381,6 +383,10 @@ enum NetworkCommand {
     Action {
         character_id: u32,
         action: u32,
+    },
+    KillMode {
+        character_id: u32,
+        mode: u8,
     },
     Team {
         action: u32,
@@ -561,6 +567,7 @@ impl NetworkHandle {
                 | NetworkEvent::Reposition { .. }
                 | NetworkEvent::RemoteWalk { .. }
                 | NetworkEvent::RemoteFacing { .. }
+                | NetworkEvent::KillMode(_)
                 | NetworkEvent::RemoteJump { .. }
                 | NetworkEvent::RemoteAction { .. }
                 | NetworkEvent::LevelUp { .. }
@@ -629,6 +636,10 @@ impl NetworkHandle {
             direction,
             current,
         });
+    }
+
+    pub fn send_kill_mode(&self, character_id: u32, mode: u8) {
+        let _ = self.commands.send(NetworkCommand::KillMode { character_id, mode });
     }
 
     pub fn send_action(&self, character_id: u32, action: u32) {
@@ -1462,6 +1473,11 @@ async fn run(
                         level: action.details as u8,
                     });
                 }
+                Some(GameEvent::Action(action))
+                    if action.action_type == 96 && action.character_id == local_character_id =>
+                {
+                    let _ = events.send(NetworkEvent::KillMode(action.data1 as u8));
+                }
                 Some(GameEvent::Action(action)) if action.action_type == 6 => {
                     crate::debug_log::write(format_args!(
                         "action type 6 received: char={}, target={}, data1={}, data2={}, details={}",
@@ -1640,6 +1656,12 @@ async fn run(
                 Some(NetworkCommand::Revive { character_id }) => {
                     session
                         .send(&ActionPacket::reborn(character_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::KillMode { character_id, mode }) => {
+                    session
+                        .send(&ActionPacket::set_kill_mode(character_id, u32::from(mode)))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

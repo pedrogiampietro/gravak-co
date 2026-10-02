@@ -291,6 +291,7 @@ enum UiTextureJob {
         pending_guild_invite: Option<u32>,
         friends: Vec<crate::network::SocialEntry>,
         ignores: Vec<crate::network::SocialEntry>,
+        pending_friend_name: Option<String>,
         selected_target_name: Option<String>,
         inventory: Vec<crate::network::OwnedItem>,
         trade: crate::network::TradeView,
@@ -557,6 +558,7 @@ impl UiTextureJob {
                 pending_guild_invite,
                 friends,
                 ignores,
+                pending_friend_name,
                 selected_target_name,
                 inventory,
                 trade,
@@ -582,6 +584,7 @@ impl UiTextureJob {
                 pending_guild_invite,
                 &friends,
                 &ignores,
+                pending_friend_name.as_deref(),
                 selected_target_name.as_deref(),
                 &inventory,
                 &trade,
@@ -1667,6 +1670,7 @@ impl Renderer {
         network_status: &str,
         friends: &[crate::network::SocialEntry],
         ignores: &[crate::network::SocialEntry],
+        pending_friend_name: Option<&str>,
         silver: u32,
         cps: u32,
         mana: u32,
@@ -1690,6 +1694,7 @@ impl Renderer {
         player_shop_price: &str,
         player_shop_price_focused: bool,
         item_context: Option<crate::shop::ItemContext>,
+        pk_menu: Option<u8>,
         item_action_panel: Option<crate::shop::ItemActionPanel>,
         action_animation_progress: Option<f32>,
         gem_selection_panel: Option<crate::shop::GemSelectionPanel>,
@@ -3012,6 +3017,7 @@ impl Renderer {
             hud_config.hash(&mut hasher);
             friends.hash(&mut hasher);
             ignores.hash(&mut hasher);
+            pending_friend_name.hash(&mut hasher);
             selected_target.hash(&mut hasher);
             let selected_target_name = selected_target
                 .and_then(|id| remote_actors.get(&id))
@@ -3038,6 +3044,7 @@ impl Renderer {
                         pending_guild_invite,
                         friends: friends.to_vec(),
                         ignores: ignores.to_vec(),
+                        pending_friend_name: pending_friend_name.map(str::to_owned),
                         selected_target_name: selected_target_name.map(str::to_owned),
                         inventory: inventory.to_vec(),
                         trade: trade.clone(),
@@ -3513,6 +3520,21 @@ impl Renderer {
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(current) = pk_menu {
+            let hovered = crate::shop::pk_menu_mode_at(viewport, cursor);
+            let key = format!("@pk-menu-{current}-{hovered:?}");
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, crate::shop::pk_menu_image(current, hovered)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::shop::pk_menu_position(viewport), texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });

@@ -219,8 +219,10 @@ fn friend_remove_rect(row: usize) -> [i32; 4] {
     [x + width - 12, y, 12, FRIEND_ROW]
 }
 
-fn friend_controls(has_target: bool) -> Vec<Control<FriendsPanelAction>> {
-    vec![
+/// "Make Friends" and "Enemy" are always live: with no player selected they
+/// wait for the next player clicked. A received request adds Accept/Refuse.
+fn friend_controls(pending_request: bool) -> Vec<Control<FriendsPanelAction>> {
+    let mut controls = vec![
         control(
             [70, 10, 80, 17],
             Face::Art("data/main/DialogFriend.dds"),
@@ -245,14 +247,29 @@ fn friend_controls(has_target: bool) -> Vec<Control<FriendsPanelAction>> {
         control(
             [70, 308, 63, 20],
             Face::Art("data/main/FriendBtnAdd.dds"),
-            has_target.then_some(FriendsPanelAction::AddFriend),
+            Some(FriendsPanelAction::AddFriend),
         ),
         control(
             [80, 340, 43, 20],
             Face::Art("data/interface/Style01/Teacher/but-Enemy1.dds"),
-            has_target.then_some(FriendsPanelAction::AddIgnore),
+            Some(FriendsPanelAction::AddIgnore),
         ),
-    ]
+    ];
+    if pending_request {
+        controls.extend([
+            control(
+                [140, 308, 52, 20],
+                Face::Label("Accept"),
+                Some(FriendsPanelAction::AcceptRequest),
+            ),
+            control(
+                [140, 340, 52, 20],
+                Face::Label("Refuse"),
+                Some(FriendsPanelAction::RefuseRequest),
+            ),
+        ]);
+    }
+    controls
 }
 
 pub fn friends_action_at(
@@ -260,10 +277,10 @@ pub fn friends_action_at(
     cursor: [f32; 2],
     friends: usize,
     ignores: usize,
-    has_target: bool,
+    pending_request: bool,
 ) -> Option<FriendsPanelAction> {
     let point = local(QuickPanel::Friends, viewport, cursor)?;
-    if let Some(action) = hit(&friend_controls(has_target), point) {
+    if let Some(action) = hit(&friend_controls(pending_request), point) {
         return Some(action);
     }
     for (row, entry) in friend_rows(friends, ignores).into_iter().enumerate() {
@@ -484,7 +501,6 @@ fn trade_slot_rect(grid: [i32; 2], index: usize) -> [i32; 4] {
 fn trade_controls(
     active: bool,
     pending_request: bool,
-    has_target: bool,
     own_items: usize,
 ) -> Vec<Control<TradePanelAction>> {
     use TradePanelAction as A;
@@ -525,7 +541,8 @@ fn trade_controls(
             ),
             control([222, 261, 46, 20], Face::Label("Refuse"), Some(A::Cancel)),
         ]);
-    } else if has_target {
+    } else {
+        // With no player selected, Request waits for the next one clicked.
         controls.push(control(
             [112, 261, 62, 20],
             Face::Label("Request"),
@@ -539,13 +556,11 @@ pub fn trade_action_at(
     viewport: [f32; 2],
     cursor: [f32; 2],
     trade: &crate::network::TradeView,
-    has_target: bool,
 ) -> Option<TradePanelAction> {
     hit(
         &trade_controls(
             trade.active,
             trade.pending_request.is_some(),
-            has_target,
             trade.own_items.len(),
         ),
         local(QuickPanel::Trade, viewport, cursor)?,
@@ -657,6 +672,8 @@ pub struct PanelData<'a> {
     pub pending_guild_invite: Option<u32>,
     pub friends: &'a [crate::network::SocialEntry],
     pub ignores: &'a [crate::network::SocialEntry],
+    /// The player whose friend request waits for Accept/Refuse.
+    pub pending_friend_name: Option<&'a str>,
     pub selected_target_name: Option<&'a str>,
     pub trade: &'a crate::network::TradeView,
 }
@@ -721,7 +738,7 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
             paint(
                 &mut image,
                 assets,
-                &friend_controls(data.selected_target_name.is_some()),
+                &friend_controls(data.pending_friend_name.is_some()),
             )?;
             for (row, entry) in friend_rows(data.friends.len(), data.ignores.len())
                 .into_iter()
@@ -750,7 +767,9 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                     12,
                 );
             }
-            if let Some(target) = data.selected_target_name {
+            if let Some(name) = data.pending_friend_name {
+                text(&mut image, &format!("Request: {name}"), 24, 292, GOLD, 150);
+            } else if let Some(target) = data.selected_target_name {
                 text(&mut image, &format!("Target: {target}"), 24, 292, GOLD, 150);
             }
         }
@@ -854,7 +873,6 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 &trade_controls(
                     trade.active,
                     trade.pending_request.is_some(),
-                    data.selected_target_name.is_some(),
                     trade.own_items.len(),
                 ),
             )?;
@@ -933,6 +951,13 @@ mod tests {
             ),
             Some(FriendsPanelAction::AddFriend)
         );
+        // Accept answers a received request and is not there without one.
+        let accept = at(QuickPanel::Friends, [140, 308, 52, 20]);
+        assert_eq!(
+            friends_action_at(viewport, accept, 0, 0, true),
+            Some(FriendsPanelAction::AcceptRequest)
+        );
+        assert_eq!(friends_action_at(viewport, accept, 0, 0, false), None);
         assert_eq!(
             friends_action_at(
                 viewport,
@@ -977,8 +1002,7 @@ mod tests {
             trade_action_at(
                 viewport,
                 at(QuickPanel::Trade, trade_slot_rect(TRADE_OWN_GRID, 0)),
-                &trade,
-                false
+                &trade
             ),
             Some(TradePanelAction::AddItem)
         );
@@ -1052,6 +1076,7 @@ mod tests {
                 pending_guild_invite: None,
                 friends: &friends,
                 ignores: &ignores,
+                pending_friend_name: None,
                 selected_target_name: Some("Sheko"),
                 trade: &trade,
             };

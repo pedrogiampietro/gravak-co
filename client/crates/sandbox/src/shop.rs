@@ -619,6 +619,8 @@ pub enum FriendsPanelAction {
     Whisper(usize),
     RemoveFriend(usize),
     RemoveIgnore(usize),
+    AcceptRequest,
+    RefuseRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,9 +689,8 @@ pub fn trade_panel_action_at(
     viewport: [f32; 2],
     cursor: [f32; 2],
     trade: &crate::network::TradeView,
-    has_selected_target: bool,
 ) -> Option<TradePanelAction> {
-    crate::original_panels::trade_action_at(viewport, cursor, trade, has_selected_target)
+    crate::original_panels::trade_action_at(viewport, cursor, trade)
 }
 
 pub fn trade_panel_drop_at(viewport: [f32; 2], cursor: [f32; 2], active: bool) -> bool {
@@ -824,14 +825,14 @@ pub fn friends_panel_action_at(
     cursor: [f32; 2],
     friends: &[crate::network::SocialEntry],
     ignores: &[crate::network::SocialEntry],
-    has_selected_target: bool,
+    pending_request: bool,
 ) -> Option<FriendsPanelAction> {
     crate::original_panels::friends_action_at(
         viewport,
         cursor,
         friends.len(),
         ignores.len(),
-        has_selected_target,
+        pending_request,
     )
 }
 
@@ -977,6 +978,7 @@ pub fn quick_panel_image(
     pending_guild_invite: Option<u32>,
     friends: &[crate::network::SocialEntry],
     ignores: &[crate::network::SocialEntry],
+    pending_friend_name: Option<&str>,
     selected_target_name: Option<&str>,
     inventory: &[crate::network::OwnedItem],
     trade: &crate::network::TradeView,
@@ -1005,6 +1007,7 @@ pub fn quick_panel_image(
                 pending_guild_invite,
                 friends,
                 ignores,
+                pending_friend_name,
                 selected_target_name,
                 trade,
             },
@@ -4211,6 +4214,110 @@ pub fn item_context_image(
                 },
             )],
             [42.0, top as f32 + 9.0],
+            10.0,
+        );
+    }
+    Ok(image)
+}
+
+/// MsgAction 96 kill modes, indexed by the mode the server expects:
+/// free PK, peace (monsters only), team and capture (black names only).
+pub const KILL_MODES: [&str; 4] = ["PK", "PEACE", "TEAM", "CAPTURE"];
+
+const PK_MENU_WIDTH: f32 = 150.0;
+
+/// The kill-mode menu opens above the Capture button.
+pub fn pk_menu_position(viewport: [f32; 2]) -> [f32; 2] {
+    let button = crate::original_ui_layout::main_hud_button_rect(
+        viewport,
+        crate::original_ui_layout::MainHudButton::Capture,
+    );
+    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * KILL_MODES.len() as f32;
+    [
+        button.x.min(viewport[0] - PK_MENU_WIDTH - 8.0).max(8.0),
+        (button.y - height - 4.0).max(8.0),
+    ]
+}
+
+/// The kill mode under the cursor, if any.
+pub fn pk_menu_mode_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
+    let [left, top] = pk_menu_position(viewport);
+    if cursor[0] < left
+        || cursor[0] >= left + PK_MENU_WIDTH
+        || cursor[1] < top + ITEM_CONTEXT_HEADER_HEIGHT
+    {
+        return None;
+    }
+    let row =
+        ((cursor[1] - top - ITEM_CONTEXT_HEADER_HEIGHT) / ITEM_CONTEXT_ROW_HEIGHT).floor() as usize;
+    (row < KILL_MODES.len()).then_some(row as u8)
+}
+
+pub fn pk_menu_contains(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [left, top] = pk_menu_position(viewport);
+    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * KILL_MODES.len() as f32;
+    cursor[0] >= left && cursor[0] < left + PK_MENU_WIDTH && cursor[1] >= top && cursor[1] < top + height
+}
+
+pub fn pk_menu_image(current: u8, hovered: Option<u8>) -> Result<RgbaImage> {
+    let font = labels::font()?;
+    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * KILL_MODES.len() as f32;
+    let mut image = RgbaImage::from_pixel(
+        PK_MENU_WIDTH as u32,
+        height as u32,
+        Rgba([4, 10, 14, 252]),
+    );
+    let width = image.width();
+    let height = image.height();
+    ui_theme::fill(
+        &mut image,
+        UiRect::new(1, 1, width as i32 - 2, ITEM_CONTEXT_HEADER_HEIGHT as i32),
+        [10, 30, 40, 255],
+    );
+    rect_outline(&mut image, 0, 0, width, height, Rgba([226, 185, 77, 255]));
+    labels::text_sized(
+        &mut image,
+        &font,
+        &[("PK MODE", ui_theme::TEXT_GOLD)],
+        [12.0, 9.0],
+        10.0,
+    );
+    for (index, label) in KILL_MODES.iter().enumerate() {
+        let mode = index as u8;
+        let top = (ITEM_CONTEXT_HEADER_HEIGHT + index as f32 * ITEM_CONTEXT_ROW_HEIGHT) as u32;
+        let row_rect = UiRect::new(
+            4,
+            top as i32 + 2,
+            width as i32 - 8,
+            ITEM_CONTEXT_ROW_HEIGHT as i32 - 4,
+        );
+        if hovered == Some(mode) {
+            ui_theme::fill(&mut image, row_rect, [39, 67, 78, 255]);
+            ui_theme::outline(&mut image, row_rect, [222, 178, 66, 255]);
+        } else if index % 2 == 0 {
+            ui_theme::fill(&mut image, row_rect, [7, 19, 27, 230]);
+        }
+        if mode == current {
+            labels::text_sized(
+                &mut image,
+                &font,
+                &[("*", ui_theme::TEXT_GOLD)],
+                [14.0, top as f32 + 9.0],
+                10.0,
+            );
+        }
+        labels::text_sized(
+            &mut image,
+            &font,
+            &[(
+                label,
+                if hovered == Some(mode) || mode == current {
+                    ui_theme::TEXT
+                } else {
+                    ui_theme::TEXT_MUTED
+                },
+            )],
+            [32.0, top as f32 + 9.0],
             10.0,
         );
     }
