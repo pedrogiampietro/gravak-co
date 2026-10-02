@@ -34,7 +34,9 @@ popd
 exit /b
 
 :client
-start "Gravak-CO - %~1" "%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username %~1 --password 123456 --realm CoEmu
+rem cmd /c ... || pause keeps the window open when the client exits with an
+rem error (for example, the game server is not running), so it can be read.
+start "Gravak-CO - %~1" cmd /c ""%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username %~1 --password 123456 --realm CoEmu || pause"
 exit /b
 
 :offline
