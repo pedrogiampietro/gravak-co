@@ -144,6 +144,8 @@ pub struct TradeView {
     pub peer_silver: u32,
     pub own_confirmed: bool,
     pub peer_confirmed: bool,
+    /// The partner's (or requester's) name, when the client knows it.
+    pub peer_name: String,
 }
 
 #[derive(Debug)]
@@ -352,6 +354,8 @@ pub struct RemoteActor {
     pub respawn_until: f32,
     pub step_right: bool,
     pub npc: bool,
+    /// Player level from MsgPlayer; 0 for NPCs.
+    pub level: u16,
 }
 
 enum NetworkCommand {
@@ -1901,6 +1905,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         respawn_until: 0.0,
         step_right: false,
         npc: false,
+        level: player.level.max(0) as u16,
     }
 }
 
@@ -1941,6 +1946,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         respawn_until: 0.0,
         step_right: false,
         npc: true,
+        level: 0,
     }
 }
 

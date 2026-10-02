@@ -1,6 +1,7 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 mod action;
 mod action_bar;
+mod cursors;
 mod assets;
 mod audio;
 mod character;
@@ -40,7 +41,7 @@ use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorIcon, Window, WindowId},
+    window::{CursorIcon, CustomCursor, Window, WindowId},
 };
 const LEVEL_UP_DURATION: f32 = 61.0 / 30.0;
 // In normal play the presentation surface is synchronized to the monitor. A
@@ -242,6 +243,10 @@ struct App {
     target_pick: Option<TargetPick>,
     /// A received friend request (requester id, name) awaiting Accept/Refuse.
     pending_friend_request: Option<(u32, String)>,
+    /// The game's own cursors, created with the window.
+    cursors: HashMap<cursors::GameCursor, CustomCursor>,
+    /// The cursor last set on the window.
+    shown_cursor: Option<cursors::GameCursor>,
     /// The Shift+click menu of another player.
     player_menu: Option<PlayerMenu>,
     /// The player the hero walks after (player menu Follow).
@@ -435,6 +440,16 @@ impl ApplicationHandler for App {
         })();
         match result {
             Ok((window, renderer)) => {
+                for cursor in cursors::GameCursor::ALL {
+                    let [x, y] = cursor.hotspot();
+                    let size = cursors::SIZE as u16;
+                    match CustomCursor::from_rgba(cursor.image().into_raw(), size, size, x, y) {
+                        Ok(source) => {
+                            self.cursors.insert(cursor, event_loop.create_custom_cursor(source));
+                        }
+                        Err(error) => eprintln!("Cursor {cursor:?} unavailable: {error}"),
+                    }
+                }
                 self.window = Some(window);
                 self.renderer = Some(renderer);
                 self.last = Instant::now();
@@ -461,26 +476,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
-                if let Some(window) = &self.window {
-                    let cursor = if self.target_pick.is_some() {
-                        CursorIcon::Crosshair
-                    } else if self.ground_loot_at_cursor().is_some() {
-                        CursorIcon::Pointer
-                    } else {
-                        let size = window.inner_size();
-                        let viewport = [size.width as f32, size.height as f32];
-                        let over_action_bar = hud::action_slot_at(viewport, self.cursor).is_some();
-                        let over_context = self.action_context_slot.is_some_and(|slot| {
-                            hud::action_context_option_at(viewport, self.cursor, slot).is_some()
-                        });
-                        if over_action_bar || over_context {
-                            CursorIcon::Pointer
-                        } else {
-                            CursorIcon::Default
-                        }
-                    };
-                    window.set_cursor(cursor);
-                }
+                self.refresh_cursor();
                 if let (Some(shop), Some(window)) = (&mut self.shop, &self.window) {
                     let size = window.inner_size();
                     let viewport = [size.width as f32, size.height as f32];
@@ -809,9 +805,6 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) if self.target_pick.is_some() => {
                         self.target_pick = None;
                         self.network_status = "seleção de alvo cancelada".into();
-                        if let Some(window) = &self.window {
-                            window.set_cursor(CursorIcon::Default);
-                        }
                     }
                     PhysicalKey::Code(KeyCode::Escape) if self.item_context.is_some() => {
                         self.item_context = None;
@@ -929,6 +922,13 @@ impl ApplicationHandler for App {
                     })
                     .flatten();
                 self.update_follow();
+                if self.target_pick.is_some()
+                    != self
+                        .shown_cursor
+                        .is_some_and(|cursor| !matches!(cursor, cursors::GameCursor::Arrow | cursors::GameCursor::Interact))
+                {
+                    self.refresh_cursor();
+                }
                 if !self.player.moving()
                     && self.pending_network_steps.is_empty()
                     && let Some(target) = self.queued_jump.take()
@@ -1648,6 +1648,57 @@ impl App {
         false
     }
 
+    /// The cursor for what is under the mouse: a target reticle while a
+    /// Friend/Trade pick waits, the bright arrow over clickable things, else
+    /// the arrow.
+    fn wanted_cursor(&self) -> cursors::GameCursor {
+        use cursors::GameCursor;
+        match self.target_pick {
+            Some(TargetPick::Friend) => return GameCursor::PickFriend,
+            Some(TargetPick::Ignore) => return GameCursor::PickEnemy,
+            Some(TargetPick::Trade) => return GameCursor::PickTrade,
+            None => {}
+        }
+        if self.ground_loot_at_cursor().is_some() {
+            return GameCursor::Interact;
+        }
+        let Some(window) = &self.window else {
+            return GameCursor::Arrow;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let over_action_bar = hud::action_slot_at(viewport, self.cursor).is_some();
+        let over_context = self
+            .action_context_slot
+            .is_some_and(|slot| hud::action_context_option_at(viewport, self.cursor, slot).is_some());
+        let over_menu = self.choice_menu().is_some_and(|menu| menu.row_at(self.cursor).is_some());
+        if over_action_bar || over_context || over_menu {
+            GameCursor::Interact
+        } else {
+            GameCursor::Arrow
+        }
+    }
+
+    fn refresh_cursor(&mut self) {
+        let wanted = self.wanted_cursor();
+        if self.shown_cursor == Some(wanted) {
+            return;
+        }
+        let Some(window) = &self.window else {
+            return;
+        };
+        // Fall back to the system cursors if ours could not be created.
+        match self.cursors.get(&wanted) {
+            Some(cursor) => window.set_cursor(cursor.clone()),
+            None => window.set_cursor(match wanted {
+                cursors::GameCursor::Arrow => CursorIcon::Default,
+                cursors::GameCursor::Interact => CursorIcon::Pointer,
+                _ => CursorIcon::Crosshair,
+            }),
+        }
+        self.shown_cursor = Some(wanted);
+    }
+
     /// The open choice menu: the kill modes or a player's Shift+click menu.
     fn choice_menu(&self) -> Option<shop::ChoiceMenu> {
         if self.pk_menu_open {
@@ -1769,6 +1820,14 @@ impl App {
         };
         network.send_team(action, target_id);
         self.network_status = format!("online: team action {action} target {target_id}");
+    }
+
+    /// The name of an actor on screen, or empty when it is not known.
+    fn actor_name(&self, id: u32) -> String {
+        self.remote_actors
+            .get(&id)
+            .map(|actor| actor.name.clone())
+            .unwrap_or_default()
     }
 
     fn selected_player_target(&self) -> Option<(u32, String)> {
@@ -2293,6 +2352,7 @@ impl App {
             } => match subtype {
                 1 => {
                     self.trade.pending_request = Some(target_id);
+                    self.trade.peer_name = self.actor_name(target_id);
                     self.trade.active = false;
                     self.quick_panel = Some(shop::QuickPanel::Trade);
                     self.network_status = format!("online: trade request from {target_id}");
@@ -2301,6 +2361,7 @@ impl App {
                     self.trade = network::TradeView {
                         active: true,
                         peer_id: Some(target_id),
+                        peer_name: self.actor_name(target_id),
                         ..Default::default()
                     };
                     self.pending_trade_items.clear();
@@ -6137,6 +6198,8 @@ fn run() -> Result<()> {
         item_context: None,
         target_pick: None,
         pending_friend_request: None,
+        cursors: HashMap::new(),
+        shown_cursor: None,
         player_menu: None,
         follow_target: None,
         pk_menu_open: false,

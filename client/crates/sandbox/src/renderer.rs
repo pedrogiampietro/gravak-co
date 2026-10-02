@@ -1017,6 +1017,27 @@ impl Renderer {
         _time: f32,
         draws: &mut Vec<Draw>,
     ) {
+        self.push_character_preview(
+            assets,
+            character,
+            [panel[0] + 128.0, panel[1] + 82.0],
+            [80.0, 230.0],
+            viewport,
+            draws,
+        );
+    }
+
+    /// Draws `character` standing, its body `size` ([max width, height])
+    /// pixels and centred under `top_center`, like the status paper doll.
+    fn push_character_preview(
+        &mut self,
+        assets: &mut Assets,
+        character: &Character,
+        top_center: [f32; 2],
+        size: [f32; 2],
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
         let facing = -std::f32::consts::FRAC_PI_4;
         let facing_sector = (facing / std::f32::consts::FRAC_PI_4).round() as i8;
         let signature = appearance_signature(character);
@@ -1060,9 +1081,8 @@ impl Renderer {
         // Height drives the scale, as in the original paper doll; the width
         // cap only matters for unusually wide bodies. Scaling by width made
         // slim bodies blow up past the panel.
-        let scale = (230.0 / height).min(80.0 / width);
-        let center_x = panel[0] + 128.0;
-        let top = panel[1] + 82.0;
+        let scale = (size[1] / height).min(size[0] / width);
+        let [center_x, top] = top_center;
         for (part, pose) in character.parts.iter().zip(poses) {
             self.texture(assets, &part.texture);
             let triangles = part
@@ -3004,6 +3024,7 @@ impl Renderer {
             pending_guild_invite.hash(&mut hasher);
             trade.active.hash(&mut hasher);
             trade.peer_id.hash(&mut hasher);
+            trade.peer_name.hash(&mut hasher);
             trade.pending_request.hash(&mut hasher);
             trade.own_items.hash(&mut hasher);
             trade.peer_items.hash(&mut hasher);
@@ -3070,6 +3091,46 @@ impl Renderer {
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
+            }
+            // Beside the trade window: who the trade is with.
+            if panel == crate::shop::QuickPanel::Trade
+                && let Some(peer) = trade.peer_id.or(trade.pending_request)
+            {
+                let actor = remote_actors.get(&peer);
+                let name = if trade.peer_name.is_empty() {
+                    actor.map_or_else(|| peer.to_string(), |actor| actor.name.clone())
+                } else {
+                    trade.peer_name.clone()
+                };
+                let level = actor.map(|actor| actor.level).filter(|level| *level > 0);
+                let key = format!("@trade-partner-{name}-{level:?}");
+                if !self.textures.contains_key(&key) {
+                    self.upload(
+                        &key,
+                        crate::original_panels::trade_partner_card(assets, &name, level)?,
+                    );
+                }
+                let [left, top] = crate::shop::quick_panel_position(viewport, panel);
+                let position = [left + crate::original_panels::TRADE_WIDTH + 6.0, top];
+                if let Some(texture) = self.textures.get(&key) {
+                    draws.push(Draw {
+                        texture: key,
+                        vertices: quad(position, texture.size, viewport),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
+                if let Some(model) = remote_models.get(&peer) {
+                    let [top_center, size] = crate::original_panels::TRADE_PARTNER_MODEL;
+                    self.push_character_preview(
+                        assets,
+                        model,
+                        [position[0] + top_center[0], position[1] + top_center[1]],
+                        size,
+                        viewport,
+                        &mut draws,
+                    );
+                }
             }
         }
         if let Some(shop) = shop {
@@ -3530,7 +3591,7 @@ impl Renderer {
             let hovered = menu.row_at(cursor);
             let key = format!("@choice-menu-{:?}-{hovered:?}", (&menu.title, &menu.labels, menu.marked));
             if !self.textures.contains_key(&key) {
-                self.upload(&key, menu.image(hovered)?);
+                self.upload(&key, menu.image(assets, hovered)?);
             }
             if let Some(texture) = self.textures.get(&key) {
                 draws.push(Draw {

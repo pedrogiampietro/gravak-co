@@ -4224,10 +4224,12 @@ pub fn item_context_image(
 /// free PK, peace (monsters only), team and capture (black names only).
 pub const KILL_MODES: [&str; 4] = ["PK", "PEACE", "TEAM", "CAPTURE"];
 
-const CHOICE_MENU_WIDTH: f32 = 150.0;
+const CHOICE_MENU_WIDTH: f32 = crate::original_panels::FRAMED_WIDTH as f32;
+const CHOICE_MENU_HEADER: f32 = crate::original_panels::FRAMED_TOP as f32 + 4.0;
+const CHOICE_MENU_ROW: f32 = 26.0;
 
-/// A small list of choices drawn like the item action menu: the kill-mode
-/// menu above Capture and the Shift+click player menu.
+/// A small list of choices in the friend dialog's art: the kill-mode menu
+/// above Capture and the Shift+click player menu.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChoiceMenu {
     pub title: String,
@@ -4239,8 +4241,13 @@ pub struct ChoiceMenu {
 }
 
 impl ChoiceMenu {
+    fn inner(rows: usize) -> f32 {
+        rows.max(1) as f32 * CHOICE_MENU_ROW + 8.0
+    }
+
     fn height(rows: usize) -> f32 {
-        ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * rows.max(1) as f32
+        (crate::original_panels::FRAMED_TOP + crate::original_panels::FRAMED_BOTTOM) as f32
+            + Self::inner(rows)
     }
 
     /// The kill-mode menu, opened above the Capture button.
@@ -4251,7 +4258,7 @@ impl ChoiceMenu {
         );
         let height = Self::height(KILL_MODES.len());
         Self {
-            title: "PK MODE".into(),
+            title: "PK Mode".into(),
             labels: KILL_MODES.to_vec(),
             marked: Some(usize::from(current)),
             position: [
@@ -4283,90 +4290,93 @@ impl ChoiceMenu {
             && cursor[1] < top + Self::height(self.labels.len())
     }
 
+    fn row_rect(row: usize) -> [i32; 4] {
+        let [left, right] = crate::original_panels::FRAMED_LIST_X;
+        [
+            left,
+            (CHOICE_MENU_HEADER + row as f32 * CHOICE_MENU_ROW) as i32,
+            right - left,
+            CHOICE_MENU_ROW as i32,
+        ]
+    }
+
     /// The row under the cursor, if any.
     pub fn row_at(&self, cursor: [f32; 2]) -> Option<usize> {
         let [left, top] = self.position.map(|value| value as f32);
-        if !self.contains(cursor) || cursor[1] < top + ITEM_CONTEXT_HEADER_HEIGHT || cursor[0] < left {
-            return None;
-        }
-        let row = ((cursor[1] - top - ITEM_CONTEXT_HEADER_HEIGHT) / ITEM_CONTEXT_ROW_HEIGHT).floor()
-            as usize;
-        (row < self.labels.len()).then_some(row)
+        let local = [cursor[0] - left, cursor[1] - top];
+        (0..self.labels.len()).find(|&row| {
+            let [x, y, width, height] = Self::row_rect(row).map(|value| value as f32);
+            local[0] >= x && local[0] < x + width && local[1] >= y && local[1] < y + height
+        })
     }
 
-    pub fn image(&self, hovered: Option<usize>) -> Result<RgbaImage> {
-        let font = labels::font()?;
-        let mut image = RgbaImage::from_pixel(
-            CHOICE_MENU_WIDTH as u32,
-            Self::height(self.labels.len()) as u32,
-            Rgba([4, 10, 14, 252]),
-        );
-        let width = image.width();
-        let height = image.height();
-        ui_theme::fill(
-            &mut image,
-            UiRect::new(1, 1, width as i32 - 2, ITEM_CONTEXT_HEADER_HEIGHT as i32),
-            [10, 30, 40, 255],
-        );
-        rect_outline(&mut image, 0, 0, width, height, Rgba([226, 185, 77, 255]));
-        labels::text_sized(
-            &mut image,
-            &font,
-            &[(self.title.as_str(), ui_theme::TEXT_GOLD)],
-            [12.0, 9.0],
-            10.0,
-        );
-        for (index, label) in self.labels.iter().enumerate() {
-            let top = (ITEM_CONTEXT_HEADER_HEIGHT + index as f32 * ITEM_CONTEXT_ROW_HEIGHT) as u32;
-            let row_rect = UiRect::new(
-                4,
-                top as i32 + 2,
-                width as i32 - 8,
-                ITEM_CONTEXT_ROW_HEIGHT as i32 - 4,
-            );
-            let marked = self.marked == Some(index);
-            if hovered == Some(index) {
-                ui_theme::fill(&mut image, row_rect, [39, 67, 78, 255]);
-                ui_theme::outline(&mut image, row_rect, [222, 178, 66, 255]);
-            } else if index % 2 == 0 {
-                ui_theme::fill(&mut image, row_rect, [7, 19, 27, 230]);
+    pub fn image(&self, assets: &mut Assets, hovered: Option<usize>) -> Result<RgbaImage> {
+        use crate::original_panels::{LABEL_GOLD, label_centered};
+        let mut image = crate::original_panels::framed_panel(assets, Self::inner(self.labels.len()) as u32)?;
+        let center = (crate::original_panels::FRAMED_LIST_X[0] + crate::original_panels::FRAMED_LIST_X[1]) / 2;
+        label_centered(&mut image, &self.title, 14.0, center, 12, LABEL_GOLD);
+        for (row, label) in self.labels.iter().enumerate() {
+            let [x, y, width, height] = Self::row_rect(row);
+            let marked = self.marked == Some(row);
+            if hovered == Some(row) {
+                // The panels' gold highlight: a warm wash framed in gold.
+                crate::original_panels::fill(&mut image, [x, y + 1, width, height - 2], [120, 90, 30, 110]);
+                ui_theme::outline(&mut image, UiRect::new(x, y + 1, width, height - 2), [222, 178, 66, 255]);
+            } else if marked {
+                crate::original_panels::fill(&mut image, [x, y + 1, width, height - 2], [10, 40, 60, 150]);
             }
+            let colour = if hovered == Some(row) {
+                [255, 244, 214, 255]
+            } else if marked {
+                [255, 220, 120, 255]
+            } else {
+                LABEL_GOLD
+            };
+            label_centered(&mut image, label, 13.0, center, y + (height - 15) / 2, colour);
             if marked {
-                labels::text_sized(
-                    &mut image,
-                    &font,
-                    &[("*", ui_theme::TEXT_GOLD)],
-                    [14.0, top as f32 + 9.0],
-                    10.0,
-                );
+                // A gold diamond beside the current choice.
+                let cy = y + height / 2;
+                for d in 0..4 {
+                    for px in (x + 8 - d)..=(x + 8 + d) {
+                        for py in [cy - (3 - d), cy + (3 - d)] {
+                            if px >= 0 && py >= 0 && (px as u32) < image.width() && (py as u32) < image.height() {
+                                image.put_pixel(px as u32, py as u32, Rgba([255, 214, 102, 255]));
+                            }
+                        }
+                    }
+                }
             }
-            labels::text_sized(
-                &mut image,
-                &font,
-                &[(
-                    label,
-                    if hovered == Some(index) || marked {
-                        ui_theme::TEXT
-                    } else {
-                        ui_theme::TEXT_MUTED
-                    },
-                )],
-                [32.0, top as f32 + 9.0],
-                10.0,
-            );
         }
         Ok(image)
     }
 }
 
 /// A one-line notice drawn at the top of the screen, such as "click a
-/// player" while a Friend/Trade button waits for its target.
+/// player" while a Friend/Trade button waits for its target: the panels'
+/// gold label on a dark band with gold rules.
 pub fn notice_image(text: &str) -> Result<RgbaImage> {
-    let font = labels::font()?;
-    let width = (text.chars().count() as u32 * 8 + 32).clamp(160, 640);
-    let mut image = RgbaImage::from_pixel(width, 30, Rgba([4, 10, 14, 235]));
-    rect_outline(&mut image, 0, 0, width, 30, Rgba([226, 185, 77, 255]));
-    labels::text_sized(&mut image, &font, &[(text, ui_theme::TEXT_GOLD)], [16.0, 9.0], 11.0);
+    let font = crate::main_hud::label_font()?;
+    let text_width = crate::main_hud::text_width(font, text, 14.0).max(0) as u32;
+    let width = (text_width + 48).clamp(160, 900);
+    let mut image = RgbaImage::from_pixel(width, 32, Rgba([8, 22, 32, 225]));
+    for x in 0..width {
+        let fade = (x.min(width - 1 - x) as f32 / 40.0).min(1.0);
+        let alpha = (fade * 255.0) as u8;
+        image.put_pixel(x, 0, Rgba([222, 178, 66, alpha]));
+        image.put_pixel(x, 31, Rgba([222, 178, 66, alpha]));
+        for y in 1..31 {
+            let pixel = image.get_pixel_mut(x, y);
+            pixel.0[3] = (f32::from(pixel.0[3]) * fade) as u8;
+        }
+    }
+    crate::main_hud::crisp_text(
+        &mut image,
+        font,
+        text,
+        14.0,
+        [((width - text_width) / 2) as i32, 8],
+        crate::original_panels::LABEL_GOLD,
+    );
     Ok(image)
 }
 
@@ -7187,14 +7197,17 @@ mod icon_tests {
         // Opened near the bottom-right corner, it moves back inside.
         let menu = super::ChoiceMenu::at(viewport, [1020.0, 760.0], "x".into(), vec!["A", "B", "C"]);
         let [left, top] = menu.position.map(|value| value as f32);
-        assert!(left + 150.0 <= viewport[0] && top + 30.0 + 3.0 * 34.0 <= viewport[1]);
-        assert_eq!(menu.row_at([left + 20.0, top + 12.0]), None);
+        let height = 40.0 + 3.0 * 26.0 + 8.0 + 20.0;
+        assert!(left + 208.0 <= viewport[0] && top + height <= viewport[1]);
+        assert_eq!(menu.row_at([left + 90.0, top + 12.0]), None);
         for row in 0..3 {
-            let y = top + 30.0 + row as f32 * 34.0 + 17.0;
-            assert_eq!(menu.row_at([left + 40.0, y]), Some(row));
+            let y = top + 44.0 + row as f32 * 26.0 + 13.0;
+            assert_eq!(menu.row_at([left + 90.0, y]), Some(row));
         }
-        assert_eq!(menu.row_at([left - 5.0, top + 47.0]), None);
-        assert!(!menu.contains([left + 40.0, top + 30.0 + 3.0 * 34.0 + 1.0]));
+        // The frame beside the rows is not a row.
+        assert_eq!(menu.row_at([left + 5.0, top + 57.0]), None);
+        assert!(menu.contains([left + 5.0, top + 57.0]));
+        assert!(!menu.contains([left + 90.0, top + height + 1.0]));
         let modes = super::ChoiceMenu::kill_modes(viewport, 1);
         assert_eq!((modes.labels.len(), modes.marked), (4, Some(1)));
     }
