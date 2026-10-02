@@ -488,7 +488,7 @@ const TRADE_PEER_GRID: [i32; 2] = [21, 57];
 const TRADE_OWN_GRID: [i32; 2] = [21, 168];
 const TRADE_SLOT_STEP: i32 = 43;
 const TRADE_SLOT: i32 = 40;
-const TRADE_SLOTS: usize = 6;
+pub const TRADE_SLOTS: usize = 6;
 const TRADE_OWN_SILVER: [i32; 4] = [211, 187, 88, 16];
 const TRADE_OWN_CPS: [i32; 4] = [211, 210, 88, 16];
 
@@ -524,8 +524,9 @@ fn trade_controls(
             ));
         }
         controls.extend([
-            // [137-1570] own silver, [137-1573] own CPs and [137-1145]
-            // "confirm amount".
+            // [137-1570] own silver and [137-1573] own CPs. The typed amounts
+            // are sent on Enter, when the box loses focus and on Agree, so the
+            // original "confirm amount" button ([137-1145]) is left out.
             control(
                 TRADE_OWN_SILVER,
                 Face::Label(""),
@@ -535,11 +536,6 @@ fn trade_controls(
                 TRADE_OWN_CPS,
                 Face::Label(""),
                 Some(A::EditAmount(TradeAmount::Cps)),
-            ),
-            control(
-                [186, 236, 64, 22],
-                Face::Art("data/main/AgreeBtn.dds"),
-                Some(A::CommitAmounts),
             ),
             // [137-1139] agree and [137-1571] cancel.
             control([112, 261, 62, 20], Face::Label("Agree"), Some(A::Confirm)),
@@ -578,12 +574,6 @@ pub fn trade_action_at(
         ),
         local(QuickPanel::Trade, viewport, cursor)?,
     )
-}
-
-/// Dropping an inventory item on the own grid ([137-1141]) offers it.
-pub fn trade_drop_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    local(QuickPanel::Trade, viewport, cursor)
-        .is_some_and(|point| inside([20, 167, 128, 86], point))
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,10 +1102,6 @@ mod tests {
             ),
             Some(TradePanelAction::AddItem)
         );
-        assert!(trade_drop_at(
-            viewport,
-            at(QuickPanel::Trade, [20, 167, 128, 86])
-        ));
         assert_eq!(
             trade_action_at(viewport, at(QuickPanel::Trade, TRADE_OWN_SILVER), &trade),
             Some(TradePanelAction::EditAmount(TradeAmount::Silver))
@@ -1123,10 +1109,6 @@ mod tests {
         assert_eq!(
             trade_action_at(viewport, at(QuickPanel::Trade, TRADE_OWN_CPS), &trade),
             Some(TradePanelAction::EditAmount(TradeAmount::Cps))
-        );
-        assert_eq!(
-            trade_action_at(viewport, at(QuickPanel::Trade, [186, 236, 64, 22]), &trade),
-            Some(TradePanelAction::CommitAmounts)
         );
         assert!(!is_original(QuickPanel::Market));
     }

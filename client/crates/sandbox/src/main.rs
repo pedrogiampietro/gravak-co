@@ -367,6 +367,11 @@ struct App {
     active_skill: Option<u32>,
     team_members: Vec<network::TeamMember>,
     team_leader_id: Option<u32>,
+    /// Teammates' last reported map and cell (MsgAction 106), for their
+    /// minimap pins when they are off screen.
+    team_positions: HashMap<u32, (u32, [i32; 2])>,
+    /// When the teammates' positions were last asked for.
+    team_positions_polled: f32,
     pending_team_invite: Option<u32>,
     pending_team_join_request: Option<u32>,
     team_join_enabled: bool,
@@ -781,7 +786,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if self.renderer.as_mut().is_some_and(|renderer| {
-                    renderer.minimap_pointer(self.cursor, state == ElementState::Pressed)
+                    renderer.minimap_pointer(self.cursor)
                 }) {
                     self.held = false;
                     return;
@@ -834,6 +839,11 @@ impl ApplicationHandler for App {
                         self.status_open = false;
                         self.inventory_open = false;
                     }
+                    PhysicalKey::Code(KeyCode::Escape)
+                        if self
+                            .renderer
+                            .as_mut()
+                            .is_some_and(renderer::Renderer::collapse_minimap) => {}
                     PhysicalKey::Code(KeyCode::Escape) if self.inventory_open => {
                         self.inventory_open = false;
                     }
@@ -956,6 +966,7 @@ impl ApplicationHandler for App {
                 let notice = self.target_pick.map(TargetPick::notice);
                 let prompt = self.prompt();
                 let hovered_player = self.hovered_player();
+                let team_pins = self.team_pins();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -966,6 +977,7 @@ impl ApplicationHandler for App {
                         &skill_hud,
                         &self.team_members,
                         self.team_leader_id,
+                        &team_pins,
                         self.pending_team_invite,
                         self.pending_team_join_request,
                         self.team_join_enabled,
@@ -1064,6 +1076,12 @@ impl ApplicationHandler for App {
         for event in events {
             self.handle_network_event(event);
         }
+        self.poll_team_positions();
+        // Closing the trade window by any means (its X, Escape, another
+        // panel) cancels the trade, so the partner's window closes too.
+        if self.trade.active && self.quick_panel != Some(shop::QuickPanel::Trade) {
+            self.handle_trade_panel_action(shop::TradePanelAction::Cancel);
+        }
         self.poll_remote_model_loader();
         // Interpolate remote movement between server walk packets. The server
         // sends tile steps; rendering the whole step immediately makes mobs
@@ -1159,6 +1177,10 @@ impl App {
                                 model.guild_rank = self.character.guild_rank.clone();
                                 model.maximum_health =
                                     self.character.maximum_health.max(model.maximum_health);
+                                // The model was built from an appearance packet
+                                // that may predate the latest hit; life comes
+                                // from MsgUserInfo, so the HUD orb keeps it.
+                                model.health = self.character.health;
                                 self.character = model;
                                 self.renderer
                                     .as_mut()
@@ -1470,8 +1492,12 @@ impl App {
             }
             if self.quick_panel == Some(shop::QuickPanel::Trade) {
                 let action = shop::trade_panel_action_at(viewport, self.cursor, &self.trade);
-                if !matches!(action, Some(shop::TradePanelAction::EditAmount(_))) {
+                // Leaving an amount box sends what was typed in it.
+                if self.trade.editing.is_some()
+                    && !matches!(action, Some(shop::TradePanelAction::EditAmount(_)))
+                {
                     self.trade.editing = None;
+                    self.commit_trade_amounts();
                 }
                 if let Some(action) = action {
                     self.handle_trade_panel_action(action);
@@ -1585,7 +1611,7 @@ impl App {
                 0 => {
                     self.status_open = !self.status_open;
                     self.inventory_open = false;
-                    self.quick_panel = None;
+                    self.close_quick_panel_unless_trading();
                 }
                 // Trade, as in the original client, turns the cursor into a
                 // trade request: the next player clicked is asked. An open
@@ -1609,7 +1635,7 @@ impl App {
                 }
                 1 => {
                     self.inventory_open = !self.inventory_open;
-                    self.quick_panel = None;
+                    self.close_quick_panel_unless_trading();
                     if !self.inventory_open {
                         self.selected_inventory_uid = None;
                     }
@@ -1737,6 +1763,69 @@ impl App {
         if !self.inventory_open {
             self.inventory_open = true;
             self.trade_opened_inventory = true;
+        }
+    }
+
+    /// Asks the server once a second where the teammates are, so their
+    /// minimap pins follow them beyond the screen.
+    fn poll_team_positions(&mut self) {
+        let now = self.started.elapsed().as_secs_f32();
+        if self.team_members.is_empty() || now - self.team_positions_polled < 1.0 {
+            return;
+        }
+        self.team_positions_polled = now;
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            return;
+        };
+        for member in &self.team_members {
+            if member.member_id != character_id {
+                network.query_team_member(character_id, member.member_id);
+            }
+        }
+    }
+
+    /// Minimap pins of the teammates on this map, where the server last
+    /// placed them. A teammate drawn nearby is pinned where it is drawn, so
+    /// the pin glides with it; an actor left behind when the teammate went
+    /// off screen is stale, and no longer near the reported cell.
+    fn team_pins(&self) -> Vec<minimap::TeamPin> {
+        self.team_members
+            .iter()
+            .filter(|member| Some(member.member_id) != self.network_character_id)
+            .filter_map(|member| {
+                let reported = self
+                    .team_positions
+                    .get(&member.member_id)
+                    .filter(|(map_id, _)| *map_id == self.map.id)
+                    .map(|(_, position)| position.map(|value| value as f32));
+                let drawn = self.remote_actors.get(&member.member_id).map(|actor| actor.position);
+                let position = match (reported, drawn) {
+                    (Some(reported), Some(drawn))
+                        if (reported[0] - drawn[0]).abs() <= 3.0
+                            && (reported[1] - drawn[1]).abs() <= 3.0 =>
+                    {
+                        Some(drawn)
+                    }
+                    (Some(reported), _) => Some(reported),
+                    (None, drawn) => drawn,
+                }?;
+                Some(minimap::TeamPin {
+                    position,
+                    name: if member.name.is_empty() {
+                        member.member_id.to_string()
+                    } else {
+                        member.name.clone()
+                    },
+                })
+            })
+            .collect()
+    }
+
+    /// The inventory and character buttons close the open quick panel,
+    /// except an active trade's, which the inventory works alongside.
+    fn close_quick_panel_unless_trading(&mut self) {
+        if !(self.trade.active && self.quick_panel == Some(shop::QuickPanel::Trade)) {
+            self.quick_panel = None;
         }
     }
 
@@ -2317,7 +2406,6 @@ impl App {
                     *input = offered.to_string();
                 }
             }
-            shop::TradePanelAction::CommitAmounts => self.commit_trade_amounts(),
             shop::TradePanelAction::Confirm => {
                 let Some(target_id) = self.trade.peer_id else {
                     return;
@@ -2531,6 +2619,17 @@ impl App {
                     _ => {}
                 }
                 self.network_status = format!("online: team action {action} target {target_id}");
+            }
+            NetworkEvent::TeamMemberPosition {
+                id,
+                map_id,
+                position,
+            } => {
+                if map_id == 0 {
+                    self.team_positions.remove(&id);
+                } else {
+                    self.team_positions.insert(id, (map_id, position));
+                }
             }
             NetworkEvent::TeamMember { member, action } => {
                 if action == 0 {
@@ -3141,12 +3240,11 @@ impl App {
                         110
                     };
                     actor.step_right = !actor.step_right;
-                    actor.animation_until = self.started.elapsed().as_secs_f32()
-                        + if movement_type == 1 {
-                            1.0 / 6.0
-                        } else {
-                            1.0 / 3.0
-                        };
+                    // Each step plays its half of the walk cycle from the
+                    // start; without this the progress came out at 1.0 and
+                    // the actor slid along frozen on the last frame.
+                    actor.animation_started = now;
+                    actor.animation_until = actor.movement_until;
                     self.network_status =
                         format!("online: actor {id} moved dir {direction} type {movement_type}");
                 }
@@ -3636,7 +3734,7 @@ impl App {
             previous_predicted.map(|value| value as f32),
             current_cell.map(|value| value as f32),
         );
-        network.send_walk(character_id, direction);
+        network.send_walk(character_id, direction, self.player.running);
         self.pending_network_steps.push_back(current_cell);
         self.network_status = format!("online: sending walk dir {direction}");
     }
@@ -3743,6 +3841,9 @@ impl App {
             self.shop = None;
         }
         let monster = training_goal || (!npc && (400001..=499999).contains(&id));
+        // Ctrl+click attacks another player, as in the original client; the
+        // server decides by the kill modes whether the hit lands.
+        let player_attack = !npc && !monster && self.modifiers.control_key();
         let kind = if npc {
             "npc"
         } else if monster {
@@ -3754,7 +3855,7 @@ impl App {
         if npc && let Some(network) = &self.network {
             network.send_npc_interact(id, npc_kind);
         }
-        if monster {
+        if monster || player_attack {
             self.pending_pickup = None;
             self.pending_skill_attack = None;
             self.selected_target = Some(id);
@@ -3875,6 +3976,11 @@ impl App {
             self.pending_attack = None;
             return;
         };
+        // A fallen player stays on the ground; stop hitting it.
+        if !target.npc && target.health == 0 && target.maximum_health > 0 {
+            self.pending_attack = None;
+            return;
+        }
         let target_cell = target.position.map(|value| value.round() as i32);
         let distance = motion_math::cell_distance(self.player.position, target.position);
         if distance <= 2.0 && self.pending_network_steps.is_empty() {
@@ -3940,6 +4046,7 @@ impl App {
             bar_open: self.skill_bar_open,
             active_skill: self.active_skill,
             kill_count: self.kill_count,
+            kill_mode: self.kill_mode,
             hovered: None,
         }
     }
@@ -3957,7 +4064,17 @@ impl App {
             return false;
         }
         if skill.requires_target {
-            let Some(target) = self.monster_at_cursor().or(self.selected_target) else {
+            // Ctrl aims the skill at a player under the cursor too.
+            let player = self
+                .modifiers
+                .control_key()
+                .then(|| self.player_at_cursor())
+                .flatten();
+            let Some(target) = self
+                .monster_at_cursor()
+                .or(player)
+                .or(self.selected_target)
+            else {
                 self.network_status = format!("selecione um monstro para usar {}", skill.name);
                 return true;
             };
@@ -4569,7 +4686,7 @@ impl App {
             let size = window.inner_size();
             let viewport = [size.width as f32, size.height as f32];
             debug_log::write(format_args!(
-                "begin standalone inventory: cursor=({:.1},{:.1}) viewport=({:.0},{:.0}) open={} panel_at={} close_at={} filter={:?} slot={:?}",
+                "begin standalone inventory: cursor=({:.1},{:.1}) viewport=({:.0},{:.0}) open={} panel_at={} close_at={} slot={:?}",
                 self.cursor[0],
                 self.cursor[1],
                 viewport[0],
@@ -4577,7 +4694,6 @@ impl App {
                 self.inventory_open,
                 shop::inventory_panel_at(viewport, self.cursor),
                 shop::inventory_close_at(viewport, self.cursor),
-                shop::inventory_filter_at(viewport, self.cursor),
                 shop::inventory_slot_at(viewport, self.cursor),
             ));
             if !self.inventory_open || !shop::inventory_panel_at(viewport, self.cursor) {
@@ -4592,12 +4708,6 @@ impl App {
             }
             if shop::inventory_organize_at(viewport, self.cursor) {
                 self.organize_inventory();
-                return true;
-            }
-            if let Some(filter) = shop::inventory_filter_at(viewport, self.cursor) {
-                debug_log::write(format_args!("begin handled by inventory filter {filter:?}"));
-                self.inventory_filter = filter;
-                self.selected_inventory_uid = None;
                 return true;
             }
             let item = shop::inventory_slot_at(viewport, self.cursor).and_then(|slot| {
@@ -4628,11 +4738,10 @@ impl App {
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
         debug_log::write(format_args!(
-            "begin modal inventory: cursor=({:.1},{:.1}) panel_at={} filter={:?} slot={:?} warehouse={} shop={}",
+            "begin modal inventory: cursor=({:.1},{:.1}) panel_at={} slot={:?} warehouse={} shop={}",
             self.cursor[0],
             self.cursor[1],
             shop::inventory_panel_at(viewport, self.cursor),
-            shop::inventory_filter_at(viewport, self.cursor),
             shop::inventory_slot_at(viewport, self.cursor),
             self.warehouse.is_some(),
             self.shop.is_some(),
@@ -4642,11 +4751,6 @@ impl App {
         }
         if shop::inventory_organize_at(viewport, self.cursor) {
             self.organize_inventory();
-            return true;
-        }
-        if let Some(filter) = shop::inventory_filter_at(viewport, self.cursor) {
-            self.inventory_filter = filter;
-            self.selected_inventory_uid = None;
             return true;
         }
         if let Some(slot) = shop::inventory_slot_at(viewport, self.cursor) {
@@ -5505,8 +5609,12 @@ impl App {
             }
             return true;
         }
-        if self.quick_panel == Some(shop::QuickPanel::Trade)
-            && shop::trade_panel_drop_at(viewport, self.cursor, self.trade.active)
+        // During a trade the whole trade window takes the item, and a release
+        // anywhere else outside the inventory is refused: falling through to
+        // the ground drop below threw offered items on the floor.
+        if self.trade.active
+            && self.quick_panel == Some(shop::QuickPanel::Trade)
+            && shop::quick_panel_at(viewport, self.cursor, shop::QuickPanel::Trade)
         {
             if self
                 .trade
@@ -5515,6 +5623,10 @@ impl App {
                 .any(|offered| offered.uid == item.uid)
             {
                 self.network_status = "este item já está na oferta".into();
+                return true;
+            }
+            if self.trade.own_items.len() >= original_panels::TRADE_SLOTS {
+                self.network_status = "a oferta do trade está cheia".into();
                 return true;
             }
             let Some(network) = &self.network else {
@@ -5529,6 +5641,10 @@ impl App {
                 "online: item {} oferecido por drag-and-drop",
                 item.item_type
             );
+            return true;
+        }
+        if self.trade.active && !shop::inventory_panel_at(viewport, self.cursor) {
+            self.network_status = "solte o item na janela de trade (ou cancele o trade)".into();
             return true;
         }
         if self.status_open
@@ -6378,6 +6494,7 @@ fn run() -> Result<()> {
             let quads = minimap.quads(
                 &map,
                 player.position,
+                &[],
                 [center[0] - 683.0, center[1] - 384.0],
                 [1366.0, 768.0],
             );
@@ -6546,6 +6663,8 @@ fn run() -> Result<()> {
         skill_bar_open: false,
         active_skill: None,
         team_members: Vec::new(),
+        team_positions: HashMap::new(),
+        team_positions_polled: f32::NEG_INFINITY,
         team_leader_id: None,
         pending_team_invite: None,
         pending_team_join_request: None,

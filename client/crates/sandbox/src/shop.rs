@@ -44,10 +44,9 @@ const INVENTORY_FILTER_Y: u32 = 44;
 const INVENTORY_FILTER_STEP_X: u32 = 42;
 const INVENTORY_FILTER_WIDTH: u32 = 40;
 const INVENTORY_FILTER_HEIGHT: u32 = 22;
-// Keep the action in the inventory header, but give it the same compact tab
-// treatment as the rest of the client-owned UI. It sits immediately before
-// the close button without competing with the centered window title.
-const INVENTORY_ORGANIZE_BUTTON: UiRect = UiRect::new(182, 8, 46, 24);
+// "Sort" takes the place of the original Help button ([153-1667]), across
+// from Close: it packs the items into the first slots, grouped by type.
+const INVENTORY_ORGANIZE_BUTTON: UiRect = UiRect::new(45, 447, 62, 20);
 const ITEMS_PER_PAGE: usize = 20;
 // GUI.ini [152-1105] Repair, [152-1667] Help and [152-1104] Close.
 const FOOTER_BUTTON_Y: f32 = 224.0;
@@ -631,8 +630,6 @@ pub enum TradePanelAction {
     RemoveOwnItem(usize),
     /// Focus the own silver or CP box.
     EditAmount(crate::network::TradeAmount),
-    /// Send the typed silver and CPs ([137-1145]).
-    CommitAmounts,
     Confirm,
     Cancel,
 }
@@ -694,10 +691,6 @@ pub fn trade_panel_action_at(
     trade: &crate::network::TradeView,
 ) -> Option<TradePanelAction> {
     crate::original_panels::trade_action_at(viewport, cursor, trade)
-}
-
-pub fn trade_panel_drop_at(viewport: [f32; 2], cursor: [f32; 2], active: bool) -> bool {
-    active && crate::original_panels::trade_drop_at(viewport, cursor)
 }
 
 pub fn player_shop_panel_action_at(
@@ -6326,7 +6319,25 @@ pub fn inventory_overlay_image(
 ) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(INVENTORY_WIDTH, INVENTORY_HEIGHT, Rgba([0, 0, 0, 0]));
     let font = crate::main_hud::font()?;
-    let _ = (filter, hovered_filter, organize_hovered);
+    let _ = (filter, hovered_filter);
+    let label_font = crate::main_hud::label_font()?;
+    let label = "Sort";
+    let label_width = crate::main_hud::text_width(label_font, label, 13.0);
+    crate::main_hud::crisp_text(
+        &mut image,
+        label_font,
+        label,
+        13.0,
+        [
+            INVENTORY_ORGANIZE_BUTTON.x + (INVENTORY_ORGANIZE_BUTTON.width - label_width) / 2,
+            INVENTORY_ORGANIZE_BUTTON.y + (INVENTORY_ORGANIZE_BUTTON.height - 15) / 2,
+        ],
+        if organize_hovered {
+            [255, 236, 170, 255]
+        } else {
+            [232, 206, 148, 255]
+        },
+    );
     if close_hovered {
         let [x, y, _, _] = INVENTORY_CLOSE_RECT;
         crate::original_ui::overlay_asset(
@@ -7617,7 +7628,8 @@ mod icon_tests {
             // The original Close button at the bottom ([153-1128]).
             assert!(inventory_close_at(viewport, [left + 200.0, top + 457.0]));
             assert!(!inventory_close_at(viewport, [left + 248.0, top + 26.0]));
-            assert!(inventory_organize_at(viewport, [left + 201.0, top + 20.0]));
+            assert!(inventory_organize_at(viewport, [left + 76.0, top + 457.0]));
+            assert!(!inventory_organize_at(viewport, [left + 201.0, top + 20.0]));
             for (index, filter) in InventoryFilter::ALL.into_iter().enumerate() {
                 assert_eq!(
                     inventory_filter_at(
