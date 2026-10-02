@@ -42,6 +42,13 @@ if /I "%~1"=="stop" goto stop
 if /I "%~1"=="status" goto status
 
 rem -- Start servers -----------------------------------------------
+rem A server left over from an earlier run holds its port, and the new one
+rem would exit with "address in use"; stop the old ones first.
+taskkill /IM auth-server.exe /F >nul 2>&1
+taskkill /IM game-server.exe /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq CoEmu - Auth Server*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq CoEmu - Game Server*" /F >nul 2>&1
+
 echo [1/2] Iniciando Auth Server...
 pushd "%SERVER_DIR%"
 rem cmd /k keeps the window open if the server exits, so its error stays visible.
