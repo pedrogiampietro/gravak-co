@@ -122,8 +122,12 @@ pub struct LoginUi {
     column_cache: std::cell::RefCell<
         std::collections::HashMap<(usize, crate::launcher_art::ColumnState, [i32; 4], usize, bool, i64), RgbaImage>,
     >,
-    /// The chosen hero's latest pose, by (body, class, size, tick).
-    chosen_hero: std::cell::RefCell<Option<((usize, usize, [u32; 2], i64), RgbaImage)>>,
+    /// The chosen hero's latest pose, by (body, class, size, tick, turn).
+    chosen_hero: std::cell::RefCell<Option<((usize, usize, [u32; 2], i64, i64), RgbaImage)>>,
+    /// How far the player has turned the chosen hero (radians), and the
+    /// drag in progress: where it started and the turn then.
+    turn: f32,
+    turning: Option<(f32, f32)>,
     /// Still renders of the heroes not selected, by (body, class).
     still_heroes: std::cell::RefCell<std::collections::HashMap<(usize, usize), RgbaImage>>,
 }
@@ -152,6 +156,8 @@ impl LoginUi {
             still_heroes: std::cell::RefCell::new(std::collections::HashMap::new()),
             column_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             chosen_hero: std::cell::RefCell::new(None),
+            turn: 0.0,
+            turning: None,
         };
         ui.show(Screen::Login);
         ui
@@ -838,6 +844,10 @@ impl LoginUi {
                 let [hx, hy] = art::column_hero_origin(*rect, hero.dimensions());
                 image::imageops::overlay(image, hero, i64::from(hx), i64::from(hy));
                 art::column_medallion(image, *rect, index, true);
+                // A hint until the hero has been turned once.
+                if self.turn == 0.0 && self.turning.is_none() {
+                    art::label(image, "‹  drag to turn  ›", 12.0, rect[0] + rect[2] / 2, rect[1] + 22, art::GOLD);
+                }
             }
         }
 
@@ -893,6 +903,36 @@ impl LoginUi {
         }
     }
 
+    /// A press on the chosen hero starts turning it; `true` when it did.
+    pub fn press(&mut self, size: [u32; 2], cursor: [f32; 2]) -> bool {
+        if self.screen != Screen::CreateCharacter || !self.heroes.contains_key(&(self.body, self.class)) {
+            return false;
+        }
+        let Some(&[x, y, w, h]) = self.layout(size).classes.get(self.class) else {
+            return false;
+        };
+        let point = [cursor[0] as i32, cursor[1] as i32];
+        if !inside([x, y, w, h * 56 / 100], point) {
+            return false;
+        }
+        self.turning = Some((cursor[0], self.turn));
+        true
+    }
+
+    /// Turns the hero while the button is held: a window's width is about
+    /// two turns.
+    pub fn drag(&mut self, cursor: [f32; 2]) -> bool {
+        let Some((start, turn)) = self.turning else {
+            return false;
+        };
+        self.turn = turn + (cursor[0] - start) * 0.012;
+        true
+    }
+
+    pub fn release(&mut self) {
+        self.turning = None;
+    }
+
     /// A profession's hero, loaded for one of the `BODIES`.
     pub fn add_hero(&mut self, body: usize, class: usize, hero: crate::showcase::Hero) {
         self.heroes.insert((body, class), hero);
@@ -907,17 +947,19 @@ impl LoginUi {
         let size = [(width - 28).max(1) as u32, (height * 56 / 100).max(1) as u32];
         let tall = size[1] as f32 * 0.86;
         if class == self.class {
-            // Twenty poses a second are plenty for breathing and turning.
+            // Twenty poses a second are plenty for breathing and turning;
+            // the player's own turn adds to the slow sway.
             let tick = (time * 20.0).floor();
+            let key = (self.body, class, size, tick as i64, (self.turn * 100.0) as i64);
             let mut latest = self.chosen_hero.borrow_mut();
-            if let Some((key, image)) = latest.as_ref()
-                && *key == (self.body, class, size, tick as i64)
+            if let Some((cached, image)) = latest.as_ref()
+                && *cached == key
             {
                 return Some(image.clone());
             }
             let pose_time = tick / 20.0;
-            let image = hero.render(size, tall, pose_time, (pose_time * 0.4).sin() * 0.7);
-            *latest = Some(((self.body, class, size, tick as i64), image.clone()));
+            let image = hero.render(size, tall, pose_time, (pose_time * 0.4).sin() * 0.7 + self.turn);
+            *latest = Some((key, image.clone()));
             return Some(image);
         }
         let mut stills = self.still_heroes.borrow_mut();
@@ -1137,6 +1179,9 @@ impl ApplicationHandler for Launcher {
             WindowEvent::ModifiersChanged(modifiers) => self.shift = modifiers.state().shift_key(),
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
+                if self.ui.drag(self.cursor) {
+                    self.redraw();
+                }
                 let hovered = self.ui.target_at(self.size(), self.cursor);
                 if hovered != self.ui.hovered {
                     self.ui.hovered = hovered;
@@ -1148,9 +1193,18 @@ impl ApplicationHandler for Launcher {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.ui.press(self.size(), self.cursor) {
+                    self.redraw();
+                    return;
+                }
                 let request = self.ui.click(self.size(), self.cursor);
                 self.run(request, event_loop);
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.ui.release(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 let request = self
                     .ui
