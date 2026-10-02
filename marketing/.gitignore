@@ -1,2 +1,0 @@
-# Generated pictures (client: cargo test --release -p conquer-sandbox marketing -- --ignored)
-*.png
