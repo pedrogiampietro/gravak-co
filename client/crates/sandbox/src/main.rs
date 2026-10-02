@@ -1964,7 +1964,7 @@ impl App {
                 }
                 self.start_jump(target);
             } else if self.modifiers.shift_key() {
-                self.player.face(target);
+                self.face_towards(target);
             } else {
                 self.player.go(&self.map, target);
             }
@@ -3109,6 +3109,24 @@ impl App {
         self.network_status = format!("online: sending walk dir {direction}");
     }
 
+    /// Turns the standing hero towards `target` and tells the server, which
+    /// turns it on the other players' screens too.
+    fn face_towards(&mut self, target: [i32; 2]) {
+        let facing = self.player.facing;
+        self.player.face(target);
+        if self.player.facing == facing {
+            return;
+        }
+        let current = self.confirmed_network_cell.unwrap_or(self.player.cell());
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            let direction = direction_towards(
+                current.map(|value| value as f32),
+                target.map(|value| value as f32),
+            );
+            network.send_facing(character_id, direction, current);
+        }
+    }
+
     fn start_jump(&mut self, target: [i32; 2]) {
         let current = self.player.cell();
         let Some(target) =
@@ -3236,7 +3254,7 @@ impl App {
         // the 1101 result; it does not drive the pickup animation through
         // ChangeAction.
         network.send_pickup_ground_item(uid, item_id, target[0] as u16, target[1] as u16);
-        self.player.face(target);
+        self.face_towards(target);
         self.player.action = Action::Pickup;
         self.player.action_instance = self.player.action_instance.wrapping_add(1);
         let now = self.started.elapsed().as_secs_f32();
@@ -3291,7 +3309,7 @@ impl App {
             {
                 let position = target_cell.map(|value| value as u16);
                 network.send_attack(character_id, target_id, position[0], position[1]);
-                self.player.face(target_cell);
+                self.face_towards(target_cell);
                 // Keep the local request cadence aligned with the equipped
                 // weapon while the server remains authoritative.
                 self.next_attack_at =
@@ -3562,7 +3580,7 @@ impl App {
             .insert(skill.id, now + skill.cooldown_seconds);
         self.pending_attack = None;
         if skill.requires_target {
-            self.player.face(target_cell);
+            self.face_towards(target_cell);
             self.network_status = format!("online: {} -> monster {target_id}", skill.name);
         } else {
             self.network_status = format!("online: {} ativada", skill.name);

@@ -415,6 +415,19 @@ impl ActionPacket {
         }
     }
 
+    /// MsgAction 79: the hero turned in place at `current` to `direction`
+    /// (MsgWalk convention).
+    pub fn change_facing(character_id: u32, direction: u8, current: [i32; 2]) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: pack_position(current),
+            details: u16::from(direction % 8),
+            action_type: 79,
+        }
+    }
+
     pub fn request_items(character_id: u32) -> Self {
         Self {
             client_timestamp: unix_timestamp(),

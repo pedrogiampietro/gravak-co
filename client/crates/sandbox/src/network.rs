@@ -362,6 +362,11 @@ enum NetworkCommand {
         target: [i32; 2],
         current: [i32; 2],
     },
+    Face {
+        character_id: u32,
+        direction: u8,
+        current: [i32; 2],
+    },
     Revive {
         character_id: u32,
     },
@@ -614,6 +619,14 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Jump {
             character_id,
             target,
+            current,
+        });
+    }
+
+    pub fn send_facing(&self, character_id: u32, direction: u8, current: [i32; 2]) {
+        let _ = self.commands.send(NetworkCommand::Face {
+            character_id,
+            direction,
             current,
         });
     }
@@ -1599,6 +1612,16 @@ async fn run(
                 }) => {
                     session
                         .send(&ActionPacket::jump(character_id, target, current))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Face {
+                    character_id,
+                    direction,
+                    current,
+                }) => {
+                    session
+                        .send(&ActionPacket::change_facing(character_id, direction, current))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
