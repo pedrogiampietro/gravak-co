@@ -44,7 +44,8 @@ if /I "%~1"=="status" goto status
 rem ── Start servers ───────────────────────────────────────────────
 echo [1/2] Iniciando Auth Server...
 pushd "%SERVER_DIR%"
-start "CoEmu - Auth Server" /MIN "%AUTH_EXE%"
+rem cmd /k keeps the window open if the server exits, so its error stays visible.
+start "CoEmu - Auth Server" /MIN cmd /k ""%AUTH_EXE%""
 popd
 
 rem Small delay to let the auth server bind its port
@@ -52,10 +53,28 @@ timeout /t 2 /nobreak >nul
 
 echo [2/2] Iniciando Game Server...
 pushd "%SERVER_DIR%"
-start "CoEmu - Game Server" /MIN "%GAME_EXE%"
+start "CoEmu - Game Server" /MIN cmd /k ""%GAME_EXE%""
 popd
 
-timeout /t 2 /nobreak >nul
+rem The game server loads the database and maps before binding its port.
+timeout /t 5 /nobreak >nul
+
+set "FAILED="
+tasklist /FI "IMAGENAME eq auth-server.exe" 2>nul | find /I "auth-server.exe" >nul || (
+    echo [ERRO] O Auth Server encerrou logo apos iniciar.
+    echo        Veja o erro na janela "CoEmu - Auth Server".
+    set "FAILED=1"
+)
+tasklist /FI "IMAGENAME eq game-server.exe" 2>nul | find /I "game-server.exe" >nul || (
+    echo [ERRO] O Game Server encerrou logo apos iniciar.
+    echo        Veja o erro na janela "CoEmu - Game Server".
+    set "FAILED=1"
+)
+if defined FAILED (
+    echo.
+    pause
+    exit /b 1
+)
 
 echo.
 echo   ┌─────────────────────────────────────────┐
@@ -85,6 +104,9 @@ taskkill /IM game-server.exe /F >nul 2>&1 && (
 ) || (
     echo   [--] Game Server nao estava rodando.
 )
+rem Close the console windows that hosted the servers.
+taskkill /FI "WINDOWTITLE eq CoEmu - Auth Server*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq CoEmu - Game Server*" /F >nul 2>&1
 echo.
 echo Servidores encerrados.
 goto :eof
