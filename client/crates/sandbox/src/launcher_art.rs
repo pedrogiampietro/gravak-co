@@ -894,6 +894,36 @@ pub fn overlay_faded(image: &mut RgbaImage, source: &RgbaImage, x: i32, y: i32, 
 
 /// A tall profession column: the illustration (or a lit emblem) above,
 /// the name, motto, description and skills below; dimmed unless chosen.
+/// A round dye swatch: the colour in a dark rim, ringed in gold when
+/// chosen and lit when hovered.
+pub fn swatch(image: &mut RgbaImage, centre: [i32; 2], radius: i32, colour: [u8; 3], chosen: bool, hovered: bool) {
+    let ring = if chosen { 4.0 } else if hovered { 2.5 } else { 1.5 };
+    let outer = radius as f32 + ring;
+    let reach = outer.ceil() as i32 + 1;
+    for dy in -reach..=reach {
+        for dx in -reach..=reach {
+            let d = ((dx * dx + dy * dy) as f32).sqrt();
+            let paint = if d <= radius as f32 - 1.0 {
+                // A little light from the top left.
+                let light = (1.0 - ((dx + 3) * (dx + 3) + (dy + 3) * (dy + 3)) as f32 / (radius * radius * 2) as f32).max(0.0) * 50.0;
+                [
+                    (f32::from(colour[0]) + light).min(255.0) as u8,
+                    (f32::from(colour[1]) + light).min(255.0) as u8,
+                    (f32::from(colour[2]) + light).min(255.0) as u8,
+                    255,
+                ]
+            } else if d <= radius as f32 {
+                [10, 14, 18, 255]
+            } else if d <= outer {
+                if chosen { GOLD_BRIGHT } else if hovered { GOLD } else { GOLD_DEEP }
+            } else {
+                continue;
+            };
+            blend(image, centre[0] + dx, centre[1] + dy, paint);
+        }
+    }
+}
+
 /// The emblem as a medallion at the hero's feet.
 const MEDAL: i32 = 54;
 

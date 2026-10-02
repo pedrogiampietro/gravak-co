@@ -83,6 +83,8 @@ pub enum Target {
     Button(Action),
     Body(usize),
     Class(usize),
+    /// A starter coat dye, an index into `showcase::DYES`.
+    Dye(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +119,12 @@ pub struct LoginUi {
     account: String,
     /// The professions' heroes by (body, class), as they finish loading.
     heroes: std::collections::HashMap<(usize, usize), crate::showcase::Hero>,
+    /// Each body in the starter coat by (body, dye), and the dyes' swatch
+    /// colours by (body, dye).
+    coats: std::collections::HashMap<(usize, usize), crate::showcase::Hero>,
+    coat_colours: std::collections::HashMap<(usize, usize), [u8; 3]>,
+    /// The starter coat's dye, an index into `showcase::DYES`.
+    pub dye: usize,
     /// The columns not chosen, painted once per (class, state, place, body,
     /// hero loaded, light tick).
     column_cache: std::cell::RefCell<
@@ -153,6 +161,9 @@ impl LoginUi {
             hovered: None,
             account: last_account.unwrap_or_default(),
             heroes: std::collections::HashMap::new(),
+            coats: std::collections::HashMap::new(),
+            coat_colours: std::collections::HashMap::new(),
+            dye: 0,
             still_heroes: std::cell::RefCell::new(std::collections::HashMap::new()),
             column_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             chosen_hero: std::cell::RefCell::new(None),
@@ -308,6 +319,7 @@ impl LoginUi {
                     name,
                     mesh: BODIES[self.body].1,
                     class: CLASSES[self.class].1,
+                    coat_dye: crate::showcase::DYES[self.dye],
                 }))
             }
             Action::Enter => {
@@ -348,6 +360,10 @@ impl LoginUi {
             }
             Target::Class(index) => {
                 self.class = index;
+                None
+            }
+            Target::Dye(dye) => {
+                self.dye = dye;
                 None
             }
             Target::Button(action) => self.activate(action),
@@ -720,6 +736,13 @@ impl LoginUi {
             classes.push(rect);
             targets.push((rect, Target::Class(index)));
         }
+        // The dye swatches sit on the chosen column, so they are hit first.
+        if let Some(&chosen) = classes.get(self.class) {
+            for (dye, [cx, cy], radius) in self.swatches(chosen).into_iter().rev() {
+                let reach = radius + 3;
+                targets.insert(0, ([cx - reach, cy - reach, reach * 2, reach * 2], Target::Dye(dye)));
+            }
+        }
         let row = bar[1] + 40;
         let name = [bar[0] + 28, row, 240, FIELD_HEIGHT];
         targets.push((name, Target::Field(0)));
@@ -849,6 +872,17 @@ impl LoginUi {
                     art::label(image, "‹  drag to turn  ›", 12.0, rect[0] + rect[2] / 2, rect[1] + 22, art::GOLD);
                 }
             }
+            if chosen {
+                let swatches = self.swatches(*rect);
+                if let Some(&(_, [cx, cy], _)) = swatches.first() {
+                    art::label(image, "Coat", 12.0, cx, cy - 30, art::GOLD);
+                }
+                for (dye, centre, radius) in swatches {
+                    let colour = self.coat_colours[&(self.body, dye)];
+                    let hovered = self.hovered == Some(Target::Dye(dye));
+                    art::swatch(image, centre, radius, colour, dye == self.dye, hovered);
+                }
+            }
         }
 
         let [bx, by, bw, bh] = layout.panel;
@@ -912,7 +946,8 @@ impl LoginUi {
             return false;
         };
         let point = [cursor[0] as i32, cursor[1] as i32];
-        if !inside([x, y, w, h * 56 / 100], point) {
+        // The dye swatches on the hero are clicks, not turns.
+        if !inside([x, y, w, h * 56 / 100], point) || matches!(self.target_at(size, cursor), Some(Target::Dye(_))) {
             return false;
         }
         self.turning = Some((cursor[0], self.turn));
@@ -933,16 +968,42 @@ impl LoginUi {
         self.turning = None;
     }
 
-    /// A profession's hero, loaded for one of the `BODIES`.
-    pub fn add_hero(&mut self, body: usize, class: usize, hero: crate::showcase::Hero) {
-        self.heroes.insert((body, class), hero);
+    /// A hero or a coat from the loading thread.
+    pub fn add_loaded(&mut self, loaded: crate::showcase::Loaded) {
+        match loaded {
+            crate::showcase::Loaded::Hero { body, class, hero } => {
+                self.heroes.insert((body, class), hero);
+            }
+            crate::showcase::Loaded::Coat { body, dye, hero, colour } => {
+                self.coats.insert((body, dye), hero);
+                self.coat_colours.insert((body, dye), colour);
+            }
+        }
+    }
+
+    /// The dye swatches on the chosen column, top to bottom, once the
+    /// body's coats have loaded: (dye, centre, radius).
+    fn swatches(&self, column: [i32; 4]) -> Vec<(usize, [i32; 2], i32)> {
+        let [x, y, w, _] = column;
+        (0..crate::showcase::DYES.len())
+            .filter(|dye| self.coat_colours.contains_key(&(self.body, *dye)))
+            .map(|dye| (dye, [x + w - 30, y + 48 + dye as i32 * 28], 10))
+            .collect()
     }
 
     /// The picture of profession `class` for its column: the chosen one
     /// breathes and turns slowly from side to side, the others stand still
     /// facing the camera.
     fn hero_image(&self, class: usize, column: [i32; 4], time: f32) -> Option<RgbaImage> {
-        let hero = self.heroes.get(&(self.body, class))?;
+        // The chosen profession wears the starter coat in its dye: what
+        // the new character will look like. The others show their gear.
+        let hero = if class == self.class {
+            self.coats
+                .get(&(self.body, self.dye))
+                .or_else(|| self.heroes.get(&(self.body, class)))?
+        } else {
+            self.heroes.get(&(self.body, class))?
+        };
         let [_, _, width, height] = column;
         let size = [(width - 28).max(1) as u32, (height * 56 / 100).max(1) as u32];
         let tall = size[1] as f32 * 0.86;
@@ -950,7 +1011,7 @@ impl LoginUi {
             // Twenty poses a second are plenty for breathing and turning;
             // the player's own turn adds to the slow sway.
             let tick = (time * 20.0).floor();
-            let key = (self.body, class, size, tick as i64, (self.turn * 100.0) as i64);
+            let key = (self.body, class * 16 + self.dye, size, tick as i64, (self.turn * 100.0) as i64);
             let mut latest = self.chosen_hero.borrow_mut();
             if let Some((cached, image)) = latest.as_ref()
                 && *cached == key
@@ -1084,7 +1145,7 @@ struct Launcher {
     /// Views of the game world arriving from `login_scenes`.
     scenes: std::sync::mpsc::Receiver<RgbaImage>,
     /// The professions' heroes arriving from `showcase`.
-    heroes: std::sync::mpsc::Receiver<(usize, usize, crate::showcase::Hero)>,
+    heroes: std::sync::mpsc::Receiver<crate::showcase::Loaded>,
 }
 
 impl Launcher {
@@ -1216,8 +1277,8 @@ impl ApplicationHandler for Launcher {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        while let Ok((body, class, hero)) = self.heroes.try_recv() {
-            self.ui.add_hero(body, class, hero);
+        while let Ok(loaded) = self.heroes.try_recv() {
+            self.ui.add_loaded(loaded);
         }
         while let Ok(view) = self.scenes.try_recv() {
             crate::launcher_art::add_scene(view, self.started.elapsed().as_secs_f32());
@@ -1356,7 +1417,9 @@ mod tests {
             Some(Request::Send(LoginCommand::CreateCharacter {
                 name: "Gravak".into(),
                 mesh: 2001,
-                class: 100
+                class: 100,
+                // No coat colour picked: the coat's own (dye 3).
+                coat_dye: 3
             }))
         );
         ui.handle_event(&LoginEvent::CharacterRejected(

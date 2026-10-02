@@ -21,6 +21,20 @@ pub const OUTFITS: [[u32; 4]; 4] = [
 ];
 const HAIR: u16 = 310;
 
+/// The coat every new character is given (any profession, level 1).
+pub const STARTER_COAT: u32 = 132_003;
+/// The dyes offered for it (the Tinter's 3..=9; 3 is its own colour).
+pub const DYES: [u8; 7] = [3, 4, 5, 6, 7, 8, 9];
+
+/// What the loading thread hands over.
+pub enum Loaded {
+    /// A profession's hero in its showcase outfit.
+    Hero { body: usize, class: usize, hero: Hero },
+    /// A body in the starter coat with dye `DYES[dye]`, and that coat's
+    /// colour for its swatch.
+    Coat { body: usize, dye: usize, hero: Hero, colour: [u8; 3] },
+}
+
 /// A model ready to draw: the character and the textures of its parts.
 pub struct Hero {
     character: Character,
@@ -48,6 +62,41 @@ impl Hero {
             .filter_map(|part| Some((part.texture.clone(), assets.image(&part.texture).ok()?)))
             .collect();
         Some(Self { character, textures })
+    }
+
+    /// `body` in the starter coat dyed `dye`, with nothing else worn: what
+    /// a new character looks like.
+    pub fn load_coat(assets: &mut Assets, body: u32, dye: u8) -> Option<Self> {
+        let armor = crate::character::dyed(STARTER_COAT, dye);
+        let character = Character::load_remote(assets, body, armor, 0, HAIR, 0, 0, String::new(), 1).ok()?;
+        let textures = character
+            .parts
+            .iter()
+            .filter_map(|part| Some((part.texture.clone(), assets.image(&part.texture).ok()?)))
+            .collect();
+        Some(Self { character, textures })
+    }
+
+    /// The colour of the cloth the dye changes on part `index`: the
+    /// average of the texels that differ from `other`'s (the same coat in
+    /// another dye), so skin, trim and shading stay out of the swatch.
+    fn dyed_colour(&self, other: &Hero, index: usize) -> Option<[u8; 3]> {
+        let mine = self.textures.get(&self.character.parts.get(index)?.texture)?;
+        let theirs = other.textures.get(&other.character.parts.get(index)?.texture)?;
+        if mine.dimensions() != theirs.dimensions() {
+            return None;
+        }
+        let mut sum = [0.0f32; 3];
+        let mut count = 0.0;
+        for (a, b) in mine.pixels().zip(theirs.pixels()) {
+            let difference: i32 = (0..3).map(|c| (i32::from(a[c]) - i32::from(b[c])).abs()).sum();
+            if a[3] < 128 || difference < 60 {
+                continue;
+            }
+            sum = [0, 1, 2].map(|c| sum[c] + f32::from(a[c]));
+            count += 1.0;
+        }
+        (count > 0.0).then(|| sum.map(|channel| (channel / count) as u8))
     }
 
     /// The hero at `time` seconds into its stand animation, turned to
@@ -175,22 +224,50 @@ fn rasterise(
     }
 }
 
-/// Loads every profession's hero for every body on a thread; each arrives
-/// as (index into `launcher::BODIES`, index into `launcher::CLASSES`, hero).
-pub fn start(root: std::path::PathBuf) -> std::sync::mpsc::Receiver<(usize, usize, Hero)> {
+/// Loads every profession's hero for every body on a thread, then every
+/// body in the starter coat in each dye; each arrives as it is ready.
+pub fn start(root: std::path::PathBuf) -> std::sync::mpsc::Receiver<Loaded> {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let Ok(mut assets) = Assets::open(&root) else {
             return;
         };
-        for (body_index, (_, mesh)) in crate::launcher::BODIES.into_iter().enumerate() {
-            // Bodies 1003/1004 are the male models 3 and 4, 2001/2002 the
-            // female 1 and 2.
-            let body = u32::from(mesh % 10);
+        // Bodies 1003/1004 are the male models 3 and 4, 2001/2002 the
+        // female 1 and 2.
+        let bodies = crate::launcher::BODIES.map(|(_, mesh)| u32::from(mesh % 10));
+        for (body_index, body) in bodies.into_iter().enumerate() {
             for class in 0..crate::launcher::CLASSES.len() {
                 if let Some(hero) = Hero::load(&mut assets, body, class)
-                    && sender.send((body_index, class, hero)).is_err()
+                    && sender.send(Loaded::Hero { body: body_index, class, hero }).is_err()
                 {
+                    return;
+                }
+            }
+        }
+        for (body_index, body) in bodies.into_iter().enumerate() {
+            let coats: Vec<Option<Hero>> = DYES.iter().map(|&dye| Hero::load_coat(&mut assets, body, dye)).collect();
+            // The coat is the part whose texture changes with the dye.
+            let coat_part = coats[0].as_ref().zip(coats[1].as_ref()).and_then(|(plain, dyed)| {
+                (0..plain.character.parts.len().min(dyed.character.parts.len()))
+                    .find(|&index| plain.character.parts[index].texture != dyed.character.parts[index].texture)
+            });
+            // Each dye's cloth is measured against another dye of the same
+            // coat (the plain one against the first dye).
+            let colours: Vec<[u8; 3]> = (0..coats.len())
+                .map(|dye| {
+                    let other = if dye == 0 { 1 } else { 0 };
+                    coats[dye]
+                        .as_ref()
+                        .zip(coats.get(other).and_then(Option::as_ref))
+                        .zip(coat_part)
+                        .and_then(|((hero, other), index)| hero.dyed_colour(other, index))
+                        .unwrap_or([160, 160, 160])
+                })
+                .collect();
+            for (dye, hero) in coats.into_iter().enumerate() {
+                let Some(hero) = hero else { continue };
+                let colour = colours[dye];
+                if sender.send(Loaded::Coat { body: body_index, dye, hero, colour }).is_err() {
                     return;
                 }
             }

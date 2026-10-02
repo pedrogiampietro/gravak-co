@@ -91,6 +91,8 @@ pub struct RegisterCharacter {
     pub mesh: u16,
     pub class: u16,
     pub token: u32,
+    /// Gravak: the dye (3..=9) of the starter coat; 0 leaves it plain.
+    pub coat_dye: u32,
 }
 
 impl RegisterCharacter {
@@ -114,7 +116,14 @@ impl RegisterCharacter {
             mesh,
             class,
             token,
+            coat_dye: 0,
         }
+    }
+
+    /// The starter coat in Tinter dye `dye` (3..=9).
+    pub fn with_coat_dye(mut self, dye: u8) -> Self {
+        self.coat_dye = u32::from(dye);
+        self
     }
 }
 
@@ -1839,8 +1848,14 @@ mod tests {
             .encode()
             .expect("register packet should encode");
         assert_eq!(register.0, MSG_REGISTER);
-        assert_eq!(register.1.len(), 56);
+        assert_eq!(register.1.len(), 60);
         assert_eq!(&register.1[52..56], &42_u32.to_le_bytes());
+        // Gravak's starter coat dye follows the classic fields.
+        let dyed = RegisterCharacter::new("test1", "Gravak", 42)
+            .with_coat_dye(5)
+            .encode()
+            .expect("register packet should encode");
+        assert_eq!(&dyed.1[56..60], &5_u32.to_le_bytes());
 
         let action = ActionPacket::send_location(1000001)
             .encode()

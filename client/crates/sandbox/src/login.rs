@@ -32,6 +32,8 @@ pub enum LoginCommand {
         name: String,
         mesh: u16,
         class: u16,
+        /// The starter coat's dye (3..=9).
+        coat_dye: u8,
     },
     /// Enter the world with the account's character.
     Enter,
@@ -174,7 +176,7 @@ async fn serve(
                     Err(error) => send(LoginEvent::LoginFailed(error)),
                 }
             }
-            LoginCommand::CreateCharacter { name, mesh, class } => {
+            LoginCommand::CreateCharacter { name, mesh, class, coat_dye } => {
                 let Phase::Creating {
                     mut session,
                     username,
@@ -186,7 +188,7 @@ async fn serve(
                     continue;
                 };
                 send(LoginEvent::Status(format!("creating {name}")));
-                match create_character(&mut session, &username, &name, mesh, class, token).await {
+                match create_character(&mut session, &username, &name, mesh, class, coat_dye, token).await {
                     Ok(()) => {
                         // The server ends the registration session; log in
                         // again to load the new character.
@@ -308,12 +310,11 @@ async fn create_character(
     name: &str,
     mesh: u16,
     class: u16,
+    coat_dye: u8,
     token: u32,
 ) -> Result<(), CreateError> {
     session
-        .send(&RegisterCharacter::with_look(
-            username, name, mesh, class, token,
-        ))
+        .send(&RegisterCharacter::with_look(username, name, mesh, class, token).with_coat_dye(coat_dye))
         .await
         .map_err(|error| CreateError::Closed(error.to_string()))?;
     loop {
@@ -369,10 +370,10 @@ mod smoke {
         client.send(LoginCommand::Login { username: account.clone(), password: "pass1234".into() });
         assert!(matches!(next(&client), LoginEvent::NeedsCharacter));
 
-        client.send(LoginCommand::CreateCharacter { name: "x".into(), mesh: 2001, class: 40 });
+        client.send(LoginCommand::CreateCharacter { name: "x".into(), mesh: 2001, class: 40, coat_dye: 3 });
         assert!(matches!(next(&client), LoginEvent::CharacterRejected(_)));
         let name = format!("Smoke{suffix}");
-        client.send(LoginCommand::CreateCharacter { name: name.clone(), mesh: 2001, class: 40 });
+        client.send(LoginCommand::CreateCharacter { name: name.clone(), mesh: 2001, class: 40, coat_dye: 3 });
         match next(&client) {
             LoginEvent::Character(summary) => {
                 assert_eq!(summary.name, name);
