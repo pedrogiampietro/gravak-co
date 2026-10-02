@@ -18,14 +18,23 @@ if not exist "%CLIENT_EXE%" (
 pushd "%~dp0client"
 if /I "%~1"=="offline" goto offline
 
-"%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
-set "CLIENT_EXIT=%ERRORLEVEL%"
-popd
-if not "%CLIENT_EXIT%"=="0" (
-    echo.
-    echo Client exited with an error. Check that the local servers are running.
-    pause
+rem One account per client: the same account cannot be online twice.
+rem   run-client.bat            opens two clients (test1 and shekohex)
+rem   run-client.bat <account>  opens one client with that account
+if not "%~1"=="" (
+    call :client "%~1"
+    popd
+    exit /b
 )
+call :client test1
+rem Let the first login settle before the second.
+timeout /t 2 /nobreak >nul
+call :client shekohex
+popd
+exit /b
+
+:client
+start "Gravak-CO - %~1" "%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username %~1 --password 123456 --realm CoEmu
 exit /b
 
 :offline
