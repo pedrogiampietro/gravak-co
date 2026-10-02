@@ -360,6 +360,40 @@ fn weapon_proficiency_threshold(level: u16) -> u32 {
         .unwrap_or(0)
 }
 
+/// Gem families by the tens digit of the gem code (Phoenix 0x, Dragon 1x,
+/// Fury 2x, Rainbow 3x, Kylin 4x, Violet 5x, Moon 6x, Tortoise 7x).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GemFamily {
+    /// Magic damage.
+    Phoenix = 0,
+    /// Hit rate.
+    Fury = 2,
+    /// Experience.
+    Rainbow = 3,
+    /// Slower durability loss.
+    Kylin = 4,
+    /// Weapon proficiency.
+    Violet = 5,
+    /// Skill experience.
+    Moon = 6,
+}
+
+/// Redux `CombatStatistics.AddGemByID`: the percent a Normal, Refined or
+/// Super gem (code tier 1, 2, 3) of `family` gives.
+pub fn gem_percent(family: GemFamily, code: u8) -> u32 {
+    if code / 10 != family as u8 || !(1..=3).contains(&(code % 10)) {
+        return 0;
+    }
+    let tiers: [u32; 3] = match family {
+        GemFamily::Phoenix | GemFamily::Fury => [5, 10, 15],
+        GemFamily::Rainbow => [10, 15, 25],
+        GemFamily::Kylin => [50, 100, 200],
+        GemFamily::Violet => [30, 50, 100],
+        GemFamily::Moon => [15, 30, 50],
+    };
+    tiers[usize::from(code % 10) - 1]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PurchaseOutcome {
     Bought(InventoryItem),
@@ -1057,6 +1091,8 @@ impl Character {
         let Some(weapon_family) = crate::shop::ShopCatalog::weapon_family(item_type) else {
             return Ok(None);
         };
+        // Violet gems speed weapon proficiency up.
+        let amount = amount.saturating_mul(100 + self.gem_bonus(GemFamily::Violet)) / 100;
         let current = self.weapon_proficiency(weapon_family).unwrap_or(WeaponProficiency {
             weapon_family,
             level: 1,
@@ -1250,6 +1286,8 @@ impl Character {
         if amount == 0 {
             return Ok(self.skills().into_iter().find(|skill| skill.skill_id == skill_id));
         }
+        // Moon gems speed skill experience up.
+        let amount = amount.saturating_mul(100 + self.gem_bonus(GemFamily::Moon)) / 100;
         let Some(current) = self.skills().into_iter().find(|skill| skill.skill_id == skill_id) else {
             return Ok(None);
         };
@@ -1444,6 +1482,15 @@ impl Character {
             }
         }
         Ok(updated)
+    }
+
+    /// The summed percent of the worn gems of `family`.
+    pub fn gem_bonus(&self, family: GemFamily) -> u32 {
+        self.equipment_items()
+            .iter()
+            .filter(|item| item.durability > 0)
+            .map(|item| gem_percent(family, item.gem_one) + gem_percent(family, item.gem_two))
+            .sum()
     }
 
     /// Damage taken is lowered by the blessings of the worn items.
@@ -4405,6 +4452,8 @@ impl Character {
         if self.heaven_blessing_active() {
             bonus += 0.2;
         }
+        // Rainbow gems (Redux adds them to the same bonus).
+        bonus += f64::from(self.gem_bonus(GemFamily::Rainbow)) / 100.0;
         let amount = (amount as f64 * bonus) as u64 * crate::leveling::EXP_RATE;
         let level = self.entity.level().clamp(1, u16::from(u8::MAX)) as u8;
         let (next_level, experience) = crate::leveling::advance(level, self.experience(), amount);

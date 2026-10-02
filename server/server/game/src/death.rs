@@ -19,6 +19,8 @@ pub const BLACK_NAME_POINTS: u16 = 100;
 /// Black names who die are sent to the prison.
 pub const JAIL_MAP: u32 = 6000;
 pub const JAIL_POINT: (u16, u16) = (29, 72);
+/// The arena (ArenaGuard): no items lost, no PK points, revive in place.
+pub const ARENA_MAP: u32 = 1_005;
 /// Chance, in percent, that each inventory item falls on death.
 const INVENTORY_DROP_PERCENT: u32 = 5;
 const DROP_OFFSETS: [(i16, i16); 9] = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)];
@@ -96,6 +98,10 @@ pub async fn kill_character(
     tracing::info!(victim = victim.id(), killer = killer_id, "Character died");
 
     let map_id = victim.entity().map_id();
+    if map_id == ARENA_MAP {
+        victim.save(state).await?;
+        return Ok(());
+    }
     let map_flags = state.try_map(map_id).map(|map| map.flags()).unwrap_or_default();
     let mut dropped = Vec::new();
     for item in victim.inventory_items() {
@@ -200,6 +206,11 @@ pub async fn revive(state: &State, character: &Character) -> Result<bool, Error>
     character.clear_death();
     character.refresh_after_revive();
     let map_id = character.entity().map_id();
+    if map_id == ARENA_MAP {
+        // Arena fighters get up where they fell.
+        revive_here(character).await?;
+        return Ok(true);
+    }
     if map_id == crate::guild_war::GUILD_MAP && crate::guild_war::running() {
         let (prison, x, y) = crate::guild_war::WAR_PRISON;
         character.teleport(state, prison, (x, y)).await?;

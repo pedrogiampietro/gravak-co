@@ -12,6 +12,7 @@ pub use basic::{Entity, Flags};
 
 mod character;
 pub use character::{
+    gem_percent, GemFamily,
     ArtifactOutcome, AttributeAllocation, AttributeKind, Character, GemComposeOutcome, InventoryItem,
     ItemUpgradeOutcome, PurchaseOutcome, QualityUpgradeOutcome, RarityBonusOutcome, RarityUpgradeOutcome,
     RefineryOutcome, SaleOutcome, SkillProgress, SocketOutcome, TradeTransfer, WeaponProficiency,

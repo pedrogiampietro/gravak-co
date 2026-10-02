@@ -248,7 +248,7 @@ pub fn monster_image(name: &str, health: u16, maximum_health: u16) -> Result<Rgb
 
 pub fn damage_image(value: u32) -> Result<RgbaImage> {
     let font = damage_font()?;
-    let text_value = value.to_string();
+    let text_value = if value == 0 { "Miss".to_owned() } else { value.to_string() };
     let size = 46.0;
     let text_width: f32 = text_value
         .chars()

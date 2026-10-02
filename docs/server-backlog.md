@@ -39,6 +39,14 @@ Itens marcados `[x]` estão implementados e aguardando teste no jogo.
 - [x] Tinter na loja de tingir (mapa 1008): capacete, armadura e escudo em 5 cores, visíveis para todos
 - [x] Chefes do Labirinto: Gibbon, NagaLord, Talon e Syren, um por andar, 1 hora para voltar
 - [x] Campo de texto nos diálogos de NPC; GuildDirector cria guilda (nível 90, 1.000.000 de silver)
+- [x] Efeitos das gemas (Redux `AddGemByID`): Phoenix +dano mágico, Fury +acerto, Rainbow +EXP, Kylin poupa
+      durabilidade, Violet +proficiência, Moon +EXP de skill
+- [x] Chance de acerto: 90% base, +Fury e +20% com o status Accuracy; o cliente mostra "Miss"
+- [x] Arena (mapa 1005): morrer lá não derruba itens, não dá PK nem prisão, e revive no lugar
+- [x] IA dos monstros por tipo (Redux `cq_monstertype`): alcance de visão e de ataque próprios; quem não caça
+      (bit 2 do AttackMode, ex. GuildBeast) só revida; todo monstro persegue quem bateu nele por 30 s
+- [x] Cliente: animação de cooldown na barra de atalhos; atalhos e painéis abertos salvos por personagem
+      (`settings/hud_<id>.ini` ao lado do executável)
 
 ## A fazer
 - [ ] Compor +1..+9 pelo WuxingOven (hoje é feito pelo menu do item com Meteor)

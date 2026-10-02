@@ -11,6 +11,12 @@ pub struct MonsterType {
     pub defense: i32,
     pub attack_speed: i32,
     pub respawn_seconds: i32,
+    /// Tiles a monster sees players from.
+    pub view_range: i32,
+    /// Tiles a monster hits from.
+    pub attack_range: i32,
+    /// TQ attack mode bits; 2 hunts players on sight.
+    pub attack_mode: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -48,7 +54,7 @@ impl MonsterType {
         }
         let placeholders = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
         let query = format!(
-            "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds \
+            "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode \
              FROM monster_types WHERE id IN ({placeholders}) ORDER BY id"
         );
         let mut request = sqlx::query_as::<_, Self>(&query);

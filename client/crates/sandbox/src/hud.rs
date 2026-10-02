@@ -559,8 +559,10 @@ fn draw_hotkeys(
             }
             imageops::overlay(img, &icon, i64::from(frame.0 + 2), i64::from(frame.1 + 2));
         }
+        if slot.cooldown_left > 0 {
+            cooldown_sweep(img, inner, slot.cooldown_left);
+        }
         if let Some(seconds) = slot.cooldown.filter(|seconds| *seconds > 0) {
-            fill(img, inner, [0, 0, 0, 150]);
             let label = seconds.to_string();
             let x = inner.0 + (inner.2 - main_hud::text_width(font, &label, 13.0)) / 2;
             main_hud::text(
@@ -578,6 +580,28 @@ fn draw_hotkeys(
         }
     }
     Ok(())
+}
+
+/// Darkens the part of the slot still cooling down, as a clock hand that
+/// sweeps clockwise from twelve o'clock (the 5065 hotkey cooldown).
+fn cooldown_sweep(img: &mut RgbaImage, area: Rect, left: u8) {
+    let ready = 1.0 - f32::from(left) / f32::from(crate::action_bar::COOLDOWN_STEPS);
+    let cx = area.0 as f32 + area.2 as f32 / 2.0;
+    let cy = area.1 as f32 + area.3 as f32 / 2.0;
+    for y in area.1.max(0)..(area.1 + area.3).min(img.height() as i32) {
+        for x in area.0.max(0)..(area.0 + area.2).min(img.width() as i32) {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            // 0 at twelve o'clock, growing clockwise to 1.
+            let turn = (dx.atan2(-dy) / std::f32::consts::TAU).rem_euclid(1.0);
+            if turn >= ready {
+                let pixel = img.get_pixel_mut(x as u32, y as u32);
+                for channel in &mut pixel.0[..3] {
+                    *channel = (u16::from(*channel) * 2 / 5) as u8;
+                }
+            }
+        }
+    }
 }
 
 fn draw_action_context_menu(

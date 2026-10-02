@@ -6,7 +6,20 @@ pub struct ActionSlot {
     pub icon: Option<String>,
     pub action_id: Option<String>,
     pub cooldown: Option<u32>,
+    /// Cooldown left, in [`COOLDOWN_STEPS`] of the whole (0 when ready).
+    pub cooldown_left: u8,
     pub disabled: bool,
+}
+
+/// How finely the cooldown sweep animates (each step redraws the HUD).
+pub const COOLDOWN_STEPS: u8 = 24;
+
+/// The steps of the cooldown sweep left `remaining` seconds into `total`.
+pub fn cooldown_steps(remaining: f32, total: f32) -> u8 {
+    if remaining <= 0.0 || total <= 0.0 {
+        return 0;
+    }
+    ((remaining / total).clamp(0.0, 1.0) * f32::from(COOLDOWN_STEPS)).ceil() as u8
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -482,6 +495,14 @@ mod tests {
         assert_eq!(skill.name, "Cyclone");
         assert!(!skill.requires_target);
         assert_eq!(skill.cooldown_seconds, 1.0);
+    }
+
+    #[test]
+    fn the_cooldown_sweep_shrinks_to_nothing() {
+        assert_eq!(super::cooldown_steps(1.0, 1.0), super::COOLDOWN_STEPS);
+        assert_eq!(super::cooldown_steps(0.5, 1.0), super::COOLDOWN_STEPS / 2);
+        assert_eq!(super::cooldown_steps(0.0, 1.0), 0);
+        assert_eq!(super::cooldown_steps(-1.0, 1.0), 0);
     }
 
     #[test]

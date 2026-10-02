@@ -7,8 +7,36 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// The chase leash past the spawn area.
 const VIEW_RANGE: i16 = 18;
-const ATTACK_RANGE: i16 = 1;
+/// TQ `ATKUSER_ACTIVE`: the monster hunts players on sight.
+const ACTIVE: i32 = 2;
+/// How long a monster remembers who hit it.
+const AGGRO_TIME: Duration = Duration::from_secs(30);
+static AGGRO: OnceLock<Mutex<std::collections::HashMap<u32, (u32, Instant)>>> = OnceLock::new();
+
+fn aggro() -> &'static Mutex<std::collections::HashMap<u32, (u32, Instant)>> {
+    AGGRO.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// `character_id` hit `monster_id`: the monster turns on them, even a
+/// passive one or from beyond its sight.
+pub fn provoke(monster_id: u32, character_id: u32) {
+    aggro().lock().unwrap().insert(monster_id, (character_id, Instant::now()));
+}
+
+/// Who the monster fights back, while it still remembers.
+fn provoker(monster_id: u32) -> Option<u32> {
+    let mut aggro = aggro().lock().unwrap();
+    match aggro.get(&monster_id) {
+        Some((character_id, since)) if since.elapsed() < AGGRO_TIME => Some(*character_id),
+        Some(_) => {
+            aggro.remove(&monster_id);
+            None
+        },
+        None => None,
+    }
+}
 static NEXT_MOVE: OnceLock<Mutex<std::collections::HashMap<u32, Instant>>> = OnceLock::new();
 static NEXT_ATTACK: OnceLock<Mutex<std::collections::HashMap<u32, Instant>>> = OnceLock::new();
 static NEXT_RESPAWN: OnceLock<Mutex<std::collections::HashMap<u32, Instant>>> = OnceLock::new();
@@ -61,6 +89,7 @@ pub async fn tick(state: &State) {
                             .unwrap_or(home)
                     };
                     monster_ref.respawn_at(location);
+                    aggro().lock().unwrap().remove(&monster.id());
                     next_respawn.lock().unwrap().remove(&monster.id());
                     map.update_region_for(monster.clone());
                     let _ = map.broadcast(MsgPlayer::from_monster(monster_ref)).await;
@@ -80,7 +109,11 @@ pub async fn tick(state: &State) {
             let wander_radius = monster_ref.wander_radius();
             // A monster that chased too far gives up and walks back home
             // instead of following a player across the whole map.
+            let monster_type = monster_ref.monster_type();
+            let view_range = monster_type.view_range.clamp(1, VIEW_RANGE as i32) as i16;
+            let attack_range = monster_type.attack_range.clamp(1, VIEW_RANGE as i32) as i16;
             if distance_between(mloc, home) > wander_radius.saturating_add(VIEW_RANGE as u16) {
+                aggro().lock().unwrap().remove(&monster.id());
                 let can_move = next_move
                     .lock()
                     .unwrap()
@@ -100,8 +133,21 @@ pub async fn tick(state: &State) {
                 }
                 continue;
             }
-            let guard = is_guard(monster_ref.monster_type().id);
-            let Some((target, distance)) = nearest_target(&characters, mloc, guard) else {
+            let guard = is_guard(monster_type.id);
+            // Whoever hit it first; otherwise, if it hunts, the nearest player.
+            let provoked = provoker(monster.id()).and_then(|id| {
+                characters
+                    .iter()
+                    .find(|entity| entity.id() == id)
+                    .and_then(|entity| reachable(entity, mloc, false, VIEW_RANGE))
+            });
+            let hunts = guard || monster_type.attack_mode & ACTIVE != 0;
+            let found = provoked.or_else(|| {
+                hunts
+                    .then(|| nearest_target(&characters, mloc, guard, view_range))
+                    .flatten()
+            });
+            let Some((target, distance)) = found else {
                 let can_move = next_move
                     .lock()
                     .unwrap()
@@ -128,7 +174,7 @@ pub async fn tick(state: &State) {
             let Some(character) = target.as_character() else {
                 continue;
             };
-            if distance <= ATTACK_RANGE {
+            if distance <= attack_range {
                 let can_attack = next_attack
                     .lock()
                     .unwrap()
@@ -142,7 +188,7 @@ pub async fn tick(state: &State) {
                         .unwrap()
                         .insert(monster.id(), now + Duration::from_millis(delay));
                 }
-            } else if distance <= VIEW_RANGE {
+            } else {
                 let can_move = next_move
                     .lock()
                     .unwrap()
@@ -170,31 +216,39 @@ fn is_guard(monster_type_id: i32) -> bool {
     matches!(monster_type_id, 900 | 910 | 911)
 }
 
-fn nearest_target(characters: &[Arc<GameEntity>], location: Location, guard: bool) -> Option<(Arc<GameEntity>, i16)> {
+fn nearest_target(
+    characters: &[Arc<GameEntity>],
+    location: Location,
+    guard: bool,
+    view_range: i16,
+) -> Option<(Arc<GameEntity>, i16)> {
     characters
         .iter()
-        .filter_map(|entity| {
-            let character = entity.as_character()?;
-            // Dead, invisible or flying players are out of reach.
-            let flags = character.entity().flags();
-            if character.entity().is_dead()
-                || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
-            {
-                return None;
-            }
-            // Guards only go after fresh killers and black names.
-            if guard
-                && !flags.intersects(crate::entities::Flags::BLUE_FLASHING_NAME | crate::entities::Flags::BLACK_NAME)
-            {
-                return None;
-            }
-            let target = character.entity().location();
-            let dx = target.x as i16 - location.x as i16;
-            let dy = target.y as i16 - location.y as i16;
-            let distance = dx.abs().max(dy.abs());
-            (distance <= VIEW_RANGE).then(|| (entity.clone(), distance))
-        })
+        .filter_map(|entity| reachable(entity, location, guard, view_range))
         .min_by_key(|(_, distance)| *distance)
+}
+
+/// The player and their distance, if the monster may go after them.
+fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, view_range: i16) -> Option<(Arc<GameEntity>, i16)> {
+    let character = entity.as_character()?;
+    // Dead, invisible or flying players are out of reach.
+    let flags = character.entity().flags();
+    if character.entity().is_dead()
+        || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
+    {
+        return None;
+    }
+    // Guards only go after fresh killers and black names.
+    if guard
+        && !flags.intersects(crate::entities::Flags::BLUE_FLASHING_NAME | crate::entities::Flags::BLACK_NAME)
+    {
+        return None;
+    }
+    let target = character.entity().location();
+    let dx = target.x as i16 - location.x as i16;
+    let dy = target.y as i16 - location.y as i16;
+    let distance = dx.abs().max(dy.abs());
+    (distance <= view_range).then(|| (entity.clone(), distance))
 }
 
 fn next_step(
@@ -312,5 +366,19 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
         if let Err(error) = crate::death::kill_character(state, character, monster.id(), None).await {
             tracing::warn!(character = character.id(), ?error, "Failed to process character death");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hit_monster_remembers_its_attacker() {
+        assert_eq!(provoker(4_000_001), None);
+        provoke(4_000_001, 1_000_042);
+        assert_eq!(provoker(4_000_001), Some(1_000_042));
+        provoke(4_000_001, 1_000_043);
+        assert_eq!(provoker(4_000_001), Some(1_000_043));
     }
 }
