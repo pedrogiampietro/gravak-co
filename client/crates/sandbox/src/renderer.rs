@@ -2004,6 +2004,9 @@ impl Renderer {
         let mut remote_monster_pose_cache =
             HashMap::<(u32, u8, i8, u32), Arc<Vec<([f32; 3], [f32; 2])>>>::new();
         let mut remote_pose_build_budget = 1usize;
+        // Players have few parts and are few on screen; give them their own
+        // budget so walking monsters cannot freeze them in the idle pose.
+        let mut remote_player_pose_budget = 4usize;
         for actor in remote_actors.values() {
             let monster = !actor.npc && (400001..=499999).contains(&actor.id);
             if monster
@@ -2178,9 +2181,28 @@ impl Renderer {
                     || (time.max(0.0) * 30.0).floor() as u32,
                     |progress| (progress.clamp(0.0, 1.0) * 30.0).floor() as u32,
                 );
+                let animated = !(action == Action::Idle && action_progress.is_none());
+                let pose_key = |part_index: usize| {
+                    (
+                        signature,
+                        part_index,
+                        facing_sector,
+                        action.index(),
+                        frame_bucket,
+                    )
+                };
+                // The budget is spent per actor, never per part: posing the
+                // body but not the hair or weapons left them floating in the
+                // idle pose. Without budget, the whole actor stands idle.
+                let cached = (0..remote_character.parts.len())
+                    .all(|part_index| remote_pose_cache.contains_key(&pose_key(part_index)));
+                let posed = animated && (cached || remote_player_pose_budget > 0);
+                if posed && !cached {
+                    remote_player_pose_budget -= 1;
+                }
                 for (part_index, part) in remote_character.parts.iter().enumerate() {
                     self.texture(assets, &part.texture);
-                    let vertices = if action == Action::Idle && action_progress.is_none() {
+                    let vertices = if !posed {
                         let Some(vertices) = self.queue_character_idle_geometry(
                             remote_character,
                             signature,
@@ -2192,50 +2214,19 @@ impl Renderer {
                         };
                         vertices
                     } else {
-                        let key = (
-                            signature,
-                            part_index,
-                            facing_sector,
-                            action.index(),
-                            frame_bucket,
-                        );
+                        let key = pose_key(part_index);
                         if let Some(vertices) = remote_pose_cache.get(&key) {
                             Arc::clone(vertices)
                         } else {
-                            if remote_pose_build_budget == 0 {
-                                // A remote actor must remain visible while
-                                // the animation budget is exhausted.  Reuse
-                                // its cached idle pose until the animated
-                                // pose can be prepared instead of dropping
-                                // the draw for this frame.
-                                self.queue_character_idle_geometry(
-                                    remote_character,
-                                    signature,
-                                    part_index,
-                                    facing_sector,
-                                    facing,
-                                )
-                                .unwrap_or_else(|| {
-                                    Arc::new(remote_character.vertices(
-                                        part,
-                                        time,
-                                        action,
-                                        facing,
-                                        action_progress,
-                                    ))
-                                })
-                            } else {
-                                remote_pose_build_budget -= 1;
-                                let vertices = Arc::new(remote_character.vertices(
-                                    part,
-                                    time,
-                                    action,
-                                    facing,
-                                    action_progress,
-                                ));
-                                remote_pose_cache.insert(key, Arc::clone(&vertices));
-                                vertices
-                            }
+                            let vertices = Arc::new(remote_character.vertices(
+                                part,
+                                time,
+                                action,
+                                facing,
+                                action_progress,
+                            ));
+                            remote_pose_cache.insert(key, Arc::clone(&vertices));
+                            vertices
                         }
                     };
                     let triangles = part

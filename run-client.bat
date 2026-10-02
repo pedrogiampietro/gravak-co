@@ -4,8 +4,12 @@ title Gravak-CO - Run Client
 
 set "CLIENT_EXE=%~dp0client\target\release\conquer-sandbox.exe"
 
-if not exist "%CLIENT_EXE%" (
-    echo Client build not found. Building it now...
+rem Rebuild before every launch so a git pull takes effect; cargo only
+rem recompiles what changed. A running client locks the exe, so skip the
+rem build then and start the existing one.
+tasklist /FI "IMAGENAME eq conquer-sandbox.exe" 2>nul | find /I "conquer-sandbox.exe" >nul && (
+    echo A client is already running; skipping the rebuild.
+) || (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-client.ps1"
     if errorlevel 1 (
         echo.
@@ -13,6 +17,11 @@ if not exist "%CLIENT_EXE%" (
         pause
         exit /b 1
     )
+)
+if not exist "%CLIENT_EXE%" (
+    echo Client build not found: %CLIENT_EXE%
+    pause
+    exit /b 1
 )
 
 pushd "%~dp0client"
