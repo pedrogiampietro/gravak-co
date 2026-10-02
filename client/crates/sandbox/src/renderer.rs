@@ -674,6 +674,9 @@ pub struct Renderer {
     feedback_signature: Option<u64>,
     /// When the shown feedback message last changed.
     feedback_since: f32,
+    /// Frames drawn, and the last frame each transient texture was drawn in.
+    frame_number: u64,
+    transient_used: HashMap<String, u64>,
     quick_panel_signature: Option<u64>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
@@ -870,6 +873,8 @@ impl Renderer {
             last_status_overlay_key: None,
             feedback_signature: None,
             feedback_since: 0.0,
+            frame_number: 0,
+            transient_used: HashMap::new(),
             quick_panel_signature: None,
             level_up_layers: None,
             effects: HashMap::new(),
@@ -1258,6 +1263,38 @@ impl Renderer {
             self.config.present_mode = mode;
             self.surface.configure(&self.device, &self.config);
         }
+    }
+
+    /// Frees the per-moment textures (a monster's life label, a damage
+    /// number, a hovered item's tooltip...) that have not been drawn for
+    /// `TRANSIENT_FRAMES`. Each is named after what it shows, so without
+    /// this every change of life or name left a texture behind in GPU
+    /// memory. They are made again whenever they are drawn.
+    fn release_unused_transients(&mut self, draws: &[Draw]) {
+        self.frame_number += 1;
+        let frame = self.frame_number;
+        for draw in draws {
+            if is_transient(&draw.texture) {
+                if let Some(last) = self.transient_used.get_mut(&draw.texture) {
+                    *last = frame;
+                } else {
+                    self.transient_used.insert(draw.texture.clone(), frame);
+                }
+            }
+        }
+        if frame % 120 != 0 {
+            return;
+        }
+        let used = &mut self.transient_used;
+        self.textures.retain(|key, _| {
+            if !is_transient(key) {
+                return true;
+            }
+            // Loaded but not drawn yet: its clock starts now.
+            let last = *used.entry(key.clone()).or_insert(frame);
+            frame - last < TRANSIENT_FRAMES
+        });
+        used.retain(|key, last| frame - *last < TRANSIENT_FRAMES && self.textures.contains_key(key));
     }
 
     /// Frees the textures named `prefix...` except `keep`: versions of a
@@ -3987,6 +4024,7 @@ impl Renderer {
             }
         }
         let ui_phase_finished = Instant::now();
+        self.release_unused_transients(&draws);
         draws.sort_by(|a, b| a.sort_depth.total_cmp(&b.sort_depth));
         draws = coalesce_adjacent_draws(draws);
         let total_vertices = draws.iter().map(|draw| draw.vertices.len()).sum();
@@ -4214,6 +4252,33 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
         && origin[1] >= -margin
         && origin[0] <= viewport[0] + margin
         && origin[1] <= viewport[1] + margin
+}
+
+/// Textures made for one moment and named after what they show; they are
+/// recreated on demand, so the renderer may free them once unused (see
+/// `release_unused_transients`). Images redrawn only when their signature
+/// changes (inventory, status, panels) are not among them.
+const TRANSIENT_PREFIXES: [&str; 14] = [
+    "@actor-label-",
+    "@monster-label-",
+    "@label-",
+    "@damage-",
+    "@loot-name-",
+    "@minimap-pin-name-",
+    "@choice-menu-",
+    "@prompt-",
+    "@notice-",
+    "@shop-tooltip-",
+    "@trade-partner-",
+    "@item-context-",
+    "@inventory-drag-item-",
+    "@shop-drag-item-",
+];
+/// About ten seconds at 60 FPS.
+const TRANSIENT_FRAMES: u64 = 600;
+
+fn is_transient(key: &str) -> bool {
+    key.starts_with('@') && TRANSIENT_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
 }
 
 /// How long a feedback message stays at the top of the screen.
@@ -4502,5 +4567,19 @@ mod tests {
         assert!(world_point_visible([1_096.0, 350.0], viewport, 96.0));
         assert!(!world_point_visible([-96.1, 350.0], viewport, 96.0));
         assert!(!world_point_visible([500.0, 900.1], viewport, 96.0));
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    #[test]
+    fn only_on_demand_textures_are_released() {
+        for key in ["@monster-label-400010-37", "@label-Gravak-80-120-[255, 255, 255]", "@damage-128", "@item-context-410003-[Equip]-None"] {
+            assert!(super::is_transient(key), "{key}");
+        }
+        // Redrawn only when their signature changes: never released.
+        for key in ["@hud-123", "@inventory-overlay-9", "@quick-panel-4", "@shadow", "c3/texture/1.dds"] {
+            assert!(!super::is_transient(key), "{key}");
+        }
     }
 }
