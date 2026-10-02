@@ -19,6 +19,10 @@ struct Slice {
     dest: [i64; 2],
 }
 
+/// The slice holding the "Conquer" emblem, relettered "v0x".
+const EMBLEM_ASSET: &str = "data/main/mainDialog2.dds";
+const EMBLEM_ROW: u32 = 64;
+
 const SLICES: [Slice; 8] = [
     // Orb with the four small buttons, F1-F4.
     Slice {
@@ -167,7 +171,10 @@ impl MainHudArt {
         for slice in SLICES {
             let source = assets.image(slice.asset)?;
             let [x, y, width, height] = slice.source;
-            let part = imageops::crop_imm(&source, x, y, width, height).to_image();
+            let mut part = imageops::crop_imm(&source, x, y, width, height).to_image();
+            if slice.asset == EMBLEM_ASSET && y == EMBLEM_ROW {
+                crate::logo::replace_lettering(&mut part);
+            }
             imageops::overlay(&mut base, &part, slice.dest[0], slice.dest[1]);
         }
         let mut buttons = Vec::new();

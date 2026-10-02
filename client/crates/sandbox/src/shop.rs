@@ -578,23 +578,15 @@ pub enum QuickPanel {
     Settings,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingsPanelAction {
-    ToggleArcs,
-    ToggleBars,
-    ScaleDown,
-    ScaleUp,
-    DistanceDown,
-    DistanceUp,
-}
+pub use crate::original_panels::SettingsAction as SettingsPanelAction;
 
-/// The Options window is the original `DialogSetup`, which has no HUD
-/// tuning controls; the HUD-centre settings belonged to the removed overlay.
+/// The Options window (the original `DialogSetup`) action under the cursor.
 pub fn settings_panel_action_at(
-    _viewport: [f32; 2],
-    _cursor: [f32; 2],
+    viewport: [f32; 2],
+    cursor: [f32; 2],
+    options: &crate::hud::HudConfig,
 ) -> Option<SettingsPanelAction> {
-    None
+    crate::original_panels::settings_action_at(viewport, cursor, options)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1006,6 +998,7 @@ pub fn quick_panel_image(
                 pending_friend_name,
                 selected_target_name,
                 trade,
+                options: hud_config,
             },
         );
     }
@@ -3986,9 +3979,6 @@ pub enum GemSelectionPanelButton {
     RemoveGem(u8),
 }
 
-const ITEM_CONTEXT_WIDTH: f32 = 224.0;
-const ITEM_CONTEXT_HEADER_HEIGHT: f32 = 30.0;
-const ITEM_CONTEXT_ROW_HEIGHT: f32 = 34.0;
 const ITEM_ACTION_PANEL_WIDTH: f32 = 286.0;
 const ITEM_ACTION_PANEL_HEIGHT: f32 = 214.0;
 const RARITY_PANEL_WIDTH: f32 = 520.0;
@@ -4104,12 +4094,15 @@ pub fn gem_selection_panel_action_at(
     None
 }
 
+/// The right-click item menu, in the same framed art as the kill-mode and
+/// player menus. Positions and hits only depend on how many rows it has.
+fn item_context_menu(viewport: [f32; 2], anchor: [f32; 2], title: String, actions: &[ItemContextAction]) -> ChoiceMenu {
+    ChoiceMenu::at(viewport, anchor, title, actions.iter().map(|action| action.label()).collect())
+}
+
 pub fn item_context_position(viewport: [f32; 2], anchor: [f32; 2], rows: usize) -> [f32; 2] {
-    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * rows.max(1) as f32;
-    [
-        (anchor[0] + 8.0).min((viewport[0] - ITEM_CONTEXT_WIDTH - 8.0).max(8.0)),
-        (anchor[1] + 8.0).min((viewport[1] - height - 8.0).max(8.0)),
-    ]
+    let menu = ChoiceMenu::at(viewport, anchor, String::new(), vec![""; rows.max(1)]);
+    menu.position.map(|value| value as f32)
 }
 
 pub fn item_context_button_at(
@@ -4118,102 +4111,24 @@ pub fn item_context_button_at(
     anchor: [f32; 2],
     rows: usize,
 ) -> Option<usize> {
-    let [left, top] = item_context_position(viewport, anchor, rows);
-    if cursor[0] < left
-        || cursor[0] >= left + ITEM_CONTEXT_WIDTH
-        || cursor[1] < top + ITEM_CONTEXT_HEADER_HEIGHT
-    {
-        return None;
-    }
-    let row =
-        ((cursor[1] - top - ITEM_CONTEXT_HEADER_HEIGHT) / ITEM_CONTEXT_ROW_HEIGHT).floor() as usize;
-    (row < rows).then_some(row)
+    ChoiceMenu::at(viewport, anchor, String::new(), vec![""; rows]).row_at(cursor)
 }
 
+/// The item menu titled with the item's name.
 pub fn item_context_image(
+    assets: &mut Assets,
+    viewport: [f32; 2],
+    anchor: [f32; 2],
+    title: &str,
     actions: &[ItemContextAction],
     hovered: Option<usize>,
 ) -> Result<RgbaImage> {
-    let font = labels::font()?;
-    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * actions.len().max(1) as f32;
-    let mut image = RgbaImage::from_pixel(
-        ITEM_CONTEXT_WIDTH as u32,
-        height as u32,
-        Rgba([4, 10, 14, 252]),
-    );
-    let width = image.width();
-    let height = image.height();
-    ui_theme::fill(
-        &mut image,
-        UiRect::new(1, 1, width as i32 - 2, ITEM_CONTEXT_HEADER_HEIGHT as i32),
-        [10, 30, 40, 255],
-    );
-    rect_outline(&mut image, 0, 0, width, height, Rgba([226, 185, 77, 255]));
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("ITEM ACTIONS", ui_theme::TEXT_GOLD)],
-        [12.0, 9.0],
-        10.0,
-    );
-    for (index, action) in actions.iter().enumerate() {
-        let top = (ITEM_CONTEXT_HEADER_HEIGHT + index as f32 * ITEM_CONTEXT_ROW_HEIGHT) as u32;
-        let row_rect = UiRect::new(
-            4,
-            top as i32 + 2,
-            width as i32 - 8,
-            ITEM_CONTEXT_ROW_HEIGHT as i32 - 4,
-        );
-        if hovered == Some(index) {
-            ui_theme::fill(&mut image, row_rect, [39, 67, 78, 255]);
-            ui_theme::outline(&mut image, row_rect, [222, 178, 66, 255]);
-        } else if index % 2 == 0 {
-            ui_theme::fill(&mut image, row_rect, [7, 19, 27, 230]);
-        }
-        let label = action.label();
-        let marker = match action {
-            ItemContextAction::Equip | ItemContextAction::Unequip => "E",
-            ItemContextAction::Upgrade => "+",
-            ItemContextAction::Rarity => "◆",
-            ItemContextAction::ImproveQuality => "Q",
-            ItemContextAction::ApplyRefinery => "R",
-            ItemContextAction::ApplyArtifact => "A",
-            ItemContextAction::GemSocket => "S",
-            ItemContextAction::OpenSocket
-            | ItemContextAction::InsertGem
-            | ItemContextAction::RemoveGem => "S",
-            ItemContextAction::Use => "U",
-        };
-        labels::text_sized(
-            &mut image,
-            &font,
-            &[(
-                marker,
-                if hovered == Some(index) {
-                    ui_theme::TEXT
-                } else {
-                    ui_theme::TEXT_GOLD
-                },
-            )],
-            [14.0, top as f32 + 9.0],
-            10.0,
-        );
-        labels::text_sized(
-            &mut image,
-            &font,
-            &[(
-                label,
-                if hovered == Some(index) {
-                    ui_theme::TEXT
-                } else {
-                    ui_theme::TEXT_MUTED
-                },
-            )],
-            [42.0, top as f32 + 9.0],
-            10.0,
-        );
-    }
-    Ok(image)
+    let title: String = if title.chars().count() > 18 {
+        title.chars().take(17).chain(['…']).collect()
+    } else {
+        title.to_owned()
+    };
+    item_context_menu(viewport, anchor, title, actions).image(assets, hovered)
 }
 
 /// MsgAction 96 kill modes, indexed by the mode the server expects:
@@ -4587,6 +4502,46 @@ pub fn item_action_panel_reroll_enabled(
             .any(|item| item.position < 40 && item.item_type == 1_088_000)
 }
 
+/// Puts a panel's contents in the friend dialog's frame, like the trade,
+/// team and prompt windows: the frame at the panel's size, the contents
+/// over it with their dark boxes let slightly through, the title in the
+/// panels' gold and the original close button.
+fn framed(assets: &mut Assets, mut content: RgbaImage, title: &str, close_hovered: bool) -> Result<RgbaImage> {
+    use crate::original_panels::{LABEL_GOLD, label_centered};
+    let (width, height) = content.dimensions();
+    let mut image = crate::original_panels::framed_window(assets, width, height)?;
+    for pixel in content.pixels_mut() {
+        let [r, g, b, a] = pixel.0;
+        let luminance = (u32::from(r) * 3 + u32::from(g) * 6 + u32::from(b)) / 10;
+        if a > 0 && luminance < 48 {
+            pixel.0[3] = a.min(205);
+        }
+    }
+    imageops::overlay(&mut image, &content, 0, 0);
+    label_centered(&mut image, title, 15.0, width as i32 / 2, 10, LABEL_GOLD);
+    // The close hit box is (width - 31, 6, 27, 30); the art sits in it.
+    let close = [width as i32 - 26, 13];
+    crate::original_ui::overlay_asset(&mut image, assets, "data/main/CloseBtnS.dds", close[0].into(), close[1].into())?;
+    if close_hovered {
+        ui_theme::outline(&mut image, UiRect::new(close[0] - 2, close[1] - 2, 19, 19), [255, 214, 102, 255]);
+    }
+    Ok(image)
+}
+
+/// "GEM SOCKET" as "Gem Socket", for the framed titles.
+fn title_case(label: &str) -> String {
+    label
+        .split(' ')
+        .map(|word| {
+            let mut letters = word.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(letters.flat_map(char::to_lowercase)).collect()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn item_action_panel_image(
     assets: &mut Assets,
     panel: ItemActionPanel,
@@ -4595,13 +4550,34 @@ pub fn item_action_panel_image(
     close_hovered: bool,
     action_animation_progress: Option<f32>,
 ) -> Result<RgbaImage> {
+    let title = match panel.action {
+        ItemContextAction::Upgrade => "Upgrade Item".to_owned(),
+        ItemContextAction::Rarity => "Item Rarity".to_owned(),
+        action => title_case(action.label()),
+    };
+    let content = item_action_panel_content(
+        assets,
+        panel,
+        hovered,
+        inventory,
+        action_animation_progress,
+    )?;
+    framed(assets, content, &title, close_hovered)
+}
+
+fn item_action_panel_content(
+    assets: &mut Assets,
+    panel: ItemActionPanel,
+    hovered: Option<ItemActionPanelButton>,
+    inventory: &[crate::network::OwnedItem],
+    action_animation_progress: Option<f32>,
+) -> Result<RgbaImage> {
     if panel.action == ItemContextAction::Upgrade {
         return upgrade_action_panel_image(
             assets,
             panel,
             hovered,
             inventory,
-            close_hovered,
             action_animation_progress,
         );
     }
@@ -4611,7 +4587,6 @@ pub fn item_action_panel_image(
             panel,
             hovered,
             inventory,
-            close_hovered,
             action_animation_progress,
         );
     }
@@ -4620,7 +4595,6 @@ pub fn item_action_panel_image(
         ITEM_ACTION_PANEL_HEIGHT as u32,
         Rgba([0, 0, 0, 0]),
     );
-    ui_theme::window(&mut image, panel.action.label(), close_hovered)?;
     let font = labels::font()?;
     ui_theme::slot(&mut image, UiRect::new(22, 53, 52, 52), false, false, true);
     if let Ok(icon) = item_icon_image(assets, panel.item.item_type) {
@@ -4758,7 +4732,6 @@ fn rarity_action_panel_image(
     panel: ItemActionPanel,
     hovered: Option<ItemActionPanelButton>,
     inventory: &[crate::network::OwnedItem],
-    close_hovered: bool,
     animation_progress: Option<f32>,
 ) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(
@@ -4766,7 +4739,6 @@ fn rarity_action_panel_image(
         RARITY_PANEL_HEIGHT as u32,
         Rgba([5, 17, 25, 255]),
     );
-    ui_theme::window(&mut image, "ITEM RARITY", close_hovered)?;
     let font = labels::font()?;
     let next_rarity = panel.item.rarity.saturating_add(1).min(4);
     let (dragon_ball_cost, success_chance) =
@@ -4970,12 +4942,21 @@ pub fn gem_selection_panel_image(
     hovered: Option<GemSelectionPanelButton>,
     close_hovered: bool,
 ) -> Result<RgbaImage> {
+    let content = gem_selection_panel_content(assets, panel, inventory, hovered)?;
+    framed(assets, content, "Gem Socket", close_hovered)
+}
+
+fn gem_selection_panel_content(
+    assets: &mut Assets,
+    panel: GemSelectionPanel,
+    inventory: &[crate::network::OwnedItem],
+    hovered: Option<GemSelectionPanelButton>,
+) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(
         GEM_SELECTION_PANEL_WIDTH as u32,
         GEM_SELECTION_PANEL_HEIGHT as u32,
         Rgba([0, 0, 0, 0]),
     );
-    ui_theme::window(&mut image, "GEM SOCKET", close_hovered)?;
     let font = labels::font()?;
     ui_theme::fill(&mut image, UiRect::new(18, 44, 404, 64), [7, 19, 28, 255]);
     ui_theme::outline(&mut image, UiRect::new(18, 44, 404, 64), [69, 94, 104, 255]);
@@ -5219,7 +5200,6 @@ fn upgrade_action_panel_image(
     panel: ItemActionPanel,
     hovered: Option<ItemActionPanelButton>,
     inventory: &[crate::network::OwnedItem],
-    close_hovered: bool,
     animation_progress: Option<f32>,
 ) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(
@@ -5227,7 +5207,6 @@ fn upgrade_action_panel_image(
         UPGRADE_PANEL_HEIGHT as u32,
         Rgba([0, 0, 0, 0]),
     );
-    ui_theme::window(&mut image, "UPGRADE ITEM", close_hovered)?;
     let font = labels::font()?;
     let confirm_enabled = item_action_panel_confirm_enabled(panel, inventory);
     let meteor_count = inventory
@@ -7277,9 +7256,10 @@ mod icon_tests {
             None
         );
         for index in 0..rows {
-            let y = top + 30.0 + index as f32 * 34.0 + 17.0;
+            let [x, y, width, height] = super::ChoiceMenu::row_rect(index);
+            let centre = [left + (x + width / 2) as f32, top + (y + height / 2) as f32];
             assert_eq!(
-                super::item_context_button_at(viewport, [left + 40.0, y], anchor, rows),
+                super::item_context_button_at(viewport, centre, anchor, rows),
                 Some(index)
             );
         }

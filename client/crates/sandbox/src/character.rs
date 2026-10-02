@@ -434,25 +434,28 @@ impl NpcModel {
     }
 
     pub fn load_monster(assets: &mut Assets, catalog: &NpcCatalog, look: u32) -> Result<Self> {
+        // Most looks live in `c3/monster/{look}N`. Others are only named by
+        // the catalogs: the city guards (900, 910) use `c3/monster/900`,
+        // where `3dmotion.ini` binds each look's stand motion (look * 10^6 +
+        // 100) and `3dobj.ini` the model (look * 10^6).
+        let catalog_id = look.saturating_mul(1_000_000);
+        let cataloged = [
+            catalog.motions.get(catalog_id + 100),
+            catalog.models.get(catalog_id),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|path| path.as_str().to_owned());
         let model_candidates = [
             format!("c3/monster/{look}N/{look:03}000000.c3"),
             format!("c3/monster/{look}n/{look:03}000000.c3"),
-        ];
+        ]
+        .into_iter()
+        .chain(cataloged);
         let Some((model_path, bytes)) = model_candidates
             .into_iter()
             .find_map(|path| assets.read(&path).ok().map(|bytes| (path, bytes)))
         else {
-            // The 5065 fixture uses look 900/910 for the server's guard
-            // fixtures, but some client asset packs omit the corresponding
-            // c3/monster directory while retaining the NPC appearance and
-            // motion catalog. Keep those actors visible with their cataloged
-            // NPC model instead of repeatedly leaving a spawned monster
-            // without geometry. Other missing monster looks remain errors so
-            // content omissions are not silently hidden.
-            if matches!(look, 900 | 910) {
-                let npc_look = look.saturating_mul(10).min(u16::MAX as u32) as u16;
-                return Self::load(assets, catalog, look as u16, npc_look);
-            }
             return Err(format!("Monster model missing for look {look}").into());
         };
         let document = C3Document::parse(&bytes)?;
@@ -460,11 +463,17 @@ impl NpcModel {
         // defined by the dedicated 100 motion in 3dmotion.ini. Using the
         // model's first embedded motion leaves Pheasant with its wings spread.
         let mut load_motion = |name: &str| {
+            let cataloged = name
+                .parse::<u32>()
+                .ok()
+                .and_then(|action| catalog.motions.get(catalog_id + action))
+                .map(|path| path.as_str().to_owned());
             [
                 format!("c3/monster/{look}N/{name}.c3"),
                 format!("c3/monster/{look}n/{name}.c3"),
             ]
             .into_iter()
+            .chain(cataloged)
             .find_map(|path| {
                 assets
                     .read(&path)
@@ -485,12 +494,18 @@ impl NpcModel {
             .ok_or("Monster mesh missing")?
             .clone();
         let model_id = catalog.models.ids_for_path(model_path.as_str()).next();
-        let texture = mesh
-            .texture_name
-            .trim_end_matches(".dds")
-            .parse::<u32>()
-            .ok()
-            .and_then(|id| catalog.textures.get(id))
+        // A look's own skin comes first (Guard2 shares Guard1's mesh but
+        // not its texture).
+        let texture = catalog
+            .textures
+            .get(catalog_id)
+            .or_else(|| {
+                mesh.texture_name
+                    .trim_end_matches(".dds")
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|id| catalog.textures.get(id))
+            })
             .or_else(|| model_id.and_then(|id| catalog.textures.get(id)))
             .or_else(|| model_id.and_then(|id| catalog.textures.get(id / 10)))
             .map(|path| path.as_str().to_owned())

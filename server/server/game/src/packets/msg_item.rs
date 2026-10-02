@@ -114,25 +114,9 @@ impl PacketProcess for MsgItem {
         let action = self.action_type.into();
         match action {
             ItemActionType::Ping => {
-                // a bit hacky, just testing it out.
-                // what if we missed with the client timestamp?
-                // does this yield a negative value? let's find out.
-                // lets add 30ms from the client timestamp, so when
-                // the client receives the packet, it can calculate
-                // the round trip time.
-                let msg = MsgItem {
-                    character_id: self.character_id,
-                    param0: self.param0,
-                    action_type: self.action_type,
-                    client_timestamp: self.client_timestamp + 30,
-                    amount: self.amount,
-                    param1: self.param1,
-                };
-                // LMFAO, this is so bad. it actually made the ping appear
-                // negative. I'm not sure if this is a bug in the client
-                // or if it's a bug in the server. I'm going to remove this
-                // later, but I'm going to leave it here for now.
-                actor.send(msg).await?;
+                // Sent straight back: the client measures the round trip
+                // against the timestamp it put in.
+                actor.send(self.clone()).await?;
             },
             ItemActionType::Buy => {
                 let entity = actor.entity();

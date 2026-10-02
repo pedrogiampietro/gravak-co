@@ -148,6 +148,11 @@ pub async fn tick(state: &State) {
                     .flatten()
             });
             let Some((target, distance)) = found else {
+                // Guards hold their post until a criminal comes along;
+                // only the walk back home (above) moves them.
+                if guard {
+                    continue;
+                }
                 let can_move = next_move
                     .lock()
                     .unwrap()

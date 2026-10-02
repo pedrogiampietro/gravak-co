@@ -66,6 +66,72 @@ impl HudSettings {
     }
 }
 
+/// The Options window's choices, shared by every character.
+pub fn load_options() -> crate::hud::HudConfig {
+    let mut options = crate::hud::HudConfig::default();
+    let Some(text) = options_path().and_then(|path| std::fs::read_to_string(path).ok()) else {
+        return options;
+    };
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        let flag = value == "1";
+        let number = value.parse::<u16>().ok();
+        match key {
+            "music" => options.music_volume = number.map_or(options.music_volume, |n| n.min(100) as u8),
+            "sound" => options.sound_volume = number.map_or(options.sound_volume, |n| n.min(100) as u8),
+            "names" => options.show_names = flag,
+            "counter" => options.kill_counter = flag,
+            "shadows" => options.full_shadows = flag,
+            "info" => options.show_info = flag,
+            "max_fps" => {
+                options.max_fps = number
+                    .filter(|fps| crate::hud::FPS_CAPS.contains(fps))
+                    .unwrap_or(options.max_fps);
+            }
+            "fullscreen" => options.fullscreen = flag,
+            "resolution" => {
+                options.resolution = number
+                    .filter(|index| usize::from(*index) < crate::hud::RESOLUTIONS.len())
+                    .map_or(options.resolution, |index| index as u8);
+            }
+            _ => {}
+        }
+    }
+    options
+}
+
+pub fn save_options(options: &crate::hud::HudConfig) {
+    let Some(path) = options_path() else {
+        return;
+    };
+    let text = format!(
+        "music={}\nsound={}\nnames={}\ncounter={}\nshadows={}\ninfo={}\nmax_fps={}\nfullscreen={}\nresolution={}\n",
+        options.music_volume,
+        options.sound_volume,
+        u8::from(options.show_names),
+        u8::from(options.kill_counter),
+        u8::from(options.full_shadows),
+        u8::from(options.show_info),
+        options.max_fps,
+        u8::from(options.fullscreen),
+        options.resolution,
+    );
+    let result = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, text));
+    if let Err(error) = result {
+        eprintln!("Could not save the options: {error}");
+    }
+}
+
+fn options_path() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("settings").join("options.ini"))
+}
+
 fn path(character_id: u32) -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.join("settings");
     Some(dir.join(format!("hud_{character_id}.ini")))

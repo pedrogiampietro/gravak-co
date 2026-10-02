@@ -6,8 +6,6 @@ use std::sync::{Arc, OnceLock};
 const FONT_SIZE: f32 = 12.0;
 const GUILD_COLOUR: [u8; 3] = [255, 255, 0];
 const RANK_COLOUR: [u8; 3] = [145, 185, 255];
-pub const BUILD_TEXT: &str =
-    "[Preservation] Skeleton test build by @digitalm1nd | Discord: _dek | discord.gg/CvKPXEHYRY";
 const CINZEL_DECORATIVE: &[u8] = include_bytes!("ui_assets/CinzelDecorative-Regular.ttf");
 
 static UI_FONT: OnceLock<std::result::Result<Arc<fontdue::Font>, String>> = OnceLock::new();
@@ -493,13 +491,6 @@ pub fn hit_flash_image() -> Result<RgbaImage> {
             image.put_pixel(x, y, Rgba([255, 235, 120, alpha]));
         }
     }
-    Ok(image)
-}
-
-pub fn build_banner() -> Result<RgbaImage> {
-    let font = font()?;
-    let mut image = RgbaImage::new(width(&font, BUILD_TEXT).ceil() as u32 + 2, 16);
-    text(&mut image, &font, &[(BUILD_TEXT, GUILD_COLOUR)], [0.0, 0.0]);
     Ok(image)
 }
 

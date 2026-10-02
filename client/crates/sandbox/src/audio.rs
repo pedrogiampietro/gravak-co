@@ -15,6 +15,50 @@ pub struct MovementAudio {
     clips: HashMap<String, SamplesBuffer>,
     voices: HashMap<String, rodio::Player>,
     last_action: Option<(Action, u64)>,
+    /// Sound effect volume, 0.0..=1.0.
+    sound_volume: f32,
+    music: MusicPlayer,
+}
+
+/// A `ini/MusicRegion.ini` area: the track that loops while the hero is in
+/// it.
+struct MusicRegion {
+    map_id: u32,
+    bounds: [i32; 4],
+    track: String,
+}
+
+/// Background music: the region's track, decoded off the render thread and
+/// looped at the music volume.
+#[derive(Default)]
+struct MusicPlayer {
+    regions: Vec<MusicRegion>,
+    /// The track asked for, and the one playing.
+    wanted: Option<String>,
+    playing: Option<(String, rodio::Player)>,
+    decoded: Option<std::sync::mpsc::Receiver<(String, std::result::Result<SamplesBuffer, String>)>>,
+    volume: f32,
+}
+
+fn music_regions(assets: &mut Assets) -> Vec<MusicRegion> {
+    let Ok(bytes) = assets.read("ini/MusicRegion.ini") else {
+        return Vec::new();
+    };
+    let catalog = sandbox_data::ini::SectionCatalog::parse(&bytes);
+    catalog
+        .sections()
+        .iter()
+        .filter_map(|section| {
+            let number = |key: &str| section.first(key)?.trim().parse::<i32>().ok();
+            let track = section.first("Music0")?.trim().replace('\\', "/");
+            (!track.eq_ignore_ascii_case("NULL")).then_some(())?;
+            Some(MusicRegion {
+                map_id: u32::try_from(number("Mapid")?).ok()?,
+                bounds: [number("Bound_X")?, number("Bound_Y")?, number("Bound_CX")?, number("Bound_CY")?],
+                track,
+            })
+        })
+        .collect()
 }
 
 impl MovementAudio {
@@ -46,7 +90,75 @@ impl MovementAudio {
             clips,
             voices: HashMap::new(),
             last_action: None,
+            sound_volume: 0.8,
+            music: MusicPlayer {
+                regions: music_regions(assets),
+                volume: 0.6,
+                ..MusicPlayer::default()
+            },
         })
+    }
+
+    /// Applies the Options window's volumes (0..=100).
+    pub fn set_volumes(&mut self, music: u8, sound: u8) {
+        self.sound_volume = f32::from(sound.min(100)) / 100.0;
+        self.music.volume = f32::from(music.min(100)) / 100.0;
+        if let Some((_, player)) = &self.music.playing {
+            player.set_volume(self.music.volume);
+        }
+        for voice in self.voices.values() {
+            voice.set_volume(self.sound_volume);
+        }
+    }
+
+    /// Plays the music of the region the hero stands in, changing track
+    /// when the hero walks into another region.
+    pub fn update_music(&mut self, assets: &mut Assets, map_id: u32, cell: [i32; 2]) {
+        let Some(device) = &self.device else { return };
+        let music = &mut self.music;
+        if let Some(receiver) = &music.decoded
+            && let Ok((track, decoded)) = receiver.try_recv()
+        {
+            music.decoded = None;
+            match decoded {
+                Ok(clip) if music.wanted.as_deref() == Some(track.as_str()) => {
+                    let player = rodio::Player::connect_new(device.mixer());
+                    player.set_volume(music.volume);
+                    player.append(clip.repeat_infinite());
+                    music.playing = Some((track, player));
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("Music {track}: {error}"),
+            }
+        }
+        let wanted = music
+            .regions
+            .iter()
+            .find(|region| {
+                let [x, y, width, height] = region.bounds;
+                region.map_id == map_id
+                    && (x..x + width).contains(&cell[0])
+                    && (y..y + height).contains(&cell[1])
+            })
+            .map(|region| region.track.clone());
+        if wanted == music.wanted {
+            return;
+        }
+        music.wanted = wanted.clone();
+        if let Some((_, player)) = music.playing.take() {
+            player.stop();
+        }
+        let Some(track) = wanted else { return };
+        let Ok(bytes) = assets.read(&track) else {
+            eprintln!("Music {track} is not in the client data");
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let decoded = decode_audio_bytes(bytes).map_err(|error| error.to_string());
+            let _ = sender.send((track, decoded));
+        });
+        music.decoded = Some(receiver);
     }
 
     pub fn open_device(&mut self) {
@@ -78,7 +190,7 @@ impl MovementAudio {
             previous.stop();
         }
         let voice = rodio::Player::connect_new(device.mixer());
-        voice.set_volume(0.8);
+        voice.set_volume(self.sound_volume);
         voice.append(clip.clone());
         self.voices.insert(path.clone(), voice);
     }
