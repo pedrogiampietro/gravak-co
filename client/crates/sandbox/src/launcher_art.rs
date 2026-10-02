@@ -18,9 +18,39 @@ const FILL_TOP: [f32; 3] = [255.0, 244.0, 204.0];
 const FILL_BOTTOM: [f32; 3] = [196.0, 142.0, 58.0];
 
 thread_local! {
+    /// The game's `GeneralBG.dds`, when the installation has it: panels and
+    /// columns are cut from it like the in-game menus and prompts.
+    static FRAME_SOURCE: RefCell<Option<RgbaImage>> = const { RefCell::new(None) };
+    static FRAMES: RefCell<HashMap<[u32; 2], RgbaImage>> = RefCell::new(HashMap::new());
     static BACKDROPS: RefCell<HashMap<[u32; 2], RgbaImage>> = RefCell::new(HashMap::new());
     static TITLES: RefCell<HashMap<(String, u32), RgbaImage>> = RefCell::new(HashMap::new());
     static EMBLEMS: RefCell<HashMap<(usize, u32, bool), RgbaImage>> = RefCell::new(HashMap::new());
+}
+
+/// Uses the game's window art (`GeneralBG.dds`) for the panels.
+pub fn set_frame_source(source: RgbaImage) {
+    FRAME_SOURCE.with(|cell| *cell.borrow_mut() = Some(source));
+    FRAMES.with(|cache| cache.borrow_mut().clear());
+}
+
+/// The game's framed window at `width` x `height`, if its art is loaded.
+fn framed(width: u32, height: u32) -> Option<RgbaImage> {
+    FRAME_SOURCE.with(|source| {
+        let source = source.borrow();
+        let source = source.as_ref()?;
+        Some(FRAMES.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() > 32 {
+                cache.clear();
+            }
+            cache
+                .entry([width, height])
+                .or_insert_with(|| {
+                    crate::original_panels::framed_window_from(source, width, height)
+                })
+                .clone()
+        }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -652,6 +682,14 @@ pub fn panel(image: &mut RgbaImage, rect: [i32; 4], title: Option<&str>) {
             [0, 0, 0, (alpha * 255.0) as u8],
         );
     }
+    if let Some(frame) = framed(w.max(1) as u32, h.max(1) as u32) {
+        image::imageops::overlay(image, &frame, i64::from(x), i64::from(y));
+        if let Some(title) = title {
+            // The title band of the friend dialog's art.
+            label(image, title, 16.0, x + w / 2, y + 10, GOLD_BRIGHT);
+        }
+        return;
+    }
     gradient(image, rect, [22, 50, 60, 238], [10, 28, 36, 245]);
     outline(image, [x - 1, y - 1, w + 2, h + 2], [4, 10, 14, 255]);
     outline(image, rect, GOLD_DEEP);
@@ -688,6 +726,9 @@ pub enum ButtonStyle {
     Choice { selected: bool },
 }
 
+/// A button in the game's prompt style: a translucent plate with a gold
+/// frame and gold serif label, warmer when it is the main action, lit on
+/// hover or when chosen.
 pub fn button(
     image: &mut RgbaImage,
     rect: [i32; 4],
@@ -697,63 +738,27 @@ pub fn button(
     disabled: bool,
 ) {
     let [x, y, w, h] = rect;
-    let (top, bottom, border, colour) = match style {
-        ButtonStyle::Primary => (
-            if hot {
-                [196, 150, 66, 255]
-            } else {
-                [156, 116, 48, 255]
-            },
-            if hot {
-                [118, 82, 28, 255]
-            } else {
-                [86, 58, 20, 255]
-            },
-            GOLD_BRIGHT,
-            [255, 246, 222, 255],
-        ),
-        ButtonStyle::Secondary => (
-            if hot {
-                [52, 98, 110, 255]
-            } else {
-                [30, 66, 78, 255]
-            },
-            if hot {
-                [20, 48, 58, 255]
-            } else {
-                [10, 30, 38, 255]
-            },
-            if hot { GOLD_BRIGHT } else { GOLD_DEEP },
-            if hot { GOLD_BRIGHT } else { GOLD },
-        ),
-        ButtonStyle::Choice { selected: true } => (
-            [132, 98, 40, 255],
-            [70, 48, 16, 255],
-            GOLD_BRIGHT,
-            GOLD_BRIGHT,
-        ),
-        ButtonStyle::Choice { selected: false } => (
-            if hot {
-                [40, 80, 92, 255]
-            } else {
-                [18, 42, 52, 255]
-            },
-            if hot {
-                [16, 40, 48, 255]
-            } else {
-                [8, 22, 28, 255]
-            },
-            if hot { GOLD } else { [96, 84, 56, 255] },
-            if hot { GOLD_BRIGHT } else { GOLD },
-        ),
+    let lit = hot && !disabled || matches!(style, ButtonStyle::Choice { selected: true });
+    let plate = match style {
+        _ if lit => [120, 90, 30, 170],
+        ButtonStyle::Primary => [92, 66, 22, 150],
+        _ => [0, 0, 0, 110],
     };
     if hot && !disabled {
-        glow(image, rect, 6, [255, 200, 110, 120]);
+        glow(image, rect, 5, [255, 200, 110, 90]);
     }
-    gradient(image, rect, top, bottom);
-    fill(image, [x + 1, y + 1, w - 2, 1], [255, 255, 255, 40]);
-    outline(image, rect, border);
-    outline(image, [x - 1, y - 1, w + 2, h + 2], [0, 0, 0, 140]);
+    fill(image, rect, plate);
+    fill(image, [x + 1, y + 1, w - 2, 1], [255, 240, 200, 30]);
+    outline(
+        image,
+        rect,
+        if lit {
+            [255, 214, 102, 255]
+        } else {
+            [168, 128, 52, 255]
+        },
+    );
+    outline(image, [x - 1, y - 1, w + 2, h + 2], [0, 0, 0, 120]);
     let mut size = if h >= 30 { 15.0 } else { 13.0 };
     while size > 10.0
         && crate::main_hud::label_font()
@@ -762,6 +767,7 @@ pub fn button(
     {
         size -= 1.0;
     }
+    let colour = if lit { [255, 244, 214, 255] } else { GOLD };
     let colour = if disabled {
         with_alpha(colour, 0.5)
     } else {
@@ -792,7 +798,7 @@ pub fn field(
     if focused {
         glow(image, rect, 5, [255, 210, 120, 110]);
     }
-    gradient(image, rect, [2, 8, 12, 255], [12, 26, 32, 255]);
+    fill(image, rect, [0, 0, 0, 170]);
     fill(image, [x + 1, y + 1, w - 2, 2], [0, 0, 0, 120]);
     outline(
         image,
@@ -802,7 +808,7 @@ pub fn field(
         } else if hot {
             GOLD
         } else {
-            [64, 94, 100, 255]
+            [168, 128, 52, 255]
         },
     );
     let advance = body(image, value, 13.0, x + 10, y + (h - 15) / 2, WHITE, w - 20);
@@ -849,6 +855,7 @@ pub struct ClassColumn<'a> {
     pub class: usize,
     pub name: &'a str,
     pub tagline: &'a str,
+    pub weapons: &'a str,
     pub description: &'a str,
     pub skills: &'a str,
     pub stats: [u8; 4],
@@ -882,17 +889,43 @@ pub fn class_column(
 ) {
     let [x, y, w, h] = rect;
     let tint = CLASS_TINTS[column.class % 4];
-    // Body: the profession's colour fading to night.
-    for row in 0..h {
-        let t = row as f32 / h as f32;
-        let strength = (1.0 - t * 1.35).max(0.0);
-        let c = [
-            (12.0 + tint[0] * 0.55 * strength) as u8,
-            (18.0 + tint[1] * 0.55 * strength) as u8,
-            (24.0 + tint[2] * 0.55 * strength) as u8,
-            235,
-        ];
-        fill(image, [x, y + row, w, 1], c);
+    // Body: the game's framed window washed in the profession's colour, or
+    // a gradient of that colour without the art.
+    let frame = framed(w.max(1) as u32, h.max(1) as u32);
+    // Inside the frame's borders, where the column's own painting goes.
+    let (inner_x, inner_w, inner_bottom) = if frame.is_some() {
+        (x + 14, w - 28, y + h - 18)
+    } else {
+        (x, w, y + h)
+    };
+    if let Some(frame) = &frame {
+        image::imageops::overlay(image, frame, i64::from(x), i64::from(y));
+        for row in 16..h - 16 {
+            let t = row as f32 / h as f32;
+            let strength = (1.0 - t * 1.6).max(0.0) * 0.45;
+            fill(
+                image,
+                [x + 14, y + row, w - 28, 1],
+                [
+                    tint[0] as u8,
+                    tint[1] as u8,
+                    tint[2] as u8,
+                    (strength * 255.0) as u8,
+                ],
+            );
+        }
+    } else {
+        for row in 0..h {
+            let t = row as f32 / h as f32;
+            let strength = (1.0 - t * 1.35).max(0.0);
+            let c = [
+                (12.0 + tint[0] * 0.55 * strength) as u8,
+                (18.0 + tint[1] * 0.55 * strength) as u8,
+                (24.0 + tint[2] * 0.55 * strength) as u8,
+                235,
+            ];
+            fill(image, [x, y + row, w, 1], c);
+        }
     }
     let art_height = h * 56 / 100;
     match column.portrait {
@@ -968,14 +1001,19 @@ pub fn class_column(
         let alpha = row as f32 / 60.0;
         fill(
             image,
-            [x, y + art_height - 60 + row, w, 1],
-            [8, 12, 16, (alpha * 200.0) as u8],
+            [inner_x, y + art_height - 60 + row, inner_w, 1],
+            [8, 12, 16, (alpha * 170.0) as u8],
         );
     }
     fill(
         image,
-        [x, y + art_height, w, h - art_height],
-        [8, 12, 16, 200],
+        [
+            inner_x,
+            y + art_height,
+            inner_w,
+            inner_bottom - y - art_height,
+        ],
+        [8, 12, 16, 170],
     );
 
     // Medallion, name and motto.
@@ -1008,7 +1046,10 @@ pub fn class_column(
     );
     line_y += 32;
     label(image, column.tagline, 13.0, x + w / 2, line_y, GOLD);
-    line_y += 24;
+    line_y += 18;
+    let width = text_width(column.weapons, 11.0);
+    body(image, column.weapons, 11.0, x + (w - width) / 2, line_y, GREY, w - 20);
+    line_y += 20;
     for line in wrap(column.description, 12.0, w - 30) {
         let width = text_width(&line, 12.0);
         body(
@@ -1051,8 +1092,9 @@ pub fn class_column(
         ColumnState::Hovered => fill(image, rect, [4, 8, 12, 70]),
         ColumnState::Selected => {}
     }
-    // Rules between columns, and the gold frame of the chosen one.
-    for row in 0..h {
+    // Rules between columns (the frame draws its own), and the gold frame of
+    // the chosen one.
+    for row in 0..if frame.is_some() { 0 } else { h } {
         let t = row as f32 / h as f32;
         let alpha = (1.0 - (t - 0.5).abs() * 2.0).max(0.0);
         blend(image, x, y + row, with_alpha(GOLD_DEEP, alpha * 0.8));

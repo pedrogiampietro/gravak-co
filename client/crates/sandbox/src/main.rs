@@ -6423,6 +6423,10 @@ fn run() -> Result<()> {
             _ => return Err("Unknown argument; use --help".into()),
         }
     }
+    // Opened before the login screens, which use the game's window art.
+    let mut assets = Assets::open(
+        &root.ok_or("You must supply your own 5065 installation: --assets <directory>")?,
+    )?;
     let mut network = None;
     let mut server_ready = None;
     let mut event_loop = None;
@@ -6437,7 +6441,7 @@ fn run() -> Result<()> {
             }),
             None => {
                 let mut screens = EventLoop::new()?;
-                let Some(handle) = launcher::run(&mut screens, auth_address, realm)? else {
+                let Some(handle) = launcher::run(&mut screens, &mut assets, auth_address, realm)? else {
                     return Ok(());
                 };
                 event_loop = Some(screens);
@@ -6452,18 +6456,22 @@ fn run() -> Result<()> {
         network = Some(handle);
     }
     let map_id = map_id.unwrap_or(1002);
-    let mut assets = Assets::open(
-        &root.ok_or("You must supply your own 5065 installation: --assets <directory>")?,
-    )?;
     let npc_catalog = character::NpcCatalog::load(&mut assets)?;
     let map = map::Map::load(&mut assets, map_id)?;
+    // Online, the body (and so the sex) is the server's, not the sample
+    // profile's.
+    let body = server_ready
+        .as_ref()
+        .map(|ready| ready.body)
+        .filter(|body| (1..=4).contains(body))
+        .unwrap_or(body);
     let mut character = character::Character::load(&mut assets, body)?;
     if let Some(ready) = &server_ready {
-        if ready.body != 0
+        if ready.body != 0 {
             // Start bare: the server's equipment and guild packets dress the
             // character. The sample profile's gear and guild are offline-only,
             // and other clients never see them.
-            && let Ok(mut live_character) = character::Character::load_remote(
+            match character::Character::load_remote(
                 &mut assets,
                 ready.body,
                 0,
@@ -6473,9 +6481,13 @@ fn run() -> Result<()> {
                 0,
                 ready.character_name.clone(),
                 ready.health.min(u16::MAX as u32) as u16,
-            )
-        {
-            character = live_character;
+            ) {
+                Ok(live_character) => character = live_character,
+                Err(error) => eprintln!(
+                    "Could not load the server look (body {}, hair {}): {error}; keeping the sample profile on that body",
+                    ready.body, ready.hair_style
+                ),
+            }
         }
         // The Ready event is consumed by wait_ready, so the server's
         // profile is applied here; the sample profile's 1000 life and

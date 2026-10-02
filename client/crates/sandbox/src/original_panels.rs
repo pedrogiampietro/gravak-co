@@ -896,9 +896,18 @@ const GENERAL_BG_BORDERS: [u32; 4] = [16, 17, 36, 38];
 /// The friend dialog's frame at any size: corners as drawn, the patterned
 /// bands repeated along each side, and the middle stretched to fit.
 pub fn framed_window(assets: &mut Assets, width: u32, height: u32) -> Result<RgbaImage> {
-    let source = assets.image(GENERAL_BG)?;
+    Ok(framed_window_from(&assets.image(GENERAL_BG)?, width, height))
+}
+
+/// The `GeneralBG.dds` art the framed windows are cut from.
+pub fn general_bg(assets: &mut Assets) -> Result<RgbaImage> {
+    assets.image(GENERAL_BG)
+}
+
+/// [`framed_window`] from an already loaded `GeneralBG.dds`.
+pub fn framed_window_from(source: &RgbaImage, width: u32, height: u32) -> RgbaImage {
     let [frame_w, frame_h] = GENERAL_BG_FRAME;
-    let frame = imageops::crop_imm(&source, 0, 0, frame_w.min(source.width()), frame_h.min(source.height())).to_image();
+    let frame = imageops::crop_imm(source, 0, 0, frame_w.min(source.width()), frame_h.min(source.height())).to_image();
     let (frame_w, frame_h) = frame.dimensions();
     let [left, right, top, bottom] = GENERAL_BG_BORDERS;
     let width = width.max(left + right + 1);
@@ -936,7 +945,7 @@ pub fn framed_window(assets: &mut Assets, width: u32, height: u32) -> Result<Rgb
     ] {
         imageops::overlay(&mut image, &piece(x, y, w, h), i64::from(dx), i64::from(dy));
     }
-    Ok(image)
+    image
 }
 
 /// The panels' gold label text, centred on `center_x`.

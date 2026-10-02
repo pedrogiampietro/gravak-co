@@ -403,8 +403,8 @@ impl LoginUi {
         let [width, height] = [size[0] as i32, size[1] as i32];
         let mut targets = Vec::new();
         let mut fields = Vec::new();
-        let mut classes = Vec::new();
-        let mut bodies = Vec::new();
+        let classes = Vec::new();
+        let bodies = Vec::new();
         let panel_width;
         let mut y;
         match self.screen {
@@ -762,6 +762,7 @@ impl LoginUi {
                     class: index,
                     name: CLASSES[index].0,
                     tagline: info.tagline,
+                    weapons: info.weapons,
                     description: info.description,
                     skills: info.skills,
                     stats: info.stats,
@@ -825,6 +826,7 @@ impl LoginUi {
     }
 
     /// Illustrations for the profession columns, by (class, female).
+    #[allow(dead_code)] // Wired once the installation's illustrations are found.
     pub fn set_portrait(&mut self, class: usize, female: bool, portrait: RgbaImage) {
         self.portraits.insert((class, female), portrait);
     }
@@ -1078,9 +1080,15 @@ impl ApplicationHandler for Launcher {
 /// the window is closed or Exit is chosen.
 pub fn run(
     event_loop: &mut EventLoop<()>,
+    assets: &mut crate::assets::Assets,
     auth_address: String,
     realm: String,
 ) -> Result<Option<NetworkHandle>, String> {
+    // The panels and columns use the game's window art when it is there.
+    match crate::original_panels::general_bg(assets) {
+        Ok(source) => crate::launcher_art::set_frame_source(source),
+        Err(error) => eprintln!("Login screens without the game's window art: {error}"),
+    }
     let mut launcher = Launcher {
         ui: LoginUi::new(crate::settings::load_last_account()),
         client: LoginClient::start(auth_address, realm),
