@@ -9,6 +9,7 @@ mod components;
 mod debug_log;
 mod hud;
 mod labels;
+mod logo;
 mod main_hud;
 mod magic;
 mod map;
@@ -372,6 +373,15 @@ struct App {
     team_positions: HashMap<u32, (u32, [i32; 2])>,
     /// When the teammates' positions were last asked for.
     team_positions_polled: f32,
+    /// Exit was chosen in the Options window; the event loop ends next.
+    exit_requested: bool,
+    /// The last ping round trip, and when the last ping was sent.
+    ping_ms: Option<u32>,
+    ping_sent: f32,
+    /// Frames drawn in the current one-second window, and the last count.
+    fps_frames: u32,
+    fps_window: f32,
+    fps: u32,
     pending_team_invite: Option<u32>,
     pending_team_join_request: Option<u32>,
     team_join_enabled: bool,
@@ -459,6 +469,8 @@ impl ApplicationHandler for App {
                 }
                 self.window = Some(window);
                 self.renderer = Some(renderer);
+                self.apply_window_options();
+                self.apply_frame_options();
                 self.last = Instant::now();
                 self.next_frame_at = self.last;
                 if let Some(interval) = self.frame_interval {
@@ -879,6 +891,12 @@ impl ApplicationHandler for App {
                     .tick(now.duration_since(self.last).as_secs_f32());
                 self.last = now;
                 let elapsed = self.started.elapsed().as_secs_f32();
+                self.fps_frames += 1;
+                if elapsed - self.fps_window >= 1.0 {
+                    self.fps = self.fps_frames;
+                    self.fps_frames = 0;
+                    self.fps_window = elapsed;
+                }
                 self.send_network_step(previous_cell);
                 self.check_portal();
                 let expired_dead = self
@@ -960,6 +978,7 @@ impl ApplicationHandler for App {
                 }
                 if let Some(audio) = &mut self.audio {
                     audio.update(&self.player);
+                    audio.update_music(&mut self.assets, self.map.id, self.player.cell());
                 }
                 let skill_hud = self.skill_hud();
                 let choice_menu = self.choice_menu();
@@ -1067,7 +1086,11 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exit_requested {
+            event_loop.exit();
+            return;
+        }
         let events = self
             .network
             .as_ref()
@@ -1077,6 +1100,7 @@ impl ApplicationHandler for App {
             self.handle_network_event(event);
         }
         self.poll_team_positions();
+        self.send_ping();
         // Closing the trade window by any means (its X, Escape, another
         // panel) cancels the trade, so the partner's window closes too.
         if self.trade.active && self.quick_panel != Some(shop::QuickPanel::Trade) {
@@ -1149,12 +1173,12 @@ impl ApplicationHandler for App {
                     .checked_sub(precision_margin)
                     .unwrap_or(now);
                 if now >= precision_deadline {
-                    _event_loop.set_control_flow(ControlFlow::Poll);
+                    event_loop.set_control_flow(ControlFlow::Poll);
                 } else {
-                    _event_loop.set_control_flow(ControlFlow::WaitUntil(precision_deadline));
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(precision_deadline));
                 }
             } else {
-                _event_loop.set_control_flow(ControlFlow::Poll);
+                event_loop.set_control_flow(ControlFlow::Poll);
             }
         }
     }
@@ -1386,35 +1410,10 @@ impl App {
         }
         if self.quick_panel.is_some() {
             if self.quick_panel == Some(shop::QuickPanel::Settings)
-                && let Some(action) = shop::settings_panel_action_at(viewport, self.cursor)
+                && let Some(action) =
+                    shop::settings_panel_action_at(viewport, self.cursor, &self.hud_config)
             {
-                match action {
-                    shop::SettingsPanelAction::ToggleArcs => {
-                        self.hud_config.center_arcs = !self.hud_config.center_arcs;
-                    }
-                    shop::SettingsPanelAction::ToggleBars => {
-                        self.hud_config.center_bars = !self.hud_config.center_bars;
-                    }
-                    shop::SettingsPanelAction::ScaleDown => {
-                        self.hud_config.center_scale =
-                            self.hud_config.center_scale.saturating_sub(10).max(75);
-                    }
-                    shop::SettingsPanelAction::ScaleUp => {
-                        self.hud_config.center_scale = (self.hud_config.center_scale + 10).min(140);
-                    }
-                    shop::SettingsPanelAction::DistanceDown => {
-                        self.hud_config.center_arc_distance = self
-                            .hud_config
-                            .center_arc_distance
-                            .saturating_sub(10)
-                            .max(80);
-                    }
-                    shop::SettingsPanelAction::DistanceUp => {
-                        self.hud_config.center_arc_distance =
-                            (self.hud_config.center_arc_distance + 10).min(180);
-                    }
-                }
-                self.network_status = "configuração do HUD atualizada".into();
+                self.handle_settings_action(action);
                 self.held = false;
                 return true;
             }
@@ -1764,6 +1763,104 @@ impl App {
             self.inventory_open = true;
             self.trade_opened_inventory = true;
         }
+    }
+
+    /// Carries out a click in the Options window and saves the options.
+    fn handle_settings_action(&mut self, action: shop::SettingsPanelAction) {
+        use shop::SettingsPanelAction as A;
+        let options = &mut self.hud_config;
+        match action {
+            A::Music(volume) => options.music_volume = volume,
+            A::Sound(volume) => options.sound_volume = volume,
+            A::Resolution(index) => {
+                options.resolution = index;
+                options.fullscreen = false;
+            }
+            A::ToggleNames => options.show_names = !options.show_names,
+            A::ToggleCounter => options.kill_counter = !options.kill_counter,
+            A::Shadows(full) => options.full_shadows = full,
+            A::Other => options.options_page = 1 - options.options_page.min(1),
+            A::MaxFps(cap) => options.max_fps = cap,
+            A::ToggleInfo => options.show_info = !options.show_info,
+            A::ToggleFullscreen => options.fullscreen = !options.fullscreen,
+            A::Exit => {
+                self.exit_requested = true;
+                return;
+            }
+            A::Delete => {
+                self.network_status = "Delete: characters are deleted from the login screen.".into();
+                return;
+            }
+            A::Hotkey | A::Help => {
+                self.network_status = "F1-F10 hotkeys | Ctrl+click attack / jump | Shift+click player menu | F11 performance | Esc close".into();
+                return;
+            }
+        }
+        if matches!(action, A::Resolution(_) | A::ToggleFullscreen) {
+            self.apply_window_options();
+        }
+        if matches!(action, A::MaxFps(_)) {
+            self.apply_frame_options();
+        }
+        if let Some(audio) = &mut self.audio {
+            audio.set_volumes(self.hud_config.music_volume, self.hud_config.sound_volume);
+        }
+        settings::save_options(&self.hud_config);
+    }
+
+    /// The frame cap and VSync. `GRAVAK_MAX_FPS` and `GRAVAK_PRESENT_MODE`
+    /// still win when set, for benchmarking.
+    fn apply_frame_options(&mut self) {
+        let cap = self.hud_config.max_fps;
+        self.frame_interval = configured_frame_interval().or_else(|| hud::frame_interval(cap));
+        if std::env::var("GRAVAK_PRESENT_MODE").is_err()
+            && let Some(renderer) = &mut self.renderer
+        {
+            renderer.set_vsync(cap == 0);
+        }
+    }
+
+    /// Fullscreen or the chosen window size.
+    fn apply_window_options(&mut self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        if self.hud_config.fullscreen {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            return;
+        }
+        window.set_fullscreen(None);
+        let [width, height] = hud::RESOLUTIONS[usize::from(self.hud_config.resolution).min(hud::RESOLUTIONS.len() - 1)];
+        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(width, height));
+    }
+
+    /// Pings the server every two seconds (MsgItem 27) for the ping shown
+    /// in the top-left corner.
+    fn send_ping(&mut self) {
+        let now = self.started.elapsed().as_secs_f32();
+        if now - self.ping_sent < 2.0 {
+            return;
+        }
+        self.ping_sent = now;
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.ping(character_id, self.started.elapsed().as_millis() as u32);
+        }
+    }
+
+    /// The top-left information lines, as in the original client: the map
+    /// and the hero's cell, then the frame rate and the ping.
+    fn info_lines(&self) -> Vec<String> {
+        if !self.hud_config.show_info {
+            return Vec::new();
+        }
+        let [x, y] = self.player.cell();
+        let ping = self
+            .ping_ms
+            .map_or_else(|| "-".to_owned(), |ping| format!("{ping} ms"));
+        vec![
+            format!("{} ({x},{y})", map_name(self.map.id)),
+            format!("FPS: {}   Ping: {ping}", self.fps),
+        ]
     }
 
     /// Asks the server once a second where the teammates are, so their
@@ -2619,6 +2716,13 @@ impl App {
                     _ => {}
                 }
                 self.network_status = format!("online: team action {action} target {target_id}");
+            }
+            NetworkEvent::Pong(sent) => {
+                // Signed, so a server that skews the echoed clock cannot
+                // wrap the round trip into billions of milliseconds.
+                let now = self.started.elapsed().as_millis() as u32;
+                let round_trip = now.wrapping_sub(sent) as i32;
+                self.ping_ms = Some(round_trip.max(0) as u32);
             }
             NetworkEvent::TeamMemberPosition {
                 id,
@@ -4047,6 +4151,7 @@ impl App {
             active_skill: self.active_skill,
             kill_count: self.kill_count,
             kill_mode: self.kill_mode,
+            info: self.info_lines(),
             hovered: None,
         }
     }
@@ -6139,6 +6244,25 @@ impl App {
     }
 }
 
+/// The names of the maps the server uses; `GameMap.dat` holds only their
+/// files, so the client keeps the names itself.
+fn map_name(map_id: u32) -> String {
+    match map_id {
+        1000 => "Desert City".into(),
+        1002 => "Twin City".into(),
+        1004 => "Promotion Center".into(),
+        1005 => "Arena".into(),
+        1010 => "Birth Village".into(),
+        1011 => "Phoenix Castle".into(),
+        1015 => "Bird Island".into(),
+        1020 => "Ape Mountain".into(),
+        1036 => "Market".into(),
+        1039 => "Training Ground".into(),
+        6000 | 6001 => "Jail".into(),
+        _ => format!("Map {map_id}"),
+    }
+}
+
 fn wire_action(action: u32) -> Option<Action> {
     Some(match action {
         110 => Action::WalkLeft,
@@ -6665,6 +6789,12 @@ fn run() -> Result<()> {
         team_members: Vec::new(),
         team_positions: HashMap::new(),
         team_positions_polled: f32::NEG_INFINITY,
+        exit_requested: false,
+        ping_ms: None,
+        ping_sent: f32::NEG_INFINITY,
+        fps_frames: 0,
+        fps_window: 0.0,
+        fps: 0,
         team_leader_id: None,
         pending_team_invite: None,
         pending_team_join_request: None,
@@ -6694,6 +6824,10 @@ fn run() -> Result<()> {
         remote_npcs_loading: HashSet::new(),
         remote_monsters_loading: HashSet::new(),
     };
+    app.hud_config = settings::load_options();
+    if let Some(audio) = &mut app.audio {
+        audio.set_volumes(app.hud_config.music_volume, app.hud_config.sound_volume);
+    }
     if let Some(saved) = app.network_character_id.and_then(settings::load) {
         saved.apply_to(&mut app.action_bar);
         app.skill_bar_open = saved.skill_bar_open;

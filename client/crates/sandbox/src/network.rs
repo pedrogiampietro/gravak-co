@@ -305,6 +305,8 @@ pub enum NetworkEvent {
         position: [i32; 2],
         direction: u8,
     },
+    /// A ping (MsgItem 27) came back carrying the client clock it left at.
+    Pong(u32),
     /// Where a teammate stands (MsgAction 106); `map_id` is 0 when it is
     /// not on the local hero's map.
     TeamMemberPosition {
@@ -432,6 +434,10 @@ enum NetworkCommand {
     QueryTeamMember {
         character_id: u32,
         member_id: u32,
+    },
+    Ping {
+        character_id: u32,
+        timestamp: u32,
     },
     KillMode {
         character_id: u32,
@@ -637,6 +643,7 @@ impl NetworkHandle {
                 | NetworkEvent::Team { .. }
                 | NetworkEvent::TeamMember { .. }
                 | NetworkEvent::TeamMemberPosition { .. }
+                | NetworkEvent::Pong(_)
                 | NetworkEvent::Trade { .. }
                 | NetworkEvent::TradeItem(_)
                 | NetworkEvent::VendorItem { .. }
@@ -697,6 +704,13 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Action {
             character_id,
             action,
+        });
+    }
+
+    pub fn ping(&self, character_id: u32, timestamp: u32) {
+        let _ = self.commands.send(NetworkCommand::Ping {
+            character_id,
+            timestamp,
         });
     }
 
@@ -1676,6 +1690,13 @@ async fn run(
                         drop_type: item.drop_type,
                     });
                 }
+                // MsgItem echoes: a ping (27) carries back its send time.
+                Some(GameEvent::Other(gravak_protocol::MSG_ITEM, body)) if body.len() >= 16 => {
+                    let word = |at: usize| u32::from_le_bytes([body[at], body[at + 1], body[at + 2], body[at + 3]]);
+                    if word(8) == 27 {
+                        let _ = events.send(NetworkEvent::Pong(word(12)));
+                    }
+                }
                 Some(_) => {}
                 None => return Ok(()),
             },
@@ -1742,6 +1763,15 @@ async fn run(
                 Some(NetworkCommand::Action { character_id, action }) => {
                     session
                         .send(&ActionPacket::change_action(character_id, action))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Ping {
+                    character_id,
+                    timestamp,
+                }) => {
+                    session
+                        .send(&ItemActionPacket::ping(character_id, timestamp))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

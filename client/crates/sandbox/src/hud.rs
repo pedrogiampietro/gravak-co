@@ -9,12 +9,34 @@ use crate::main_hud::{self, MainHudArt, MainHudState};
 use crate::original_ui_layout::{self as layout, ChatStripControl, MainHudButton};
 use image::{Pixel, Rgba, RgbaImage, imageops};
 
+/// The player's options (the Options window), kept in
+/// `settings/options.ini` beside the client. They travel with the HUD and
+/// the panels, which redraw when any of them changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HudConfig {
     pub center_arcs: bool,
     pub center_bars: bool,
     pub center_scale: u8,
     pub center_arc_distance: u8,
+    /// Background music and sound effect volumes, 0..=100.
+    pub music_volume: u8,
+    pub sound_volume: u8,
+    /// Names over the other players and NPCs.
+    pub show_names: bool,
+    /// The kill counter beside the Skill button.
+    pub kill_counter: bool,
+    /// Shadows under every actor ("Full") or only under the hero.
+    pub full_shadows: bool,
+    /// Map, position, FPS and ping in the top-left corner.
+    pub show_info: bool,
+    /// Frame cap; 0 follows the monitor (VSync), `FPS_UNLIMITED` draws as
+    /// fast as the machine can.
+    pub max_fps: u16,
+    pub fullscreen: bool,
+    /// Window size: 0 the default 1366x768, 1 for 800x600, 2 for 1024x768.
+    pub resolution: u8,
+    /// The Options window shows its second page ("Other").
+    pub options_page: u8,
 }
 
 impl Default for HudConfig {
@@ -24,8 +46,31 @@ impl Default for HudConfig {
             center_bars: true,
             center_scale: 100,
             center_arc_distance: 118,
+            music_volume: 60,
+            sound_volume: 80,
+            show_names: true,
+            kill_counter: true,
+            full_shadows: true,
+            show_info: true,
+            max_fps: 0,
+            fullscreen: false,
+            resolution: 0,
+            options_page: 0,
         }
     }
+}
+
+/// The window sizes offered by the Options window, by `HudConfig::resolution`.
+pub const RESOLUTIONS: [[u32; 2]; 3] = [[1366, 768], [800, 600], [1024, 768]];
+/// The frame caps offered by the Options window; 0 is VSync.
+pub const FPS_CAPS: [u16; 6] = [0, 30, 60, 120, 144, FPS_UNLIMITED];
+pub const FPS_UNLIMITED: u16 = u16::MAX;
+
+/// The pause between frames for a cap: none for VSync (the monitor paces
+/// it) and for Unlimited.
+pub fn frame_interval(max_fps: u16) -> Option<std::time::Duration> {
+    (max_fps != 0 && max_fps != FPS_UNLIMITED)
+        .then(|| std::time::Duration::from_secs_f64(1.0 / f64::from(max_fps)))
 }
 
 /// Skill state shown by the HUD: the skill bar opened by the "Skill" button
@@ -49,6 +94,8 @@ pub struct SkillHud {
     pub kill_count: u32,
     /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
     pub kill_mode: u8,
+    /// The top-left information lines: map and position, FPS and ping.
+    pub info: Vec<String>,
     /// Skill under the cursor in the bar; filled in by the renderer.
     pub hovered: Option<u32>,
 }
@@ -734,7 +781,7 @@ pub fn image(
     superman_active: bool,
     stigma_active: bool,
     shield_active: bool,
-    _hud_config: HudConfig,
+    hud_config: HudConfig,
     skills: &SkillHud,
 ) -> Result<RgbaImage> {
     let font = main_hud::font()?;
@@ -775,7 +822,9 @@ pub fn image(
         font,
     );
     draw_skill_bar(&mut img, assets, font, viewport, skills);
-    draw_kill_counter(&mut img, viewport, skills.kill_count);
+    if hud_config.kill_counter {
+        draw_kill_counter(&mut img, viewport, skills.kill_count);
+    }
     draw_hotkeys(&mut img, assets, font, viewport, action_bar, hover)?;
 
     // Status effects, listed under the top-left information line.
@@ -792,13 +841,25 @@ pub fn image(
     if skills.xp_ready {
         badges.insert(0, ("XP Skills Ready", [255, 220, 90, 255]));
     }
+    for (row, line) in skills.info.iter().enumerate() {
+        main_hud::text(
+            &mut img,
+            font,
+            line,
+            12.0,
+            [4, 4 + row as i32 * 15],
+            [255, 255, 255, 255],
+            None,
+        );
+    }
+    let badges_top = 6 + skills.info.len().max(2) as i32 * 15;
     for (row, (label, color)) in badges.into_iter().enumerate() {
         main_hud::text(
             &mut img,
             font,
             label,
             12.0,
-            [4, 36 + row as i32 * 15],
+            [4, badges_top + row as i32 * 15],
             color,
             None,
         );

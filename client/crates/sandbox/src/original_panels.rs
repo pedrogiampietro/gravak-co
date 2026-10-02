@@ -134,6 +134,11 @@ enum Face {
     Label(&'static str),
     /// Two-state check box texture.
     Check(&'static str, &'static str, bool),
+    /// A small framed button with a label, lit when selected, for options
+    /// the original window has no art for.
+    Button(&'static str, bool),
+    /// A check box drawn by the client, with its label on the right.
+    Toggle(&'static str, bool),
 }
 
 struct Control<A> {
@@ -176,6 +181,41 @@ fn paint<A>(image: &mut RgbaImage, assets: &mut Assets, controls: &[Control<A>])
                     label,
                     13.0,
                     [x + (width - text_width) / 2, y + (height - 15) / 2],
+                    [232, 206, 148, 255],
+                );
+            }
+            Face::Button(label, selected) => {
+                fill(image, control.rect, [6, 18, 30, 210]);
+                if selected {
+                    highlight(image, control.rect);
+                } else {
+                    outline(image, control.rect, [120, 100, 62, 255]);
+                }
+                let font = crate::main_hud::label_font()?;
+                let text_width = crate::main_hud::text_width(font, label, 13.0);
+                crate::main_hud::crisp_text(
+                    image,
+                    font,
+                    label,
+                    13.0,
+                    [x + (width - text_width) / 2, y + (height - 15) / 2],
+                    if selected { [255, 232, 160, 255] } else { [200, 180, 130, 255] },
+                );
+            }
+            Face::Toggle(label, checked) => {
+                let box_rect = [x, y + (height - 12) / 2, 12, 12];
+                fill(image, box_rect, [6, 18, 30, 200]);
+                outline(image, box_rect, [196, 170, 100, 255]);
+                if checked {
+                    fill(image, [box_rect[0] + 3, box_rect[1] + 3, 6, 6], [255, 215, 108, 255]);
+                }
+                let font = crate::main_hud::label_font()?;
+                crate::main_hud::crisp_text(
+                    image,
+                    font,
+                    label,
+                    13.0,
+                    [x + 18, y + (height - 15) / 2],
                     [232, 206, 148, 255],
                 );
             }
@@ -580,61 +620,200 @@ pub fn trade_action_at(
 // Options ([0-138]) and Message ([0-232]) have no client-side behaviour yet;
 // they show the original controls only.
 
-fn settings_controls() -> Vec<Control<()>> {
-    let check = |rect, off, on| control(rect, Face::Check(off, on, true), None);
-    vec![
-        control(
-            [340, 23, 15, 15],
-            Face::Art("data/main/CloseBtnS.dds"),
-            None,
-        ),
-        check(
-            [66, 124, 75, 20],
-            "data/main/SetupDisable.dds",
-            "data/main/SetupEnable.dds",
-        ),
-        check(
-            [208, 124, 75, 20],
-            "data/main/CountDisable.dds",
-            "data/main/CountEnable.dds",
-        ),
-        control(
-            [153, 156, 60, 20],
-            Face::Art("data/main/SetupBtnReal.dds"),
-            None,
-        ),
-        control(
-            [244, 156, 60, 20],
-            Face::Art("data/main/SetupBtnSimple.dds"),
-            None,
-        ),
+/// What a click in the Options window asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsAction {
+    /// A volume, 0..=100, from where the bar was clicked.
+    Music(u8),
+    Sound(u8),
+    /// An index into `hud::RESOLUTIONS`.
+    Resolution(u8),
+    ToggleNames,
+    ToggleCounter,
+    /// Full (`true`) or Simple shadows.
+    Shadows(bool),
+    Delete,
+    Hotkey,
+    /// Switches between the original page and the "Other" options.
+    Other,
+    Exit,
+    Help,
+    MaxFps(u16),
+    ToggleInfo,
+    ToggleFullscreen,
+}
+
+// GUI.ini [138-1530]/[138-1532]: the music and sound bars, and the two
+// window sizes beside their icons. Clicks land on a taller band than the
+// thin bars themselves.
+const MUSIC_BAR: [i32; 4] = [84, 43, 88, 6];
+const SOUND_BAR: [i32; 4] = [239, 43, 88, 6];
+const BAR_HIT_PADDING: i32 = 6;
+const RESOLUTION_RECTS: [(u8, [i32; 4]); 2] = [(1, [34, 62, 128, 22]), (2, [194, 62, 124, 22])];
+/// The middle of the window, which the "Other" page takes over: the
+/// dialog art paints Show Name and Shadow there.
+const OTHER_PAGE_RECT: [i32; 4] = [28, 104, 314, 86];
+
+/// Label and width of each frame-cap button.
+fn fps_button(cap: u16) -> (&'static str, i32) {
+    match cap {
+        0 => ("VSync", 52),
+        30 => ("30", 34),
+        60 => ("60", 34),
+        120 => ("120", 40),
+        144 => ("144", 40),
+        _ => ("Unlimited", 74),
+    }
+}
+
+fn settings_controls(options: &crate::hud::HudConfig) -> Vec<Control<SettingsAction>> {
+    use SettingsAction as A;
+    let mut controls = vec![control(
+        [340, 23, 15, 15],
+        Face::Art("data/main/CloseBtnS.dds"),
+        None,
+    )];
+    if options.options_page == 0 {
+        controls.extend([
+            control(
+                [66, 124, 75, 20],
+                Face::Check(
+                    "data/main/SetupDisable.dds",
+                    "data/main/SetupEnable.dds",
+                    options.show_names,
+                ),
+                Some(A::ToggleNames),
+            ),
+            control(
+                [208, 124, 75, 20],
+                Face::Check(
+                    "data/main/CountDisable.dds",
+                    "data/main/CountEnable.dds",
+                    options.kill_counter,
+                ),
+                Some(A::ToggleCounter),
+            ),
+            control(
+                [153, 156, 60, 20],
+                Face::Art("data/main/SetupBtnReal.dds"),
+                Some(A::Shadows(true)),
+            ),
+            control(
+                [244, 156, 60, 20],
+                Face::Art("data/main/SetupBtnSimple.dds"),
+                Some(A::Shadows(false)),
+            ),
+        ]);
+    } else {
+        let mut x = 40;
+        for cap in crate::hud::FPS_CAPS {
+            let (label, width) = fps_button(cap);
+            controls.push(control(
+                [x, 128, width, 20],
+                Face::Button(label, options.max_fps == cap),
+                Some(A::MaxFps(cap)),
+            ));
+            x += width + 4;
+        }
+        controls.extend([
+            control(
+                [42, 160, 140, 20],
+                Face::Toggle("Show FPS / ping", options.show_info),
+                Some(A::ToggleInfo),
+            ),
+            control(
+                [200, 160, 130, 20],
+                Face::Toggle("Fullscreen", options.fullscreen),
+                Some(A::ToggleFullscreen),
+            ),
+        ]);
+    }
+    controls.extend([
         control(
             [45, 200, 62, 20],
             Face::Art("data/main/SetupBtnDelete.dds"),
-            None,
+            Some(A::Delete),
         ),
         control(
             [119, 200, 62, 20],
             Face::Art("data/main/SetupBtnHotkey.dds"),
-            None,
+            Some(A::Hotkey),
         ),
         control(
             [193, 200, 62, 20],
             Face::Art("data/main/SetupBtnOther.dds"),
-            None,
+            Some(A::Other),
         ),
         control(
             [267, 200, 62, 20],
             Face::Art("data/main/SetupBtnExit.dds"),
-            None,
+            Some(A::Exit),
         ),
-        control([77, 261, 62, 20], Face::Art("data/main/HelpBtn2.dds"), None),
+        control([77, 261, 62, 20], Face::Art("data/main/HelpBtn2.dds"), Some(A::Help)),
         control(
             [244, 261, 62, 20],
             Face::Art("data/main/CloseBtn2.dds"),
             None,
         ),
-    ]
+    ]);
+    controls
+}
+
+fn bar_value(bar: [i32; 4], point: [i32; 2]) -> Option<u8> {
+    let band = [bar[0] - 4, bar[1] - BAR_HIT_PADDING, bar[2] + 8, bar[3] + BAR_HIT_PADDING * 2];
+    inside(band, point).then(|| {
+        (((point[0] - bar[0]) as f32 / bar[2] as f32).clamp(0.0, 1.0) * 100.0).round() as u8
+    })
+}
+
+/// The Options window's action under the cursor.
+pub fn settings_action_at(
+    viewport: [f32; 2],
+    cursor: [f32; 2],
+    options: &crate::hud::HudConfig,
+) -> Option<SettingsAction> {
+    let point = local(QuickPanel::Settings, viewport, cursor)?;
+    if let Some(volume) = bar_value(MUSIC_BAR, point) {
+        return Some(SettingsAction::Music(volume));
+    }
+    if let Some(volume) = bar_value(SOUND_BAR, point) {
+        return Some(SettingsAction::Sound(volume));
+    }
+    if let Some((index, _)) = RESOLUTION_RECTS.iter().find(|(_, rect)| inside(*rect, point)) {
+        return Some(SettingsAction::Resolution(*index));
+    }
+    hit(&settings_controls(options), point)
+}
+
+/// The dynamic parts of the Options window: volume fills, the chosen window
+/// size and shadow mode, and the second page's heading.
+fn paint_settings(image: &mut RgbaImage, options: &crate::hud::HudConfig) {
+    for (bar, volume) in [(MUSIC_BAR, options.music_volume), (SOUND_BAR, options.sound_volume)] {
+        let filled = (bar[2] as f32 * f32::from(volume) / 100.0).round() as i32;
+        // A gold gradient, darker at the bottom, and a round knob.
+        for row in 0..bar[3] {
+            let t = row as f32 / (bar[3] - 1).max(1) as f32;
+            let colour = [
+                (255.0 - 40.0 * t) as u8,
+                (226.0 - 80.0 * t) as u8,
+                (140.0 - 90.0 * t) as u8,
+                235,
+            ];
+            fill(image, [bar[0], bar[1] + row, filled, 1], colour);
+        }
+        knob(image, [bar[0] + filled, bar[1] + bar[3] / 2]);
+    }
+    for (index, rect) in RESOLUTION_RECTS {
+        if options.resolution == index {
+            highlight(image, rect);
+        }
+    }
+    if options.options_page == 0 {
+        let selected = if options.full_shadows { [153, 156, 60, 20] } else { [244, 156, 60, 20] };
+        highlight(image, selected);
+    } else {
+        highlight(image, [193, 200, 62, 20]);
+    }
 }
 
 fn mail_controls() -> Vec<Control<()>> {
@@ -709,6 +888,57 @@ pub fn framed_panel(assets: &mut Assets, inner: u32) -> Result<RgbaImage> {
     Ok(image)
 }
 
+/// `GeneralBG.dds` cut for any size: the frame drawn on its 205x374
+/// canvas, its borders (left, right, top with the title band, bottom).
+const GENERAL_BG_FRAME: [u32; 2] = [205, 374];
+const GENERAL_BG_BORDERS: [u32; 4] = [16, 17, 36, 38];
+
+/// The friend dialog's frame at any size: corners as drawn, the patterned
+/// bands repeated along each side, and the middle stretched to fit.
+pub fn framed_window(assets: &mut Assets, width: u32, height: u32) -> Result<RgbaImage> {
+    let source = assets.image(GENERAL_BG)?;
+    let [frame_w, frame_h] = GENERAL_BG_FRAME;
+    let frame = imageops::crop_imm(&source, 0, 0, frame_w.min(source.width()), frame_h.min(source.height())).to_image();
+    let (frame_w, frame_h) = frame.dimensions();
+    let [left, right, top, bottom] = GENERAL_BG_BORDERS;
+    let width = width.max(left + right + 1);
+    let height = height.max(top + bottom + 1);
+    let mut image = RgbaImage::new(width, height);
+    let piece = |x: u32, y: u32, w: u32, h: u32| imageops::crop_imm(&frame, x, y, w, h).to_image();
+    let (inner_w, inner_h) = (frame_w - left - right, frame_h - top - bottom);
+    let (target_w, target_h) = (width - left - right, height - top - bottom);
+    // Middle, stretched.
+    let middle = imageops::resize(&piece(left, top, inner_w, inner_h), target_w, target_h, imageops::FilterType::Triangle);
+    imageops::overlay(&mut image, &middle, i64::from(left), i64::from(top));
+    // Bands, repeated so their pattern is not smeared.
+    for (band, y) in [(piece(left, 0, inner_w, top), 0), (piece(left, frame_h - bottom, inner_w, bottom), height - bottom)] {
+        let mut x = left;
+        while x < width - right {
+            let span = (width - right - x).min(inner_w);
+            imageops::overlay(&mut image, &imageops::crop_imm(&band, 0, 0, span, band.height()).to_image(), i64::from(x), i64::from(y));
+            x += span;
+        }
+    }
+    for (band, x) in [(piece(0, top, left, inner_h), 0), (piece(frame_w - right, top, right, inner_h), width - right)] {
+        let mut y = top;
+        while y < height - bottom {
+            let span = (height - bottom - y).min(inner_h);
+            imageops::overlay(&mut image, &imageops::crop_imm(&band, 0, 0, band.width(), span).to_image(), i64::from(x), i64::from(y));
+            y += span;
+        }
+    }
+    // Corners, as drawn.
+    for (x, y, w, h, dx, dy) in [
+        (0, 0, left, top, 0, 0),
+        (frame_w - right, 0, right, top, width - right, 0),
+        (0, frame_h - bottom, left, bottom, 0, height - bottom),
+        (frame_w - right, frame_h - bottom, right, bottom, width - right, height - bottom),
+    ] {
+        imageops::overlay(&mut image, &piece(x, y, w, h), i64::from(dx), i64::from(dy));
+    }
+    Ok(image)
+}
+
 /// The panels' gold label text, centred on `center_x`.
 pub fn label_centered(image: &mut RgbaImage, value: &str, size: f32, center_x: i32, y: i32, colour: [u8; 4]) {
     if let Ok(font) = crate::main_hud::label_font() {
@@ -757,6 +987,8 @@ pub struct PanelData<'a> {
     pub pending_friend_name: Option<&'a str>,
     pub selected_target_name: Option<&'a str>,
     pub trade: &'a crate::network::TradeView,
+    /// The player's options, for the Options window.
+    pub options: crate::hud::HudConfig,
 }
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -785,6 +1017,35 @@ fn outline(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
     for py in y..y + height {
         put(x, py);
         put(x + width - 1, py);
+    }
+}
+
+/// The lit state of a chosen option: a warm wash, a gold frame and a soft
+/// halo one pixel outside it.
+fn highlight(image: &mut RgbaImage, rect: [i32; 4]) {
+    let [x, y, width, height] = rect;
+    fill(image, rect, [255, 200, 90, 46]);
+    outline(image, [x - 1, y - 1, width + 2, height + 2], [255, 200, 90, 90]);
+    outline(image, rect, [255, 222, 130, 255]);
+}
+
+/// A round gold slider knob with a highlight, centred on `centre`.
+fn knob(image: &mut RgbaImage, centre: [i32; 2]) {
+    for dy in -5..=5_i32 {
+        for dx in -5..=5_i32 {
+            let distance = ((dx * dx + dy * dy) as f32).sqrt();
+            if distance > 5.0 {
+                continue;
+            }
+            let colour = if distance > 4.0 {
+                [50, 34, 8, 255]
+            } else if dx + dy < -2 {
+                [255, 246, 210, 255]
+            } else {
+                [230, 180, 80, 255]
+            };
+            fill(image, [centre[0] + dx, centre[1] + dy, 1, 1], colour);
+        }
     }
 }
 
@@ -1013,7 +1274,17 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 outline(&mut image, [112, 261, 62, 20], [255, 215, 108, 255]);
             }
         }
-        QuickPanel::Settings => paint(&mut image, assets, &settings_controls())?,
+        QuickPanel::Settings => {
+            if data.options.options_page != 0 {
+                // The original middle rows give way to the client's own
+                // options, on a framed plate over the art.
+                fill(&mut image, OTHER_PAGE_RECT, [10, 26, 40, 255]);
+                outline(&mut image, OTHER_PAGE_RECT, [150, 124, 70, 255]);
+                text(&mut image, "FPS limit", 42, 110, GOLD, 120);
+            }
+            paint(&mut image, assets, &settings_controls(&data.options))?;
+            paint_settings(&mut image, &data.options);
+        }
         QuickPanel::Mail => {
             paint(&mut image, assets, &mail_controls())?;
             text(&mut image, "No messages.", 46, 80, GREY, 290);
@@ -1179,6 +1450,7 @@ mod tests {
                 pending_friend_name: None,
                 selected_target_name: Some("Sheko"),
                 trade: &trade,
+                options: crate::hud::HudConfig::default(),
             };
             image(&mut assets, panel, &data)?.save(output.join(format!("{panel:?}.png")))?;
         }

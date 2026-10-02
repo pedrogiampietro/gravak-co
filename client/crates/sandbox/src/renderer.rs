@@ -201,9 +201,6 @@ enum UiTextureJob {
         character: Character,
         name_colour: [u8; 3],
     },
-    Build {
-        path: String,
-    },
     Feedback {
         path: String,
         message: String,
@@ -341,7 +338,6 @@ impl UiTextureJob {
             Self::Minimap { path, .. }
             | Self::Shadow { path, .. }
             | Self::Label { path, .. }
-            | Self::Build { path, .. }
             | Self::Feedback { path, .. }
             | Self::ActorLabel { path, .. }
             | Self::Hud { path, .. }
@@ -393,7 +389,6 @@ impl UiTextureJob {
                 name_colour,
                 ..
             } => crate::labels::image(&character, name_colour),
-            Self::Build { .. } => crate::labels::build_banner(),
             Self::Feedback { message, .. } => crate::labels::status_image(&message),
             Self::ActorLabel {
                 name,
@@ -615,6 +610,8 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// What the surface can present with; VSync off picks from these.
+    present_modes: Vec<wgpu::PresentMode>,
     layout: wgpu::BindGroupLayout,
     sprites: wgpu::RenderPipeline,
     actor: wgpu::RenderPipeline,
@@ -675,6 +672,8 @@ pub struct Renderer {
     last_status_dynamic_key: Option<String>,
     last_status_overlay_key: Option<String>,
     feedback_signature: Option<u64>,
+    /// When the shown feedback message last changed.
+    feedback_since: f32,
     quick_panel_signature: Option<u64>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
@@ -808,6 +807,7 @@ impl Renderer {
             device,
             queue,
             config,
+            present_modes,
             layout,
             sprites,
             actor,
@@ -869,6 +869,7 @@ impl Renderer {
             last_status_dynamic_key: None,
             last_status_overlay_key: None,
             feedback_signature: None,
+            feedback_since: 0.0,
             quick_panel_signature: None,
             level_up_layers: None,
             effects: HashMap::new(),
@@ -1240,6 +1241,32 @@ impl Renderer {
         indices
     }
 
+    /// VSync on, or frames shown as fast as they are drawn: Mailbox where
+    /// the driver has it (no tearing), else Immediate. Without this the
+    /// monitor's refresh rate caps every frame limit.
+    pub fn set_vsync(&mut self, vsync: bool) {
+        let mode = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else if self.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else if self.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        if self.config.present_mode != mode {
+            self.config.present_mode = mode;
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+
+    /// Frees the textures named `prefix...` except `keep`: versions of a
+    /// redrawn image that are no longer shown.
+    fn prune_textures(&mut self, prefix: &str, keep: &[Option<&str>]) {
+        self.textures
+            .retain(|key, _| !key.starts_with(prefix) || keep.contains(&Some(key.as_str())));
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -1594,7 +1621,7 @@ impl Renderer {
             image.as_raw(),
         );
         let view = texture.create_view(&Default::default());
-        let filter = if matches!(path, "@label" | "@build") {
+        let filter = if path == "@label" {
             wgpu::FilterMode::Nearest
         } else {
             wgpu::FilterMode::Linear
@@ -2109,6 +2136,24 @@ impl Renderer {
             }
             let depth = actor.position[0] + actor.position[1];
             let facing = -f32::from((actor.direction % 8) + 1) * std::f32::consts::FRAC_PI_4;
+            // "Full" shadows (Options window): players and monsters get the
+            // hero's ground shadow; "Simple" keeps it under the hero only.
+            if hud_config.full_shadows
+                && !actor.npc
+                && let Some(shadow) = self.textures.get("@shadow")
+            {
+                let size = [shadow.size[0] * 1.4, shadow.size[1] * 1.4];
+                draws.push(Draw {
+                    texture: "@shadow".into(),
+                    vertices: quad(
+                        [origin[0] - size[0] * 0.5, origin[1] - size[1] * 0.5],
+                        size,
+                        viewport,
+                    ),
+                    depth_test: false,
+                    sort_depth: depth - 0.01,
+                });
+            }
             if let Some(npc) = remote_npcs.get(&actor.id) {
                 self.texture(assets, &npc.texture);
                 let Some(vertices) = self.cached_static_npc_vertices(npc, facing) else {
@@ -2336,7 +2381,7 @@ impl Renderer {
                         sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
-            } else if !actor.name.is_empty() {
+            } else if !actor.name.is_empty() && (hud_config.show_names || monster) {
                 let name_colour = crate::labels::name_colour(actor.status_flags);
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
@@ -2453,6 +2498,19 @@ impl Renderer {
                 );
             }
         }
+        // Map portals glow with the original client's `Exit` effect
+        // (3DEffect.ini), which it draws on each DMap portal itself. It
+        // sits under whoever stands on the portal.
+        for portal in &map.data.portals {
+            let position = [portal.x as f32, portal.y as f32];
+            let projected = map.project(position);
+            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            if !world_point_visible(origin, viewport, 192.0) {
+                continue;
+            }
+            let depth = position[0] + position[1] - 0.5;
+            self.push_looping_effect(assets, "Exit", origin, time, depth, viewport, &mut draws);
+        }
         // Status effects (`ini/statuseffect.ini`) around the player and the
         // other actors: shield, Superman, Cyclone, Stigma, accuracy...
         let mut status_effects = vec![(player.position, status_flags)];
@@ -2547,23 +2605,6 @@ impl Renderer {
                 ),
                 depth_test: false,
                 sort_depth: WORLD_OVERLAY_SORT,
-            });
-        }
-        let build_key = "@build";
-        if !self.textures.contains_key(build_key) && !self.loading.contains(build_key) {
-            self.queue_ui_texture(
-                assets,
-                UiTextureJob::Build {
-                    path: build_key.to_owned(),
-                },
-            );
-        }
-        if let Some(texture) = self.textures.get(build_key) {
-            draws.push(Draw {
-                texture: build_key.into(),
-                vertices: quad([4.0, 3.0], texture.size, viewport),
-                depth_test: false,
-                sort_depth: f32::INFINITY,
             });
         }
         if minimap_visible && self.minimap_map != Some(map.id) {
@@ -2697,6 +2738,11 @@ impl Renderer {
         } else {
             self.last_hud_key.clone()
         };
+        // The HUD is redrawn whenever its contents change (the FPS every
+        // second, the position every step); only the shown version and the
+        // one on its way may stay in GPU memory.
+        let shown_hud = self.last_hud_key.clone();
+        self.prune_textures("@hud-", &[Some(hud_key.as_str()), shown_hud.as_deref()]);
         if let Some(hud_draw_key) = hud_draw_key
             && let Some(texture) = self.textures.get(&hud_draw_key)
         {
@@ -2707,7 +2753,7 @@ impl Renderer {
                 sort_depth: f32::INFINITY,
             });
         }
-        if !network_status.trim().is_empty() {
+        if show_feedback(network_status) {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             network_status.hash(&mut hasher);
@@ -2722,8 +2768,10 @@ impl Renderer {
                     },
                 );
                 self.feedback_signature = Some(signature);
+                self.feedback_since = time;
             }
-            if let Some(texture) = self.textures.get(&feedback_key) {
+            let fresh = time - self.feedback_since < FEEDBACK_SECONDS || debug_status();
+            if fresh && let Some(texture) = self.textures.get(&feedback_key) {
                 draws.push(Draw {
                     texture: feedback_key,
                     vertices: quad(
@@ -2736,6 +2784,11 @@ impl Renderer {
                 });
             }
         }
+        // Each status message is its own texture; keep only the latest.
+        let current_feedback = self
+            .feedback_signature
+            .map(|signature| format!("@network-feedback-{signature}"));
+        self.prune_textures("@network-feedback-", &[current_feedback.as_deref()]);
         if status_open {
             use std::hash::{Hash, Hasher};
             let status_equipment = crate::shop::status_equipment_items(
@@ -3651,11 +3704,22 @@ impl Renderer {
                 context.anchor,
                 context.actions.len(),
             );
-            let key = format!("@item-context-{:?}-{:?}", context.actions, hovered);
+            let key = format!(
+                "@item-context-{}-{:?}-{:?}",
+                context.item.item_type, context.actions, hovered
+            );
             if !self.textures.contains_key(&key) {
+                let title = crate::shop::item_name(assets, context.item.item_type);
                 self.upload(
                     &key,
-                    crate::shop::item_context_image(&context.actions, hovered)?,
+                    crate::shop::item_context_image(
+                        assets,
+                        viewport,
+                        context.anchor,
+                        &title,
+                        &context.actions,
+                        hovered,
+                    )?,
                 );
             }
             if let Some(texture) = self.textures.get(&key) {
@@ -4150,6 +4214,33 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
         && origin[1] >= -margin
         && origin[0] <= viewport[0] + margin
         && origin[1] <= viewport[1] + margin
+}
+
+/// How long a feedback message stays at the top of the screen.
+const FEEDBACK_SECONDS: f32 = 4.0;
+
+/// `GRAVAK_DEBUG_STATUS=1` keeps every client status on screen, the
+/// `online: ...` network trace included.
+fn debug_status() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("GRAVAK_DEBUG_STATUS")
+            .is_ok_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+    })
+}
+
+/// Whether a client status is shown at the top of the screen: player-facing
+/// notices are, the network trace ("online: ...", "loading ...") only when
+/// debugging.
+fn show_feedback(status: &str) -> bool {
+    let status = status.trim();
+    if status.is_empty() {
+        return false;
+    }
+    debug_status()
+        || !["online:", "online ", "loading", "connecting", "Network"]
+            .iter()
+            .any(|prefix| status.starts_with(prefix))
 }
 
 /// Remote action codes whose last frame is held: sitting (250) and a

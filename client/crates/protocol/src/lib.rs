@@ -580,6 +580,19 @@ impl AssignAttributesPacket {
 }
 
 impl ItemActionPacket {
+    /// MsgItem 27: the server sends it straight back, so the time it took is
+    /// the round trip. `timestamp` is the client's own millisecond clock.
+    pub fn ping(character_id: u32, timestamp: u32) -> Self {
+        Self {
+            character_id,
+            item_id: 0,
+            action_type: 27,
+            client_timestamp: timestamp,
+            amount: 0,
+            data2: 0,
+        }
+    }
+
     pub fn buy(character_id: u32, item_id: u32, inventory_slot: u8) -> Self {
         Self {
             character_id,
