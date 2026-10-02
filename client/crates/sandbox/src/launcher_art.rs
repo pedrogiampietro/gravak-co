@@ -894,6 +894,24 @@ pub fn overlay_faded(image: &mut RgbaImage, source: &RgbaImage, x: i32, y: i32, 
 
 /// A tall profession column: the illustration (or a lit emblem) above,
 /// the name, motto, description and skills below; dimmed unless chosen.
+/// The emblem as a medallion at the hero's feet.
+const MEDAL: i32 = 54;
+
+/// Where a `size` hero picture goes in a profession column at `rect`.
+pub fn column_hero_origin(rect: [i32; 4], size: (u32, u32)) -> [i32; 2] {
+    let [x, y, w, h] = rect;
+    let art_height = h * 56 / 100;
+    [x + w / 2 - size.0 as i32 / 2, y + art_height - size.1 as i32 + 10]
+}
+
+/// The medallion over a column's hero (drawn again after a hero laid over
+/// a cached column).
+pub fn column_medallion(image: &mut RgbaImage, rect: [i32; 4], class: usize, lit: bool) {
+    let [x, y, w, h] = rect;
+    let medal_y = y + h * 56 / 100 - MEDAL / 2;
+    overlay_faded(image, &emblem(class, MEDAL as u32, lit), x + w / 2 - MEDAL / 2, medal_y, 1.0);
+}
+
 pub fn class_column(
     image: &mut RgbaImage,
     rect: [i32; 4],
@@ -967,7 +985,7 @@ pub fn class_column(
     match column.hero {
         Some(hero) => {
             // The hero in the light: a glow behind, a shadow at the feet.
-            let top = y + art_height - hero.height() as i32 + 10;
+            let [_, top] = column_hero_origin(rect, hero.dimensions());
             radial_glow(
                 image,
                 cx,
@@ -1040,20 +1058,13 @@ pub fn class_column(
     );
 
     // Medallion, name and motto.
-    let medal = 54;
-    let medal_y = y + art_height - medal / 2;
+    let medal_y = y + art_height - MEDAL / 2;
     let lit = state != ColumnState::Idle;
     // With the hero shown the emblem becomes a medallion at its feet.
     if column.hero.is_some() {
-        overlay_faded(
-            image,
-            &emblem(column.class, medal as u32, lit),
-            x + w / 2 - medal / 2,
-            medal_y,
-            1.0,
-        );
+        column_medallion(image, rect, column.class, lit);
     }
-    let mut line_y = medal_y + medal + 8;
+    let mut line_y = medal_y + MEDAL + 8;
     heading(
         image,
         column.name,

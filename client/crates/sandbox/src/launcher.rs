@@ -122,6 +122,8 @@ pub struct LoginUi {
     column_cache: std::cell::RefCell<
         std::collections::HashMap<(usize, crate::launcher_art::ColumnState, [i32; 4], usize, bool, i64), RgbaImage>,
     >,
+    /// The chosen hero's latest pose, by (body, class, size, tick).
+    chosen_hero: std::cell::RefCell<Option<((usize, usize, [u32; 2], i64), RgbaImage)>>,
     /// Still renders of the heroes not selected, by (body, class).
     still_heroes: std::cell::RefCell<std::collections::HashMap<(usize, usize), RgbaImage>>,
 }
@@ -149,6 +151,7 @@ impl LoginUi {
             heroes: std::collections::HashMap::new(),
             still_heroes: std::cell::RefCell::new(std::collections::HashMap::new()),
             column_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            chosen_hero: std::cell::RefCell::new(None),
         };
         ui.show(Screen::Login);
         ui
@@ -785,24 +788,57 @@ impl LoginUi {
                     time,
                 );
             };
-            if index == self.class {
-                // The chosen column moves every frame (its hero turns).
-                paint(image, *rect, time);
-                continue;
-            }
-            // The others are opaque and nearly still: painted on their own
-            // and reused, their light rays stepping four times a second.
+            // Columns are painted on their own and reused, their light rays
+            // stepping four times a second. The chosen one is cached with
+            // room for its hero, who is laid over it each frame; the
+            // margin keeps its gold glow.
+            const MARGIN: i32 = 12;
+            let chosen = index == self.class;
+            let hero = chosen.then(|| self.hero_image(index, *rect, time)).flatten();
             let tick = (time * 4.0).floor();
             let key = (index, state, *rect, self.body, self.heroes.contains_key(&(self.body, index)), tick as i64);
             let mut columns = self.column_cache.borrow_mut();
             if !columns.contains_key(&key) {
                 columns.retain(|cached, _| cached.0 != index);
                 let [_, _, w, h] = *rect;
-                let mut column = RgbaImage::new(w.max(1) as u32, h.max(1) as u32);
-                paint(&mut column, [0, 0, w, h], tick / 4.0);
+                let mut column = RgbaImage::new((w + MARGIN * 2).max(1) as u32, (h + MARGIN * 2).max(1) as u32);
+                let local = [MARGIN, MARGIN, w, h];
+                if chosen {
+                    // A clear hero of the right size: the glow, the shadow
+                    // and the layout around it, without the hero itself.
+                    let blank = hero.as_ref().map(|hero| RgbaImage::new(hero.width(), hero.height()));
+                    art::class_column(
+                        &mut column,
+                        local,
+                        art::ClassColumn {
+                            class: index,
+                            name: CLASSES[index].0,
+                            tagline: info.tagline,
+                            weapons: info.weapons,
+                            description: info.description,
+                            skills: info.skills,
+                            stats: info.stats,
+                            hero: blank.as_ref(),
+                        },
+                        state,
+                        tick / 4.0,
+                    );
+                } else {
+                    paint(&mut column, local, tick / 4.0);
+                }
                 columns.insert(key, column);
             }
-            image::imageops::overlay(image, &columns[&key], i64::from(rect[0]), i64::from(rect[1]));
+            image::imageops::overlay(
+                image,
+                &columns[&key],
+                i64::from(rect[0] - MARGIN),
+                i64::from(rect[1] - MARGIN),
+            );
+            if let Some(hero) = &hero {
+                let [hx, hy] = art::column_hero_origin(*rect, hero.dimensions());
+                image::imageops::overlay(image, hero, i64::from(hx), i64::from(hy));
+                art::column_medallion(image, *rect, index, true);
+            }
         }
 
         let [bx, by, bw, bh] = layout.panel;
@@ -871,8 +907,18 @@ impl LoginUi {
         let size = [(width - 28).max(1) as u32, (height * 56 / 100).max(1) as u32];
         let tall = size[1] as f32 * 0.86;
         if class == self.class {
-            let facing = (time * 0.4).sin() * 0.7;
-            return Some(hero.render(size, tall, time, facing));
+            // Twenty poses a second are plenty for breathing and turning.
+            let tick = (time * 20.0).floor();
+            let mut latest = self.chosen_hero.borrow_mut();
+            if let Some((key, image)) = latest.as_ref()
+                && *key == (self.body, class, size, tick as i64)
+            {
+                return Some(image.clone());
+            }
+            let pose_time = tick / 20.0;
+            let image = hero.render(size, tall, pose_time, (pose_time * 0.4).sin() * 0.7);
+            *latest = Some(((self.body, class, size, tick as i64), image.clone()));
+            return Some(image);
         }
         let mut stills = self.still_heroes.borrow_mut();
         Some(
