@@ -215,6 +215,54 @@ pub fn actor_image(name: &str, name_colour: [u8; 3]) -> Result<RgbaImage> {
     Ok(image)
 }
 
+/// Side of the face portrait on the hovered player's nameplate.
+pub const PLAYER_FACE_SIZE: u32 = 32;
+
+/// Nameplate shown over a hovered player: their face portrait on the left,
+/// the name and a small health bar beside it.
+pub fn player_plate(
+    face: Option<&RgbaImage>,
+    name: &str,
+    name_colour: [u8; 3],
+    health: u16,
+    maximum_health: u16,
+) -> Result<RgbaImage> {
+    let font = font()?;
+    let face_box = PLAYER_FACE_SIZE + 2;
+    let bar_width = 50u32;
+    let text_left = face_box + 4;
+    let image_width = text_left + (width(&font, name).ceil() as u32 + 4).max(bar_width + 2);
+    let mut image = RgbaImage::new(image_width, face_box);
+    for y in 0..face_box {
+        for x in 0..face_box {
+            let edge = x == 0 || y == 0 || x == face_box - 1 || y == face_box - 1;
+            image.put_pixel(
+                x,
+                y,
+                Rgba(if edge { [0, 0, 0, 255] } else { [24, 30, 34, 220] }),
+            );
+        }
+    }
+    if let Some(face) = face {
+        image::imageops::overlay(&mut image, face, 1, 1);
+    }
+    text(&mut image, &font, &[(name, name_colour)], [text_left as f32, 2.0]);
+    let bar_top = 19;
+    for y in bar_top..bar_top + 6 {
+        for x in text_left..text_left + bar_width + 2 {
+            image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+        }
+    }
+    let fraction = health as f32 / maximum_health.max(health).max(1) as f32;
+    let filled_width = (bar_width as f32 * fraction).round() as u32;
+    for y in bar_top + 1..bar_top + 5 {
+        for x in text_left + 1..text_left + 1 + filled_width {
+            image.put_pixel(x, y, Rgba([34, 190, 62, 255]));
+        }
+    }
+    Ok(image)
+}
+
 /// Compact monster nameplate: the name followed by a small health bar.
 pub fn monster_image(name: &str, health: u16, maximum_health: u16) -> Result<RgbaImage> {
     let font = font()?;

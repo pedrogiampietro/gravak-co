@@ -48,6 +48,10 @@ Itens marcados `[x]` estão implementados e aguardando teste no jogo.
 - [x] Cliente: animação de cooldown na barra de atalhos; atalhos e painéis abertos salvos por personagem
       (`settings/hud_<id>.ini` ao lado do executável)
 
+- [x] Compor +1..+9 no WuxingOven (Redux `Process_ComposePacket`): a peça vestida e dois itens +n iguais na
+      bolsa; acima dela, ela fica +n, senão ganha +1, até +9. Pelo diálogo, porque o cliente não tem a janela
+- [x] Resistência mágica dos monstros (Redux `MagicDefence`, em %); SnakeKing na Bird Island (1015): golpes
+      tiram 1, magia passa 10%, só revida, volta em 2 horas — local, temperamento e drops escolhidos por nós
+
 ## A fazer
-- [ ] Compor +1..+9 pelo WuxingOven (hoje é feito pelo menu do item com Meteor)
-- [ ] SnakeKing e GuildBeast: defesa 65000 no catálogo, não dá para colocar sem rever os números
+- [ ] GuildBeast (Redux 3120, ataque 5000, defesa 60000): é de evento de guilda, ainda sem lugar

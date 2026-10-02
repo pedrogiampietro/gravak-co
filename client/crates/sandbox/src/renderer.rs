@@ -24,6 +24,16 @@ struct Vertex {
     uv: [f32; 2],
     alpha: f32,
 }
+/// Sort depth of a UI model preview outside the status paper doll (the
+/// trade partner card) and of what it stands on: above the world like the
+/// UI, but without the status panel's scissor that INFINITY depth-tested
+/// draws get, and before the INFINITY UI layered over it.
+const PREVIEW_SORT: f32 = f32::MAX;
+/// Sort depth of what floats over the world (names, nameplates, damage
+/// numbers, ground loot labels): above every world draw but below the UI,
+/// the trade partner card included, so a name never shows through a window.
+const WORLD_OVERLAY_SORT: f32 = f32::MAX / 2.0;
+
 struct Draw {
     texture: String,
     vertices: Vec<Vertex>,
@@ -291,6 +301,7 @@ enum UiTextureJob {
         pending_guild_invite: Option<u32>,
         friends: Vec<crate::network::SocialEntry>,
         ignores: Vec<crate::network::SocialEntry>,
+        pending_friend_name: Option<String>,
         selected_target_name: Option<String>,
         inventory: Vec<crate::network::OwnedItem>,
         trade: crate::network::TradeView,
@@ -557,6 +568,7 @@ impl UiTextureJob {
                 pending_guild_invite,
                 friends,
                 ignores,
+                pending_friend_name,
                 selected_target_name,
                 inventory,
                 trade,
@@ -582,6 +594,7 @@ impl UiTextureJob {
                 pending_guild_invite,
                 &friends,
                 &ignores,
+                pending_friend_name.as_deref(),
                 selected_target_name.as_deref(),
                 &inventory,
                 &trade,
@@ -1014,6 +1027,29 @@ impl Renderer {
         _time: f32,
         draws: &mut Vec<Draw>,
     ) {
+        self.push_character_preview(
+            assets,
+            character,
+            [panel[0] + 128.0, panel[1] + 82.0],
+            [80.0, 230.0],
+            f32::INFINITY,
+            viewport,
+            draws,
+        );
+    }
+
+    /// Draws `character` standing, its body `size` ([max width, height])
+    /// pixels and centred under `top_center`, like the status paper doll.
+    fn push_character_preview(
+        &mut self,
+        assets: &mut Assets,
+        character: &Character,
+        top_center: [f32; 2],
+        size: [f32; 2],
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
         let facing = -std::f32::consts::FRAC_PI_4;
         let facing_sector = (facing / std::f32::consts::FRAC_PI_4).round() as i8;
         let signature = appearance_signature(character);
@@ -1057,9 +1093,8 @@ impl Renderer {
         // Height drives the scale, as in the original paper doll; the width
         // cap only matters for unusually wide bodies. Scaling by width made
         // slim bodies blow up past the panel.
-        let scale = (230.0 / height).min(80.0 / width);
-        let center_x = panel[0] + 128.0;
-        let top = panel[1] + 82.0;
+        let scale = (size[1] / height).min(size[0] / width);
+        let [center_x, top] = top_center;
         for (part, pose) in character.parts.iter().zip(poses) {
             self.texture(assets, &part.texture);
             let triangles = part
@@ -1073,8 +1108,10 @@ impl Renderer {
                         center_x + (p[0] - (body_bounds[0][0] + body_bounds[1][0]) * 0.5) * scale,
                         top + (p[1] - body_bounds[0][1]) * scale,
                     ];
+                    // Nearer than any world actor (0.5 +- 0.5), so one
+                    // standing behind the panel cannot cut into the model.
                     Vertex {
-                        position: clip(screen, (0.5 + p[2] * 0.0005).clamp(0.001, 0.999), viewport),
+                        position: clip(screen, (0.05 + p[2] * 0.00005).clamp(0.001, 0.099), viewport),
                         uv,
                         alpha: 1.0,
                     }
@@ -1084,7 +1121,7 @@ impl Renderer {
                 texture: part.texture.clone(),
                 vertices: triangles,
                 depth_test: true,
-                sort_depth: f32::INFINITY,
+                sort_depth,
             });
         }
     }
@@ -1667,6 +1704,7 @@ impl Renderer {
         network_status: &str,
         friends: &[crate::network::SocialEntry],
         ignores: &[crate::network::SocialEntry],
+        pending_friend_name: Option<&str>,
         silver: u32,
         cps: u32,
         mana: u32,
@@ -1690,6 +1728,10 @@ impl Renderer {
         player_shop_price: &str,
         player_shop_price_focused: bool,
         item_context: Option<crate::shop::ItemContext>,
+        choice_menu: Option<crate::shop::ChoiceMenu>,
+        notice: Option<&str>,
+        prompt: Option<crate::shop::PromptDialog>,
+        hovered_player: Option<u32>,
         item_action_panel: Option<crate::shop::ItemActionPanel>,
         action_animation_progress: Option<f32>,
         gem_selection_panel: Option<crate::shop::GemSelectionPanel>,
@@ -2004,6 +2046,9 @@ impl Renderer {
         let mut remote_monster_pose_cache =
             HashMap::<(u32, u8, i8, u32), Arc<Vec<([f32; 3], [f32; 2])>>>::new();
         let mut remote_pose_build_budget = 1usize;
+        // Players have few parts and are few on screen; give them their own
+        // budget so walking monsters cannot freeze them in the idle pose.
+        let mut remote_player_pose_budget = 4usize;
         for actor in remote_actors.values() {
             let monster = !actor.npc && (400001..=499999).contains(&actor.id);
             if monster
@@ -2033,7 +2078,22 @@ impl Renderer {
                 })
             };
             let projected = map.project(actor.position);
-            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            let mut origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            // A remote jump (action 130) follows the local player's arc.
+            if actor.action == 130
+                && actor.movement_until > actor.movement_started
+                && time < actor.movement_until
+            {
+                let progress = (time - actor.movement_started)
+                    / (actor.movement_until - actor.movement_started);
+                let peak = crate::motion_math::jump_motion(
+                    actor.movement_from,
+                    actor.movement_to,
+                    std::time::Duration::ZERO,
+                )
+                .peak_screen_pixels;
+                origin[1] -= crate::motion_math::jump_screen_height(peak, progress);
+            }
             let visibility_margin = if monster {
                 384.0
             } else if actor.npc {
@@ -2163,9 +2223,28 @@ impl Renderer {
                     || (time.max(0.0) * 30.0).floor() as u32,
                     |progress| (progress.clamp(0.0, 1.0) * 30.0).floor() as u32,
                 );
+                let animated = !(action == Action::Idle && action_progress.is_none());
+                let pose_key = |part_index: usize| {
+                    (
+                        signature,
+                        part_index,
+                        facing_sector,
+                        action.index(),
+                        frame_bucket,
+                    )
+                };
+                // The budget is spent per actor, never per part: posing the
+                // body but not the hair or weapons left them floating in the
+                // idle pose. Without budget, the whole actor stands idle.
+                let cached = (0..remote_character.parts.len())
+                    .all(|part_index| remote_pose_cache.contains_key(&pose_key(part_index)));
+                let posed = animated && (cached || remote_player_pose_budget > 0);
+                if posed && !cached {
+                    remote_player_pose_budget -= 1;
+                }
                 for (part_index, part) in remote_character.parts.iter().enumerate() {
                     self.texture(assets, &part.texture);
-                    let vertices = if action == Action::Idle && action_progress.is_none() {
+                    let vertices = if !posed {
                         let Some(vertices) = self.queue_character_idle_geometry(
                             remote_character,
                             signature,
@@ -2177,50 +2256,19 @@ impl Renderer {
                         };
                         vertices
                     } else {
-                        let key = (
-                            signature,
-                            part_index,
-                            facing_sector,
-                            action.index(),
-                            frame_bucket,
-                        );
+                        let key = pose_key(part_index);
                         if let Some(vertices) = remote_pose_cache.get(&key) {
                             Arc::clone(vertices)
                         } else {
-                            if remote_pose_build_budget == 0 {
-                                // A remote actor must remain visible while
-                                // the animation budget is exhausted.  Reuse
-                                // its cached idle pose until the animated
-                                // pose can be prepared instead of dropping
-                                // the draw for this frame.
-                                self.queue_character_idle_geometry(
-                                    remote_character,
-                                    signature,
-                                    part_index,
-                                    facing_sector,
-                                    facing,
-                                )
-                                .unwrap_or_else(|| {
-                                    Arc::new(remote_character.vertices(
-                                        part,
-                                        time,
-                                        action,
-                                        facing,
-                                        action_progress,
-                                    ))
-                                })
-                            } else {
-                                remote_pose_build_budget -= 1;
-                                let vertices = Arc::new(remote_character.vertices(
-                                    part,
-                                    time,
-                                    action,
-                                    facing,
-                                    action_progress,
-                                ));
-                                remote_pose_cache.insert(key, Arc::clone(&vertices));
-                                vertices
-                            }
+                            let vertices = Arc::new(remote_character.vertices(
+                                part,
+                                time,
+                                action,
+                                facing,
+                                action_progress,
+                            ));
+                            remote_pose_cache.insert(key, Arc::clone(&vertices));
+                            vertices
                         }
                     };
                     let triangles = part
@@ -2249,7 +2297,43 @@ impl Renderer {
                     });
                 }
             }
-            if !actor.name.is_empty() {
+            // A hovered player shows their face, name and health instead
+            // of the plain name.
+            if hovered_player == Some(actor.id) && !actor.npc && !monster && !actor.name.is_empty() {
+                let name_colour = crate::labels::name_colour(actor.status_flags);
+                let key = format!(
+                    "@player-plate-{}-{}-{}-{}-{:?}",
+                    actor.id, actor.mesh, actor.health, actor.maximum_health, name_colour
+                );
+                if !self.textures.contains_key(&key) {
+                    let face = player_face(assets, actor.mesh, crate::labels::PLAYER_FACE_SIZE);
+                    self.upload(
+                        &key,
+                        crate::labels::player_plate(
+                            face.as_ref(),
+                            &actor.name,
+                            name_colour,
+                            actor.health,
+                            actor.maximum_health,
+                        )?,
+                    );
+                }
+                if let Some(plate) = self.textures.get(&key) {
+                    draws.push(Draw {
+                        texture: key,
+                        vertices: quad(
+                            [
+                                (origin[0] - plate.size[0] * 0.5).round(),
+                                (origin[1] - 160.0).round(),
+                            ],
+                            plate.size,
+                            viewport,
+                        ),
+                        depth_test: false,
+                        sort_depth: WORLD_OVERLAY_SORT,
+                    });
+                }
+            } else if !actor.name.is_empty() {
                 let name_colour = crate::labels::name_colour(actor.status_flags);
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
@@ -2291,7 +2375,7 @@ impl Renderer {
                             viewport,
                         ),
                         depth_test: false,
-                        sort_depth: f32::INFINITY,
+                        sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
             }
@@ -2327,7 +2411,7 @@ impl Renderer {
                         viewport,
                     ),
                     depth_test: false,
-                    sort_depth: f32::INFINITY,
+                    sort_depth: WORLD_OVERLAY_SORT,
                 });
             }
         }
@@ -2410,7 +2494,7 @@ impl Renderer {
                         viewport,
                     ),
                     depth_test: false,
-                    sort_depth: f32::INFINITY,
+                    sort_depth: WORLD_OVERLAY_SORT,
                 });
             }
             let name_key = format!("@loot-name-{loot_id}-{item_id}");
@@ -2430,7 +2514,7 @@ impl Renderer {
                         viewport,
                     ),
                     depth_test: false,
-                    sort_depth: f32::INFINITY,
+                    sort_depth: WORLD_OVERLAY_SORT,
                 });
             }
         }
@@ -2459,7 +2543,7 @@ impl Renderer {
                     viewport,
                 ),
                 depth_test: false,
-                sort_depth: f32::INFINITY,
+                sort_depth: WORLD_OVERLAY_SORT,
             });
         }
         let build_key = "@build";
@@ -2992,6 +3076,7 @@ impl Renderer {
             pending_guild_invite.hash(&mut hasher);
             trade.active.hash(&mut hasher);
             trade.peer_id.hash(&mut hasher);
+            trade.peer_name.hash(&mut hasher);
             trade.pending_request.hash(&mut hasher);
             trade.own_items.hash(&mut hasher);
             trade.peer_items.hash(&mut hasher);
@@ -3006,6 +3091,7 @@ impl Renderer {
             hud_config.hash(&mut hasher);
             friends.hash(&mut hasher);
             ignores.hash(&mut hasher);
+            pending_friend_name.hash(&mut hasher);
             selected_target.hash(&mut hasher);
             let selected_target_name = selected_target
                 .and_then(|id| remote_actors.get(&id))
@@ -3032,6 +3118,7 @@ impl Renderer {
                         pending_guild_invite,
                         friends: friends.to_vec(),
                         ignores: ignores.to_vec(),
+                        pending_friend_name: pending_friend_name.map(str::to_owned),
                         selected_target_name: selected_target_name.map(str::to_owned),
                         inventory: inventory.to_vec(),
                         trade: trade.clone(),
@@ -3056,6 +3143,52 @@ impl Renderer {
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
+            }
+            // Beside the trade window: who the trade is with.
+            if panel == crate::shop::QuickPanel::Trade
+                && let Some(peer) = trade.peer_id.or(trade.pending_request)
+            {
+                let actor = remote_actors.get(&peer);
+                let name = if trade.peer_name.is_empty() {
+                    actor.map_or_else(|| peer.to_string(), |actor| actor.name.clone())
+                } else {
+                    trade.peer_name.clone()
+                };
+                let level = actor.map(|actor| actor.level).filter(|level| *level > 0);
+                let key = format!("@trade-partner-{name}-{level:?}");
+                if !self.textures.contains_key(&key) {
+                    self.upload(
+                        &key,
+                        crate::original_panels::player_card(
+                            assets,
+                            &name,
+                            level,
+                            crate::original_panels::TRADE_PARTNER_INNER,
+                        )?,
+                    );
+                }
+                let [left, top] = crate::shop::quick_panel_position(viewport, panel);
+                let position = [left + crate::original_panels::TRADE_WIDTH + 6.0, top];
+                if let Some(texture) = self.textures.get(&key) {
+                    draws.push(Draw {
+                        texture: key,
+                        vertices: quad(position, texture.size, viewport),
+                        depth_test: false,
+                        sort_depth: PREVIEW_SORT,
+                    });
+                }
+                if let Some(model) = remote_models.get(&peer) {
+                    let [top_center, size] = crate::original_panels::TRADE_PARTNER_MODEL;
+                    self.push_character_preview(
+                        assets,
+                        model,
+                        [position[0] + top_center[0], position[1] + top_center[1]],
+                        size,
+                        PREVIEW_SORT,
+                        viewport,
+                        &mut draws,
+                    );
+                }
             }
         }
         if let Some(shop) = shop {
@@ -3504,6 +3637,51 @@ impl Renderer {
                     context.anchor,
                     context.actions.len(),
                 );
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(menu) = choice_menu {
+            let hovered = menu.row_at(cursor);
+            let key = format!("@choice-menu-{:?}-{hovered:?}", (&menu.title, &menu.labels, menu.marked));
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, menu.image(assets, hovered)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(menu.position.map(|value| value as f32), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(prompt) = prompt {
+            let hovered = prompt.button_at(cursor);
+            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, prompt.text));
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, prompt.image(assets, hovered)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(prompt.position.map(|value| value as f32), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(notice) = notice {
+            let key = format!("@notice-{notice}");
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, crate::shop::notice_image(notice)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [((viewport[0] - texture.size[0] as f32) * 0.5).max(8.0), 48.0];
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(position, texture.size, viewport),
@@ -4030,6 +4208,91 @@ fn quad_with_alpha(p: [f32; 2], size: [f32; 2], viewport: [f32; 2], alpha: f32) 
         })
         .to_vec()
 }
+/// A player's face portrait from `data/PlayerFace/JPG/64`, scaled to `size`
+/// pixels square. The face is the avatar part of the look
+/// (`look = body + avatar * 10000 + transformation * 10000000`).
+pub(crate) fn player_face(
+    assets: &mut crate::assets::Assets,
+    mesh: u32,
+    size: u32,
+) -> Option<image::RgbaImage> {
+    let face = mesh / 10_000 % 1_000;
+    if face == 0 {
+        return None;
+    }
+    let mut paths = player_face_ani_paths(assets, face);
+    for extension in ["dds", "jpg", "DDS", "JPG"] {
+        paths.push(format!("data/PlayerFace/JPG/64/{face}.{extension}"));
+        paths.push(format!("data/PlayerFace/JPG/64/{face:03}.{extension}"));
+    }
+    let image = paths.iter().find_map(|path| assets.image(path).ok())?;
+    Some(image::imageops::resize(
+        &image,
+        size,
+        size,
+        image::imageops::FilterType::Triangle,
+    ))
+}
+
+/// The 64px frames `ani/PlayerFace.ani` binds to `face`: sections whose
+/// name, or whose frame's file name, carries the face number.
+fn player_face_ani_paths(assets: &mut crate::assets::Assets, face: u32) -> Vec<String> {
+    let Ok(bytes) = assets.read("ani/PlayerFace.ani") else {
+        return Vec::new();
+    };
+    let number = |value: &str| {
+        let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+        digits.parse::<u32>().ok()
+    };
+    let mut section = String::new();
+    let mut paths = Vec::new();
+    for line in String::from_utf8_lossy(&bytes).lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+            section = name.to_owned();
+            continue;
+        }
+        let Some((key, path)) = line.split_once('=') else {
+            continue;
+        };
+        let path = path.trim().replace('\\', "/");
+        if !key.trim().eq_ignore_ascii_case("Frame0") || !path.to_ascii_lowercase().contains("/64/") {
+            continue;
+        }
+        let stem = path.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("");
+        if number(&section) == Some(face) || number(stem) == Some(face) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+#[cfg(test)]
+mod player_face_probe {
+    /// Prints how `ani/PlayerFace.ani` names the faces and which portrait
+    /// each of the first faces resolves to, against a local 5065 install.
+    #[test]
+    #[ignore = "Needs the 5065 install (GRAVAK_CLIENT, default R:/5065)"]
+    fn probe_player_faces() -> crate::assets::Result<()> {
+        let root = std::env::var("GRAVAK_CLIENT").unwrap_or_else(|_| "R:/5065".into());
+        let mut assets = crate::assets::Assets::open(std::path::Path::new(&root))?;
+        match assets.read("ani/PlayerFace.ani") {
+            Ok(bytes) => {
+                for line in String::from_utf8_lossy(&bytes).lines().take(40) {
+                    println!("ani: {line}");
+                }
+            }
+            Err(error) => println!("ani/PlayerFace.ani: {error}"),
+        }
+        for face in (1..=12).chain(201..=212) {
+            let paths = super::player_face_ani_paths(&mut assets, face);
+            let found = super::player_face(&mut assets, face * 10_000 + 1003, crate::labels::PLAYER_FACE_SIZE)
+                .is_some();
+            println!("face {face}: ani {paths:?}, loaded {found}");
+        }
+        Ok(())
+    }
+}
+
 fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {

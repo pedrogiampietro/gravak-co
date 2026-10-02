@@ -144,6 +144,8 @@ pub struct TradeView {
     pub peer_silver: u32,
     pub own_confirmed: bool,
     pub peer_confirmed: bool,
+    /// The partner's (or requester's) name, when the client knows it.
+    pub peer_name: String,
 }
 
 #[derive(Debug)]
@@ -264,6 +266,8 @@ pub enum NetworkEvent {
         id: u32,
         direction: u8,
     },
+    /// The server confirmed the local hero's kill mode (MsgAction 96).
+    KillMode(u8),
     RemoteJump {
         id: u32,
         position: [i32; 2],
@@ -350,6 +354,8 @@ pub struct RemoteActor {
     pub respawn_until: f32,
     pub step_right: bool,
     pub npc: bool,
+    /// Player level from MsgPlayer; 0 for NPCs.
+    pub level: u16,
 }
 
 enum NetworkCommand {
@@ -360,6 +366,11 @@ enum NetworkCommand {
     Jump {
         character_id: u32,
         target: [i32; 2],
+        current: [i32; 2],
+    },
+    Face {
+        character_id: u32,
+        direction: u8,
         current: [i32; 2],
     },
     Revive {
@@ -376,6 +387,10 @@ enum NetworkCommand {
     Action {
         character_id: u32,
         action: u32,
+    },
+    KillMode {
+        character_id: u32,
+        mode: u8,
     },
     Team {
         action: u32,
@@ -556,6 +571,7 @@ impl NetworkHandle {
                 | NetworkEvent::Reposition { .. }
                 | NetworkEvent::RemoteWalk { .. }
                 | NetworkEvent::RemoteFacing { .. }
+                | NetworkEvent::KillMode(_)
                 | NetworkEvent::RemoteJump { .. }
                 | NetworkEvent::RemoteAction { .. }
                 | NetworkEvent::LevelUp { .. }
@@ -616,6 +632,18 @@ impl NetworkHandle {
             target,
             current,
         });
+    }
+
+    pub fn send_facing(&self, character_id: u32, direction: u8, current: [i32; 2]) {
+        let _ = self.commands.send(NetworkCommand::Face {
+            character_id,
+            direction,
+            current,
+        });
+    }
+
+    pub fn send_kill_mode(&self, character_id: u32, mode: u8) {
+        let _ = self.commands.send(NetworkCommand::KillMode { character_id, mode });
     }
 
     pub fn send_action(&self, character_id: u32, action: u32) {
@@ -1449,6 +1477,11 @@ async fn run(
                         level: action.details as u8,
                     });
                 }
+                Some(GameEvent::Action(action))
+                    if action.action_type == 96 && action.character_id == local_character_id =>
+                {
+                    let _ = events.send(NetworkEvent::KillMode(action.data1 as u8));
+                }
                 Some(GameEvent::Action(action)) if action.action_type == 6 => {
                     crate::debug_log::write(format_args!(
                         "action type 6 received: char={}, target={}, data1={}, data2={}, details={}",
@@ -1602,6 +1635,16 @@ async fn run(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
+                Some(NetworkCommand::Face {
+                    character_id,
+                    direction,
+                    current,
+                }) => {
+                    session
+                        .send(&ActionPacket::change_facing(character_id, direction, current))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 Some(NetworkCommand::ChangeMap { character_id, x, y }) => {
                     session
                         .send(&ActionPacket::change_map(character_id, x, y))
@@ -1617,6 +1660,12 @@ async fn run(
                 Some(NetworkCommand::Revive { character_id }) => {
                     session
                         .send(&ActionPacket::reborn(character_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::KillMode { character_id, mode }) => {
+                    session
+                        .send(&ActionPacket::set_kill_mode(character_id, u32::from(mode)))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
@@ -1856,6 +1905,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         respawn_until: 0.0,
         step_right: false,
         npc: false,
+        level: player.level.max(0) as u16,
     }
 }
 
@@ -1896,6 +1946,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         respawn_until: 0.0,
         step_right: false,
         npc: true,
+        level: 0,
     }
 }
 

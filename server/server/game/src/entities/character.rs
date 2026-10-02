@@ -5186,6 +5186,37 @@ impl Character {
         Ok(Some(items))
     }
 
+    /// Removes these inventory items, all or none.
+    pub async fn consume_item_uids(
+        &self,
+        pool: &sqlx::SqlitePool,
+        uids: &[u32],
+    ) -> Result<Option<Vec<InventoryItem>>, Error> {
+        let items = self
+            .inventory_items()
+            .into_iter()
+            .filter(|owned| uids.contains(&owned.uid))
+            .collect::<Vec<_>>();
+        if items.len() != uids.len() {
+            return Ok(None);
+        }
+        let mut transaction = pool.begin().await?;
+        for item in &items {
+            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+                .bind(i64::from(item.uid))
+                .bind(self.inner.character_id)
+                .execute(&mut *transaction)
+                .await?;
+            if deleted.rows_affected() != 1 {
+                transaction.rollback().await?;
+                return Ok(None);
+            }
+        }
+        transaction.commit().await?;
+        self.inventory.lock().retain(|owned| !uids.contains(&owned.uid));
+        Ok(Some(items))
+    }
+
     pub fn count_items(&self, item_type: u32) -> usize {
         self.inventory
             .lock()

@@ -4,8 +4,12 @@ title Gravak-CO - Run Client
 
 set "CLIENT_EXE=%~dp0client\target\release\conquer-sandbox.exe"
 
-if not exist "%CLIENT_EXE%" (
-    echo Client build not found. Building it now...
+rem Rebuild before every launch so a git pull takes effect; cargo only
+rem recompiles what changed. A running client locks the exe, so skip the
+rem build then and start the existing one.
+tasklist /FI "IMAGENAME eq conquer-sandbox.exe" 2>nul | find /I "conquer-sandbox.exe" >nul && (
+    echo A client is already running; skipping the rebuild.
+) || (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-client.ps1"
     if errorlevel 1 (
         echo.
@@ -14,18 +18,34 @@ if not exist "%CLIENT_EXE%" (
         exit /b 1
     )
 )
+if not exist "%CLIENT_EXE%" (
+    echo Client build not found: %CLIENT_EXE%
+    pause
+    exit /b 1
+)
 
 pushd "%~dp0client"
 if /I "%~1"=="offline" goto offline
 
-"%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
-set "CLIENT_EXIT=%ERRORLEVEL%"
-popd
-if not "%CLIENT_EXIT%"=="0" (
-    echo.
-    echo Client exited with an error. Check that the local servers are running.
-    pause
+rem One account per client: the same account cannot be online twice.
+rem   run-client.bat            opens two clients (test1 and shekohex)
+rem   run-client.bat <account>  opens one client with that account
+if not "%~1"=="" (
+    call :client "%~1"
+    popd
+    exit /b
 )
+call :client test1
+rem Let the first login settle before the second.
+timeout /t 2 /nobreak >nul
+call :client shekohex
+popd
+exit /b
+
+:client
+rem cmd /c ... || pause keeps the window open when the client exits with an
+rem error (for example, the game server is not running), so it can be read.
+start "Gravak-CO - %~1" cmd /c ""%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username %~1 --password 123456 --realm CoEmu || pause"
 exit /b
 
 :offline

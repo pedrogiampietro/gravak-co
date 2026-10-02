@@ -1,6 +1,7 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 mod action;
 mod action_bar;
+mod cursors;
 mod assets;
 mod audio;
 mod character;
@@ -40,7 +41,7 @@ use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorIcon, Window, WindowId},
+    window::{CursorIcon, CustomCursor, Window, WindowId},
 };
 const LEVEL_UP_DURATION: f32 = 61.0 / 30.0;
 // In normal play the presentation surface is synchronized to the monitor. A
@@ -58,6 +59,53 @@ fn configured_frame_interval() -> Option<std::time::Duration> {
         .and_then(|value| value.trim().parse::<u32>().ok())
         .unwrap_or(DEFAULT_MAX_FPS);
     frame_interval_for(max_fps)
+}
+
+/// What the next click on a player does after a Friend/Trade button was
+/// pressed with no player selected, like the original targeting cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetPick {
+    Friend,
+    Ignore,
+    Trade,
+}
+
+impl TargetPick {
+    /// The notice shown at the top of the screen while the pick waits.
+    fn notice(self) -> &'static str {
+        match self {
+            Self::Friend => "Click a player to send a friend request (click the ground to cancel)",
+            Self::Ignore => "Click a player to add as enemy (click the ground to cancel)",
+            Self::Trade => "Click a player to request a trade (click the ground to cancel)",
+        }
+    }
+}
+
+/// Rows of the Shift+click player menu, in order.
+const PLAYER_MENU: [(&str, PlayerMenuAction); 6] = [
+    ("TRADE", PlayerMenuAction::Trade),
+    ("FOLLOW", PlayerMenuAction::Follow),
+    ("WHISPER", PlayerMenuAction::Whisper),
+    ("ADD FRIEND", PlayerMenuAction::AddFriend),
+    ("TEAM INVITE", PlayerMenuAction::TeamInvite),
+    ("ENEMY", PlayerMenuAction::Enemy),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlayerMenuAction {
+    Trade,
+    Follow,
+    Whisper,
+    AddFriend,
+    TeamInvite,
+    Enemy,
+}
+
+/// The menu opened by Shift+clicking another player.
+struct PlayerMenu {
+    target_id: u32,
+    name: String,
+    menu: shop::ChoiceMenu,
 }
 
 enum RemoteModelJob {
@@ -191,6 +239,22 @@ struct App {
     action_bar: action_bar::ActionBar,
     action_context_slot: Option<usize>,
     item_context: Option<shop::ItemContext>,
+    /// A Friend/Trade button waiting for the player to click its target.
+    target_pick: Option<TargetPick>,
+    /// A received friend request (requester id, name) awaiting Accept/Refuse.
+    pending_friend_request: Option<(u32, String)>,
+    /// The game's own cursors, created with the window.
+    cursors: HashMap<cursors::GameCursor, CustomCursor>,
+    /// The cursor last set on the window.
+    shown_cursor: Option<cursors::GameCursor>,
+    /// The Shift+click menu of another player.
+    player_menu: Option<PlayerMenu>,
+    /// The player the hero walks after (player menu Follow).
+    follow_target: Option<u32>,
+    /// The kill-mode menu above the Capture button is open.
+    pk_menu_open: bool,
+    /// The server's kill mode (MsgAction 96): 0 PK, 1 peace, 2 team, 3 capture.
+    kill_mode: u8,
     item_action_panel: Option<shop::ItemActionPanel>,
     action_animation_started: Option<Instant>,
     gem_selection_panel: Option<shop::GemSelectionPanel>,
@@ -311,6 +375,8 @@ struct App {
     pending_guild_invite: Option<u32>,
     trade: network::TradeView,
     pending_trade_items: Vec<u32>,
+    /// The trade opened the inventory, so ending it closes it again.
+    trade_opened_inventory: bool,
     player_shop_items: Vec<network::PlayerShopItem>,
     player_shop_open: bool,
     player_shop_price: String,
@@ -376,6 +442,16 @@ impl ApplicationHandler for App {
         })();
         match result {
             Ok((window, renderer)) => {
+                for cursor in cursors::GameCursor::ALL {
+                    let [x, y] = cursor.hotspot();
+                    let size = cursors::SIZE as u16;
+                    match CustomCursor::from_rgba(cursor.image().into_raw(), size, size, x, y) {
+                        Ok(source) => {
+                            self.cursors.insert(cursor, event_loop.create_custom_cursor(source));
+                        }
+                        Err(error) => eprintln!("Cursor {cursor:?} unavailable: {error}"),
+                    }
+                }
                 self.window = Some(window);
                 self.renderer = Some(renderer);
                 self.last = Instant::now();
@@ -402,24 +478,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
-                if let Some(window) = &self.window {
-                    let cursor = if self.ground_loot_at_cursor().is_some() {
-                        CursorIcon::Pointer
-                    } else {
-                        let size = window.inner_size();
-                        let viewport = [size.width as f32, size.height as f32];
-                        let over_action_bar = hud::action_slot_at(viewport, self.cursor).is_some();
-                        let over_context = self.action_context_slot.is_some_and(|slot| {
-                            hud::action_context_option_at(viewport, self.cursor, slot).is_some()
-                        });
-                        if over_action_bar || over_context {
-                            CursorIcon::Pointer
-                        } else {
-                            CursorIcon::Default
-                        }
-                    };
-                    window.set_cursor(cursor);
-                }
+                self.refresh_cursor();
                 if let (Some(shop), Some(window)) = (&mut self.shop, &self.window) {
                     let size = window.inner_size();
                     let viewport = [size.width as f32, size.height as f32];
@@ -739,6 +798,16 @@ impl ApplicationHandler for App {
                         self.item_action_panel = None;
                         self.action_animation_started = None;
                     }
+                    PhysicalKey::Code(KeyCode::Escape)
+                        if self.player_menu.is_some() || self.pk_menu_open =>
+                    {
+                        self.player_menu = None;
+                        self.pk_menu_open = false;
+                    }
+                    PhysicalKey::Code(KeyCode::Escape) if self.target_pick.is_some() => {
+                        self.target_pick = None;
+                        self.network_status = "seleção de alvo cancelada".into();
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.item_context.is_some() => {
                         self.item_context = None;
                     }
@@ -761,6 +830,9 @@ impl ApplicationHandler for App {
                     }
                     PhysicalKey::Code(KeyCode::Escape) if self.inventory_open => {
                         self.inventory_open = false;
+                    }
+                    PhysicalKey::Code(KeyCode::Escape) if self.trade_request_pending() => {
+                        self.handle_trade_panel_action(shop::TradePanelAction::Cancel);
                     }
                     PhysicalKey::Code(KeyCode::Escape) if self.quick_panel.is_some() => {
                         self.quick_panel = None;
@@ -854,6 +926,14 @@ impl ApplicationHandler for App {
                         }
                     })
                     .flatten();
+                self.update_follow();
+                if self.target_pick.is_some()
+                    != self
+                        .shown_cursor
+                        .is_some_and(|cursor| !matches!(cursor, cursors::GameCursor::Arrow | cursors::GameCursor::Interact))
+                {
+                    self.refresh_cursor();
+                }
                 if !self.player.moving()
                     && self.pending_network_steps.is_empty()
                     && let Some(target) = self.queued_jump.take()
@@ -866,6 +946,10 @@ impl ApplicationHandler for App {
                     audio.update(&self.player);
                 }
                 let skill_hud = self.skill_hud();
+                let choice_menu = self.choice_menu();
+                let notice = self.target_pick.map(TargetPick::notice);
+                let prompt = self.prompt();
+                let hovered_player = self.hovered_player();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -920,6 +1004,7 @@ impl ApplicationHandler for App {
                         &self.network_status,
                         &self.friends,
                         &self.ignores,
+                        self.pending_friend_request.as_ref().map(|(_, name)| name.as_str()),
                         self.silver,
                         self.cps,
                         self.mana,
@@ -943,6 +1028,10 @@ impl ApplicationHandler for App {
                         &self.player_shop_price,
                         self.player_shop_price_focused,
                         self.item_context.clone(),
+                        choice_menu,
+                        notice,
+                        prompt,
+                        hovered_player,
                         self.item_action_panel,
                         action_animation_progress,
                         self.gem_selection_panel,
@@ -1210,6 +1299,54 @@ impl App {
             self.held = false;
             return true;
         }
+        if let Some(prompt) = self.prompt() {
+            if let Some(accept) = prompt.button_at(self.cursor) {
+                self.answer_prompt(accept);
+                self.held = false;
+                return true;
+            }
+            if prompt.contains(self.cursor) {
+                self.held = false;
+                return true;
+            }
+        }
+        if let Some(player_menu) = self.player_menu.take() {
+            if let Some(row) = player_menu.menu.row_at(self.cursor) {
+                self.player_menu_action(player_menu.target_id, &player_menu.name, PLAYER_MENU[row].1);
+                self.held = false;
+                return true;
+            }
+            if player_menu.menu.contains(self.cursor) {
+                self.player_menu = Some(player_menu);
+                self.held = false;
+                return true;
+            }
+            // Any click elsewhere closes the menu and is handled as usual.
+        }
+        if self.pk_menu_open {
+            let menu = shop::ChoiceMenu::kill_modes(viewport, self.kill_mode);
+            if let Some(mode) = menu.row_at(self.cursor) {
+                self.pk_menu_open = false;
+                self.set_kill_mode(mode as u8);
+                self.held = false;
+                return true;
+            }
+            if menu.contains(self.cursor) {
+                self.held = false;
+                return true;
+            }
+            // Any click elsewhere closes the menu and is handled as usual.
+            self.pk_menu_open = false;
+            if hud::capture_button_at(viewport, self.cursor) {
+                self.held = false;
+                return true;
+            }
+        } else if hud::capture_button_at(viewport, self.cursor) {
+            self.pk_menu_open = true;
+            self.chat_focused = false;
+            self.held = false;
+            return true;
+        }
         let skill_hud = self.skill_hud();
         if let Some(skill_id) = hud::skill_bar_at(&mut self.assets, viewport, self.cursor, &skill_hud)
         {
@@ -1313,13 +1450,12 @@ impl App {
                 }
             }
             if self.quick_panel == Some(shop::QuickPanel::Friends) {
-                let has_selected_target = self.selected_player_target().is_some();
                 if let Some(action) = shop::friends_panel_action_at(
                     viewport,
                     self.cursor,
                     &self.friends,
                     &self.ignores,
-                    has_selected_target,
+                    self.pending_friend_request.is_some(),
                 ) {
                     self.handle_friends_panel_action(action);
                     self.held = false;
@@ -1327,13 +1463,7 @@ impl App {
                 }
             }
             if self.quick_panel == Some(shop::QuickPanel::Trade) {
-                let has_selected_target = self.selected_player_target().is_some();
-                if let Some(action) = shop::trade_panel_action_at(
-                    viewport,
-                    self.cursor,
-                    &self.trade,
-                    has_selected_target,
-                ) {
+                if let Some(action) = shop::trade_panel_action_at(viewport, self.cursor, &self.trade) {
                     self.handle_trade_panel_action(action);
                     self.held = false;
                     return true;
@@ -1447,6 +1577,21 @@ impl App {
                     self.inventory_open = false;
                     self.quick_panel = None;
                 }
+                // Trade, as in the original client, turns the cursor into a
+                // trade request: the next player clicked is asked. An open
+                // or requested trade shows its panel instead.
+                6 if !self.trade.active
+                    && self.trade.pending_request.is_none()
+                    && self.quick_panel != Some(shop::QuickPanel::Trade) =>
+                {
+                    if self.target_pick == Some(TargetPick::Trade) {
+                        self.target_pick = None;
+                        self.network_status = "seleção de alvo cancelada".into();
+                    } else {
+                        self.target_pick = Some(TargetPick::Trade);
+                        self.network_status = "clique no jogador para negociar".into();
+                    }
+                }
                 // "Skill" toggles the bar with the learned skills above the
                 // HUD, as in the original client.
                 2 => {
@@ -1523,6 +1668,221 @@ impl App {
         false
     }
 
+    /// The cursor for what is under the mouse: a target reticle while a
+    /// Friend/Trade pick waits, the bright arrow over clickable things, else
+    /// the arrow.
+    fn wanted_cursor(&self) -> cursors::GameCursor {
+        use cursors::GameCursor;
+        match self.target_pick {
+            Some(TargetPick::Friend) => return GameCursor::PickFriend,
+            Some(TargetPick::Ignore) => return GameCursor::PickEnemy,
+            Some(TargetPick::Trade) => return GameCursor::PickTrade,
+            None => {}
+        }
+        if self.ground_loot_at_cursor().is_some() {
+            return GameCursor::Interact;
+        }
+        let Some(window) = &self.window else {
+            return GameCursor::Arrow;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let over_action_bar = hud::action_slot_at(viewport, self.cursor).is_some();
+        let over_context = self
+            .action_context_slot
+            .is_some_and(|slot| hud::action_context_option_at(viewport, self.cursor, slot).is_some());
+        let over_menu = self.choice_menu().is_some_and(|menu| menu.row_at(self.cursor).is_some());
+        if over_action_bar || over_context || over_menu {
+            GameCursor::Interact
+        } else {
+            GameCursor::Arrow
+        }
+    }
+
+    fn refresh_cursor(&mut self) {
+        let wanted = self.wanted_cursor();
+        if self.shown_cursor == Some(wanted) {
+            return;
+        }
+        let Some(window) = &self.window else {
+            return;
+        };
+        // Fall back to the system cursors if ours could not be created.
+        match self.cursors.get(&wanted) {
+            Some(cursor) => window.set_cursor(cursor.clone()),
+            None => window.set_cursor(match wanted {
+                cursors::GameCursor::Arrow => CursorIcon::Default,
+                cursors::GameCursor::Interact => CursorIcon::Pointer,
+                _ => CursorIcon::Crosshair,
+            }),
+        }
+        self.shown_cursor = Some(wanted);
+    }
+
+    /// The trade window comes with the inventory, as in the original
+    /// client, so items can be dragged onto the offer. The character
+    /// window would cover the trade on the left, so it closes.
+    fn open_trade_inventory(&mut self) {
+        self.status_open = false;
+        if !self.inventory_open {
+            self.inventory_open = true;
+            self.trade_opened_inventory = true;
+        }
+    }
+
+    /// Closes the inventory if the trade opened it.
+    fn close_trade_inventory(&mut self) {
+        if std::mem::take(&mut self.trade_opened_inventory) {
+            self.inventory_open = false;
+            self.selected_inventory_uid = None;
+        }
+    }
+
+    /// A trade request received and not yet answered.
+    fn trade_request_pending(&self) -> bool {
+        self.trade.pending_request.is_some() && !self.trade.active
+    }
+
+    /// The popup for a received team invite, a request to join the hero's
+    /// team, or a trade request.
+    fn prompt(&self) -> Option<shop::PromptDialog> {
+        let (title, id, text) = if let Some(leader) = self.pending_team_invite {
+            ("Team", leader, "invites you to the team")
+        } else if let Some(requester) = self.pending_team_join_request {
+            ("Team", requester, "asks to join your team")
+        } else if self.trade_request_pending() {
+            ("Trade", self.trade.pending_request?, "wants to trade with you")
+        } else {
+            return None;
+        };
+        let size = self.window.as_ref()?.inner_size();
+        let name = self.actor_name(id);
+        let name = if name.is_empty() { id.to_string() } else { name };
+        Some(shop::PromptDialog::new(
+            [size.width as f32, size.height as f32],
+            title,
+            name,
+            text,
+        ))
+    }
+
+    fn answer_prompt(&mut self, accept: bool) {
+        if self.pending_team_invite.is_some() || self.pending_team_join_request.is_some() {
+            self.answer_team_prompt(accept);
+        } else if self.trade_request_pending() {
+            self.handle_trade_panel_action(if accept {
+                shop::TradePanelAction::AcceptRequest
+            } else {
+                shop::TradePanelAction::Cancel
+            });
+        }
+    }
+
+    fn answer_team_prompt(&mut self, accept: bool) {
+        let invite = self.pending_team_invite.is_some();
+        match (invite, accept) {
+            (true, true) => self.handle_team_panel_action(shop::TeamPanelAction::AcceptInvite),
+            (false, true) => self.handle_team_panel_action(shop::TeamPanelAction::AcceptJoin),
+            (true, false) => {
+                self.pending_team_invite = None;
+                self.network_status = "convite de grupo recusado".into();
+            }
+            (false, false) => {
+                self.pending_team_join_request = None;
+                self.network_status = "pedido de entrada no grupo recusado".into();
+            }
+        }
+    }
+
+    /// The open choice menu: the kill modes or a player's Shift+click menu.
+    fn choice_menu(&self) -> Option<shop::ChoiceMenu> {
+        if self.pk_menu_open {
+            let size = self.window.as_ref()?.inner_size();
+            let viewport = [size.width as f32, size.height as f32];
+            return Some(shop::ChoiceMenu::kill_modes(viewport, self.kill_mode));
+        }
+        self.player_menu.as_ref().map(|player_menu| player_menu.menu.clone())
+    }
+
+    fn open_player_menu(&mut self, target_id: u32, name: String) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let menu = shop::ChoiceMenu::at(
+            viewport,
+            self.cursor,
+            name.clone(),
+            PLAYER_MENU.iter().map(|(label, _)| *label).collect(),
+        );
+        self.pk_menu_open = false;
+        self.target_pick = None;
+        self.selected_target = Some(target_id);
+        self.player_menu = Some(PlayerMenu {
+            target_id,
+            name,
+            menu,
+        });
+    }
+
+    fn player_menu_action(&mut self, target_id: u32, name: &str, action: PlayerMenuAction) {
+        // The handlers below act on the selected player.
+        self.selected_target = Some(target_id);
+        match action {
+            PlayerMenuAction::Trade => self.handle_trade_panel_action(shop::TradePanelAction::Request),
+            PlayerMenuAction::AddFriend => {
+                self.handle_friends_panel_action(shop::FriendsPanelAction::AddFriend);
+            }
+            PlayerMenuAction::Enemy => {
+                self.handle_friends_panel_action(shop::FriendsPanelAction::AddIgnore);
+            }
+            PlayerMenuAction::TeamInvite => {
+                const REQUEST_INVITE: u32 = 4;
+                self.send_team_action(REQUEST_INVITE, target_id);
+            }
+            PlayerMenuAction::Whisper => {
+                self.chat_text = format!("/w {name} ");
+                self.chat_focused = true;
+                self.network_status = format!("whisper preparado para {name}");
+            }
+            PlayerMenuAction::Follow => {
+                self.follow_target = Some(target_id);
+                self.network_status = format!("seguindo {name}");
+            }
+        }
+    }
+
+    /// Walks after the followed player while it is more than two cells away.
+    fn update_follow(&mut self) {
+        let Some(target_id) = self.follow_target else {
+            return;
+        };
+        let Some(actor) = self.remote_actors.get(&target_id) else {
+            self.follow_target = None;
+            self.network_status = "alvo seguido saiu da tela".into();
+            return;
+        };
+        if self.player.moving() || !self.pending_network_steps.is_empty() || self.dead_since.is_some() {
+            return;
+        }
+        let target = actor.position.map(|value| value.round() as i32);
+        let here = self.player.cell();
+        if (target[0] - here[0]).abs().max((target[1] - here[1]).abs()) > 2 {
+            self.player.go(&self.map, target);
+        }
+    }
+
+    fn set_kill_mode(&mut self, mode: u8) {
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            self.network_status = "modo PK requer conexão online".into();
+            return;
+        };
+        // The server answers with the same MsgAction 96 and a notice.
+        network.send_kill_mode(character_id, mode);
+        self.network_status = format!("online: modo {}", shop::KILL_MODES[usize::from(mode)]);
+    }
+
     fn submit_chat(&mut self) {
         let message = self.chat_text.trim().to_owned();
         if !message.is_empty()
@@ -1557,6 +1917,14 @@ impl App {
         self.network_status = format!("online: team action {action} target {target_id}");
     }
 
+    /// The name of an actor on screen, or empty when it is not known.
+    fn actor_name(&self, id: u32) -> String {
+        self.remote_actors
+            .get(&id)
+            .map(|actor| actor.name.clone())
+            .unwrap_or_default()
+    }
+
     fn selected_player_target(&self) -> Option<(u32, String)> {
         let target_id = self.selected_target?;
         let actor = self.remote_actors.get(&target_id)?;
@@ -1570,7 +1938,12 @@ impl App {
         match action {
             shop::FriendsPanelAction::AddFriend | shop::FriendsPanelAction::AddIgnore => {
                 let Some((target_id, target_name)) = self.selected_player_target() else {
-                    self.network_status = "selecione um jogador próximo primeiro".into();
+                    self.target_pick = Some(if action == shop::FriendsPanelAction::AddFriend {
+                        TargetPick::Friend
+                    } else {
+                        TargetPick::Ignore
+                    });
+                    self.network_status = "clique no jogador".into();
                     return;
                 };
                 let action_code = match action {
@@ -1587,6 +1960,24 @@ impl App {
                     };
                 } else {
                     self.network_status = "social indisponível: servidor offline".into();
+                }
+            }
+            shop::FriendsPanelAction::AcceptRequest => {
+                let Some((requester_id, name)) = self.pending_friend_request.take() else {
+                    return;
+                };
+                // The server makes the friendship when the requested player
+                // applies back to the requester.
+                if let Some(network) = &self.network {
+                    network.send_friend_action(10, requester_id, &name);
+                    self.network_status = format!("online: amizade com {name} aceita");
+                } else {
+                    self.network_status = "social indisponível: servidor offline".into();
+                }
+            }
+            shop::FriendsPanelAction::RefuseRequest => {
+                if let Some((_, name)) = self.pending_friend_request.take() {
+                    self.network_status = format!("pedido de amizade de {name} recusado");
                 }
             }
             shop::FriendsPanelAction::Whisper(index) => {
@@ -1774,8 +2165,9 @@ impl App {
         };
         match action {
             shop::TradePanelAction::Request => {
-                let Some(target_id) = self.selected_target else {
-                    self.network_status = "selecione um jogador para negociar".into();
+                let Some((target_id, _)) = self.selected_player_target() else {
+                    self.target_pick = Some(TargetPick::Trade);
+                    self.network_status = "clique no jogador para negociar".into();
                     return;
                 };
                 network.send_trade(target_id, REQUEST, 0);
@@ -1787,6 +2179,9 @@ impl App {
                     return;
                 };
                 network.send_trade(target_id, REQUEST, 0);
+                // The trade window opens once the server confirms the trade.
+                self.trade.pending_request = None;
+                self.network_status = format!("online: aceitando trade de {target_id}");
             }
             shop::TradePanelAction::AddItem => {
                 let Some(item) = self
@@ -1846,7 +2241,10 @@ impl App {
                 network.send_trade(target_id, CLOSE, 0);
                 self.trade = network::TradeView::default();
                 self.pending_trade_items.clear();
-                self.quick_panel = None;
+                if self.quick_panel == Some(shop::QuickPanel::Trade) {
+                    self.quick_panel = None;
+                }
+                self.close_trade_inventory();
             }
         }
     }
@@ -1939,6 +2337,7 @@ impl App {
         if self.dead_since.is_some() {
             return;
         }
+        self.follow_target = None;
         self.pending_attack = None;
         self.pending_skill_attack = None;
         self.selected_target = None;
@@ -1964,7 +2363,7 @@ impl App {
                 }
                 self.start_jump(target);
             } else if self.modifiers.shift_key() {
-                self.player.face(target);
+                self.face_towards(target);
             } else {
                 self.player.go(&self.map, target);
             }
@@ -2054,18 +2453,20 @@ impl App {
             } => match subtype {
                 1 => {
                     self.trade.pending_request = Some(target_id);
+                    self.trade.peer_name = self.actor_name(target_id);
                     self.trade.active = false;
-                    self.quick_panel = Some(shop::QuickPanel::Trade);
                     self.network_status = format!("online: trade request from {target_id}");
                 }
                 3 => {
                     self.trade = network::TradeView {
                         active: true,
                         peer_id: Some(target_id),
+                        peer_name: self.actor_name(target_id),
                         ..Default::default()
                     };
                     self.pending_trade_items.clear();
                     self.quick_panel = Some(shop::QuickPanel::Trade);
+                    self.open_trade_inventory();
                     self.network_status = format!("online: trade opened with {target_id}");
                 }
                 5 | 17 => {
@@ -2074,6 +2475,7 @@ impl App {
                     if self.quick_panel == Some(shop::QuickPanel::Trade) {
                         self.quick_panel = None;
                     }
+                    self.close_trade_inventory();
                     self.network_status = "online: trade closed".into();
                 }
                 8 => self.trade.peer_silver = data,
@@ -2125,6 +2527,16 @@ impl App {
             } => {
                 let state = if online { "online" } else { "offline" };
                 match action {
+                    // Someone asked to be our friend: Accept/Refuse in the
+                    // friends panel.
+                    10 => {
+                        self.pending_friend_request = Some((friend_id, name.clone()));
+                        self.quick_panel = Some(shop::QuickPanel::Friends);
+                        self.status_open = false;
+                        self.inventory_open = false;
+                        self.network_status = format!("{name} quer ser seu amigo");
+                        return;
+                    }
                     12 | 13 | 15 => {
                         self.friends.retain(|entry| entry.friend_id != friend_id);
                         self.friends.push(SocialEntry {
@@ -2631,6 +3043,11 @@ impl App {
                         format!("online: actor {id} moved dir {direction} type {movement_type}");
                 }
             }
+            NetworkEvent::KillMode(mode) => {
+                if usize::from(mode) < shop::KILL_MODES.len() {
+                    self.kill_mode = mode;
+                }
+            }
             NetworkEvent::RemoteFacing { id, direction } => {
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
                     actor.direction = direction;
@@ -2642,17 +3059,40 @@ impl App {
                 direction,
             } => {
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
-                    actor.position = position.map(|value| value as f32);
-                    actor.movement_from = actor.position;
-                    actor.movement_to = actor.position;
-                    actor.movement_started = 0.0;
-                    actor.movement_until = 0.0;
-                    actor.direction = direction;
-                    actor.action = 130;
+                    // Fly from where the actor is drawn now to the landing
+                    // cell over the same time the local player's jump takes;
+                    // the renderer lifts it along the arc while action is 130.
                     let now = self.started.elapsed().as_secs_f32();
+                    if actor.movement_until > actor.movement_started && now < actor.movement_until {
+                        let t = ((now - actor.movement_started)
+                            / (actor.movement_until - actor.movement_started))
+                            .clamp(0.0, 1.0);
+                        actor.position[0] = actor.movement_from[0]
+                            + (actor.movement_to[0] - actor.movement_from[0]) * t;
+                        actor.position[1] = actor.movement_from[1]
+                            + (actor.movement_to[1] - actor.movement_from[1]) * t;
+                    }
+                    let target = position.map(|value| value as f32);
+                    let motion = motion_math::jump_motion(
+                        actor.position,
+                        target,
+                        self.character.duration(Action::Jump),
+                    );
+                    // Face the way the jump goes; the packet's direction is
+                    // only a fallback for a jump in place (older servers
+                    // forwarded 0 there).
+                    actor.direction = if target == actor.position {
+                        direction
+                    } else {
+                        direction_towards(actor.position, target)
+                    };
+                    actor.movement_from = actor.position;
+                    actor.movement_to = target;
+                    actor.movement_started = now;
+                    actor.movement_until = now + motion.duration.as_secs_f32();
+                    actor.action = 130;
                     actor.animation_started = now;
-                    actor.animation_until =
-                        now + self.character.duration(Action::Jump).as_secs_f32();
+                    actor.animation_until = actor.movement_until;
                 }
             }
             NetworkEvent::RemoteAction { id, action } => {
@@ -2944,11 +3384,28 @@ impl App {
                     self.remote_models.remove(&id);
                     return;
                 }
+                // The server re-sends MsgPlayer when a player changes gear;
+                // rebuild the model then. The old one stays drawn until the
+                // new one loads, and results apply in request order.
+                let appearance_changed = !actor.npc
+                    && self.remote_actors.get(&id).is_some_and(|old| {
+                        (old.body, old.armor, old.helmet, old.hair_style, old.right_weapon, old.left_weapon)
+                            != (
+                                actor.body,
+                                actor.armor,
+                                actor.helmet,
+                                actor.hair_style,
+                                actor.right_weapon,
+                                actor.left_weapon,
+                            )
+                    });
                 if !actor.npc
                     && actor.body != 0
-                    && !self.remote_models.contains_key(&id)
-                    && self.remote_models_loading.insert(id)
+                    && (appearance_changed
+                        || (!self.remote_models.contains_key(&id)
+                            && !self.remote_models_loading.contains(&id)))
                 {
+                    self.remote_models_loading.insert(id);
                     let job = RemoteModelJob::Player {
                         id,
                         body: actor.body,
@@ -3076,6 +3533,24 @@ impl App {
         self.network_status = format!("online: sending walk dir {direction}");
     }
 
+    /// Turns the standing hero towards `target` and tells the server, which
+    /// turns it on the other players' screens too.
+    fn face_towards(&mut self, target: [i32; 2]) {
+        let facing = self.player.facing;
+        self.player.face(target);
+        if self.player.facing == facing {
+            return;
+        }
+        let current = self.confirmed_network_cell.unwrap_or(self.player.cell());
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            let direction = direction_towards(
+                current.map(|value| value as f32),
+                target.map(|value| value as f32),
+            );
+            network.send_facing(character_id, direction, current);
+        }
+    }
+
     fn start_jump(&mut self, target: [i32; 2]) {
         let current = self.player.cell();
         let Some(target) =
@@ -3092,13 +3567,12 @@ impl App {
         }
     }
 
-    fn select_actor_at_cursor(&mut self) -> bool {
-        let Some(renderer) = &self.renderer else {
-            return false;
-        };
+    /// The actor drawn under the cursor, nearest the camera first:
+    /// (id, npc, npc kind, name).
+    fn actor_at_cursor(&self) -> Option<(u32, bool, u16, String)> {
+        let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera(&self.map, &self.player);
-        let selected = self
-            .remote_actors
+        self.remote_actors
             .values()
             .filter_map(|actor| {
                 let projected = self.map.project(actor.position);
@@ -3110,8 +3584,43 @@ impl App {
                 within.then_some((actor.position[0] + actor.position[1], actor))
             })
             .min_by(|(left, _), (right, _)| left.total_cmp(right))
-            .map(|(_, actor)| (actor.id, actor.npc, actor.npc_kind, actor.name.clone()));
+            .map(|(_, actor)| (actor.id, actor.npc, actor.npc_kind, actor.name.clone()))
+    }
+
+    /// Another player under the cursor in the world (not over the HUD or a
+    /// menu), for the hover card.
+    fn hovered_player(&self) -> Option<u32> {
+        let size = self.window.as_ref()?.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        if hud::contains(viewport, self.cursor)
+            || self.choice_menu().is_some_and(|menu| menu.contains(self.cursor))
+            || self.prompt().is_some_and(|prompt| prompt.contains(self.cursor))
+        {
+            return None;
+        }
+        let (id, npc, _, name) = self.actor_at_cursor()?;
+        (!npc && !(400001..=499999).contains(&id) && !name.is_empty()).then_some(id)
+    }
+
+    fn select_actor_at_cursor(&mut self) -> bool {
+        if self.renderer.is_none() {
+            return false;
+        }
+        let selected = self.actor_at_cursor();
+        if let Some((id, false, _, name)) = &selected
+            && self.modifiers.shift_key()
+            && !(400001..=499999).contains(id)
+            && !name.is_empty()
+        {
+            let (id, name) = (*id, name.clone());
+            self.open_player_menu(id, name);
+            return true;
+        }
         let Some((id, npc, npc_kind, name)) = selected else {
+            // Clicking the ground cancels a pending target pick.
+            if self.target_pick.take().is_some() {
+                self.network_status = "seleção de alvo cancelada".into();
+            }
             return false;
         };
         // Training ground Stakes and Scarecrows are attacked, not talked to;
@@ -3149,6 +3658,17 @@ impl App {
             self.selected_target = Some(id);
         }
         self.network_status = format!("online: selected {kind} {label} ({id})");
+        if !npc && !monster && let Some(pick) = self.target_pick.take() {
+            match pick {
+                TargetPick::Friend => {
+                    self.handle_friends_panel_action(shop::FriendsPanelAction::AddFriend);
+                }
+                TargetPick::Ignore => {
+                    self.handle_friends_panel_action(shop::FriendsPanelAction::AddIgnore);
+                }
+                TargetPick::Trade => self.handle_trade_panel_action(shop::TradePanelAction::Request),
+            }
+        }
         if let Some(window) = &self.window {
             window.set_title(&format!("gravak-co — {}", self.network_status));
         }
@@ -3203,7 +3723,7 @@ impl App {
         // the 1101 result; it does not drive the pickup animation through
         // ChangeAction.
         network.send_pickup_ground_item(uid, item_id, target[0] as u16, target[1] as u16);
-        self.player.face(target);
+        self.face_towards(target);
         self.player.action = Action::Pickup;
         self.player.action_instance = self.player.action_instance.wrapping_add(1);
         let now = self.started.elapsed().as_secs_f32();
@@ -3258,7 +3778,7 @@ impl App {
             {
                 let position = target_cell.map(|value| value as u16);
                 network.send_attack(character_id, target_id, position[0], position[1]);
-                self.player.face(target_cell);
+                self.face_towards(target_cell);
                 // Keep the local request cadence aligned with the equipped
                 // weapon while the server remains authoritative.
                 self.next_attack_at =
@@ -3529,7 +4049,7 @@ impl App {
             .insert(skill.id, now + skill.cooldown_seconds);
         self.pending_attack = None;
         if skill.requires_target {
-            self.player.face(target_cell);
+            self.face_towards(target_cell);
             self.network_status = format!("online: {} -> monster {target_id}", skill.name);
         } else {
             self.network_status = format!("online: {} ativada", skill.name);
@@ -5575,20 +6095,21 @@ fn run() -> Result<()> {
     let mut character = character::Character::load(&mut assets, body)?;
     if let Some(ready) = &server_ready {
         if ready.body != 0
+            // Start bare: the server's equipment and guild packets dress the
+            // character. The sample profile's gear and guild are offline-only,
+            // and other clients never see them.
             && let Ok(mut live_character) = character::Character::load_remote(
                 &mut assets,
                 ready.body,
-                character.armor_id,
-                character.helmet_id,
+                0,
+                0,
                 ready.hair_style,
-                character.right_weapon_id,
-                character.left_weapon_id,
+                0,
+                0,
                 ready.character_name.clone(),
                 ready.health.min(u16::MAX as u32) as u16,
             )
         {
-            live_character.guild = character.guild.clone();
-            live_character.guild_rank = character.guild_rank.clone();
             live_character.maximum_health = character
                 .maximum_health
                 .max(ready.maximum_health)
@@ -5596,6 +6117,8 @@ fn run() -> Result<()> {
             character = live_character;
         }
         character.name = ready.character_name.clone();
+        character.guild.clear();
+        character.guild_rank.clear();
     }
     let requested_spawn = spawn;
     let preferred_spawn = requested_spawn
@@ -5796,6 +6319,15 @@ fn run() -> Result<()> {
         action_bar: action_bar::ActionBar::default(),
         action_context_slot: None,
         item_context: None,
+        target_pick: None,
+        pending_friend_request: None,
+        cursors: HashMap::new(),
+        shown_cursor: None,
+        player_menu: None,
+        follow_target: None,
+        pk_menu_open: false,
+        // The game server starts every character in peace mode.
+        kill_mode: 1,
         item_action_panel: None,
         action_animation_started: None,
         gem_selection_panel: None,
@@ -5915,6 +6447,7 @@ fn run() -> Result<()> {
         pending_guild_invite: None,
         trade: network::TradeView::default(),
         pending_trade_items: Vec::new(),
+        trade_opened_inventory: false,
         player_shop_items: Vec::new(),
         player_shop_open: false,
         player_shop_price: "1000".into(),
