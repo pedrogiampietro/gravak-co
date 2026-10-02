@@ -228,6 +228,84 @@ fn action_sound(
         })
 }
 
+/// The login screens' sound: the theme looping softly behind them, and the
+/// game's own clicks for buttons and page turns.
+pub struct LoginAudio {
+    device: MixerDeviceSink,
+    music: Option<rodio::Player>,
+    decoding: Option<std::sync::mpsc::Receiver<std::result::Result<SamplesBuffer, String>>>,
+    clips: HashMap<LoginSound, SamplesBuffer>,
+    music_volume: f32,
+    sound_volume: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LoginSound {
+    /// A button, a body, a profession or a dye chosen.
+    Click,
+    /// One screen giving way to another.
+    Page,
+}
+
+/// The theme of the login screens.
+const LOGIN_MUSIC: &str = "sound/music.mp3";
+
+impl LoginAudio {
+    /// Opens the sound device and starts decoding the theme on a thread;
+    /// `None` without a device. Volumes are the Options window's (0..=100).
+    pub fn start(assets: &mut Assets, music_volume: u8, sound_volume: u8) -> Option<Self> {
+        let mut device = DeviceSinkBuilder::from_default_device()
+            .and_then(|builder| builder.open_sink_or_fallback())
+            .map_err(|error| eprintln!("Login audio unavailable: {error}"))
+            .ok()?;
+        device.log_on_drop(false);
+        let clips = [(LoginSound::Click, "sound/BtnClick.wav"), (LoginSound::Page, "sound/ChangePage.wav")]
+            .into_iter()
+            .filter_map(|(sound, path)| Some((sound, assets.read(path).ok().and_then(|bytes| decode_audio_bytes(bytes).ok())?)))
+            .collect();
+        let decoding = assets.read(LOGIN_MUSIC).ok().map(|bytes| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(decode_audio_bytes(bytes).map_err(|error| error.to_string()));
+            });
+            receiver
+        });
+        Some(Self {
+            device,
+            music: None,
+            decoding,
+            clips,
+            music_volume: f32::from(music_volume.min(100)) / 100.0,
+            sound_volume: f32::from(sound_volume.min(100)) / 100.0,
+        })
+    }
+
+    /// Starts the theme once it is decoded: it rises over three seconds
+    /// and loops.
+    pub fn update(&mut self) {
+        let Some(receiver) = &self.decoding else { return };
+        let Ok(decoded) = receiver.try_recv() else { return };
+        self.decoding = None;
+        match decoded {
+            Ok(theme) => {
+                let player = rodio::Player::connect_new(self.device.mixer());
+                player.set_volume(self.music_volume * 0.8);
+                player.append(theme.repeat_infinite().fade_in(std::time::Duration::from_secs(3)));
+                self.music = Some(player);
+            }
+            Err(error) => eprintln!("Login music {LOGIN_MUSIC}: {error}"),
+        }
+    }
+
+    pub fn play(&self, sound: LoginSound) {
+        let Some(clip) = self.clips.get(&sound) else { return };
+        let player = rodio::Player::connect_new(self.device.mixer());
+        player.set_volume(self.sound_volume);
+        player.append(clip.clone());
+        player.detach();
+    }
+}
+
 fn decode_audio_bytes(bytes: Vec<u8>) -> Result<SamplesBuffer> {
     if bytes.len() > 32 * 1024 * 1024 {
         return Err("Audio exceeds 32 MiB safety limit".into());

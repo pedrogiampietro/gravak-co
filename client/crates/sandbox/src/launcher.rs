@@ -24,6 +24,8 @@ use winit::{
 };
 
 const FIELD_HEIGHT: i32 = 32;
+/// How long a new screen takes to rise out of the dark, in seconds.
+const SCREEN_FADE: f32 = 0.35;
 const BUTTON_HEIGHT: i32 = 34;
 const MAX_INPUT: usize = 15;
 
@@ -117,6 +119,9 @@ pub struct LoginUi {
     pub busy: bool,
     pub hovered: Option<Target>,
     account: String,
+    /// A screen change waiting for its first frame, and when its fade began.
+    fade_pending: std::cell::Cell<bool>,
+    fade_from: std::cell::Cell<Option<f32>>,
     /// The professions' heroes by (body, class), as they finish loading.
     heroes: std::collections::HashMap<(usize, usize), crate::showcase::Hero>,
     /// Each body in the starter coat by (body, dye), and the dyes' swatch
@@ -160,6 +165,8 @@ impl LoginUi {
             busy: false,
             hovered: None,
             account: last_account.unwrap_or_default(),
+            fade_pending: std::cell::Cell::new(false),
+            fade_from: std::cell::Cell::new(None),
             heroes: std::collections::HashMap::new(),
             coats: std::collections::HashMap::new(),
             coat_colours: std::collections::HashMap::new(),
@@ -191,6 +198,7 @@ impl LoginUi {
             self.focus = 1;
         }
         self.screen = screen;
+        self.fade_pending.set(true);
         self.hovered = None;
     }
 
@@ -524,7 +532,30 @@ impl LoginUi {
     }
 
     /// Paints the whole window.
+    /// Paints the whole window; a new screen rises out of the dark over
+    /// its first moments.
     pub fn image(&self, size: [u32; 2], time: f32) -> RgbaImage {
+        let mut image = self.paint(size, time);
+        if self.fade_pending.replace(false) {
+            self.fade_from.set(Some(time));
+        }
+        if let Some(from) = self.fade_from.get() {
+            let t = ((time - from) / SCREEN_FADE).clamp(0.0, 1.0);
+            if t >= 1.0 {
+                self.fade_from.set(None);
+            } else {
+                let light = t * t * (3.0 - 2.0 * t);
+                for pixel in image.pixels_mut() {
+                    for c in 0..3 {
+                        pixel.0[c] = (f32::from(pixel.0[c]) * light) as u8;
+                    }
+                }
+            }
+        }
+        image
+    }
+
+    fn paint(&self, size: [u32; 2], time: f32) -> RgbaImage {
         use crate::launcher_art as art;
         let size = [size[0].max(1), size[1].max(1)];
         let mut image = art::backdrop(size);
@@ -1146,6 +1177,8 @@ struct Launcher {
     scenes: std::sync::mpsc::Receiver<RgbaImage>,
     /// The professions' heroes arriving from `showcase`.
     heroes: std::sync::mpsc::Receiver<crate::showcase::Loaded>,
+    /// The theme and the clicks; none without a sound device.
+    audio: Option<crate::audio::LoginAudio>,
 }
 
 impl Launcher {
@@ -1157,6 +1190,15 @@ impl Launcher {
                 [size.width, size.height]
             })
             .unwrap_or([1024, 768])
+    }
+
+    /// A page turn when an input or event changed the screen.
+    fn sound_screen_change(&self, before: std::mem::Discriminant<Screen>) {
+        if std::mem::discriminant(&self.ui.screen) != before
+            && let Some(audio) = &self.audio
+        {
+            audio.play(crate::audio::LoginSound::Page);
+        }
     }
 
     fn run(&mut self, request: Option<Request>, event_loop: &ActiveEventLoop) {
@@ -1258,7 +1300,15 @@ impl ApplicationHandler for Launcher {
                     self.redraw();
                     return;
                 }
+                let target = self.ui.target_at(self.size(), self.cursor);
+                if matches!(target, Some(Target::Button(_) | Target::Body(_) | Target::Class(_) | Target::Dye(_)))
+                    && let Some(audio) = &self.audio
+                {
+                    audio.play(crate::audio::LoginSound::Click);
+                }
+                let before = std::mem::discriminant(&self.ui.screen);
                 let request = self.ui.click(self.size(), self.cursor);
+                self.sound_screen_change(before);
                 self.run(request, event_loop);
             }
             WindowEvent::MouseInput {
@@ -1267,9 +1317,11 @@ impl ApplicationHandler for Launcher {
                 ..
             } => self.ui.release(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let before = std::mem::discriminant(&self.ui.screen);
                 let request = self
                     .ui
                     .key(&event.logical_key, event.text.as_deref(), self.shift);
+                self.sound_screen_change(before);
                 self.run(request, event_loop);
             }
             _ => {}
@@ -1280,11 +1332,16 @@ impl ApplicationHandler for Launcher {
         while let Ok(loaded) = self.heroes.try_recv() {
             self.ui.add_loaded(loaded);
         }
+        if let Some(audio) = &mut self.audio {
+            audio.update();
+        }
         while let Ok(view) = self.scenes.try_recv() {
             crate::launcher_art::add_scene(view, self.started.elapsed().as_secs_f32());
         }
         for event in self.client.drain() {
+            let before = std::mem::discriminant(&self.ui.screen);
             self.ui.handle_event(&event);
+            self.sound_screen_change(before);
             if let LoginEvent::Entered(handle) = event {
                 self.entered = Some(handle);
                 event_loop.exit();
@@ -1325,6 +1382,10 @@ pub fn run(
         error: None,
         scenes: crate::login_scenes::start(assets.root_path().to_path_buf()),
         heroes: crate::showcase::start(assets.root_path().to_path_buf()),
+        audio: {
+            let options = crate::settings::load_options();
+            crate::audio::LoginAudio::start(assets, options.music_volume, options.sound_volume)
+        },
     };
     event_loop
         .run_app_on_demand(&mut launcher)
