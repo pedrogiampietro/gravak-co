@@ -1694,7 +1694,8 @@ impl Renderer {
         player_shop_price: &str,
         player_shop_price_focused: bool,
         item_context: Option<crate::shop::ItemContext>,
-        pk_menu: Option<u8>,
+        choice_menu: Option<crate::shop::ChoiceMenu>,
+        notice: Option<&str>,
         item_action_panel: Option<crate::shop::ItemActionPanel>,
         action_animation_progress: Option<f32>,
         gem_selection_panel: Option<crate::shop::GemSelectionPanel>,
@@ -3525,16 +3526,31 @@ impl Renderer {
                 });
             }
         }
-        if let Some(current) = pk_menu {
-            let hovered = crate::shop::pk_menu_mode_at(viewport, cursor);
-            let key = format!("@pk-menu-{current}-{hovered:?}");
+        if let Some(menu) = choice_menu {
+            let hovered = menu.row_at(cursor);
+            let key = format!("@choice-menu-{:?}-{hovered:?}", (&menu.title, &menu.labels, menu.marked));
             if !self.textures.contains_key(&key) {
-                self.upload(&key, crate::shop::pk_menu_image(current, hovered)?);
+                self.upload(&key, menu.image(hovered)?);
             }
             if let Some(texture) = self.textures.get(&key) {
                 draws.push(Draw {
                     texture: key,
-                    vertices: quad(crate::shop::pk_menu_position(viewport), texture.size, viewport),
+                    vertices: quad(menu.position.map(|value| value as f32), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(notice) = notice {
+            let key = format!("@notice-{notice}");
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, crate::shop::notice_image(notice)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [((viewport[0] - texture.size[0] as f32) * 0.5).max(8.0), 48.0];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });

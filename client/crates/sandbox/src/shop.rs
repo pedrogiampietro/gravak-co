@@ -4224,103 +4224,149 @@ pub fn item_context_image(
 /// free PK, peace (monsters only), team and capture (black names only).
 pub const KILL_MODES: [&str; 4] = ["PK", "PEACE", "TEAM", "CAPTURE"];
 
-const PK_MENU_WIDTH: f32 = 150.0;
+const CHOICE_MENU_WIDTH: f32 = 150.0;
 
-/// The kill-mode menu opens above the Capture button.
-pub fn pk_menu_position(viewport: [f32; 2]) -> [f32; 2] {
-    let button = crate::original_ui_layout::main_hud_button_rect(
-        viewport,
-        crate::original_ui_layout::MainHudButton::Capture,
-    );
-    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * KILL_MODES.len() as f32;
-    [
-        button.x.min(viewport[0] - PK_MENU_WIDTH - 8.0).max(8.0),
-        (button.y - height - 4.0).max(8.0),
-    ]
+/// A small list of choices drawn like the item action menu: the kill-mode
+/// menu above Capture and the Shift+click player menu.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChoiceMenu {
+    pub title: String,
+    pub labels: Vec<&'static str>,
+    /// A row drawn as the current choice.
+    pub marked: Option<usize>,
+    /// Top-left corner in window pixels.
+    pub position: [i32; 2],
 }
 
-/// The kill mode under the cursor, if any.
-pub fn pk_menu_mode_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
-    let [left, top] = pk_menu_position(viewport);
-    if cursor[0] < left
-        || cursor[0] >= left + PK_MENU_WIDTH
-        || cursor[1] < top + ITEM_CONTEXT_HEADER_HEIGHT
-    {
-        return None;
+impl ChoiceMenu {
+    fn height(rows: usize) -> f32 {
+        ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * rows.max(1) as f32
     }
-    let row =
-        ((cursor[1] - top - ITEM_CONTEXT_HEADER_HEIGHT) / ITEM_CONTEXT_ROW_HEIGHT).floor() as usize;
-    (row < KILL_MODES.len()).then_some(row as u8)
-}
 
-pub fn pk_menu_contains(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = pk_menu_position(viewport);
-    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * KILL_MODES.len() as f32;
-    cursor[0] >= left && cursor[0] < left + PK_MENU_WIDTH && cursor[1] >= top && cursor[1] < top + height
-}
-
-pub fn pk_menu_image(current: u8, hovered: Option<u8>) -> Result<RgbaImage> {
-    let font = labels::font()?;
-    let height = ITEM_CONTEXT_HEADER_HEIGHT + ITEM_CONTEXT_ROW_HEIGHT * KILL_MODES.len() as f32;
-    let mut image = RgbaImage::from_pixel(
-        PK_MENU_WIDTH as u32,
-        height as u32,
-        Rgba([4, 10, 14, 252]),
-    );
-    let width = image.width();
-    let height = image.height();
-    ui_theme::fill(
-        &mut image,
-        UiRect::new(1, 1, width as i32 - 2, ITEM_CONTEXT_HEADER_HEIGHT as i32),
-        [10, 30, 40, 255],
-    );
-    rect_outline(&mut image, 0, 0, width, height, Rgba([226, 185, 77, 255]));
-    labels::text_sized(
-        &mut image,
-        &font,
-        &[("PK MODE", ui_theme::TEXT_GOLD)],
-        [12.0, 9.0],
-        10.0,
-    );
-    for (index, label) in KILL_MODES.iter().enumerate() {
-        let mode = index as u8;
-        let top = (ITEM_CONTEXT_HEADER_HEIGHT + index as f32 * ITEM_CONTEXT_ROW_HEIGHT) as u32;
-        let row_rect = UiRect::new(
-            4,
-            top as i32 + 2,
-            width as i32 - 8,
-            ITEM_CONTEXT_ROW_HEIGHT as i32 - 4,
+    /// The kill-mode menu, opened above the Capture button.
+    pub fn kill_modes(viewport: [f32; 2], current: u8) -> Self {
+        let button = crate::original_ui_layout::main_hud_button_rect(
+            viewport,
+            crate::original_ui_layout::MainHudButton::Capture,
         );
-        if hovered == Some(mode) {
-            ui_theme::fill(&mut image, row_rect, [39, 67, 78, 255]);
-            ui_theme::outline(&mut image, row_rect, [222, 178, 66, 255]);
-        } else if index % 2 == 0 {
-            ui_theme::fill(&mut image, row_rect, [7, 19, 27, 230]);
+        let height = Self::height(KILL_MODES.len());
+        Self {
+            title: "PK MODE".into(),
+            labels: KILL_MODES.to_vec(),
+            marked: Some(usize::from(current)),
+            position: [
+                button.x.min(viewport[0] - CHOICE_MENU_WIDTH - 8.0).max(8.0) as i32,
+                (button.y - height - 4.0).max(8.0) as i32,
+            ],
         }
-        if mode == current {
-            labels::text_sized(
-                &mut image,
-                &font,
-                &[("*", ui_theme::TEXT_GOLD)],
-                [14.0, top as f32 + 9.0],
-                10.0,
-            );
+    }
+
+    /// A menu opened at `anchor` (the click), kept inside the window.
+    pub fn at(viewport: [f32; 2], anchor: [f32; 2], title: String, labels: Vec<&'static str>) -> Self {
+        let height = Self::height(labels.len());
+        Self {
+            title,
+            labels,
+            marked: None,
+            position: [
+                (anchor[0] + 8.0).min((viewport[0] - CHOICE_MENU_WIDTH - 8.0).max(8.0)) as i32,
+                (anchor[1] + 8.0).min((viewport[1] - height - 8.0).max(8.0)) as i32,
+            ],
         }
+    }
+
+    pub fn contains(&self, cursor: [f32; 2]) -> bool {
+        let [left, top] = self.position.map(|value| value as f32);
+        cursor[0] >= left
+            && cursor[0] < left + CHOICE_MENU_WIDTH
+            && cursor[1] >= top
+            && cursor[1] < top + Self::height(self.labels.len())
+    }
+
+    /// The row under the cursor, if any.
+    pub fn row_at(&self, cursor: [f32; 2]) -> Option<usize> {
+        let [left, top] = self.position.map(|value| value as f32);
+        if !self.contains(cursor) || cursor[1] < top + ITEM_CONTEXT_HEADER_HEIGHT || cursor[0] < left {
+            return None;
+        }
+        let row = ((cursor[1] - top - ITEM_CONTEXT_HEADER_HEIGHT) / ITEM_CONTEXT_ROW_HEIGHT).floor()
+            as usize;
+        (row < self.labels.len()).then_some(row)
+    }
+
+    pub fn image(&self, hovered: Option<usize>) -> Result<RgbaImage> {
+        let font = labels::font()?;
+        let mut image = RgbaImage::from_pixel(
+            CHOICE_MENU_WIDTH as u32,
+            Self::height(self.labels.len()) as u32,
+            Rgba([4, 10, 14, 252]),
+        );
+        let width = image.width();
+        let height = image.height();
+        ui_theme::fill(
+            &mut image,
+            UiRect::new(1, 1, width as i32 - 2, ITEM_CONTEXT_HEADER_HEIGHT as i32),
+            [10, 30, 40, 255],
+        );
+        rect_outline(&mut image, 0, 0, width, height, Rgba([226, 185, 77, 255]));
         labels::text_sized(
             &mut image,
             &font,
-            &[(
-                label,
-                if hovered == Some(mode) || mode == current {
-                    ui_theme::TEXT
-                } else {
-                    ui_theme::TEXT_MUTED
-                },
-            )],
-            [32.0, top as f32 + 9.0],
+            &[(self.title.as_str(), ui_theme::TEXT_GOLD)],
+            [12.0, 9.0],
             10.0,
         );
+        for (index, label) in self.labels.iter().enumerate() {
+            let top = (ITEM_CONTEXT_HEADER_HEIGHT + index as f32 * ITEM_CONTEXT_ROW_HEIGHT) as u32;
+            let row_rect = UiRect::new(
+                4,
+                top as i32 + 2,
+                width as i32 - 8,
+                ITEM_CONTEXT_ROW_HEIGHT as i32 - 4,
+            );
+            let marked = self.marked == Some(index);
+            if hovered == Some(index) {
+                ui_theme::fill(&mut image, row_rect, [39, 67, 78, 255]);
+                ui_theme::outline(&mut image, row_rect, [222, 178, 66, 255]);
+            } else if index % 2 == 0 {
+                ui_theme::fill(&mut image, row_rect, [7, 19, 27, 230]);
+            }
+            if marked {
+                labels::text_sized(
+                    &mut image,
+                    &font,
+                    &[("*", ui_theme::TEXT_GOLD)],
+                    [14.0, top as f32 + 9.0],
+                    10.0,
+                );
+            }
+            labels::text_sized(
+                &mut image,
+                &font,
+                &[(
+                    label,
+                    if hovered == Some(index) || marked {
+                        ui_theme::TEXT
+                    } else {
+                        ui_theme::TEXT_MUTED
+                    },
+                )],
+                [32.0, top as f32 + 9.0],
+                10.0,
+            );
+        }
+        Ok(image)
     }
+}
+
+/// A one-line notice drawn at the top of the screen, such as "click a
+/// player" while a Friend/Trade button waits for its target.
+pub fn notice_image(text: &str) -> Result<RgbaImage> {
+    let font = labels::font()?;
+    let width = (text.chars().count() as u32 * 8 + 32).clamp(160, 640);
+    let mut image = RgbaImage::from_pixel(width, 30, Rgba([4, 10, 14, 235]));
+    rect_outline(&mut image, 0, 0, width, 30, Rgba([226, 185, 77, 255]));
+    labels::text_sized(&mut image, &font, &[(text, ui_theme::TEXT_GOLD)], [16.0, 9.0], 11.0);
     Ok(image)
 }
 
@@ -7133,6 +7179,24 @@ mod icon_tests {
                 Some(index)
             );
         }
+    }
+
+    #[test]
+    fn choice_menu_maps_rows_and_stays_in_the_window() {
+        let viewport = [1024.0, 768.0];
+        // Opened near the bottom-right corner, it moves back inside.
+        let menu = super::ChoiceMenu::at(viewport, [1020.0, 760.0], "x".into(), vec!["A", "B", "C"]);
+        let [left, top] = menu.position.map(|value| value as f32);
+        assert!(left + 150.0 <= viewport[0] && top + 30.0 + 3.0 * 34.0 <= viewport[1]);
+        assert_eq!(menu.row_at([left + 20.0, top + 12.0]), None);
+        for row in 0..3 {
+            let y = top + 30.0 + row as f32 * 34.0 + 17.0;
+            assert_eq!(menu.row_at([left + 40.0, y]), Some(row));
+        }
+        assert_eq!(menu.row_at([left - 5.0, top + 47.0]), None);
+        assert!(!menu.contains([left + 40.0, top + 30.0 + 3.0 * 34.0 + 1.0]));
+        let modes = super::ChoiceMenu::kill_modes(viewport, 1);
+        assert_eq!((modes.labels.len(), modes.marked), (4, Some(1)));
     }
 
     #[test]

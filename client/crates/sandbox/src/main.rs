@@ -69,6 +69,44 @@ enum TargetPick {
     Trade,
 }
 
+impl TargetPick {
+    /// The notice shown at the top of the screen while the pick waits.
+    fn notice(self) -> &'static str {
+        match self {
+            Self::Friend => "Click a player to send a friend request (click the ground to cancel)",
+            Self::Ignore => "Click a player to add as enemy (click the ground to cancel)",
+            Self::Trade => "Click a player to request a trade (click the ground to cancel)",
+        }
+    }
+}
+
+/// Rows of the Shift+click player menu, in order.
+const PLAYER_MENU: [(&str, PlayerMenuAction); 6] = [
+    ("TRADE", PlayerMenuAction::Trade),
+    ("FOLLOW", PlayerMenuAction::Follow),
+    ("WHISPER", PlayerMenuAction::Whisper),
+    ("ADD FRIEND", PlayerMenuAction::AddFriend),
+    ("TEAM INVITE", PlayerMenuAction::TeamInvite),
+    ("ENEMY", PlayerMenuAction::Enemy),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlayerMenuAction {
+    Trade,
+    Follow,
+    Whisper,
+    AddFriend,
+    TeamInvite,
+    Enemy,
+}
+
+/// The menu opened by Shift+clicking another player.
+struct PlayerMenu {
+    target_id: u32,
+    name: String,
+    menu: shop::ChoiceMenu,
+}
+
 enum RemoteModelJob {
     Player {
         id: u32,
@@ -204,6 +242,10 @@ struct App {
     target_pick: Option<TargetPick>,
     /// A received friend request (requester id, name) awaiting Accept/Refuse.
     pending_friend_request: Option<(u32, String)>,
+    /// The Shift+click menu of another player.
+    player_menu: Option<PlayerMenu>,
+    /// The player the hero walks after (player menu Follow).
+    follow_target: Option<u32>,
     /// The kill-mode menu above the Capture button is open.
     pk_menu_open: bool,
     /// The server's kill mode (MsgAction 96): 0 PK, 1 peace, 2 team, 3 capture.
@@ -420,7 +462,9 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
                 if let Some(window) = &self.window {
-                    let cursor = if self.ground_loot_at_cursor().is_some() {
+                    let cursor = if self.target_pick.is_some() {
+                        CursorIcon::Crosshair
+                    } else if self.ground_loot_at_cursor().is_some() {
                         CursorIcon::Pointer
                     } else {
                         let size = window.inner_size();
@@ -756,6 +800,19 @@ impl ApplicationHandler for App {
                         self.item_action_panel = None;
                         self.action_animation_started = None;
                     }
+                    PhysicalKey::Code(KeyCode::Escape)
+                        if self.player_menu.is_some() || self.pk_menu_open =>
+                    {
+                        self.player_menu = None;
+                        self.pk_menu_open = false;
+                    }
+                    PhysicalKey::Code(KeyCode::Escape) if self.target_pick.is_some() => {
+                        self.target_pick = None;
+                        self.network_status = "seleção de alvo cancelada".into();
+                        if let Some(window) = &self.window {
+                            window.set_cursor(CursorIcon::Default);
+                        }
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.item_context.is_some() => {
                         self.item_context = None;
                     }
@@ -871,6 +928,7 @@ impl ApplicationHandler for App {
                         }
                     })
                     .flatten();
+                self.update_follow();
                 if !self.player.moving()
                     && self.pending_network_steps.is_empty()
                     && let Some(target) = self.queued_jump.take()
@@ -883,6 +941,8 @@ impl ApplicationHandler for App {
                     audio.update(&self.player);
                 }
                 let skill_hud = self.skill_hud();
+                let choice_menu = self.choice_menu();
+                let notice = self.target_pick.map(TargetPick::notice);
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -961,7 +1021,8 @@ impl ApplicationHandler for App {
                         &self.player_shop_price,
                         self.player_shop_price_focused,
                         self.item_context.clone(),
-                        self.pk_menu_open.then_some(self.kill_mode),
+                        choice_menu,
+                        notice,
                         self.item_action_panel,
                         action_animation_progress,
                         self.gem_selection_panel,
@@ -1229,14 +1290,28 @@ impl App {
             self.held = false;
             return true;
         }
-        if self.pk_menu_open {
-            if let Some(mode) = shop::pk_menu_mode_at(viewport, self.cursor) {
-                self.pk_menu_open = false;
-                self.set_kill_mode(mode);
+        if let Some(player_menu) = self.player_menu.take() {
+            if let Some(row) = player_menu.menu.row_at(self.cursor) {
+                self.player_menu_action(player_menu.target_id, &player_menu.name, PLAYER_MENU[row].1);
                 self.held = false;
                 return true;
             }
-            if shop::pk_menu_contains(viewport, self.cursor) {
+            if player_menu.menu.contains(self.cursor) {
+                self.player_menu = Some(player_menu);
+                self.held = false;
+                return true;
+            }
+            // Any click elsewhere closes the menu and is handled as usual.
+        }
+        if self.pk_menu_open {
+            let menu = shop::ChoiceMenu::kill_modes(viewport, self.kill_mode);
+            if let Some(mode) = menu.row_at(self.cursor) {
+                self.pk_menu_open = false;
+                self.set_kill_mode(mode as u8);
+                self.held = false;
+                return true;
+            }
+            if menu.contains(self.cursor) {
                 self.held = false;
                 return true;
             }
@@ -1571,6 +1646,85 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// The open choice menu: the kill modes or a player's Shift+click menu.
+    fn choice_menu(&self) -> Option<shop::ChoiceMenu> {
+        if self.pk_menu_open {
+            let size = self.window.as_ref()?.inner_size();
+            let viewport = [size.width as f32, size.height as f32];
+            return Some(shop::ChoiceMenu::kill_modes(viewport, self.kill_mode));
+        }
+        self.player_menu.as_ref().map(|player_menu| player_menu.menu.clone())
+    }
+
+    fn open_player_menu(&mut self, target_id: u32, name: String) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        let menu = shop::ChoiceMenu::at(
+            viewport,
+            self.cursor,
+            name.clone(),
+            PLAYER_MENU.iter().map(|(label, _)| *label).collect(),
+        );
+        self.pk_menu_open = false;
+        self.target_pick = None;
+        self.selected_target = Some(target_id);
+        self.player_menu = Some(PlayerMenu {
+            target_id,
+            name,
+            menu,
+        });
+    }
+
+    fn player_menu_action(&mut self, target_id: u32, name: &str, action: PlayerMenuAction) {
+        // The handlers below act on the selected player.
+        self.selected_target = Some(target_id);
+        match action {
+            PlayerMenuAction::Trade => self.handle_trade_panel_action(shop::TradePanelAction::Request),
+            PlayerMenuAction::AddFriend => {
+                self.handle_friends_panel_action(shop::FriendsPanelAction::AddFriend);
+            }
+            PlayerMenuAction::Enemy => {
+                self.handle_friends_panel_action(shop::FriendsPanelAction::AddIgnore);
+            }
+            PlayerMenuAction::TeamInvite => {
+                const REQUEST_INVITE: u32 = 4;
+                self.send_team_action(REQUEST_INVITE, target_id);
+            }
+            PlayerMenuAction::Whisper => {
+                self.chat_text = format!("/w {name} ");
+                self.chat_focused = true;
+                self.network_status = format!("whisper preparado para {name}");
+            }
+            PlayerMenuAction::Follow => {
+                self.follow_target = Some(target_id);
+                self.network_status = format!("seguindo {name}");
+            }
+        }
+    }
+
+    /// Walks after the followed player while it is more than two cells away.
+    fn update_follow(&mut self) {
+        let Some(target_id) = self.follow_target else {
+            return;
+        };
+        let Some(actor) = self.remote_actors.get(&target_id) else {
+            self.follow_target = None;
+            self.network_status = "alvo seguido saiu da tela".into();
+            return;
+        };
+        if self.player.moving() || !self.pending_network_steps.is_empty() || self.dead_since.is_some() {
+            return;
+        }
+        let target = actor.position.map(|value| value.round() as i32);
+        let here = self.player.cell();
+        if (target[0] - here[0]).abs().max((target[1] - here[1]).abs()) > 2 {
+            self.player.go(&self.map, target);
+        }
     }
 
     fn set_kill_mode(&mut self, mode: u8) {
@@ -2023,6 +2177,7 @@ impl App {
         if self.dead_since.is_some() {
             return;
         }
+        self.follow_target = None;
         self.pending_attack = None;
         self.pending_skill_attack = None;
         self.selected_target = None;
@@ -3268,6 +3423,15 @@ impl App {
             })
             .min_by(|(left, _), (right, _)| left.total_cmp(right))
             .map(|(_, actor)| (actor.id, actor.npc, actor.npc_kind, actor.name.clone()));
+        if let Some((id, false, _, name)) = &selected
+            && self.modifiers.shift_key()
+            && !(400001..=499999).contains(id)
+            && !name.is_empty()
+        {
+            let (id, name) = (*id, name.clone());
+            self.open_player_menu(id, name);
+            return true;
+        }
         let Some((id, npc, npc_kind, name)) = selected else {
             // Clicking the ground cancels a pending target pick.
             if self.target_pick.take().is_some() {
@@ -5973,6 +6137,8 @@ fn run() -> Result<()> {
         item_context: None,
         target_pick: None,
         pending_friend_request: None,
+        player_menu: None,
+        follow_target: None,
         pk_menu_open: false,
         // The game server starts every character in peace mode.
         kill_mode: 1,
