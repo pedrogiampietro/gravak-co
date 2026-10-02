@@ -20,6 +20,7 @@ mod original_panels;
 mod original_ui;
 mod original_ui_layout;
 mod renderer;
+mod settings;
 mod shop;
 mod ui;
 mod ui_theme;
@@ -280,6 +281,8 @@ struct App {
     selected_target: Option<u32>,
     pending_pickup: Option<(u32, u32, [i32; 2])>,
     skill_cooldown_until: HashMap<u32, f32>,
+    /// The HUD settings last written to disk.
+    saved_hud: Option<settings::HudSettings>,
     next_attack_at: f32,
     remote_actors: HashMap<u32, RemoteActor>,
     /// Life and maximum life of the Guild War structures.
@@ -974,16 +977,34 @@ impl ApplicationHandler for App {
         self.combat_numbers.retain(|(_, _, expires)| *expires > now);
         self.skill_effects.retain(|effect| effect.expires > now);
         for slot in &mut self.action_bar.slots {
-            slot.cooldown = slot
+            let skill_id = slot
                 .action_id
                 .as_deref()
                 .and_then(|action| action.strip_prefix("skill:"))
-                .and_then(|id| id.parse::<u32>().ok())
+                .and_then(|id| id.parse::<u32>().ok());
+            let remaining = skill_id
                 .and_then(|skill_id| self.skill_cooldown_until.get(&skill_id).copied())
-                .map(|until| (until - now).max(0.0).ceil() as u32)
-                .filter(|seconds| *seconds > 0);
+                .map_or(0.0, |until| (until - now).max(0.0));
+            let total = skill_id
+                .and_then(action_bar::skill_action)
+                .map_or(1.0, |skill| skill.cooldown_seconds);
+            // Whole seconds only for long cooldowns; the sweep shows the rest.
+            slot.cooldown = Some(remaining.ceil() as u32).filter(|seconds| *seconds > 1);
+            slot.cooldown_left = action_bar::cooldown_steps(remaining, total);
         }
         self.ground_loot.retain(|(_, _, _, expires)| *expires > now);
+        if let Some(character_id) = self.network_character_id {
+            let hud = settings::HudSettings::capture(
+                &self.action_bar,
+                self.skill_bar_open,
+                self.performance_overlay,
+                self.team_join_enabled,
+            );
+            if self.saved_hud.as_ref() != Some(&hud) {
+                settings::save(character_id, &hud);
+                self.saved_hud = Some(hud);
+            }
+        }
         for actor in self.remote_actors.values_mut() {
             if actor.movement_until > actor.movement_started && now < actor.movement_until {
                 let t = ((now - actor.movement_started)
@@ -2693,7 +2714,8 @@ impl App {
                 self.network_status =
                     format!("online: combat {id} -> {target_id}, hit {value} (action {action})");
                 let now = self.started.elapsed().as_secs_f32();
-                if value > 0 {
+                // A physical blow of 0 missed: it shows "Miss".
+                if value > 0 || action == 2 {
                     self.combat_numbers.push((target_id, value, now + 1.0));
                 }
                 if self.network_character_id == Some(target_id) {
@@ -5869,6 +5891,7 @@ fn run() -> Result<()> {
         selected_target: None,
         pending_pickup: None,
         skill_cooldown_until: HashMap::new(),
+        saved_hud: None,
         next_attack_at: 0.0,
         remote_actors: HashMap::new(),
         structure_lives: HashMap::new(),
@@ -5911,6 +5934,13 @@ fn run() -> Result<()> {
         remote_npcs_loading: HashSet::new(),
         remote_monsters_loading: HashSet::new(),
     };
+    if let Some(saved) = app.network_character_id.and_then(settings::load) {
+        saved.apply_to(&mut app.action_bar);
+        app.skill_bar_open = saved.skill_bar_open;
+        app.performance_overlay = saved.performance_overlay;
+        app.team_join_enabled = saved.team_join_enabled;
+        app.saved_hud = Some(saved);
+    }
     EventLoop::new()?.run_app(&mut app)?;
     if let Some(error) = app.error {
         return Err(error.into());

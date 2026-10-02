@@ -65,7 +65,7 @@ fn find_character(state: &State, id: u32) -> Option<Arc<GameEntity>> {
 pub async fn summon(state: &State, character: &Character, monster_type_id: u32, duration: Duration) -> Result<(), Error> {
     dismiss(state, character.id()).await;
     let monster_type = sqlx::query_as::<_, tq_db::monster::MonsterType>(
-        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds \
+        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode \
          FROM monster_types WHERE id = ?",
     )
     .bind(i64::from(monster_type_id))

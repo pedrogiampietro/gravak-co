@@ -142,7 +142,12 @@ impl MsgInteract {
         actor: &Actor<ActorState>,
         character: &crate::entities::Character,
     ) -> Result<(), Error> {
+        // Kylin gems: a 50% Kylin bonus spares a third of the wear.
+        let kylin = character.gem_bonus(crate::entities::GemFamily::Kylin);
         for position in [4_u8, 5_u8] {
+            if kylin > 0 && next_roll() % (100 + kylin) < kylin {
+                continue;
+            }
             if let Some(item) = character.degrade_equipment_item(state.pool(), position, 1).await? {
                 // A quiver that runs out is gone (Redux deletes it).
                 if item.durability == 0 && crate::shop::ShopCatalog::is_arrow(item.item_type) {
@@ -847,10 +852,13 @@ impl MsgInteract {
             } else {
                 attacker_stats
             };
+            // Phoenix gems strengthen magic (Redux `CalculateSkillDamage`).
             let magic_attack = target_attacker_stats
                 .min_attack
                 .saturating_add(target_attacker_stats.attack_flat)
-                .saturating_add(skill.flat_power);
+                .saturating_add(skill.flat_power)
+                .saturating_mul(100 + character.gem_bonus(crate::entities::GemFamily::Phoenix))
+                / 100;
             let outcome = if skill.physical {
                 resolve_physical_hit(
                     scale_skill_power(physical_stats, physical_power),
@@ -871,6 +879,7 @@ impl MsgInteract {
             };
             let health_after = target_entity.apply_damage(outcome.damage);
             if let Some(monster) = target.as_monster() {
+                crate::systems::monster_ai::provoke(monster.id(), character.id());
                 hit_experience += crate::leveling::combat_experience(
                     character.entity().level(),
                     u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
@@ -1247,8 +1256,24 @@ impl PacketProcess for MsgInteract {
         // used the client timestamp directly, which made damage repeatable and
         // often pinned it to the minimum value.
         let life_before = u32::from(target_entity.hp().current());
-        let outcome = resolve_physical_hit(attacker_stats, target_stats, life_before, next_roll());
+        let mut outcome = resolve_physical_hit(attacker_stats, target_stats, life_before, next_roll());
+        // Fury gems and Accuracy steady the blow; the rest may miss.
+        let accuracy = character.gem_bonus(crate::entities::GemFamily::Fury)
+            + if character.has_status(crate::entities::StatusEffect::Accuracy) {
+                crate::combat::ACCURACY_STATUS_BONUS
+            } else {
+                0
+            };
+        if next_roll() % 100 >= crate::combat::hit_chance(0, accuracy) {
+            outcome.damage = 0;
+            outcome.raw_damage = 0;
+            outcome.remaining_health = life_before;
+            outcome.defeated = false;
+        }
         target_entity.apply_damage(outcome.damage);
+        if let Some(monster) = target.as_monster() {
+            crate::systems::monster_ai::provoke(monster.id(), character.id());
+        }
         tracing::debug!(
             character_id = character.id(),
             target_id = self.target_id,

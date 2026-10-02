@@ -152,6 +152,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hits_land_between_forty_and_a_hundred_percent() {
+        assert_eq!(super::hit_chance(0, 0), 90);
+        assert_eq!(super::hit_chance(0, 35), 100);
+        assert_eq!(super::hit_chance(80, 0), 40);
+    }
+
+    #[test]
     fn damage_respects_attack_range_and_defense() {
         let outcome = resolve_physical_hit(
             CombatStats {
@@ -457,6 +464,15 @@ mod tests {
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static ROLL_COUNTER: AtomicU32 = AtomicU32::new(0x1357_9bdf);
+
+/// Redux `CalculatePhysicalDamage`: a physical blow lands
+/// `max(40, 90 - dodge + accuracy)` percent of the time.
+pub fn hit_chance(dodge: u32, accuracy: u32) -> u32 {
+    (90 + accuracy).saturating_sub(dodge).clamp(40, 100)
+}
+
+/// Accuracy and Star of Accuracy raise the hit chance this much.
+pub const ACCURACY_STATUS_BONUS: u32 = 20;
 
 pub fn next_roll() -> u32 {
     ROLL_COUNTER
