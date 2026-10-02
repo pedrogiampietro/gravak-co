@@ -762,6 +762,11 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) if self.inventory_open => {
                         self.inventory_open = false;
                     }
+                    PhysicalKey::Code(KeyCode::Escape)
+                        if self.quick_panel == Some(shop::QuickPanel::TradeRequest) =>
+                    {
+                        self.handle_trade_panel_action(shop::TradePanelAction::Cancel);
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.quick_panel.is_some() => {
                         self.quick_panel = None;
                     }
@@ -1260,6 +1265,21 @@ impl App {
                 self.player_shop_price_focused = true;
                 self.held = false;
                 return true;
+            }
+            if self.quick_panel == Some(shop::QuickPanel::TradeRequest) {
+                let action = shop::trade_request_action_at(viewport, self.cursor).or(
+                    shop::quick_panel_close_at(
+                        viewport,
+                        self.cursor,
+                        shop::QuickPanel::TradeRequest,
+                    )
+                    .then_some(shop::TradePanelAction::Cancel),
+                );
+                if let Some(action) = action {
+                    self.handle_trade_panel_action(action);
+                    self.held = false;
+                    return true;
+                }
             }
             if self
                 .quick_panel
@@ -1787,6 +1807,11 @@ impl App {
                     return;
                 };
                 network.send_trade(target_id, REQUEST, 0);
+                // The trade window opens once the server confirms the trade.
+                if self.quick_panel == Some(shop::QuickPanel::TradeRequest) {
+                    self.quick_panel = None;
+                }
+                self.network_status = format!("online: aceitando trade de {target_id}");
             }
             shop::TradePanelAction::AddItem => {
                 let Some(item) = self
@@ -2054,8 +2079,13 @@ impl App {
             } => match subtype {
                 1 => {
                     self.trade.pending_request = Some(target_id);
+                    self.trade.pending_request_name = self
+                        .remote_actors
+                        .get(&target_id)
+                        .map(|actor| actor.name.clone())
+                        .filter(|name| !name.is_empty());
                     self.trade.active = false;
-                    self.quick_panel = Some(shop::QuickPanel::Trade);
+                    self.quick_panel = Some(shop::QuickPanel::TradeRequest);
                     self.network_status = format!("online: trade request from {target_id}");
                 }
                 3 => {
@@ -2071,7 +2101,10 @@ impl App {
                 5 | 17 => {
                     self.trade = network::TradeView::default();
                     self.pending_trade_items.clear();
-                    if self.quick_panel == Some(shop::QuickPanel::Trade) {
+                    if matches!(
+                        self.quick_panel,
+                        Some(shop::QuickPanel::Trade | shop::QuickPanel::TradeRequest)
+                    ) {
                         self.quick_panel = None;
                     }
                     self.network_status = "online: trade closed".into();

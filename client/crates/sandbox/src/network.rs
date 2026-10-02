@@ -138,6 +138,8 @@ pub struct TradeView {
     pub active: bool,
     pub peer_id: Option<u32>,
     pub pending_request: Option<u32>,
+    /// Name of the player behind `pending_request`, when they are in view.
+    pub pending_request_name: Option<String>,
     pub own_items: Vec<OwnedItem>,
     pub peer_items: Vec<OwnedItem>,
     pub own_silver: u32,

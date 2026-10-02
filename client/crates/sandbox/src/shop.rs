@@ -572,6 +572,8 @@ pub enum QuickPanel {
     Guild,
     Friends,
     Trade,
+    /// Incoming trade request prompt, shown before the trade window opens.
+    TradeRequest,
     Mail,
     Market,
     Team,
@@ -673,7 +675,7 @@ impl QuickPanel {
             Self::Quest => "QUESTS",
             Self::Guild => "GUILD",
             Self::Friends => "FRIENDS",
-            Self::Trade => "TRADE",
+            Self::Trade | Self::TradeRequest => "TRADE",
             Self::Mail => "MAIL",
             Self::Market => "MARKET",
             Self::Team => "TEAM",
@@ -690,6 +692,10 @@ pub fn trade_panel_action_at(
     has_selected_target: bool,
 ) -> Option<TradePanelAction> {
     crate::original_panels::trade_action_at(viewport, cursor, trade, has_selected_target)
+}
+
+pub fn trade_request_action_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<TradePanelAction> {
+    crate::original_panels::trade_request_action_at(viewport, cursor)
 }
 
 pub fn trade_panel_drop_at(viewport: [f32; 2], cursor: [f32; 2], active: bool) -> bool {
@@ -1437,6 +1443,8 @@ pub fn quick_panel_image(
                 );
             }
         }
+        // Painted by `original_panels`.
+        QuickPanel::TradeRequest => {}
         QuickPanel::Mail => {
             labels::text(
                 &mut image,

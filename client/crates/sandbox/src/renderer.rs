@@ -2993,6 +2993,7 @@ impl Renderer {
             trade.active.hash(&mut hasher);
             trade.peer_id.hash(&mut hasher);
             trade.pending_request.hash(&mut hasher);
+            trade.pending_request_name.hash(&mut hasher);
             trade.own_items.hash(&mut hasher);
             trade.peer_items.hash(&mut hasher);
             trade.own_silver.hash(&mut hasher);

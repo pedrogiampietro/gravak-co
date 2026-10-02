@@ -22,7 +22,8 @@ enum Anchor {
 }
 
 struct Frame {
-    art: &'static str,
+    /// Original dialog art, or `None` for windows painted by the client.
+    art: Option<&'static str>,
     size: [u32; 2],
     anchor: Anchor,
     /// Small top-right close button and, optionally, a bottom "Close".
@@ -33,42 +34,50 @@ fn frame(panel: QuickPanel) -> Option<Frame> {
     Some(match panel {
         // [0-160] plus [160-1681] close.
         QuickPanel::Friends => Frame {
-            art: "data/main/GeneralBG.dds",
+            art: Some("data/main/GeneralBG.dds"),
             size: [208, 375],
             anchor: Anchor::Left,
             close: &[[175, 10, 15, 15]],
         },
         // [0-141] plus [141-1642] close.
         QuickPanel::Team => Frame {
-            art: "data/main/DialogGroup.dds",
+            art: Some("data/main/DialogGroup.dds"),
             size: [290, 114],
             anchor: Anchor::TopCenter,
             close: &[[263, 10, 15, 15]],
         },
         // [0-133] plus [133-1510]/[133-1511].
         QuickPanel::Guild => Frame {
-            art: "data/main/DialogQuery_Faction.dds",
+            art: Some("data/main/DialogQuery_Faction.dds"),
             size: [250, 392],
             anchor: Anchor::Left,
             close: &[[210, 23, 15, 15], [144, 350, 63, 21]],
         },
         // [0-137] plus [137-1138].
         QuickPanel::Trade => Frame {
-            art: "data/main/DialogTrade.dds",
+            art: Some("data/main/DialogTrade.dds"),
             size: [335, 297],
             anchor: Anchor::Left,
             close: &[[303, 8, 15, 15]],
         },
+        // Incoming trade request: a small accept/refuse prompt shown before
+        // the full trade window.
+        QuickPanel::TradeRequest => Frame {
+            art: None,
+            size: TRADE_REQUEST_SIZE,
+            anchor: Anchor::Center,
+            close: &[TRADE_REQUEST_CLOSE],
+        },
         // [0-138] plus [138-1535]/[138-1531].
         QuickPanel::Settings => Frame {
-            art: "data/main/DialogSetup.dds",
+            art: Some("data/main/DialogSetup.dds"),
             size: [370, 294],
             anchor: Anchor::Center,
             close: &[[340, 23, 15, 15], [244, 261, 62, 20]],
         },
         // [0-232] plus [232-1281]/[232-1283].
         QuickPanel::Mail => Frame {
-            art: "data/main/DialogMsgSend.dds",
+            art: Some("data/main/DialogMsgSend.dds"),
             size: [396, 261],
             anchor: Anchor::Center,
             close: &[[372, 20, 16, 16], [290, 230, 64, 24]],
@@ -559,6 +568,58 @@ pub fn trade_drop_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Trade request prompt
+
+const TRADE_REQUEST_SIZE: [u32; 2] = [260, 112];
+const TRADE_REQUEST_CLOSE: [i32; 4] = [235, 7, 15, 15];
+const TRADE_REQUEST_ACCEPT: [i32; 4] = [40, 76, 76, 22];
+const TRADE_REQUEST_REFUSE: [i32; 4] = [144, 76, 76, 22];
+
+fn trade_request_controls() -> Vec<Control<TradePanelAction>> {
+    vec![
+        control(
+            TRADE_REQUEST_CLOSE,
+            Face::Art("data/main/CloseBtnS.dds"),
+            None,
+        ),
+        control(
+            TRADE_REQUEST_ACCEPT,
+            Face::Label("Accept"),
+            Some(TradePanelAction::AcceptRequest),
+        ),
+        control(
+            TRADE_REQUEST_REFUSE,
+            Face::Label("Refuse"),
+            Some(TradePanelAction::Cancel),
+        ),
+    ]
+}
+
+pub fn trade_request_action_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<TradePanelAction> {
+    hit(
+        &trade_request_controls(),
+        local(QuickPanel::TradeRequest, viewport, cursor)?,
+    )
+}
+
+/// Dark teal panel with the gold double border of the original dialogs.
+fn trade_request_background(image: &mut RgbaImage) {
+    let [width, height] = [image.width() as i32, image.height() as i32];
+    fill(image, [0, 0, width, height], [18, 44, 54, 240]);
+    fill(image, [3, 3, width - 6, 22], [28, 66, 80, 255]);
+    outline(image, [0, 0, width, height], [10, 20, 26, 255]);
+    outline(image, [1, 1, width - 2, height - 2], [196, 166, 96, 255]);
+    outline(image, [3, 3, width - 6, height - 6], [92, 132, 140, 255]);
+    fill(image, [4, 25, width - 8, 1], [92, 132, 140, 255]);
+    for rect in [TRADE_REQUEST_ACCEPT, TRADE_REQUEST_REFUSE] {
+        let [x, y, w, h] = rect;
+        fill(image, rect, [12, 30, 38, 255]);
+        outline(image, rect, [150, 126, 74, 255]);
+        outline(image, [x + 1, y + 1, w - 2, h - 2], [40, 78, 90, 255]);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Options ([0-138]) and Message ([0-232]) have no client-side behaviour yet;
 // they show the original controls only.
 
@@ -715,7 +776,10 @@ fn item_icon(assets: &mut Assets, item_type: u32) -> Option<RgbaImage> {
 pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result<RgbaImage> {
     let frame = frame(panel).ok_or("panel has no original dialog")?;
     let mut image = RgbaImage::new(frame.size[0], frame.size[1]);
-    crate::original_ui::overlay_asset(&mut image, assets, frame.art, 0, 0)?;
+    match frame.art {
+        Some(art) => crate::original_ui::overlay_asset(&mut image, assets, art, 0, 0)?,
+        None => trade_request_background(&mut image),
+    }
     match panel {
         QuickPanel::Friends => {
             paint(
@@ -899,6 +963,43 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 outline(&mut image, [112, 261, 62, 20], [255, 215, 108, 255]);
             }
         }
+        QuickPanel::TradeRequest => {
+            paint(&mut image, assets, &trade_request_controls())?;
+            if let Ok(font) = crate::main_hud::label_font() {
+                let title = "Trade";
+                let width = crate::main_hud::text_width(font, title, 15.0);
+                crate::main_hud::crisp_text(
+                    &mut image,
+                    font,
+                    title,
+                    15.0,
+                    [(TRADE_REQUEST_SIZE[0] as i32 - width) / 2, 6],
+                    [232, 206, 148, 255],
+                );
+            }
+            let trade = data.trade;
+            let requester = trade
+                .pending_request_name
+                .clone()
+                .or_else(|| trade.pending_request.map(|id| id.to_string()))
+                .unwrap_or_default();
+            let centred = |image: &mut RgbaImage, value: &str, y: i32, colour: [u8; 4]| {
+                if let Ok(font) = crate::main_hud::font() {
+                    let max = TRADE_REQUEST_SIZE[0] as i32 - 24;
+                    let width = crate::main_hud::text_width(font, value, 12.0).min(max);
+                    text(
+                        image,
+                        value,
+                        (TRADE_REQUEST_SIZE[0] as i32 - width) / 2,
+                        y,
+                        colour,
+                        max,
+                    );
+                }
+            };
+            centred(&mut image, &requester, 34, GOLD);
+            centred(&mut image, "is sending you a trade request.", 52, WHITE);
+        }
         QuickPanel::Settings => paint(&mut image, assets, &settings_controls())?,
         QuickPanel::Mail => {
             paint(&mut image, assets, &mail_controls())?;
@@ -912,6 +1013,31 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trade_request_prompt_accepts_and_refuses() {
+        let viewport = [1366.0, 768.0];
+        let at = |rect: [i32; 4]| {
+            let [left, top] = position(QuickPanel::TradeRequest, viewport).expect("prompt");
+            [
+                left + rect[0] as f32 + rect[2] as f32 * 0.5,
+                top + rect[1] as f32 + rect[3] as f32 * 0.5,
+            ]
+        };
+        assert_eq!(
+            trade_request_action_at(viewport, at(TRADE_REQUEST_ACCEPT)),
+            Some(TradePanelAction::AcceptRequest)
+        );
+        assert_eq!(
+            trade_request_action_at(viewport, at(TRADE_REQUEST_REFUSE)),
+            Some(TradePanelAction::Cancel)
+        );
+        assert!(close_at(
+            QuickPanel::TradeRequest,
+            viewport,
+            at(TRADE_REQUEST_CLOSE)
+        ));
+    }
 
     #[test]
     fn controls_are_hit_where_they_are_painted() {
