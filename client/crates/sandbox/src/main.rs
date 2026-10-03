@@ -823,9 +823,9 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if self.dead_since.is_some()
-                    && self.renderer.as_ref().is_some_and(|renderer| renderer.revive_at(self.cursor))
+                    && let Some(here) = self.renderer.as_ref().and_then(|renderer| renderer.revive_at(self.cursor))
                 {
-                    self.request_revive();
+                    self.request_revive(here);
                     self.held = false;
                     return;
                 }
@@ -986,9 +986,14 @@ impl ApplicationHandler for App {
                 }
                 // The revive countdown, then the REVIVE button, when the
                 // server allows it.
-                let revive_remaining = self
-                    .dead_since
-                    .map(|died_at| (REVIVE_DELAY_SECONDS - (elapsed - died_at)).ceil().max(0.0) as u32);
+                self.player.ghost = self.dead_since.is_some();
+                // Heaven's Blessing (status bit 49) adds "Revive here".
+                let revive = self.dead_since.map(|died_at| {
+                    (
+                        (REVIVE_DELAY_SECONDS - (elapsed - died_at)).ceil().max(0.0) as u32,
+                        self.status_flags & (1 << 49) != 0,
+                    )
+                });
                 let action_animation_progress = self
                     .action_animation_started
                     .map(|started| {
@@ -1057,7 +1062,7 @@ impl ApplicationHandler for App {
                         &self.remote_npcs,
                         &self.remote_monsters,
                         local_ghost_look.and_then(|look| self.ghosts.get(&look)),
-                        revive_remaining,
+                        revive,
                         &self.combat_numbers,
                         &self.skill_effects,
                         &self.ground_loot,
@@ -3965,7 +3970,7 @@ impl App {
             previous_predicted.map(|value| value as f32),
             current_cell.map(|value| value as f32),
         );
-        network.send_walk(character_id, direction, self.player.running);
+        network.send_walk(character_id, direction, self.player.running && !self.player.ghost);
         self.pending_network_steps.push_back(current_cell);
         self.network_status = format!("online: sending walk dir {direction}");
     }
@@ -4626,10 +4631,11 @@ impl App {
         })
     }
 
-    /// Asks the server to revive; it refuses before the delay.
-    fn request_revive(&mut self) {
+    /// Asks the server to revive, in town or (`here`, under Heaven's
+    /// Blessing) where the body lies; it refuses before the delay.
+    fn request_revive(&mut self, here: bool) {
         if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
-            network.revive(character_id);
+            network.revive(character_id, here);
             self.network_status = "online: reviving".into();
         }
     }
@@ -4727,7 +4733,7 @@ impl App {
                     if let (Some(network), Some(character_id)) =
                         (&self.network, self.network_character_id)
                     {
-                        network.revive(character_id);
+                        network.revive(character_id, false);
                         self.network_status = "online: reviving".into();
                     }
                     self.dialog = None;

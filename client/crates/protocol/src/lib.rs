@@ -622,11 +622,12 @@ impl ActionPacket {
         }
     }
 
-    pub fn reborn(character_id: u32) -> Self {
+    /// Revive (94): in town, or `here` where the body lies (data 1).
+    pub fn reborn(character_id: u32, here: bool) -> Self {
         Self {
             client_timestamp: unix_timestamp(),
             character_id,
-            data1: 0,
+            data1: u32::from(here),
             data2: 0,
             details: 0,
             action_type: 94,

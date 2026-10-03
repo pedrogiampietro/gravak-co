@@ -281,9 +281,10 @@ pub async fn revive_here(character: &Character) -> Result<(), Error> {
     Ok(())
 }
 
-/// Revives a dead character at the revive point of the map's reborn map.
-/// `false` while the revive delay is still running.
-pub async fn revive(state: &State, character: &Character) -> Result<bool, Error> {
+/// Revives a dead character at the revive point of the map's reborn map, or
+/// where they lie when they ask to (`here`) under Heaven's Blessing (Redux:
+/// MsgAction 94 with data 1). `false` while the revive delay is running.
+pub async fn revive(state: &State, character: &Character, here: bool) -> Result<bool, Error> {
     if !character.can_revive() {
         return Ok(false);
     }
@@ -291,6 +292,10 @@ pub async fn revive(state: &State, character: &Character) -> Result<bool, Error>
     character.clear_death();
     character.refresh_after_revive();
     let map_id = character.entity().map_id();
+    if here && character.heaven_blessing_active() {
+        revive_here(character).await?;
+        return Ok(true);
+    }
     if map_id == ARENA_MAP {
         // Arena fighters get up where they fell.
         revive_here(character).await?;

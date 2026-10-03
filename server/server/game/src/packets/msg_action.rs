@@ -489,7 +489,8 @@ impl MsgAction {
             return Ok(());
         }
 
-        if !crate::death::revive(state, character).await? {
+        // data 1: revive where the body lies (Heaven's Blessing only).
+        if !crate::death::revive(state, character, self.data1 == 1).await? {
             actor
                 .send(super::MsgTalk::from_system(
                     character.id(),

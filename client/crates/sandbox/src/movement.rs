@@ -19,6 +19,8 @@ pub struct Player {
     pub position: [f32; 2],
     pub facing: f32,
     pub running: bool,
+    /// A ghost only walks, whatever `running` says.
+    pub ghost: bool,
     pub height: f32,
     pub action: Action,
     pub action_instance: u64,
@@ -79,6 +81,7 @@ impl Player {
             position: spawn.map(|v| v as f32),
             facing: -std::f32::consts::FRAC_PI_4,
             running: true,
+            ghost: false,
             height: 0.0,
             action: Action::Idle,
             action_instance: 0,
@@ -167,7 +170,8 @@ impl Player {
                     let target = target.map(|v| v as f32);
                     self.facing = -f32::from(direction_towards(self.position, target) + 1)
                         * std::f32::consts::FRAC_PI_4;
-                    self.action = match (self.running, self.right_foot) {
+                    let running = self.running && !self.ghost;
+                    self.action = match (running, self.right_foot) {
                         (false, false) => Action::WalkLeft,
                         (false, true) => Action::WalkRight,
                         (true, false) => Action::RunLeft,
@@ -179,7 +183,7 @@ impl Player {
                         start: self.position,
                         target,
                         elapsed: 0.0,
-                        duration: step_duration(self.running).as_secs_f32(),
+                        duration: step_duration(running).as_secs_f32(),
                         peak: 0.0,
                         jump: false,
                     });

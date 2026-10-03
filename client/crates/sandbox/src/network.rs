@@ -430,6 +430,7 @@ pub(crate) enum NetworkCommand {
     },
     Revive {
         character_id: u32,
+        here: bool,
     },
     Mine {
         character_id: u32,
@@ -786,8 +787,10 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Mine { character_id });
     }
 
-    pub fn revive(&self, character_id: u32) {
-        let _ = self.commands.send(NetworkCommand::Revive { character_id });
+    /// Asks to revive in town, or `here` where the body lies (MsgAction 94
+    /// with data 1, Heaven's Blessing only).
+    pub fn revive(&self, character_id: u32, here: bool) {
+        let _ = self.commands.send(NetworkCommand::Revive { character_id, here });
     }
 
     pub fn player_shop_query(&self, character_id: u32, owner_id: u32) {
@@ -1796,9 +1799,9 @@ pub(crate) async fn play(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
-                Some(NetworkCommand::Revive { character_id }) => {
+                Some(NetworkCommand::Revive { character_id, here }) => {
                     session
-                        .send(&ActionPacket::reborn(character_id))
+                        .send(&ActionPacket::reborn(character_id, here))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

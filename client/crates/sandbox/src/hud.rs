@@ -279,22 +279,8 @@ pub fn revive_anchor(viewport: [f32; 2]) -> [f32; 2] {
     [viewport[0] - 10.0, hud_y as f32 - 8.0]
 }
 
-/// While dead: "Revive 14" in the KO counter's glow, then, at 0, a REVIVE
-/// button.
-pub fn revive_image(remaining: u32) -> crate::assets::Result<RgbaImage> {
-    if remaining == 0 {
-        let font = crate::labels::font()?;
-        let mut image = RgbaImage::new(150, 38);
-        crate::components::draw_button(
-            &mut image,
-            &font,
-            crate::ui::UiRect::new(2, 2, 146, 34),
-            "REVIVE",
-            crate::components::WidgetState::Hovered,
-        );
-        crate::components::outline(&mut image, crate::ui::UiRect::new(0, 0, 150, 38), [255, 214, 102, 255]);
-        return Ok(image);
-    }
+/// While dead, the countdown: "Revive 14" in the KO counter's glow.
+pub fn revive_countdown_image(remaining: u32) -> crate::assets::Result<RgbaImage> {
     let (digits, glyph) = (crate::main_hud::italic_font()?, crate::main_hud::client_font()?);
     let label = "Revive";
     let number = remaining.to_string();
@@ -305,6 +291,78 @@ pub fn revive_image(remaining: u32) -> crate::assets::Result<RgbaImage> {
     let glow = [150, 110, 255];
     crate::main_hud::glow_text(&mut image, glyph, label, 22.0, [4, 12], glow);
     crate::main_hud::glow_text(&mut image, digits, &number, 34.0, [label_width + 14, 2], glow);
+    Ok(image)
+}
+
+/// Size of a revive button.
+pub const REVIVE_BUTTON: [u32; 2] = [136, 40];
+
+/// A button in the style of the HUD's "Skill" button: the HUD's diamond
+/// pattern on deep teal, a thin gold frame with corner brackets, and the
+/// client's serif text in pale teal.
+pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
+    let [width, height] = REVIVE_BUTTON;
+    let mut image = RgbaImage::from_pixel(width, height, image::Rgba([12, 34, 44, 255]));
+    // The diamond pattern beside the HUD's emblem (mainDialog2.dds).
+    if let Ok(art) = assets.image("data/main/mainDialog2.dds") {
+        let tile = image::imageops::crop_imm(&art, 33, 66, 18, 44).to_image();
+        let mut y = 0;
+        while y < height {
+            let mut x = 0;
+            while x < width {
+                image::imageops::overlay(&mut image, &tile, i64::from(x), i64::from(y));
+                x += tile.width();
+            }
+            y += tile.height();
+        }
+        // Darken it so the text reads, as on the Skill button.
+        for pixel in image.pixels_mut() {
+            for channel in 0..3 {
+                pixel.0[channel] = (u16::from(pixel.0[channel]) * 7 / 10) as u8;
+            }
+            pixel.0[3] = 255;
+        }
+    }
+    let gold = image::Rgba([176, 158, 104, 255]);
+    let shade = image::Rgba([40, 34, 20, 255]);
+    let (w, h) = (width as i32, height as i32);
+    let mut put = |x: i32, y: i32, colour: image::Rgba<u8>| {
+        if x >= 0 && y >= 0 && x < w && y < h {
+            image.put_pixel(x as u32, y as u32, colour);
+        }
+    };
+    // The frame, inset like the original, with a dark line outside it.
+    for x in 3..w - 3 {
+        put(x, 3, gold);
+        put(x, h - 4, gold);
+        put(x, 2, shade);
+        put(x, h - 3, shade);
+    }
+    for y in 3..h - 3 {
+        put(3, y, gold);
+        put(w - 4, y, gold);
+        put(2, y, shade);
+        put(w - 3, y, shade);
+    }
+    // Corner brackets: a small square bracket hooked on each corner.
+    for (cx, cy, sx, sy) in [(3, 3, 1, 1), (w - 4, 3, -1, 1), (3, h - 4, 1, -1), (w - 4, h - 4, -1, -1)] {
+        for step in 0..5 {
+            put(cx - sx * 2 + sx * step, cy - sy * 2, gold);
+            put(cx - sx * 2, cy - sy * 2 + sy * step, gold);
+        }
+        put(cx + sx, cy + sy, gold);
+    }
+    let font = crate::main_hud::client_font()?;
+    let mut size = 20.0;
+    while size > 12.0 && crate::main_hud::text_width(font, label, size) > w - 20 {
+        size -= 1.0;
+    }
+    let text_width = crate::main_hud::text_width(font, label, size);
+    let x = ((w - text_width) / 2).max(4);
+    crate::main_hud::glow_text(&mut image, font, label, size, [x, (h - 22) / 2], [10, 26, 34]);
+    let mut text = RgbaImage::new(width, height);
+    crate::labels::text_sized(&mut text, font, &[(label, [140, 206, 210])], [x as f32, ((h - 22) / 2) as f32], size);
+    image::imageops::overlay(&mut image, &text, 0, 0);
     Ok(image)
 }
 
