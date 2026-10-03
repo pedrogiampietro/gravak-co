@@ -27,7 +27,7 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
        GossiperWang) com caça e entrega de itens; banca com nome, anúncios
        guardados; fundo da guild com doação e saque do líder.
 9. [ ] Pagamento real dos CPs por um site (projeto à parte; decisões do Pedro).
-10. [ ] Validar skills, magias, effects, XP skills e o "super especial" contra
+10. [x] Validar skills, magias, effects, XP skills e o "super especial" contra
         o original. Referências que o Pedro mandou (imagens no chat de
         2026-10-03):
         - anel verde no chão com raios amarelos e números grandes azulados
@@ -36,6 +36,11 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
           área;
         - pentagrama dourado no chão com raios brancos sob o personagem:
           o efeito "super especial".
+        Feito: teste que carrega o effect de todas as skills do MagicType.dat
+        (132 effects; só `hitlight`, de skills de monstro, não existe); nomes
+        "1－bomb4" do Snow corrigidos; status effects lidos do
+        statuseffect.ini (Reflect, GodBelieve, Luck*, veneno...). Falta o Pedro
+        olhar no jogo e apontar o que ainda estiver diferente das imagens.
 11. [ ] Stamina enchendo (sentado e parado) e o efeito especial quando enche.
         Referência: personagem com raios azul-claros em volta dos pés e um
         brilho branco (a confirmar se é esse o efeito da stamina cheia).

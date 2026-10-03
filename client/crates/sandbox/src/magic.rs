@@ -31,7 +31,13 @@ pub struct MagicType {
 fn field(record: &[u8], offset: usize) -> Option<String> {
     let bytes = record.get(offset..)?;
     let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
-    let text = String::from_utf8_lossy(&bytes[..end]).replace('~', " ");
+    let mut bytes = &bytes[..end];
+    // Some effects come as "1－bomb4" (a GBK full-width hyphen, A3 AD,
+    // after a number): the effect is the name after it.
+    if let Some(hyphen) = bytes.windows(2).position(|pair| pair == [0xa3, 0xad]) {
+        bytes = &bytes[hyphen + 2..];
+    }
+    let text = String::from_utf8_lossy(bytes).replace('~', " ");
     let text = text.trim();
     (!text.is_empty() && text != "NULL").then(|| text.to_owned())
 }
@@ -169,6 +175,38 @@ fn tables(assets: &mut Assets) -> &'static EffectTables {
     })
 }
 
+/// `ini/statuseffect.ini`: a status bit in hex and up to two effect names
+/// (`NULL` for none).
+pub fn parse_status_effects(text: &str) -> Vec<(u64, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let bit = u64::from_str_radix(fields.next()?, 16).ok().filter(|bit| *bit != 0)?;
+            Some(fields.filter(|name| *name != "NULL").map(move |name| (bit, name.to_owned())))
+        })
+        .flatten()
+        .collect()
+}
+
+/// The status bits and the effects that play around whoever has them, as
+/// the original lists them; names missing from `3DEffect.ini` are left out.
+pub fn status_effects(assets: &mut Assets) -> &'static [(u64, String)] {
+    static STATUS: OnceLock<Vec<(u64, String)>> = OnceLock::new();
+    if let Some(status) = STATUS.get() {
+        return status;
+    }
+    let text = assets
+        .read("ini/statuseffect.ini")
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
+    let tables = tables(assets);
+    let status = parse_status_effects(&text)
+        .into_iter()
+        .filter(|(_, name)| tables.effects.contains_key(&name.to_ascii_lowercase()))
+        .collect();
+    STATUS.get_or_init(|| status)
+}
+
 pub fn effect(assets: &mut Assets, name: &str) -> Option<EffectDefinition> {
     let tables = tables(assets);
     let section = tables.effects.get(&name.to_ascii_lowercase())?;
@@ -209,6 +247,7 @@ mod tests {
         record[KIND..KIND + 12].copy_from_slice(b"Magic~attack");
         record[INTONE_EFFECT..INTONE_EFFECT + 8].copy_from_slice(b"Intone-1");
         record[TARGET_EFFECT..TARGET_EFFECT + 4].copy_from_slice(b"NULL");
+        record[TARGET_SOUND..TARGET_SOUND + 8].copy_from_slice(b"1\xa3\xadbomb4");
         bytes.extend(record);
         let types = parse_magic_types(&bytes);
         assert_eq!(types.len(), 1);
@@ -217,6 +256,20 @@ mod tests {
         assert_eq!(types[0].kind, "Magic attack");
         assert_eq!(types[0].intone_effect.as_deref(), Some("Intone-1"));
         assert_eq!(types[0].target_effect, None);
+        assert_eq!(types[0].sound.as_deref(), Some("bomb4"), "the name after the full-width hyphen");
+    }
+
+    #[test]
+    fn reads_the_status_effect_table() {
+        let effects = parse_status_effects("00000000 NULL NULL
+00000002 poisontime NULL
+00000040 NULL TeamLeader
+80000000 LuckAbsorb NULL
+");
+        assert_eq!(
+            effects,
+            [(0x2, "poisontime".to_owned()), (0x40, "TeamLeader".to_owned()), (0x8000_0000, "LuckAbsorb".to_owned())]
+        );
     }
 
     #[test]
@@ -238,6 +291,46 @@ mod tests {
             assert!(!document.meshes.is_empty(), "{}", layer.mesh);
             assert!(assets.image(&layer.texture).is_ok(), "{}", layer.texture);
             println!("born: {} frames={:?} interval={}", layer.mesh, document.motions.iter().map(|m| m.frame_count).collect::<Vec<_>>(), effect.frame_interval);
+        }
+    }
+
+    /// Every skill's casting and target effects, as the client would play
+    /// them: `cargo test -p conquer-sandbox every_skill_effect -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "Requires a local 5065 installation"]
+    fn every_skill_effect_loads() {
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let bytes = assets.read("ini/MagicType.dat").expect("MagicType.dat");
+        let mut names = std::collections::BTreeMap::<String, Vec<(u32, String)>>::new();
+        for magic in parse_magic_types(&bytes) {
+            for name in [&magic.intone_effect, &magic.target_effect].into_iter().flatten() {
+                names.entry(name.clone()).or_default().push((magic.id, magic.name.clone()));
+            }
+        }
+        let mut broken = Vec::new();
+        for (name, users) in &names {
+            let problem = match effect(&mut assets, name) {
+                None => Some("not in 3DEffect.ini".to_owned()),
+                Some(definition) => definition.layers.iter().find_map(|layer| {
+                    match assets.read(&layer.mesh) {
+                        Err(_) => Some(format!("missing mesh {}", layer.mesh)),
+                        Ok(bytes) if sandbox_data::c3::C3Document::parse(&bytes).is_err() => {
+                            Some(format!("unreadable mesh {}", layer.mesh))
+                        },
+                        Ok(_) if assets.image(&layer.texture).is_err() => Some(format!("missing texture {}", layer.texture)),
+                        Ok(_) => None,
+                    }
+                }),
+            };
+            if let Some(problem) = problem {
+                let mut skills: Vec<String> = users.iter().map(|(id, name)| format!("{id} {name}")).collect();
+                skills.dedup();
+                broken.push(format!("{name}: {problem} (used by {})", skills.join(", ")));
+            }
+        }
+        println!("{} effects, {} broken", names.len(), broken.len());
+        for line in &broken {
+            println!("  {line}");
         }
     }
 

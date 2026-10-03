@@ -75,16 +75,6 @@ pub const SKILL_EFFECT_MAX_SECONDS: f32 = 4.0;
 
 /// An original 3D effect (`3DEffect.ini`) loaded into C3 layers.
 /// `ini/statuseffect.ini`: status flag and its looping effect.
-const STATUS_EFFECTS: [(u64, &str); 7] = [
-    (0x80, "attackfast40"),
-    (0x100, "zf2-e307"),
-    (0x200, "attackup40"),
-    (0x40000, "SuperSoldier"),
-    (0x800000, "Tornado"),
-    (0x4000000, "Dodge"),
-    (0x80000, "BodyShield"),
-];
-
 struct LoadedEffect {
     layers: Vec<LevelUpLayer>,
     frame_interval: f32,
@@ -2728,7 +2718,7 @@ impl Renderer {
             if !world_point_visible(origin, viewport, 256.0) {
                 continue;
             }
-            for (bit, name) in STATUS_EFFECTS {
+            for (bit, name) in crate::magic::status_effects(assets) {
                 if flags & bit != 0 {
                     self.push_looping_effect(assets, name, origin, time, position[0] + position[1] + 0.04, viewport, &mut draws);
                 }
