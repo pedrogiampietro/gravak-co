@@ -9,6 +9,34 @@ use argh::FromArgs;
 use std::time::Duration;
 use tq_network::Actor;
 
+/// Moves a character to `map_id` at `location`, with its screen refreshed.
+async fn move_to(
+    state: &crate::State,
+    entity: &std::sync::Arc<crate::entities::GameEntity>,
+    map_id: u32,
+    location: (u16, u16),
+) -> Result<(), Error> {
+    let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+    let old_map_id = character.entity().map_id();
+    let old_map = state.try_map(old_map_id)?;
+    let map = state.try_map(map_id)?;
+    character.teleport(state, map_id, location).await?;
+    map.insert_entity(entity.clone()).await?;
+    // `Character::teleport` removes the entity from its old map.  Do not
+    // remove it a second time when the destination is the same map: in that
+    // case `old_map` and `map` are the same map object, and the second
+    // removal would erase the freshly reinserted character from the world
+    // index.
+    if old_map_id != map_id {
+        old_map.remove_entity(entity)?;
+    }
+    // Teleport updates the character location and map membership, but does
+    // not itself repopulate the client's surrounding entities. Refresh the
+    // screen so nearby NPCs and monsters are spawned.
+    character.try_screen()?.load_surroundings(state).await?;
+    Ok(())
+}
+
 pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, args: &[&str]) -> Result<(), Error> {
     let entity = actor.entity();
     let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
@@ -42,25 +70,33 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             Ok(())
         },
         SubCommands::Teleport(info) => {
-            let old_map_id = me.entity().map_id();
-            let old_map = state.try_map(old_map_id)?;
-            let map = state.try_map(info.map_id)?;
-            me.teleport(state, info.map_id, (info.x, info.y)).await?;
-            map.insert_entity(actor.entity()).await?;
-            // `Character::teleport` removes the entity from its old map.  Do
-            // not remove it a second time when the destination is the same
-            // map: in that case `old_map` and `map` are the same map object,
-            // and the second removal would erase the freshly reinserted
-            // character from the world index.
-            if old_map_id != info.map_id {
-                old_map.remove_entity(&actor.entity())?;
-            }
-            // Teleport updates the character location and map membership, but
-            // does not itself repopulate the client's surrounding entities.
-            // Refresh the screen so nearby NPCs and monsters are spawned.
-            me.try_screen()?.load_surroundings(state).await?;
+            move_to(state, &actor.entity(), info.map_id, (info.x, info.y)).await?;
             if info.all {
-                // TODO: teleport all
+                let mut summoned = 0;
+                for entity in state.entities() {
+                    let Some(other) = entity.as_character() else { continue };
+                    if other.id() == me.id() {
+                        continue;
+                    }
+                    move_to(state, &entity, info.map_id, (info.x, info.y)).await?;
+                    let _ = other
+                        .owner()
+                        .send(MsgTalk::from_system(
+                            other.id(),
+                            TalkChannel::TopLeft,
+                            format!("{} summoned everyone here.", me.entity().name()),
+                        ))
+                        .await;
+                    summoned += 1;
+                }
+                tracing::info!(target: "world", gm = %me.entity().name(), summoned, map = info.map_id, "Summoned everyone online");
+                actor
+                    .send(MsgTalk::from_system(
+                        me.id(),
+                        TalkChannel::System,
+                        format!("Summoned {summoned} players."),
+                    ))
+                    .await?;
             }
             Ok(())
         },
@@ -1253,8 +1289,8 @@ struct TeleportCmd {
     x: u16,
     #[argh(positional)]
     y: u16,
-    /// teleport all characters with you
-    #[argh(option, default = "false")]
+    /// bring every player online along
+    #[argh(switch)]
     all: bool,
 }
 
@@ -1408,6 +1444,20 @@ struct UpgradeItemCmd {
 mod tests {
     use super::{Command, SubCommands};
     use argh::FromArgs;
+
+    #[test]
+    fn teleport_takes_everyone_along_with_a_switch() {
+        let command = Command::from_args(&["commands"], &["tele", "1002", "430", "380", "--all"]).expect("tele --all");
+        assert_eq!(
+            command.commands,
+            SubCommands::Teleport(super::TeleportCmd { map_id: 1002, x: 430, y: 380, all: true })
+        );
+        let command = Command::from_args(&["commands"], &["tele", "1002", "430", "380"]).expect("tele");
+        assert_eq!(
+            command.commands,
+            SubCommands::Teleport(super::TeleportCmd { map_id: 1002, x: 430, y: 380, all: false })
+        );
+    }
 
     #[tokio::test]
     async fn only_game_masters_run_game_master_commands() -> Result<(), crate::Error> {

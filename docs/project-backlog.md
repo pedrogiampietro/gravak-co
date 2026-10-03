@@ -65,7 +65,8 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
       com o nome real de quem fala, e canais do servidor (System, Center,
       Broadcast...) enviados por um cliente são ignorados. Teste:
       `world_chat_reaches_everyone_under_the_real_name`.
-- [ ] `$teleport ... all` (teleportar todos), pendente no comando.
+- [x] `$tele <mapa> <x> <y> --all`: o GM leva todos os jogadores online junto
+      (antes era um TODO, e a opção nem aceitava a forma `--all`).
 
 ## P3 — cliente e interface
 
