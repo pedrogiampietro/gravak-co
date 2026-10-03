@@ -2783,7 +2783,7 @@ async fn run_pvp_smoke(
     }
 
     target_session
-        .send(&ActionPacket::reborn(target_id))
+        .send(&ActionPacket::reborn(target_id, false))
         .await?;
     let revived_hp = wait_for_revived_health(&mut target_session, target_id).await?;
     session

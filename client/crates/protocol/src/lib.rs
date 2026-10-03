@@ -2059,7 +2059,7 @@ mod tests {
             96
         );
 
-        let reborn = ActionPacket::reborn(1_000_001)
+        let reborn = ActionPacket::reborn(1_000_001, false)
             .encode()
             .expect("reborn packet should encode");
         assert_eq!(reborn.0, MSG_ACTION);
