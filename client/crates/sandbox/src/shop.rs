@@ -641,6 +641,10 @@ pub enum PlayerShopPanelAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuildPanelAction {
+    /// Gives this much silver to the guild fund.
+    Donate(u32),
+    /// The leader takes this much silver from the fund.
+    Withdraw(u32),
     AcceptInvite,
     Warehouse,
     Invite,

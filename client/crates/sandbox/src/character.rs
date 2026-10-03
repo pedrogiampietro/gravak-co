@@ -28,6 +28,8 @@ pub struct Character {
     pub name: String,
     pub guild: String,
     pub guild_rank: String,
+    /// The guild fund in silver, as the server last said.
+    pub guild_fund: u64,
     pub health: u32,
     pub maximum_health: u32,
     pub strength: u16,
@@ -322,6 +324,7 @@ impl Character {
             name,
             guild,
             guild_rank,
+            guild_fund: 0,
             health,
             maximum_health,
             strength: 0,

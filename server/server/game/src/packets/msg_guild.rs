@@ -11,6 +11,14 @@ pub const LEAVE_GUILD: u32 = 3;
 pub const KICK_MEMBER: u32 = 4;
 pub const QUERY_GUILD_NAME: u32 = 6;
 pub const SET_GUILD: u32 = 14;
+/// Client: give `data` silver to the guild fund (the original's donation).
+pub const DONATE_SILVER: u32 = 11;
+/// Client: ask the fund; server: the fund, in `data` (capped) and as text.
+pub const GUILD_FUND: u32 = 30;
+/// Client (leader): take `data` silver from the fund.
+pub const WITHDRAW_SILVER: u32 = 31;
+/// Silver a donation or withdrawal moves, at most.
+const MAX_FUND_MOVE: u32 = 100_000_000;
 
 /// Classic 5065 guild action packet (1107).
 #[derive(Debug, Clone, Serialize, Deserialize, PacketID)]
@@ -193,6 +201,14 @@ impl PacketProcess for MsgGuild {
                 Ok(())
             },
             SET_GUILD => Ok(()),
+            GUILD_FUND => {
+                if let Some(guild) = state.guild_manager().guild_for(character_id) {
+                    let fund = crate::guild::GuildManager::fund(state.pool(), guild.id).await?;
+                    actor.send(fund_packet(fund)).await?;
+                }
+                Ok(())
+            },
+            DONATE_SILVER | WITHDRAW_SILVER => move_fund(state, actor, character, self.action == DONATE_SILVER, self.data).await,
             _ => Err(Error::Other(format!("Unsupported guild action {}.", self.action))),
         };
         if let Err(error) = result {
@@ -200,6 +216,48 @@ impl PacketProcess for MsgGuild {
         }
         Ok(())
     }
+}
+
+fn fund_packet(fund: u64) -> MsgGuild {
+    MsgGuild::new(GUILD_FUND, u32::try_from(fund).unwrap_or(u32::MAX)).with_strings([fund.to_string()])
+}
+
+/// A donation to the guild fund, or the leader taking from it; every member
+/// online hears of it and sees the new fund.
+async fn move_fund(
+    state: &State,
+    actor: &Actor<ActorState>,
+    character: &crate::entities::Character,
+    donate: bool,
+    amount: u32,
+) -> Result<(), Error> {
+    let character_id = character.id();
+    let Some(guild) = state.guild_manager().guild_for(character_id) else {
+        return send_notice(actor, character_id, "You are not in a guild.").await;
+    };
+    if !donate && guild.leader_id != character_id {
+        return send_notice(actor, character_id, "Only the guild leader can take from the fund.").await;
+    }
+    if amount == 0 || amount > MAX_FUND_MOVE {
+        return Ok(());
+    }
+    let Some((_, fund)) = character.transfer_guild_fund(state.pool(), guild.id, amount, donate).await? else {
+        let reason = if donate { "You do not have that much silver." } else { "The guild fund does not hold that much." };
+        return send_notice(actor, character_id, reason).await;
+    };
+    actor.send(super::MsgUserInfo::from(character)).await?;
+    let name = character.entity().name();
+    let line = if donate {
+        format!("{name} gave {amount} silver to the guild fund ({fund} now).")
+    } else {
+        format!("{name} took {amount} silver from the guild fund ({fund} left).")
+    };
+    tracing::info!(target: "economy", character = %name, guild = %guild.name, amount, donate, fund, "Guild fund");
+    for member_id in &guild.members {
+        send_to_character(state, *member_id, fund_packet(fund)).await?;
+        send_notice_to_character(state, *member_id, line.clone()).await?;
+    }
+    Ok(())
 }
 
 async fn send_notice_to_character(state: &State, character_id: u32, message: impl Into<String>) -> Result<(), Error> {

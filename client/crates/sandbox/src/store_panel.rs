@@ -124,7 +124,7 @@ fn product_row(row: usize) -> UiRect {
 }
 
 /// `1234567` as `1.234.567`.
-fn thousands(value: u64) -> String {
+pub fn thousands(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {

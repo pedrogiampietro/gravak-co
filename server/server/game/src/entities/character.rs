@@ -765,6 +765,46 @@ impl Character {
         Ok(Some(balance.max(0).min(i64::from(u32::MAX)) as u32))
     }
 
+    /// Moves `amount` silver between the character and their guild's fund in
+    /// one transaction: from the character when `donate`, else from the fund.
+    /// The new balances (character, fund), or `None` when the giver lacks it.
+    pub async fn transfer_guild_fund(
+        &self,
+        pool: &sqlx::PgPool,
+        guild_id: u32,
+        amount: u32,
+        donate: bool,
+    ) -> Result<Option<(u64, u64)>, Error> {
+        let amount = i64::from(amount);
+        let (to_character, to_fund) = if donate { (-amount, amount) } else { (amount, -amount) };
+        let mut transaction = pool.begin().await?;
+        let balance: Option<i64> = sqlx::query_scalar(
+            "UPDATE characters SET silver = silver + $1
+             WHERE character_id = $2 AND silver + $1 >= 0 AND silver + $1 <= $3 RETURNING silver",
+        )
+        .bind(to_character)
+        .bind(self.inner.character_id)
+        .bind(i64::from(u32::MAX))
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(balance) = balance else {
+            return Ok(None);
+        };
+        let fund: Option<i64> = sqlx::query_scalar(
+            "UPDATE guilds SET silver = silver + $1 WHERE guild_id = $2 AND silver + $1 >= 0 RETURNING silver",
+        )
+        .bind(to_fund)
+        .bind(i64::from(guild_id))
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(fund) = fund else {
+            return Ok(None);
+        };
+        transaction.commit().await?;
+        self.silver.store(balance.max(0) as u64, Ordering::Relaxed);
+        Ok(Some((balance.max(0) as u64, fund.max(0) as u64)))
+    }
+
     pub fn set_market_return(&self, map_id: u32, position: (u16, u16)) {
         *self.market_return.lock() = Some((map_id, position));
     }
@@ -6060,6 +6100,27 @@ mod tests {
         assert!(!character.can_attack_character(&character));
         character.entity().set_flags(crate::entities::Flags::BLACK_NAME);
         assert!(character.can_attack_character(&character));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn silver_moves_between_a_member_and_the_guild_fund() -> Result<(), Error> {
+        let (pool, character, database_character_id) = test_character().await?;
+        sqlx::query("UPDATE characters SET silver = 50000 WHERE character_id = $1")
+            .bind(i64::from(database_character_id))
+            .execute(&pool)
+            .await?;
+        let guild_id: i64 = sqlx::query_scalar("INSERT INTO guilds (name, leader_id) VALUES ('FundTest', $1) RETURNING guild_id")
+            .bind(i64::from(database_character_id))
+            .fetch_one(&pool)
+            .await?;
+        let guild_id = guild_id as u32;
+        assert_eq!(character.transfer_guild_fund(&pool, guild_id, 30_000, true).await?, Some((20_000, 30_000)));
+        assert_eq!(character.silver(), 20_000);
+        assert_eq!(character.transfer_guild_fund(&pool, guild_id, 30_000, true).await?, None, "not enough silver");
+        assert_eq!(character.transfer_guild_fund(&pool, guild_id, 40_000, false).await?, None, "not enough in the fund");
+        assert_eq!(character.transfer_guild_fund(&pool, guild_id, 10_000, false).await?, Some((30_000, 20_000)));
+        assert_eq!(crate::guild::GuildManager::fund(&pool, guild_id).await?, 20_000);
         Ok(())
     }
 

@@ -2541,7 +2541,19 @@ impl App {
         const INVITE_JOIN: u32 = 2;
         const LEAVE_GUILD: u32 = 3;
         const KICK_MEMBER: u32 = 4;
+        const DONATE_SILVER: u32 = 11;
+        const WITHDRAW_SILVER: u32 = 31;
         match action {
+            shop::GuildPanelAction::Donate(amount) => {
+                if let Some(network) = &self.network {
+                    network.send_guild_action(DONATE_SILVER, amount);
+                }
+            }
+            shop::GuildPanelAction::Withdraw(amount) => {
+                if let Some(network) = &self.network {
+                    network.send_guild_action(WITHDRAW_SILVER, amount);
+                }
+            }
             shop::GuildPanelAction::AcceptInvite => {
                 if self.pending_guild_invite.take().is_some() {
                     self.network
@@ -2944,6 +2956,10 @@ impl App {
                     view.board.task.kills = required;
                 }
             }
+            // The guild fund (Gravak's action 30): exact in the text.
+            NetworkEvent::Guild { action: 30, data, name } => {
+                self.character.guild_fund = name.and_then(|fund| fund.parse().ok()).unwrap_or(u64::from(data));
+            }
             NetworkEvent::Guild { action, data, name } => {
                 let description = name.clone().unwrap_or_else(|| "sem nome".to_owned());
                 if action == 2 && data != 0 && self.character.guild.is_empty() {
@@ -2964,6 +2980,10 @@ impl App {
                     if action == 14 {
                         self.character.guild = guild_name;
                         self.guild_id = Some(data);
+                        // Ask how much the guild holds.
+                        if let Some(network) = &self.network {
+                            network.send_guild_action(30, 0);
+                        }
                         self.pending_guild_invite = None;
                     }
                 }

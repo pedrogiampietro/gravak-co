@@ -543,6 +543,13 @@ fn guild_controls(has_guild: bool, pending_invite: bool) -> Vec<Control<GuildPan
         ),
     ];
     if has_guild {
+        // Under the fund: donations, and the leader's withdrawal.
+        controls.extend([
+            control([32, 268, 44, 20], Face::Label("+10K"), Some(A::Donate(10_000))),
+            control([80, 268, 44, 20], Face::Label("+100K"), Some(A::Donate(100_000))),
+            control([128, 268, 44, 20], Face::Label("+1M"), Some(A::Donate(1_000_000))),
+            control([176, 268, 44, 20], Face::Label("-100K"), Some(A::Withdraw(100_000))),
+        ]);
         controls.extend([
             // [133-1048]/[133-1049] and [133-1043]/[133-1046] button rows.
             control(
@@ -1286,6 +1293,11 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
             ] {
                 text(&mut image, label, 32, y, GOLD, 88);
                 text(&mut image, &value, 122, y, WHITE, 100);
+            }
+            if has_guild {
+                text(&mut image, "Fund:", 32, 250, GOLD, 88);
+                let fund = format!("{} silver", crate::store_panel::thousands(data.character.guild_fund));
+                text(&mut image, &fund, 122, 250, WHITE, 100);
             }
             if !has_guild {
                 let line = match data.pending_guild_invite {

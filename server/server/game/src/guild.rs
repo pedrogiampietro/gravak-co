@@ -176,6 +176,15 @@ impl GuildManager {
         transaction.commit().await
     }
 
+    /// The guild's fund in silver.
+    pub async fn fund(pool: &PgPool, guild_id: u32) -> Result<u64, sqlx::Error> {
+        let fund: Option<i64> = sqlx::query_scalar("SELECT silver FROM guilds WHERE guild_id = $1")
+            .bind(i64::from(guild_id))
+            .fetch_optional(pool)
+            .await?;
+        Ok(fund.map_or(0, |fund| fund.max(0) as u64))
+    }
+
     pub async fn persist_member(pool: &PgPool, guild: &GuildInfo, member_id: u32) -> Result<(), sqlx::Error> {
         sqlx::query("INSERT INTO guild_members (guild_id, character_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
             .bind(i64::from(guild.id))

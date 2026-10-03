@@ -3437,6 +3437,7 @@ impl Renderer {
             character.name.hash(&mut hasher);
             character.guild.hash(&mut hasher);
             character.guild_rank.hash(&mut hasher);
+            character.guild_fund.hash(&mut hasher);
             action_bar.hash(&mut hasher);
             let mut skill_signature = known_skills.iter().collect::<Vec<_>>();
             skill_signature.sort_by_key(|(skill_id, _)| **skill_id);
