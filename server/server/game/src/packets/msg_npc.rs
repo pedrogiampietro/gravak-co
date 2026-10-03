@@ -87,6 +87,7 @@ impl PacketProcess for MsgNpc {
             .or_else(|| crate::trainers::opening(npc_id, character))
             .or_else(|| crate::market_npcs::opening(npc_id, character))
             .or_else(|| crate::quest_npcs::opening(npc_id, character))
+            .or_else(|| crate::quest_givers::opening(npc_id, character))
             .or_else(|| crate::guild_war::opening(state, npc_id, character))
             .or_else(|| crate::city_npcs::opening(npc_id, character))
             .or_else(|| crate::offline_tg::opening(npc_id))

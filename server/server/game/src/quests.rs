@@ -1,8 +1,8 @@
-//! Quests: chains of monster hunts offered by NPCs. An NPC offers the next
-//! quest of its chain a character may take, once the quest before it is done
-//! and the character has the level; a kill counts toward every active quest
-//! for that monster, and the last one pays silver, experience and maybe an
-//! item.
+//! Quests: chains offered by NPCs. An NPC offers the next quest of its chain
+//! a character may take, once the quest before it is done and the character
+//! has the level. A hunt counts every kill of its monster and the last one
+//! pays; a delivery (`target_item`) is paid when the items are brought back
+//! to the NPC. The pay is silver, experience and maybe an item.
 
 use crate::entities::{Character, InventoryItem};
 use crate::Error;
@@ -22,6 +22,8 @@ pub struct QuestDefinition {
     pub min_level: u16,
     /// An item type given on completion.
     pub reward_item: Option<u32>,
+    /// For a delivery, the item to bring (`required_count` of them).
+    pub target_item: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +78,28 @@ pub struct QuestState {
 
 /// The columns of a definition, as [`definition`] reads them.
 const COLUMNS: &str = "q.quest_id, q.npc_id, q.name, q.description, q.target_monster_type, q.required_count,
-     q.reward_silver, q.reward_experience, q.required_quest, q.min_level, q.reward_item";
+     q.reward_silver, q.reward_experience, q.required_quest, q.min_level, q.reward_item, q.target_item";
+
+/// A definition from a row with [`COLUMNS`].
+fn read_definition(row: &sqlx::postgres::PgRow) -> Result<QuestDefinition, sqlx::Error> {
+    use sqlx::Row;
+    let mut quest = definition((
+        row.try_get("quest_id")?,
+        row.try_get("npc_id")?,
+        row.try_get("name")?,
+        row.try_get("description")?,
+        row.try_get("target_monster_type")?,
+        row.try_get("required_count")?,
+        row.try_get("reward_silver")?,
+        row.try_get("reward_experience")?,
+        row.try_get("required_quest")?,
+        row.try_get("min_level")?,
+        row.try_get("reward_item")?,
+    ));
+    let target_item: Option<i64> = row.try_get("target_item")?;
+    quest.target_item = target_item.and_then(|id| u32::try_from(id).ok());
+    Ok(quest)
+}
 
 type DefinitionRow = (i64, i64, String, String, i64, i64, i64, i64, Option<i64>, i64, Option<i64>);
 
@@ -106,6 +129,7 @@ fn definition(row: DefinitionRow) -> QuestDefinition {
         required_quest: required_quest.and_then(|id| u32::try_from(id).ok()),
         min_level: u16::try_from(min_level).unwrap_or(u16::MAX),
         reward_item: reward_item.and_then(|id| u32::try_from(id).ok()),
+        target_item: None,
     }
 }
 
@@ -154,13 +178,13 @@ pub async fn start(pool: &sqlx::PgPool, character_id: i32, quest_id: u32) -> Res
 /// What `npc_id` has for a character of `level`: the quest under way, else
 /// the next one of its chain (started now), in quest order.
 pub async fn offer(pool: &sqlx::PgPool, character_id: i32, level: u16, npc_id: u32) -> Result<Offer, Error> {
-    let rows = sqlx::query_as::<_, (i64, i64, String, String, i64, i64, i64, i64, Option<i64>, i64, Option<i64>, Option<i64>, Option<i64>, bool)>(
+    let rows = sqlx::query(
         &format!(
             "SELECT {COLUMNS}, cq.state, cq.progress,
                     q.required_quest IS NULL OR EXISTS (
                         SELECT 1 FROM character_quests done
                         WHERE done.character_id = $1 AND done.quest_id = q.required_quest AND done.state = 2
-                    )
+                    ) AS unlocked
              FROM quest_definitions q
              LEFT JOIN character_quests cq ON cq.quest_id = q.quest_id AND cq.character_id = $1
              WHERE q.npc_id = $2
@@ -176,8 +200,11 @@ pub async fn offer(pool: &sqlx::PgPool, character_id: i32, level: u16, npc_id: u
     }
     let mut next = None;
     for row in rows {
-        let (a, b, c, d, e, f, g, h, i, j, k, state, progress, unlocked) = row;
-        let quest = definition((a, b, c, d, e, f, g, h, i, j, k));
+        use sqlx::Row;
+        let quest = read_definition(&row)?;
+        let state: Option<i64> = row.try_get("state")?;
+        let progress: Option<i64> = row.try_get("progress")?;
+        let unlocked: bool = row.try_get("unlocked")?;
         match state {
             Some(1) => {
                 return Ok(Offer::Active(quest, progress.and_then(|p| u32::try_from(p).ok()).unwrap_or_default()));
@@ -201,7 +228,7 @@ pub async fn offer(pool: &sqlx::PgPool, character_id: i32, level: u16, npc_id: u
 }
 
 pub async fn list(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<QuestState>, Error> {
-    let rows = sqlx::query_as::<_, (i64, i64, String, String, i64, i64, i64, i64, Option<i64>, i64, Option<i64>, i64, i64)>(
+    let rows = sqlx::query(
         &format!(
             "SELECT {COLUMNS}, cq.progress, cq.state
              FROM character_quests cq
@@ -213,14 +240,19 @@ pub async fn list(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<QuestSta
     .bind(i64::from(character_id))
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(a, b, c, d, e, f, g, h, i, j, k, progress, state)| QuestState {
-            definition: definition((a, b, c, d, e, f, g, h, i, j, k)),
-            progress: u32::try_from(progress).unwrap_or_default(),
-            completed: state == 2,
+    rows.iter()
+        .map(|row| {
+            use sqlx::Row;
+            let progress: i64 = row.try_get("progress")?;
+            let state: i64 = row.try_get("state")?;
+            Ok(QuestState {
+                definition: read_definition(row)?,
+                progress: u32::try_from(progress).unwrap_or_default(),
+                completed: state == 2,
+            })
         })
-        .collect())
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(Into::into)
 }
 
 pub async fn record_monster_defeat(
@@ -228,12 +260,12 @@ pub async fn record_monster_defeat(
     character: &Character,
     monster_type_id: u32,
 ) -> Result<DefeatOutcome, Error> {
-    let rows = sqlx::query_as::<_, (i64, i64, String, String, i64, i64, i64, i64, Option<i64>, i64, Option<i64>, i64)>(
+    let rows = sqlx::query(
         &format!(
             "SELECT {COLUMNS}, cq.progress
              FROM quest_definitions q
              INNER JOIN character_quests cq ON cq.quest_id = q.quest_id
-             WHERE cq.character_id = $1 AND cq.state = 1 AND q.target_monster_type = $2
+             WHERE cq.character_id = $1 AND cq.state = 1 AND q.target_monster_type = $2 AND q.target_item IS NULL
              ORDER BY q.quest_id"
         ),
     )
@@ -242,8 +274,10 @@ pub async fn record_monster_defeat(
     .fetch_all(pool)
     .await?;
     let mut outcome = DefeatOutcome::default();
-    for (a, b, c, d, e, f, g, h, i, j, k, progress) in rows {
-        let quest = definition((a, b, c, d, e, f, g, h, i, j, k));
+    for row in rows {
+        use sqlx::Row;
+        let quest = read_definition(&row)?;
+        let progress: i64 = row.try_get("progress")?;
         let required_count = i64::from(quest.required_count);
         let next_progress = progress.saturating_add(1).min(required_count);
         let finishing = next_progress >= required_count;
@@ -267,6 +301,67 @@ pub async fn record_monster_defeat(
         if updated.rows_affected() != 1 || !finishing {
             continue;
         }
+        outcome.completed.push(pay(pool, character, quest).await?);
+    }
+    Ok(outcome)
+}
+
+/// Why a delivery was not taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnIn {
+    Completed(Completion),
+    /// Not enough of the item yet: how many the character has.
+    Missing(u32),
+    /// The reward item needs a free slot first.
+    BagFull,
+    /// Not a delivery, or not under way.
+    NotDelivery,
+}
+
+/// Hands a delivery's items to its NPC: they are taken, the quest is done and
+/// paid.
+pub async fn turn_in(pool: &sqlx::PgPool, character: &Character, quest: QuestDefinition) -> Result<TurnIn, Error> {
+    let Some(item_type) = quest.target_item else {
+        return Ok(TurnIn::NotDelivery);
+    };
+    let have = character.count_items(item_type);
+    let need = quest.required_count as usize;
+    if have < need {
+        return Ok(TurnIn::Missing(u32::try_from(have).unwrap_or(u32::MAX)));
+    }
+    // The items leave the bag, so a reward item has room unless the bag was
+    // full of other things and the delivery is exactly zero items.
+    if quest.reward_item.is_some() && need == 0 && character.inventory_items().len() >= 40 {
+        return Ok(TurnIn::BagFull);
+    }
+    let updated = sqlx::query(
+        "UPDATE character_quests
+         SET progress = $1, state = 2, completed_at = EXTRACT(EPOCH FROM now())::BIGINT
+         WHERE character_id = $2 AND quest_id = $3 AND state = 1",
+    )
+    .bind(i64::from(quest.required_count))
+    .bind(i64::from(character.database_id()))
+    .bind(i64::from(quest.quest_id))
+    .execute(pool)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Ok(TurnIn::NotDelivery);
+    }
+    if character.consume_items(pool, item_type, need).await?.is_none() {
+        // The items went away between the count and the take: undo.
+        sqlx::query("UPDATE character_quests SET state = 1, completed_at = NULL WHERE character_id = $1 AND quest_id = $2")
+            .bind(i64::from(character.database_id()))
+            .bind(i64::from(quest.quest_id))
+            .execute(pool)
+            .await?;
+        return Ok(TurnIn::Missing(u32::try_from(character.count_items(item_type)).unwrap_or(u32::MAX)));
+    }
+    Ok(TurnIn::Completed(pay(pool, character, quest).await?))
+}
+
+/// Pays a quest just marked done: silver, the item, experience.
+async fn pay(pool: &sqlx::PgPool, character: &Character, quest: QuestDefinition) -> Result<Completion, Error> {
+    {
         character.grant_silver(pool, quest.reward_silver).await?;
         crate::audit::economic("quest_reward", character.id(), quest.npc_id, 0, quest.reward_silver);
         let reward_item = match quest.reward_item {
@@ -292,26 +387,23 @@ pub async fn record_monster_defeat(
             quest = %quest.name,
             "Quest completed"
         );
-        outcome.completed.push(Completion {
+        Ok(Completion {
             progress: quest.required_count,
             reward_silver: quest.reward_silver,
             reward_experience: quest.reward_experience,
             definition: quest,
             reward_item,
             leveled_to,
-        });
+        })
     }
-    Ok(outcome)
 }
 
 async fn load_definition(pool: &sqlx::PgPool, quest_id: u32) -> Result<Option<QuestDefinition>, Error> {
-    let row = sqlx::query_as::<_, DefinitionRow>(&format!(
-        "SELECT {COLUMNS} FROM quest_definitions q WHERE q.quest_id = $1"
-    ))
-    .bind(i64::from(quest_id))
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(definition))
+    let row = sqlx::query(&format!("SELECT {COLUMNS} FROM quest_definitions q WHERE q.quest_id = $1"))
+        .bind(i64::from(quest_id))
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.as_ref().map(read_definition).transpose()?)
 }
 
 #[cfg(test)]
@@ -388,6 +480,65 @@ mod tests {
         assert_eq!(done.len(), 1);
         let meteor = done[0].reward_item.expect("the Meteor is given");
         assert_eq!((meteor.item_type, meteor.position), (1_088_001, 7));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_city_chains_hunt_and_deliver() -> Result<(), Error> {
+        let (pool, character) = test_character().await?;
+        let id = character.database_id();
+        // CoachLin of Phoenix Castle: WingedSnakes first.
+        let Offer::Started(first) = offer(&pool, id, 25, 30081).await? else {
+            panic!("CoachLin offers his first quest");
+        };
+        assert_eq!((first.quest_id, first.target_monster_type, first.target_item), (10, 6, None));
+        sqlx::query("UPDATE character_quests SET state = 2 WHERE character_id = $1")
+            .bind(i64::from(id))
+            .execute(&pool)
+            .await?;
+        assert!(matches!(offer(&pool, id, 30, 30081).await?, Offer::Started(quest) if quest.quest_id == 11));
+        sqlx::query("UPDATE character_quests SET state = 2 WHERE character_id = $1")
+            .bind(i64::from(id))
+            .execute(&pool)
+            .await?;
+        // The delivery: five Painkillers.
+        let Offer::Started(delivery) = offer(&pool, id, 30, 30081).await? else {
+            panic!("the delivery is offered");
+        };
+        assert_eq!(delivery.target_item, Some(1_000_020));
+        assert!(record_monster_defeat(&pool, &character, 0).await?.completed.is_empty(), "kills never finish it");
+        for position in 0..3_u8 {
+            sqlx::query(
+                "INSERT INTO inventory_items (character_id, item_type, position, durability, max_durability)
+                 VALUES ($1, 1000020, $2, 1, 1)",
+            )
+            .bind(i64::from(id))
+            .bind(i64::from(position))
+            .execute(&pool)
+            .await?;
+        }
+        character.load_inventory(&pool).await?;
+        assert_eq!(turn_in(&pool, &character, delivery.clone()).await?, TurnIn::Missing(3));
+        for position in 3..5_u8 {
+            sqlx::query(
+                "INSERT INTO inventory_items (character_id, item_type, position, durability, max_durability)
+                 VALUES ($1, 1000020, $2, 1, 1)",
+            )
+            .bind(i64::from(id))
+            .bind(i64::from(position))
+            .execute(&pool)
+            .await?;
+        }
+        character.load_inventory(&pool).await?;
+        let silver = character.silver();
+        let TurnIn::Completed(done) = turn_in(&pool, &character, delivery.clone()).await? else {
+            panic!("five Painkillers finish it");
+        };
+        assert_eq!(done.reward_silver, 6_000);
+        assert_eq!(character.silver(), silver + 6_000);
+        assert_eq!(character.count_items(1_000_020), 0, "the Painkillers are taken");
+        assert_eq!(turn_in(&pool, &character, delivery).await?, TurnIn::Missing(0));
+        assert!(matches!(offer(&pool, id, 35, 30081).await?, Offer::Started(quest) if quest.quest_id == 13));
         Ok(())
     }
 

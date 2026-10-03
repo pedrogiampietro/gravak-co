@@ -41,8 +41,15 @@ pub async fn pool() -> PgPool {
             .connect(&with_database(&url, &template))
             .await
             .expect("connect to the template");
-        MIGRATOR.run(&template_pool).await.expect("migrate the template");
+        let migrated = MIGRATOR.run(&template_pool).await;
         template_pool.close().await;
+        if let Err(error) = migrated {
+            // A half-migrated template would be reused by every later run.
+            let _ = admin
+                .execute(format!("DROP DATABASE IF EXISTS {template} WITH (FORCE)").as_str())
+                .await;
+            panic!("migrate the template: {error}");
+        }
     }
 
     drop_stale(&mut admin).await;

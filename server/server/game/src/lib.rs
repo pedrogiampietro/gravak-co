@@ -36,6 +36,7 @@ pub mod packets;
 pub mod player_shop;
 pub mod offline_tg;
 pub mod pets;
+pub mod quest_givers;
 pub mod quest_npcs;
 pub mod quests;
 pub mod refinery;

@@ -22,8 +22,10 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 7. [x] Comando de GM `$monster` para criar monstros (reorganizar como o mapa
        guarda os monstros). `$monster <nome|id> [qtd]` e `$monster-clear`;
        somem 5 s depois de mortos, sem respawn.
-8. [ ] Mais quests (outras cidades, outros objetivos), banca com nome e prata
-       da guild.
+8. [x] Mais quests (outras cidades, outros objetivos), banca com nome e prata
+       da guild. Quatro cadeias novas (CoachLin, OldGeneral, GeneralShou,
+       GossiperWang) com caça e entrega de itens; banca com nome, anúncios
+       guardados; fundo da guild com doação e saque do líder.
 9. [ ] Pagamento real dos CPs por um site (projeto à parte; decisões do Pedro).
 10. [ ] Validar skills, magias, effects, XP skills e o "super especial" contra
         o original. Referências que o Pedro mandou (imagens no chat de

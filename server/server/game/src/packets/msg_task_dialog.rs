@@ -280,7 +280,7 @@ impl PacketProcess for MsgTaskDialog {
             }
             return Ok(());
         }
-        if self.task_id == 425 && self.option_id == 4 {
+        if crate::quest_givers::asks_for_task(self.task_id, self.option_id) {
             let Some(npc) = npc else {
                 return Ok(());
             };
@@ -291,38 +291,12 @@ impl PacketProcess for MsgTaskDialog {
                     .send(super::MsgTalk::from_system(
                         character.id(),
                         super::TalkChannel::TopLeft,
-                        "Old General Yang is too far away.",
+                        format!("{} is too far away.", npc.entity().name()),
                     ))
                     .await?;
                 return Ok(());
             }
-            let level = character.entity().level();
-            let response =
-                match crate::quests::offer(_state.pool(), character.database_id(), level, self.task_id).await? {
-                    crate::quests::Offer::Started(quest) => {
-                        format!("Quest accepted: {}. {}", quest.name, quest.description)
-                    },
-                    crate::quests::Offer::Active(quest, progress) => format!(
-                        "Finish what you started first: {} ({}/{}).",
-                        quest.name, progress, quest.required_count
-                    ),
-                    crate::quests::Offer::TooLow(quest) => format!(
-                        "Old General Yang: come back at level {} for {}.",
-                        quest.min_level, quest.name
-                    ),
-                    crate::quests::Offer::AllDone => {
-                        "Old General Yang: you have done all I could ask of you. Twin City is grateful.".to_owned()
-                    },
-                    crate::quests::Offer::Nothing => "This quest is not available.".to_owned(),
-                };
-            actor
-                .send(super::MsgTalk::from_system(
-                    character.id(),
-                    super::TalkChannel::System,
-                    response,
-                ))
-                .await?;
-            return Ok(());
+            return crate::quest_givers::ask(_state, actor, character, self.task_id).await;
         }
         let character_name = entity.basic().name().to_owned();
         let npc_name = npc.map(|value| value.entity().name().to_owned());
