@@ -55,6 +55,8 @@ pub struct Character {
     protected_until: Mutex<Option<std::time::Instant>>,
     /// The name over the character's booth while it is open.
     booth_name: Mutex<Option<String>>,
+    /// The status timers last sent to the client.
+    timers_sent: Mutex<Vec<(u64, u64)>>,
     /// The blue flashing name after killing someone.
     flashing_until: Mutex<Option<std::time::Instant>>,
     /// When the next PK point wears off.
@@ -488,6 +490,7 @@ impl Character {
             died_at: Mutex::new(None),
             protected_until: Mutex::new(None),
             booth_name: Mutex::new(None),
+            timers_sent: Mutex::new(Vec::new()),
             flashing_until: Mutex::new(None),
             next_pk_decay: Mutex::new((kill_points > 0).then(|| std::time::Instant::now() + crate::death::PK_DECAY)),
             stamina: std::sync::atomic::AtomicU8::new(crate::vitals::MAX_STAMINA),
@@ -766,6 +769,47 @@ impl Character {
         };
         self.silver.store(balance.max(0) as u64, Ordering::Relaxed);
         Ok(Some(balance.max(0).min(i64::from(u32::MAX)) as u32))
+    }
+
+    /// Each status flag under way and when it ends (seconds since 1970):
+    /// the timed statuses, double experience and Heaven's Blessing.
+    pub fn status_timers(&self) -> Vec<(u64, u64)> {
+        let now = std::time::Instant::now();
+        // In milliseconds, rounded once, so the end stays the same second
+        // from one tick to the next.
+        let unix_now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis());
+        let mut timers: Vec<(u64, u64)> = self
+            .statuses
+            .active()
+            .into_iter()
+            .map(|(effect, ends)| {
+                let end_ms = unix_now_ms + ends.saturating_duration_since(now).as_millis();
+                (effect.flag().bits(), u64::try_from((end_ms + 500) / 1_000).unwrap_or(u64::MAX))
+            })
+            .collect();
+        for (flag, end) in [
+            (crate::entities::Flags::DOUBLE_EXPERIENCE, self.double_experience_until_unix()),
+            (crate::entities::Flags::HEAVEN_BLESSING, self.heaven_blessing_until_unix()),
+        ] {
+            if end > 0 {
+                timers.push((flag.bits(), end as u64));
+            }
+        }
+        timers.sort_unstable();
+        timers
+    }
+
+    /// Whether `timers` differ from what the client last got; they are kept
+    /// as sent when they do.
+    pub fn timers_changed(&self, timers: &[(u64, u64)]) -> bool {
+        let mut sent = self.timers_sent.lock();
+        if sent.as_slice() == timers {
+            return false;
+        }
+        *sent = timers.to_vec();
+        true
     }
 
     /// The name over the character's open booth.

@@ -49,6 +49,16 @@ pub async fn tick(state: &State) {
                 tracing::debug!(character = character.id(), ?error, "Failed to send stamina");
             }
         }
+        // The HUD counts statuses down; it hears when they change.
+        let mut timers = character.status_timers();
+        let vip_until = state.vip().until(character.id());
+        if vip_until > crate::store::now_secs() {
+            timers.push((crate::entities::Flags::VIP.bits(), vip_until));
+        }
+        if character.timers_changed(&timers) {
+            let packet = crate::packets::MsgStatusTimers::new(crate::store::now_secs(), &timers);
+            let _ = character.owner().send(packet).await;
+        }
         if change.flags {
             let update = MsgPlayer::from(character);
             let _ = character.owner().send(update.clone()).await;

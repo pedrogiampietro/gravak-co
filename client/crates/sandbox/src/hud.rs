@@ -98,6 +98,68 @@ pub struct SkillHud {
     pub info: Vec<String>,
     /// Skill under the cursor in the bar; filled in by the renderer.
     pub hovered: Option<u32>,
+    /// Timed statuses: their flag and the seconds left.
+    pub timers: Vec<(u64, u32)>,
+}
+
+/// Seconds since 1970 on this machine.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// What a status's icon shows: a skill's icon, an item's, or the VIP title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusIcon {
+    Skill(u32),
+    Item(u32),
+    Vip,
+}
+
+/// The icon of each timed status flag.
+const STATUS_ICONS: [(u64, StatusIcon); 13] = [
+    (1 << 18, StatusIcon::Skill(1_025)), // Superman
+    (1 << 23, StatusIcon::Skill(1_110)), // Cyclone
+    (1 << 9, StatusIcon::Skill(1_095)),  // Stigma
+    (1 << 8, StatusIcon::Skill(1_020)),  // Shield
+    (1 << 7, StatusIcon::Skill(1_015)),  // Accuracy
+    (1 << 22, StatusIcon::Skill(1_075)), // Invisibility
+    (1 << 27, StatusIcon::Skill(8_002)), // Fly
+    (1 << 47, StatusIcon::Skill(9_000)), // Intensify
+    (1 << 1, StatusIcon::Skill(5_002)),  // Poisoned
+    (1 << 5, StatusIcon::Skill(1_002)),  // Stunned
+    (1 << 48, StatusIcon::Item(723_017)), // Double experience
+    (1 << 49, StatusIcon::Item(1_200_000)), // Heaven's Blessing
+    (1 << 46, StatusIcon::Vip),
+];
+
+/// Time left as the bar shows it: `3d`, `5h`, `2:05`, `45s`.
+pub fn short_time(seconds: u32) -> String {
+    match seconds {
+        86_400.. => format!("{}d", seconds / 86_400),
+        3_600.. => format!("{}h", seconds / 3_600),
+        60.. => format!("{}:{:02}", seconds / 60, seconds % 60),
+        _ => format!("{seconds}s"),
+    }
+}
+
+/// A status's icon, `size` pixels square.
+fn status_icon(assets: &mut Assets, flag: u64, size: u32) -> Option<RgbaImage> {
+    let icon = STATUS_ICONS.iter().find(|(bit, _)| *bit == flag).map(|(_, icon)| *icon)?;
+    let image = match icon {
+        StatusIcon::Skill(skill) => crate::main_hud::skill_icon(assets, skill)?,
+        StatusIcon::Item(item) => crate::shop::item_icon_image(assets, item).ok()?,
+        StatusIcon::Vip => crate::ornate::vip_tag(0.8).ok()?,
+    };
+    let (width, height) = image.dimensions();
+    let scale = size as f32 / width.max(height).max(1) as f32;
+    Some(image::imageops::resize(
+        &image,
+        ((width as f32 * scale).round() as u32).max(1),
+        ((height as f32 * scale).round() as u32).max(1),
+        image::imageops::FilterType::Triangle,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -967,7 +1029,55 @@ pub fn image(
             None,
         );
     }
-    let badges_top = 6 + skills.info.len().max(2) as i32 * 15;
+    let mut badges_top = 6 + skills.info.len().max(2) as i32 * 15;
+    // Timed statuses as icons with the time left under each; their text
+    // badges give way.
+    let mut timed = skills.timers.clone();
+    timed.sort_by_key(|(flag, _)| STATUS_ICONS.iter().position(|(bit, _)| bit == flag).unwrap_or(usize::MAX));
+    let mut column = 0;
+    for (flag, seconds) in &timed {
+        let Some(icon) = status_icon(assets, *flag, 26) else {
+            continue;
+        };
+        let x = 4 + column * 34;
+        let (icon_width, icon_height) = icon.dimensions();
+        image::imageops::overlay(
+            &mut img,
+            &icon,
+            i64::from(x + (30 - icon_width as i32) / 2),
+            i64::from(badges_top + (26 - icon_height as i32) / 2),
+        );
+        let label = short_time(*seconds);
+        let width = crate::main_hud::text_width(font, &label, 11.0);
+        main_hud::text(
+            &mut img,
+            font,
+            &label,
+            11.0,
+            [x + (30 - width) / 2, badges_top + 27],
+            if *seconds <= 10 { [255, 140, 110, 255] } else { [255, 240, 200, 255] },
+            None,
+        );
+        column += 1;
+    }
+    if column > 0 {
+        badges_top += 44;
+        let shown = |label: &str| {
+            let flag = match label {
+                "2X XP" => 1 << 48,
+                "Blessing" => 1 << 49,
+                "Poisoned" => 1 << 1,
+                "Stunned" => 1 << 5,
+                "Cyclone" => 1 << 23,
+                "Superman" => 1 << 18,
+                "Stigma" => 1 << 9,
+                "Shield" => 1 << 8,
+                _ => 0,
+            };
+            timed.iter().any(|(bit, _)| *bit == flag)
+        };
+        badges.retain(|(label, _)| !shown(label));
+    }
     for (row, (label, color)) in badges.into_iter().enumerate() {
         main_hud::text(
             &mut img,
@@ -1090,6 +1200,10 @@ mod tests {
 
     #[test]
     fn combat_buffs_are_listed_in_order() {
+        assert_eq!(
+            (short_time(45), short_time(125), short_time(7_300), short_time(200_000)),
+            ("45s".to_owned(), "2:05".to_owned(), "2h".to_owned(), "2d".to_owned())
+        );
         let none = active_buff_badges(false, false, false, false, false, false, false, false);
         assert!(none.is_empty());
         let all = active_buff_badges(true, true, true, true, true, true, true, true);

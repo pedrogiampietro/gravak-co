@@ -232,6 +232,8 @@ pub enum NetworkEvent {
     StoreState(gravak_protocol::StoreState),
     /// One of the buyer's latest purchases.
     StorePurchase(gravak_protocol::StorePurchase),
+    /// When each of the hero's statuses ends.
+    StatusTimers(gravak_protocol::StatusTimers),
     /// Kills counted toward the bounty under way.
     BountyProgress {
         done: u32,
@@ -694,6 +696,7 @@ impl NetworkHandle {
                 | NetworkEvent::StoreProduct(_)
                 | NetworkEvent::StoreState(_)
                 | NetworkEvent::StorePurchase(_)
+                | NetworkEvent::StatusTimers(_)
                 | NetworkEvent::ExperienceGain { .. }
                 | NetworkEvent::InventoryItem(_)
                 | NetworkEvent::InventoryItemRemoved(_)
@@ -1442,6 +1445,9 @@ pub(crate) async fn play(
                 }
                 Some(GameEvent::StorePurchase(purchase)) => {
                     let _ = events.send(NetworkEvent::StorePurchase(purchase));
+                }
+                Some(GameEvent::StatusTimers(timers)) => {
+                    let _ = events.send(NetworkEvent::StatusTimers(timers));
                 }
                 Some(GameEvent::BountyState(board)) => {
                     let _ = events.send(NetworkEvent::Bounty(board));

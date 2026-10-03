@@ -84,6 +84,17 @@ impl StatusEffects {
         due
     }
 
+    /// The effects under way and when each ends.
+    pub fn active(&self) -> Vec<(StatusEffect, Instant)> {
+        let now = Instant::now();
+        self.active
+            .lock()
+            .iter()
+            .filter(|(_, status)| status.expires_at > now)
+            .map(|(effect, status)| (*effect, status.expires_at))
+            .collect()
+    }
+
     pub fn contains(&self, effect: StatusEffect) -> bool {
         self.active
             .lock()

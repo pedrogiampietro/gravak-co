@@ -30,6 +30,8 @@ pub const MSG_STORE_PRODUCT: u16 = 9111;
 pub const MSG_STORE_STATE: u16 = 9112;
 /// Gravak's Store: one of the buyer's latest purchases.
 pub const MSG_STORE_PURCHASE: u16 = 9113;
+/// Gravak: when each of the hero's statuses ends.
+pub const MSG_STATUS_TIMERS: u16 = 9120;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
@@ -294,6 +296,28 @@ pub struct StorePurchase {
     /// Seconds since 1970.
     pub bought_at: u64,
     pub name: String,
+}
+
+/// When each of the hero's statuses ends: `timers` is `flag:end,...` (a
+/// status flag bit, seconds since 1970); `now` is the server's clock.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9120)]
+pub struct StatusTimers {
+    pub now: u64,
+    pub timers: String,
+}
+
+impl StatusTimers {
+    /// The (flag, end) pairs.
+    pub fn entries(&self) -> Vec<(u64, u64)> {
+        self.timers
+            .split(',')
+            .filter_map(|entry| {
+                let (flag, end) = entry.split_once(':')?;
+                Some((flag.parse().ok()?, end.parse().ok()?))
+            })
+            .collect()
+    }
 }
 
 /// One bounty on offer, or the one under way (`monster_type` 0: none).
@@ -1509,6 +1533,7 @@ pub enum GameEvent {
     StoreProduct(StoreProduct),
     StoreState(StoreState),
     StorePurchase(StorePurchase),
+    StatusTimers(StatusTimers),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
@@ -1620,6 +1645,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_STORE_PURCHASE => Ok(GameEvent::StorePurchase(
             StorePurchase::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STATUS_TIMERS => Ok(GameEvent::StatusTimers(
+            StatusTimers::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,

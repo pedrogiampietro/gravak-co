@@ -56,14 +56,16 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
         StrandedMonster, Seizer, Rage, Celestial, Roamer) saem no ataque
         normal pela chance do MagicType; aprendidas pelos livros 7250xx.
         Earthquake, Boom e FreezingArrow (dano fixo + status) ficaram de fora.
-13. [ ] Contador na tela para Cyclone, Superman, Speed e outros buffs.
+13. [x] Contador na tela para Cyclone, Superman, Speed e outros buffs.
+        Feito com o 16: barra de ícones (skill/item do original) com o tempo
+        restante; o servidor manda o fim de cada status (pacote 9120).
 14. [ ] Blade (Fast Blade / Scent Sword) com o effect certo. Referência:
         rastros verdes longos atravessando a tela, vários acertos de
         50.000+.
 15. [ ] Ao matar uma criatura, a alma/luz que sai dela e voa até o
         personagem. Referência: figura azul translúcida (a alma) subindo
         perto dos personagens numa caverna.
-16. [ ] Ícones dos bônus ativos (VIP, exp dupla, Heaven Blessing etc.) na
+16. [x] Ícones dos bônus ativos (VIP, exp dupla, Heaven Blessing etc.) na
         HUD. Referência: fileira de ícones pequenos (verde, escuro, roxo,
         verde) no canto da tela.
 

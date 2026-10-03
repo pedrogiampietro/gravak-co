@@ -418,6 +418,10 @@ struct App {
     player_shop_name_focused: bool,
     /// Open booths around, by their seller's name: the booth's name.
     booths: HashMap<String, String>,
+    /// The hero's statuses and when each ends, on the server's clock.
+    status_timers: Vec<(u64, u64)>,
+    /// The server's clock minus this one, in seconds.
+    server_clock_offset: i64,
     /// The bounty Task Board, as the server last sent it.
     bounty: Option<bounty_board::BountyView>,
     /// The Store, as the server last sent it.
@@ -2998,6 +3002,11 @@ impl App {
             NetworkEvent::StoreProduct(product) => {
                 self.store.get_or_insert_with(Default::default).receive(product);
             }
+            NetworkEvent::StatusTimers(timers) => {
+                let now = hud::unix_now();
+                self.server_clock_offset = timers.now as i64 - now as i64;
+                self.status_timers = timers.entries();
+            }
             NetworkEvent::StorePurchase(purchase) => {
                 self.store.get_or_insert_with(Default::default).receive_purchase(purchase);
             }
@@ -4543,6 +4552,14 @@ impl App {
             kill_mode: self.kill_mode,
             info: self.info_lines(),
             hovered: None,
+            timers: {
+                let now = (hud::unix_now() as i64 + self.server_clock_offset).max(0) as u64;
+                self.status_timers
+                    .iter()
+                    .filter(|(_, end)| *end > now)
+                    .map(|(flag, end)| (*flag, u32::try_from(end - now).unwrap_or(u32::MAX)))
+                    .collect()
+            },
         }
     }
 
@@ -7327,6 +7344,8 @@ fn run() -> Result<()> {
         player_shop_name: String::new(),
         player_shop_name_focused: false,
         booths: HashMap::new(),
+        status_timers: Vec::new(),
+        server_clock_offset: 0,
         bounty: None,
         store: None,
         store_confirm: None,
