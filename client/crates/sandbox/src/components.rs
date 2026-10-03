@@ -142,74 +142,22 @@ pub fn draw_section(image: &mut RgbaImage, font: &Font, rect: UiRect, title: &st
 /// Renders a standard Conquer bronze text button driven by an explicit `WidgetState`.
 pub fn draw_button(
     image: &mut RgbaImage,
-    font: &Font,
+    _font: &Font,
     rect: UiRect,
     label: &str,
     state: WidgetState,
 ) {
-    let (fill_colour, border_top, border_bottom, text_colour) = match state {
-        WidgetState::Disabled => (
-            [30, 29, 25, 235],
-            [80, 70, 60, 200],
-            [40, 35, 30, 200],
-            [133, 121, 96],
-        ),
-        WidgetState::Hovered => (
-            [111, 82, 37, 255],
-            [255, 226, 123, 255],
-            [140, 100, 45, 240],
-            [255, 245, 210],
-        ),
-        WidgetState::Pressed | WidgetState::Selected => (
-            [35, 28, 20, 255],
-            [140, 100, 45, 240],
-            [224, 173, 73, 255],
-            [220, 200, 160],
-        ),
-        WidgetState::Normal => (
-            [49, 40, 29, 255],
-            [205, 160, 70, 230],
-            [111, 77, 33, 210],
-            [235, 225, 193],
-        ),
+    // The game's ornate plate (`ornate.rs`), sized to the rect.
+    let look = match state {
+        WidgetState::Disabled => crate::ornate::Look::Disabled,
+        WidgetState::Hovered => crate::ornate::Look::Hovered,
+        WidgetState::Pressed | WidgetState::Selected => crate::ornate::Look::Pressed,
+        WidgetState::Normal => crate::ornate::Look::Normal,
     };
-
-    fill(image, rect, fill_colour);
-    line(
-        image,
-        [rect.x, rect.y],
-        [rect.x + rect.width - 1, rect.y],
-        border_top,
-    );
-    line(
-        image,
-        [rect.x, rect.y + rect.height - 1],
-        [rect.x + rect.width - 1, rect.y + rect.height - 1],
-        border_bottom,
-    );
-    line(
-        image,
-        [rect.x, rect.y],
-        [rect.x, rect.y + rect.height - 1],
-        border_top,
-    );
-    line(
-        image,
-        [rect.x + rect.width - 1, rect.y],
-        [rect.x + rect.width - 1, rect.y + rect.height - 1],
-        border_bottom,
-    );
-
-    let font_size = fit_font(font, label, (rect.width - 6).max(1) as f32, 10.0);
-    centered_text(
-        image,
-        font,
-        label,
-        rect.x as f32 + rect.width as f32 * 0.5,
-        rect.y as f32 + ((rect.height as f32 - font_size) * 0.5).max(1.0),
-        font_size,
-        text_colour,
-    );
+    let size = [rect.width.max(1) as u32, rect.height.max(1) as u32];
+    if let Ok(plate) = crate::ornate::plate(None, size, label, crate::ornate::GRAVAK, look, None) {
+        image::imageops::overlay(image, &plate, i64::from(rect.x), i64::from(rect.y));
+    }
 }
 
 /// Renders a wide action button (used in Quick Panels: Trade, Guild, Team, etc.)

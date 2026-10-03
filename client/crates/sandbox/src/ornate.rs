@@ -63,6 +63,29 @@ fn polygon(image: &mut RgbaImage, points: &[[f32; 2]], colour: impl Fn(f32, f32)
     }
 }
 
+/// How a button looks: as it is, under the cursor, held down or unusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    Normal,
+    Hovered,
+    Pressed,
+    Disabled,
+}
+
+/// The palette greyed, for a button that cannot be used.
+fn greyed(palette: Palette) -> Palette {
+    let grey = |colour: Colour| {
+        let value = colour[0] * 0.3 + colour[1] * 0.59 + colour[2] * 0.11;
+        paint::mix([value; 3], hex(0x101418), 0.35)
+    };
+    Palette {
+        metal: palette.metal.map(grey),
+        panel: palette.panel.map(grey),
+        text: palette.text.map(|colour| paint::mix(grey(colour), hex(0x808080), 0.3)),
+        glow: palette.glow,
+    }
+}
+
 /// An ornate button with `label`; `emblem` is a letter on a gold medallion
 /// riveted on the left edge.
 pub fn button(
@@ -72,11 +95,37 @@ pub fn button(
     hovered: bool,
     emblem: Option<&str>,
 ) -> crate::assets::Result<RgbaImage> {
-    let [width, height] = SIZE;
+    let look = if hovered { Look::Hovered } else { Look::Normal };
+    plate(Some(assets), SIZE, label, palette, look, emblem)
+}
+
+/// An ornate button of any size. From [`SIZE`]'s height up it has spikes,
+/// a glow when hovered and room for the `emblem`; smaller ones are a framed
+/// plate filling all of `size`. Without `assets` the HUD's pattern is left
+/// out.
+pub fn plate(
+    mut assets: Option<&mut Assets>,
+    size: [u32; 2],
+    label: &str,
+    palette: Palette,
+    look: Look,
+    emblem: Option<&str>,
+) -> crate::assets::Result<RgbaImage> {
+    let [width, height] = size;
     let (w, h) = (width as f32, height as f32);
-    let mut image = RgbaImage::new(width, height);
+    let mut image = RgbaImage::new(width.max(1), height.max(1));
+    let spiked = height >= 34 && width >= 60;
+    let hovered = look == Look::Hovered;
+    let palette = match look {
+        Look::Disabled => greyed(palette),
+        Look::Pressed => Palette {
+            panel: palette.panel.map(|colour| paint::mix(colour, hex(0x000000), 0.35)),
+            ..palette
+        },
+        _ => palette,
+    };
     // The plate, inside the spikes.
-    let inset = [7.0_f32, 6.0_f32];
+    let inset = if spiked { [7.0_f32, 6.0_f32] } else { [0.5_f32, 0.5_f32] };
     let plate_centre = [w / 2.0, h / 2.0];
     let plate_half = [w / 2.0 - inset[0], h / 2.0 - inset[1]];
     let plate = |x: f32, y: f32| paint::rounded_rect(x, y, plate_centre, plate_half, 3.0);
@@ -86,13 +135,16 @@ pub fn button(
         paint::gradient(&[(0.0, palette.metal[0]), (0.45, palette.metal[1]), (1.0, palette.metal[2])], t)
     };
 
-    if hovered {
+    if hovered && spiked {
         paint::glow(&mut image, plate, 6.0, palette.glow, 0.5);
     }
     // Shadow, then the spikes behind the frame.
-    paint::fill(&mut image, |x, y| plate(x, y - 2.0) - 0.5, |_, _| hex(0x000000), 0.55);
+    if spiked {
+        paint::fill(&mut image, |x, y| plate(x, y - 2.0) - 0.5, |_, _| hex(0x000000), 0.55);
+    }
     let (left, right) = (inset[0], w - inset[0]);
-    for (cx, cy, sx, sy) in [(left, top, -1.0, -1.0), (right, top, 1.0, -1.0), (left, bottom, -1.0, 1.0), (right, bottom, 1.0, 1.0)] {
+    let corners = if spiked { [(left, top, -1.0, -1.0), (right, top, 1.0, -1.0), (left, bottom, -1.0, 1.0), (right, bottom, 1.0, 1.0)].to_vec() } else { Vec::new() };
+    for (cx, cy, sx, sy) in corners {
         // A thorn grown out of each corner: it leaves the frame along both
         // edges and curls out to a point.
         let thorn = [
@@ -107,7 +159,7 @@ pub fn button(
         polygon(&mut image, &thorn.map(|[x, y]| [x + 0.6, y + 1.2]), |_, _| hex(0x000000), 0.45);
         polygon(&mut image, &thorn, metal, 1.0);
     }
-    for (cx, sx) in [(left, -1.0), (right, 1.0)] {
+    for (cx, sx) in if spiked { vec![(left, -1.0), (right, 1.0)] } else { Vec::new() } {
         // A diamond on each side, half over the frame.
         let cy = h / 2.0;
         let diamond = [[cx + sx * 5.5, cy], [cx + sx * 1.0, cy - 5.5], [cx - sx * 3.5, cy], [cx + sx * 1.0, cy + 5.5]];
@@ -120,8 +172,9 @@ pub fn button(
     paint::fill(&mut image, plate, metal, 1.0);
     paint::stroke(&mut image, |x, y| plate(x, y) + 0.8, 0.8, |_, y| if y < h / 2.0 { hex(0xffffff) } else { palette.metal[2] }, 0.45);
 
-    // The inner panel, 3 pixels in.
-    let panel_half = [plate_half[0] - 3.0, plate_half[1] - 3.0];
+    // The inner panel, 3 pixels in (2 on small buttons).
+    let rim = if spiked { 3.0 } else { 2.0 };
+    let panel_half = [plate_half[0] - rim, plate_half[1] - rim];
     let panel = |x: f32, y: f32| paint::rounded_rect(x, y, plate_centre, panel_half, 1.5);
     let lift = if hovered { 0.18 } else { 0.0 };
     paint::fill(
@@ -138,7 +191,7 @@ pub fn button(
         1.0,
     );
     // The HUD's diamond pattern, faint.
-    if let Ok(art) = assets.image("data/main/mainDialog2.dds") {
+    if let Some(Ok(art)) = assets.as_deref_mut().map(|assets| assets.image("data/main/mainDialog2.dds")) {
         let tile = image::imageops::crop_imm(&art, 33, 66, 18, 44).to_image();
         for y in 0..height as i32 {
             for x in 0..width as i32 {
@@ -158,14 +211,17 @@ pub fn button(
     // Gloss across the upper part.
     paint::fill(
         &mut image,
-        |x, y| paint::rounded_rect(x, y, [plate_centre[0], top + 7.5], [panel_half[0] - 4.0, 3.0], 3.0),
+        |x, y| {
+            let gloss_half = (panel_half[1] * 0.3).max(1.5);
+            paint::rounded_rect(x, y, [plate_centre[0], top + rim + gloss_half + 1.0], [panel_half[0] - 4.0, gloss_half], gloss_half)
+        },
         |_, _| hex(0xffffff),
         0.10,
     );
 
     // The medallion on the left edge.
-    let mut text_left = left + 6.0;
-    if let Some(letter) = emblem {
+    let mut text_left = left + if spiked { 6.0 } else { 7.0 };
+    if let Some(letter) = emblem.filter(|_| spiked) {
         let centre = [left + 3.0, h / 2.0];
         let radius = 12.0;
         paint::fill(&mut image, |x, y| paint::circle(x, y, [centre[0] + 1.0, centre[1] + 1.5], radius), |_, _| hex(0x000000), 0.5);
@@ -192,17 +248,38 @@ pub fn button(
         text_left = centre[0] + radius + 2.0;
     }
 
-    // The label: spaced serif capitals, cream to gold, over a dark drop.
-    let font = crate::labels::decorative_font()?;
-    let (size, spacing) = (15.0_f32, 1.4_f32);
+    // The label: spaced serif capitals, cream to gold, over a dark drop,
+    // shrunk to fit; small ones in the plain font, which reads better.
+    let text_right = right - if spiked { 6.0 } else { 9.0 };
+    let room = (text_right - text_left).max(1.0);
     let label = label.to_uppercase();
+    let mut size = if spiked { 15.0_f32 } else { (h * 0.52).clamp(9.0, 13.0) };
+    // Cinzel, its spacing given up first, down to 9px; below that the
+    // plain font reads better.
+    let cinzel = crate::labels::decorative_font()?;
+    let mut spacing = size * 0.09;
+    while size > 9.0 && paint::text_width(&cinzel, &label, size, spacing) > room {
+        if spacing > 0.0 {
+            spacing = (spacing - 0.4).max(0.0);
+        } else {
+            size -= 0.5;
+        }
+    }
+    let font = if paint::text_width(&cinzel, &label, size, spacing) <= room {
+        cinzel
+    } else {
+        let plain = crate::labels::font()?;
+        while size > 8.0 && paint::text_width(&plain, &label, size, 0.0) > room {
+            size -= 0.5;
+        }
+        plain
+    };
     let label_width = paint::text_width(&font, &label, size, spacing);
-    let text_right = right - 6.0;
     let origin = [
         (text_left + (text_right - text_left - label_width) / 2.0).round(),
-        (h / 2.0 - size * 0.66).round(),
+        (h / 2.0 - size * 0.66 - if spiked { 0.0 } else { 1.0 }).round(),
     ];
-    let mask = paint::text_mask(&font, &label, size, spacing, origin, [width, height]);
+    let mask = paint::text_mask(&font, &label, size, spacing, origin, [image.width(), image.height()]);
     paint::paint_mask(&mut image, &mask, [1, 1], |_, _| hex(0x000000), 0.9);
     let text = |_: f32, y: f32| {
         let colour = paint::mix(palette.text[0], palette.text[1], (y - origin[1]) / size);

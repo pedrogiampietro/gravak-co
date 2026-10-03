@@ -17,7 +17,7 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
        garments na aba Cosmetics no lugar do Cosmetic Token, que não existe no 5065).
 5. [x] VIP: teleporte para qualquer cidade (1 min de espera) e filtro de loot
        (aba VIP Services da Store; o filtro escolhe o que vai direto para a bolsa).
-6. [ ] Botões ornamentados (`ornate.rs`) no resto da UI: Bounty, Revive,
+6. [x] Botões ornamentados (`ornate.rs`) no resto da UI: Bounty, Revive,
        confirmações e janelas.
 7. [ ] Comando de GM `$monster` para criar monstros (reorganizar como o mapa
        guarda os monstros).

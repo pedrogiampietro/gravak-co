@@ -4315,7 +4315,7 @@ impl PromptDialog {
     }
 
     pub fn image(&self, assets: &mut Assets, hovered: Option<bool>) -> Result<RgbaImage> {
-        use crate::original_panels::{LABEL_GOLD, fill, label_centered};
+        use crate::original_panels::{LABEL_GOLD, label_centered};
         let mut image = crate::original_panels::framed_panel(assets, PROMPT_INNER)?;
         let center = (crate::original_panels::FRAMED_LIST_X[0] + crate::original_panels::FRAMED_LIST_X[1]) / 2;
         label_centered(&mut image, self.title, 14.0, center, 12, LABEL_GOLD);
@@ -4324,21 +4324,16 @@ impl PromptDialog {
         crate::original_panels::label_fitted(&mut image, &self.name, 14.0, center, 50, [255, 244, 214, 255], room);
         crate::original_panels::label_fitted(&mut image, &self.text, 13.0, center, 70, LABEL_GOLD, room);
         for (index, ([x, y, width, height], label)) in PROMPT_BUTTONS.into_iter().zip(self.buttons).enumerate() {
-            let hot = hovered == Some(index == 0);
-            fill(&mut image, [x, y, width, height], if hot { [120, 90, 30, 150] } else { [0, 0, 0, 90] });
-            ui_theme::outline(
-                &mut image,
-                UiRect::new(x, y, width, height),
-                if hot { [255, 214, 102, 255] } else { [168, 128, 52, 255] },
-            );
-            label_centered(
-                &mut image,
+            let look = if hovered == Some(index == 0) { crate::ornate::Look::Hovered } else { crate::ornate::Look::Normal };
+            let button = crate::ornate::plate(
+                Some(&mut *assets),
+                [width as u32, height as u32],
                 label,
-                13.0,
-                x + width / 2,
-                y + (height - 15) / 2,
-                if hot { [255, 244, 214, 255] } else { LABEL_GOLD },
-            );
+                crate::ornate::GRAVAK,
+                look,
+                None,
+            )?;
+            image::imageops::overlay(&mut image, &button, i64::from(x), i64::from(y));
         }
         Ok(image)
     }

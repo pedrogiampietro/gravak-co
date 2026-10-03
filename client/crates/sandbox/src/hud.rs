@@ -356,6 +356,11 @@ pub fn hud_style_panel(assets: &mut Assets, width: u32, height: u32, frame: [u8;
     image
 }
 
+/// The revive buttons: ornate plates like the Store's.
+pub fn revive_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
+    crate::ornate::plate(Some(assets), REVIVE_BUTTON, label, crate::ornate::GRAVAK, crate::ornate::Look::Normal, None)
+}
+
 pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
     let [width, height] = REVIVE_BUTTON;
     let mut image = hud_style_panel(assets, width, height, [176, 158, 104]);

@@ -2976,8 +2976,8 @@ impl Renderer {
             if !self.textures.contains_key(key) {
                 let image = match (button, revive) {
                     (None, Some((remaining, _))) => crate::hud::revive_countdown_image(remaining)?,
-                    (Some(true), _) => crate::hud::hud_style_button(assets, "Revive here")?,
-                    _ => crate::hud::hud_style_button(assets, "Revive")?,
+                    (Some(true), _) => crate::hud::revive_button(assets, "Revive here")?,
+                    _ => crate::hud::revive_button(assets, "Revive")?,
                 };
                 self.upload(key, image);
             }
