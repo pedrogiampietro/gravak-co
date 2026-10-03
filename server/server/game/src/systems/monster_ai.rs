@@ -73,14 +73,24 @@ pub async fn tick(state: &State) {
                 continue;
             };
             if monster_ref.entity().is_dead() {
+                // A game master's monster lies a moment, then is gone.
+                let summoned = crate::constants::is_summoned(monster.id());
                 let should_respawn = {
                     let mut respawns = next_respawn.lock().unwrap();
                     let due = respawns.entry(monster.id()).or_insert_with(|| {
-                        now + Duration::from_secs(monster_ref.monster_type().respawn_seconds.max(3) as u64)
+                        let seconds = if summoned { 5 } else { monster_ref.monster_type().respawn_seconds.max(3) as u64 };
+                        now + Duration::from_secs(seconds)
                     });
                     *due <= now
                 };
-                if should_respawn {
+                if should_respawn && summoned {
+                    map.remove_monster(monster.id());
+                    aggro().lock().unwrap().remove(&monster.id());
+                    next_respawn.lock().unwrap().remove(&monster.id());
+                    let _ = map
+                        .broadcast(MsgAction::new(monster.id(), 0, 0, 0, ActionType::LeaveMap))
+                        .await;
+                } else if should_respawn {
                     let home = monster_ref.home();
                     let location = if map.is_walkable(home.x, home.y) {
                         home

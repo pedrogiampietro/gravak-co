@@ -672,7 +672,7 @@ impl MsgInteract {
         character: &crate::entities::Character,
         skill: &crate::skills::SkillDefinition,
     ) -> Option<Vec<Arc<crate::entities::GameEntity>>> {
-        let Some(primary) = map.monster_entity(self.target_id).cloned().or_else(|| {
+        let Some(primary) = map.monster_entity(self.target_id).or_else(|| {
             state
                 .entities()
                 .into_iter()
@@ -963,8 +963,10 @@ impl MsgInteract {
             actor.send(super::MsgSkill::from(progress)).await?;
         }
         for target_id in defeated {
-            if let Some(monster) = map.monster_entity(target_id).and_then(|entity| entity.as_monster()) {
-                self.reward_monster_defeat(state, actor, character, monster).await?;
+            if let Some(entity) = map.monster_entity(target_id) {
+                if let Some(monster) = entity.as_monster() {
+                    self.reward_monster_defeat(state, actor, character, monster).await?;
+                }
             }
         }
         self.grant_hit_experience(state, actor, character, hit_experience).await?;
@@ -1307,7 +1309,7 @@ impl PacketProcess for MsgInteract {
         if let Some(npc) = map.npc(self.target_id).filter(|npc| npc.is_training_goal() || crate::guild_war::is_war_structure(npc.id())) {
             return self.train_on_dummy(state, actor, character, npc, None).await;
         }
-        let Some(target) = map.monster_entity(self.target_id).cloned().or_else(|| {
+        let Some(target) = map.monster_entity(self.target_id).or_else(|| {
             state
                 .entities()
                 .into_iter()

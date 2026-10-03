@@ -19,8 +19,9 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
        (aba VIP Services da Store; o filtro escolhe o que vai direto para a bolsa).
 6. [x] Botões ornamentados (`ornate.rs`) no resto da UI: Bounty, Revive,
        confirmações e janelas.
-7. [ ] Comando de GM `$monster` para criar monstros (reorganizar como o mapa
-       guarda os monstros).
+7. [x] Comando de GM `$monster` para criar monstros (reorganizar como o mapa
+       guarda os monstros). `$monster <nome|id> [qtd]` e `$monster-clear`;
+       somem 5 s depois de mortos, sem respawn.
 8. [ ] Mais quests (outras cidades, outros objetivos), banca com nome e prata
        da guild.
 9. [ ] Pagamento real dos CPs por um site (projeto à parte; decisões do Pedro).

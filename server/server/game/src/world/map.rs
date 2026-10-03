@@ -40,8 +40,9 @@ pub struct Map {
     npcs: Npcs,
     /// Persistent monster definitions and spawn rules for this map.
     monsters: Vec<(tq_db::monster::MonsterSpawn, tq_db::monster::MonsterType)>,
-    /// Runtime monster instances for this map.
-    monster_entities: Monsters,
+    /// Runtime monster instances for this map: its spawns, and the ones a
+    /// game master created, which come and go.
+    monster_entities: RwLock<Monsters>,
     /// Holds all MapRegions in that map.
     regions: MapRegions,
 }
@@ -65,7 +66,16 @@ fn monster_instance_id(spawn_id: i32, index: u32) -> Option<u32> {
     let id = constants::MONSTER_ID_MIN
         .checked_add(spawn_id.checked_mul(MONSTERS_PER_SPAWN)?)?
         .checked_add(index)?;
-    (index < MONSTERS_PER_SPAWN && id <= constants::MONSTER_ID_MAX).then_some(id)
+    (index < MONSTERS_PER_SPAWN && id < constants::SUMMONED_ID_MIN).then_some(id)
+}
+
+/// The next id for a monster a game master creates, cycling through its
+/// range.
+pub fn next_summoned_id() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let span = constants::SUMMONED_ID_MAX - constants::SUMMONED_ID_MIN + 1;
+    constants::SUMMONED_ID_MIN + NEXT.fetch_add(1, Ordering::Relaxed) % span
 }
 
 impl Map {
@@ -135,7 +145,7 @@ impl Map {
             regions: RwLock::new(Vec::new()),
             npcs,
             monsters,
-            monster_entities,
+            monster_entities: RwLock::new(monster_entities),
             portals,
             inner,
         }
@@ -229,12 +239,28 @@ impl Map {
         &self.monsters
     }
 
-    pub fn monster_entity(&self, id: u32) -> Option<&Arc<GameEntity>> {
-        self.monster_entities.get(&id)
+    pub fn monster_entity(&self, id: u32) -> Option<Arc<GameEntity>> {
+        self.monster_entities.read().get(&id).cloned()
     }
 
     pub fn monster_entities(&self) -> Vec<Arc<GameEntity>> {
-        self.monster_entities.values().cloned().collect()
+        self.monster_entities.read().values().cloned().collect()
+    }
+
+    /// Puts a new monster on the map (a game master's); the caller shows it.
+    pub async fn add_monster(&self, entity: Arc<GameEntity>) -> Result<(), Error> {
+        self.monster_entities.write().insert(entity.id(), entity.clone());
+        self.insert_entity(entity).await
+    }
+
+    /// Takes a monster off the map; the caller tells the clients.
+    pub fn remove_monster(&self, id: u32) -> Option<Arc<GameEntity>> {
+        let entity = self.monster_entities.write().remove(&id)?;
+        let location = entity.basic().location();
+        if let Some(region) = self.region(location.x, location.y) {
+            region.remove_entity(id);
+        }
+        Some(entity)
     }
 
     pub fn with_regions<F, R>(&self, f: F) -> R
@@ -332,7 +358,8 @@ impl Map {
         // Spawn areas come from another server's data and their spread is
         // computed before the floor is known, so move any instance that
         // landed on a wall or an NPC to the nearest free cell.
-        for monster in self.monster_entities.values() {
+        let monsters = self.monster_entities();
+        for monster in &monsters {
             let location = monster.basic().location();
             if !self.is_walkable(location.x, location.y) {
                 if let Some(free) = self.nearest_walkable_position(location, MONSTER_RELOCATION_RADIUS) {
@@ -340,7 +367,7 @@ impl Map {
                 }
             }
         }
-        self.insert_batch(self.monster_entities.values().cloned()).await?;
+        self.insert_batch(monsters.into_iter()).await?;
         tracing::trace!("Map Loaded into memory");
         Ok(())
     }
@@ -796,6 +823,11 @@ mod tests {
         assert_eq!(super::monster_instance_id(1, 31), Some(constants::MONSTER_ID_MIN + 63));
         assert_eq!(super::monster_instance_id(2, 0), Some(constants::MONSTER_ID_MIN + 64));
         assert_eq!(super::monster_instance_id(1, 32), None);
+        // Spawn ids never reach the game masters' monsters.
+        assert_eq!(super::monster_instance_id(3_000, 0), None);
+        let summoned = super::next_summoned_id();
+        assert!(constants::is_summoned(summoned) && constants::is_monster(summoned));
+        assert!(!crate::pets::is_pet(constants::SUMMONED_ID_MAX));
         assert_eq!(super::monster_instance_id(-1, 0), None);
         assert_eq!(super::monster_instance_id(4000, 0), None);
         // Every spawn of the imported catalog fits in the monster id range.

@@ -37,6 +37,78 @@ async fn move_to(
     Ok(())
 }
 
+/// Monsters one `$monster` creates, at most.
+const MAX_SUMMONED: u32 = 20;
+
+/// Creates `amount` monsters of type `wanted` (an id or a name) around a
+/// game master; they fight as any other, drop loot, and are gone once dead.
+async fn summon_monsters(
+    state: &crate::State,
+    me: &crate::entities::Character,
+    wanted: &str,
+    amount: u32,
+) -> Result<String, Error> {
+    let id = wanted.parse::<i64>().unwrap_or(-1);
+    let monster_type = sqlx::query_as::<_, tq_db::monster::MonsterType>(
+        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance \
+         FROM monster_types WHERE id = $1 OR lower(name) = lower($2) ORDER BY (id = $1) DESC, id LIMIT 1",
+    )
+    .bind(id)
+    .bind(wanted)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some(monster_type) = monster_type else {
+        return Ok(format!("No monster called {wanted}."));
+    };
+    let map_id = me.entity().map_id();
+    let map = state.try_map(map_id)?;
+    let here = me.entity().location();
+    let mut created = 0;
+    for index in 0..amount {
+        // Around the game master, a ring at a time, on walkable cells.
+        let ring = 2 + index as i32 / 8;
+        let (dx, dy) = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)][index as usize % 8];
+        let mut origin = here;
+        origin.x = (i32::from(here.x) + dx * ring).max(0) as u16;
+        origin.y = (i32::from(here.y) + dy * ring).max(0) as u16;
+        let Some(spot) = map.nearest_walkable_position(origin, 4) else {
+            continue;
+        };
+        let spawn = tq_db::monster::MonsterSpawn {
+            id: 0,
+            monster_type_id: monster_type.id,
+            map_id: map_id as i32,
+            x: spot.x as i16,
+            y: spot.y as i16,
+            amount: 1,
+            radius: 3,
+        };
+        let id = crate::world::next_summoned_id();
+        let monster = crate::entities::Monster::new(id, monster_type.clone(), spawn);
+        let entity = std::sync::Arc::new(crate::entities::GameEntity::from(monster));
+        map.add_monster(entity.clone()).await?;
+        if let Some(monster) = entity.as_monster() {
+            let _ = map.broadcast(MsgPlayer::from_monster(monster)).await;
+            let _ = map
+                .broadcast(crate::packets::MsgAction::new(id, 0, 0, 0, crate::packets::ActionType::SpawnEffect))
+                .await;
+        }
+        created += 1;
+    }
+    tracing::info!(
+        target: "world",
+        character = %me.entity().name(),
+        monster = %monster_type.name,
+        created,
+        map_id,
+        "Game master created monsters"
+    );
+    Ok(format!(
+        "Created {created} {} (level {}). $monster-clear removes them.",
+        monster_type.name, monster_type.level
+    ))
+}
+
 pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, args: &[&str]) -> Result<(), Error> {
     let entity = actor.entity();
     let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
@@ -138,6 +210,35 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                     me.id(),
                     TalkChannel::System,
                     format!("{} roam here.", task.monster_name),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Monster(info) => {
+            let amount = info.amount.unwrap_or(1).clamp(1, MAX_SUMMONED);
+            let line = summon_monsters(state, me, &info.monster, amount).await?;
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
+            Ok(())
+        },
+        SubCommands::MonsterClear(_) => {
+            let map = state.try_map(me.entity().map_id())?;
+            let summoned: Vec<u32> = map
+                .monster_entities()
+                .into_iter()
+                .map(|entity| entity.id())
+                .filter(|id| crate::constants::is_summoned(*id))
+                .collect();
+            for id in &summoned {
+                map.remove_monster(*id);
+                let _ = map
+                    .broadcast(crate::packets::MsgAction::new(*id, 0, 0, 0, crate::packets::ActionType::LeaveMap))
+                    .await;
+            }
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Removed {} created monster(s) from this map.", summoned.len()),
                 ))
                 .await?;
             Ok(())
@@ -1188,6 +1289,8 @@ enum SubCommands {
     BountyGo(BountyGoCmd),
     BountyKills(BountyKillsCmd),
     BountyPoints(BountyPointsCmd),
+    Monster(MonsterCmd),
+    MonsterClear(MonsterClearCmd),
 }
 
 impl SubCommands {
@@ -1244,6 +1347,23 @@ struct SetLevelCmd {
     #[argh(positional)]
     level: u16,
 }
+
+/// Create monsters around you: $monster <name or type id> [amount].
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "monster")]
+struct MonsterCmd {
+    /// the monster's name (as in monster_types) or its type id
+    #[argh(positional)]
+    monster: String,
+    /// how many (default 1, at most 20)
+    #[argh(positional)]
+    amount: Option<u32>,
+}
+
+/// Remove the monsters created with $monster from this map.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "monster-clear")]
+struct MonsterClearCmd {}
 
 /// Go to where the monster of your bounty roams.
 #[derive(Debug, Clone, PartialEq, FromArgs)]
