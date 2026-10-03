@@ -3029,7 +3029,7 @@ impl Renderer {
         let store_hovered = self.store_icon_at(cursor);
         let store_key = if store_hovered { "@store-button-hover" } else { "@store-button" };
         if !self.textures.contains_key(store_key) {
-            self.upload(store_key, crate::store_panel::button_image(store_hovered)?);
+            self.upload(store_key, crate::store_panel::button_image(assets, store_hovered)?);
         }
         if self.textures.contains_key(store_key) {
             draws.push(Draw {

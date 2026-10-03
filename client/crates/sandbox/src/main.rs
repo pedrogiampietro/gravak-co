@@ -28,6 +28,7 @@ mod npc_dialog;
 mod original_panels;
 mod original_ui;
 mod original_ui_layout;
+mod ornate;
 mod paint;
 mod renderer;
 mod settings;
