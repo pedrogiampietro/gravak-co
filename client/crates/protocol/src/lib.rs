@@ -28,6 +28,8 @@ pub const MSG_BOUNTY_STATE: u16 = 9101;
 /// Gravak's Store: one product of the catalog, and the buyer's CPs and VIP.
 pub const MSG_STORE_PRODUCT: u16 = 9111;
 pub const MSG_STORE_STATE: u16 = 9112;
+/// Gravak's Store: one of the buyer's latest purchases.
+pub const MSG_STORE_PURCHASE: u16 = 9113;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
@@ -271,6 +273,19 @@ impl StoreProduct {
 pub struct StoreState {
     pub cps: u64,
     pub vip_until: u64,
+}
+
+/// One of the buyer's latest purchases, `index` of `total`, newest first;
+/// `total` 0 when there are none.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9113)]
+pub struct StorePurchase {
+    pub index: u32,
+    pub total: u32,
+    pub price_cps: u32,
+    /// Seconds since 1970.
+    pub bought_at: u64,
+    pub name: String,
 }
 
 /// One bounty on offer, or the one under way (`monster_type` 0: none).
@@ -1477,6 +1492,7 @@ pub enum GameEvent {
     BountyState(BountyState),
     StoreProduct(StoreProduct),
     StoreState(StoreState),
+    StorePurchase(StorePurchase),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
@@ -1585,6 +1601,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_STORE_STATE => Ok(GameEvent::StoreState(
             StoreState::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STORE_PURCHASE => Ok(GameEvent::StorePurchase(
+            StorePurchase::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,

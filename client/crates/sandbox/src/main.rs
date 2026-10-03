@@ -2904,6 +2904,9 @@ impl App {
             NetworkEvent::StoreProduct(product) => {
                 self.store.get_or_insert_with(Default::default).receive(product);
             }
+            NetworkEvent::StorePurchase(purchase) => {
+                self.store.get_or_insert_with(Default::default).receive_purchase(purchase);
+            }
             NetworkEvent::StoreState(state) => {
                 self.cps = state.cps.try_into().unwrap_or(u32::MAX);
                 let view = self.store.get_or_insert_with(Default::default);

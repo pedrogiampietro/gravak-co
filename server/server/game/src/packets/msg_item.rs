@@ -621,6 +621,15 @@ impl PacketProcess for MsgItem {
                     return Ok(());
                 }
                 if let Some(effect) = crate::shop::ShopCatalog::temporary_effect_for_item(item.item_type) {
+                    if effect
+                        .experience_multiplier()
+                        .is_some_and(|multiplier| character.experience_multiplier() > multiplier)
+                    {
+                        actor
+                            .send(reject("A stronger experience boost is already active."))
+                            .await?;
+                        return Ok(());
+                    }
                     let Some(consumed) = character.drop_inventory_item(state.pool(), item.uid).await? else {
                         actor
                             .send(reject("Use rejected: item disappeared from inventory."))
@@ -631,6 +640,13 @@ impl PacketProcess for MsgItem {
                         TemporaryEffect::DoubleExperience(duration) => {
                             character.activate_double_experience(duration);
                             format!("Double experience activated for {} minutes.", duration.as_secs() / 60)
+                        },
+                        TemporaryEffect::BoostedExperience(multiplier, duration) => {
+                            character.activate_experience_boost(multiplier, duration);
+                            format!(
+                                "{multiplier}x experience activated for {} minutes.",
+                                duration.as_secs() / 60
+                            )
                         },
                         TemporaryEffect::HeavenBlessing(duration) => {
                             character.activate_heaven_blessing(duration);

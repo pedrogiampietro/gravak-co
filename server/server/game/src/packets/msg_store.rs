@@ -68,6 +68,18 @@ pub struct MsgStoreState {
     pub vip_until: u64,
 }
 
+/// One of the buyer's latest purchases, `index` of `total`, newest first;
+/// `total` 0 (and nothing else) when there are none.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, PacketID)]
+#[packet(id = 9113)]
+pub struct MsgStorePurchase {
+    pub index: u32,
+    pub total: u32,
+    pub price_cps: u32,
+    pub bought_at: u64,
+    pub name: String,
+}
+
 /// The account a character belongs to.
 fn account_of(character: &crate::entities::Character) -> u32 {
     character.account_id()
@@ -115,6 +127,21 @@ pub async fn send_store(state: &State, character: &crate::entities::Character) -
     let owner = character.owner();
     for (index, product) in products.iter().enumerate() {
         owner.send(MsgStoreProduct::new(index, products.len(), product)).await?;
+    }
+    let history = crate::store::history(state.pool(), character.database_id()).await?;
+    if history.is_empty() {
+        owner.send(MsgStorePurchase::default()).await?;
+    }
+    for (index, purchase) in history.iter().enumerate() {
+        owner
+            .send(MsgStorePurchase {
+                index: u32::try_from(index).unwrap_or_default(),
+                total: u32::try_from(history.len()).unwrap_or_default(),
+                price_cps: purchase.price_cps,
+                bought_at: purchase.bought_at,
+                name: purchase.name.clone(),
+            })
+            .await?;
     }
     owner
         .send(MsgStoreState {

@@ -7,10 +7,12 @@ use crate::components::{draw_button, draw_card, draw_tab, WidgetState};
 use crate::ui::UiRect;
 use crate::{labels, ui_theme};
 use fontdue::Font;
-use gravak_protocol::{StoreProduct, StoreState};
+use gravak_protocol::{StoreProduct, StorePurchase, StoreState};
 use image::RgbaImage;
 
-pub const CATEGORIES: [&str; 3] = ["VIP", "Consumables", "Upgrades"];
+pub const CATEGORIES: [&str; 5] = ["VIP", "Experience", "Upgrades", "Blessings", "Cosmetics"];
+/// The tab under the categories that shows the latest purchases.
+pub const HISTORY: u32 = CATEGORIES.len() as u32;
 
 /// The catalog as the server sent it, and what is chosen on this screen.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -20,6 +22,8 @@ pub struct StoreView {
     pub category: u32,
     /// The product chosen in the list.
     pub selected: Option<u32>,
+    /// The latest purchases, newest first.
+    pub history: Vec<StorePurchase>,
 }
 
 impl StoreView {
@@ -30,6 +34,16 @@ impl StoreView {
         }
         self.products.retain(|known| known.product_id != product.product_id);
         self.products.push(product);
+    }
+
+    /// Adds a past purchase as it arrives; index 0 starts the history over.
+    pub fn receive_purchase(&mut self, purchase: StorePurchase) {
+        if purchase.index == 0 {
+            self.history.clear();
+        }
+        if purchase.total > 0 {
+            self.history.push(purchase);
+        }
     }
 
     pub fn in_category(&self) -> Vec<&StoreProduct> {
@@ -67,8 +81,10 @@ const DETAIL_LEFT: i32 = 330;
 const DETAIL_WIDTH: i32 = 170;
 const BUY: UiRect = UiRect::new(DETAIL_LEFT + 20, 340, DETAIL_WIDTH - 40, 26);
 
-/// Under the categories: the VIP Rights window.
-const VIP_RIGHTS: UiRect = UiRect::new(20, LIST_TOP + 3 * 30 + 12, 110, 26);
+/// Under the categories and History: the VIP Rights window.
+const VIP_RIGHTS: UiRect = UiRect::new(20, LIST_TOP + (CATEGORIES.len() as i32 + 1) * 30 + 12, 110, 26);
+/// A row of the purchase history.
+const HISTORY_ROW: i32 = 27;
 
 fn category_tab(index: usize) -> UiRect {
     UiRect::new(20, LIST_TOP + index as i32 * 30, 110, 26)
@@ -96,6 +112,17 @@ pub fn vip_left(vip_until: u64, now: u64) -> Option<String> {
     let left = vip_until.checked_sub(now).filter(|left| *left > 0)?;
     let (days, hours, minutes) = (left / 86_400, left / 3_600 % 24, left / 60 % 60);
     Some(if days > 0 { format!("{days}d {hours}h") } else { format!("{hours}h {minutes}m") })
+}
+
+/// How long ago `then` was: `just now`, `12m ago`, `5h ago`, `3d ago`.
+pub fn ago(then: u64, now: u64) -> String {
+    let seconds = now.saturating_sub(then);
+    match seconds {
+        0..60 => "just now".to_owned(),
+        60..3_600 => format!("{}m ago", seconds / 60),
+        3_600..86_400 => format!("{}h ago", seconds / 3_600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
 }
 
 fn now_secs() -> u64 {
@@ -192,10 +219,15 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&StoreView>
     let vip_x = 500 - width_of(&ui, &vip, 14.0) as i32;
     say(image, &ui, &vip, vip_colour, vip_x, 46, 14.0);
 
-    for (index, name) in CATEGORIES.iter().enumerate() {
+    for (index, name) in CATEGORIES.iter().chain(["History"].iter()).enumerate() {
         draw_tab(image, &ui, category_tab(index), name, index as u32 == view.category, false);
     }
     draw_button(image, &ui, VIP_RIGHTS, "VIP Rights", WidgetState::Normal);
+
+    if view.category == HISTORY {
+        draw_history(image, &ui, view);
+        return;
+    }
 
     let shown = view.shown().map(|product| product.product_id);
     for (row, product) in view.in_category().into_iter().enumerate().take(5) {
@@ -260,13 +292,36 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&StoreView>
     draw_button(image, &ui, BUY, "Buy", state);
 }
 
+/// The latest purchases, one per row: the product, its price, how long ago.
+fn draw_history(image: &mut RgbaImage, ui: &Font, view: &StoreView) {
+    let width = DETAIL_LEFT + DETAIL_WIDTH - LIST_LEFT;
+    if view.history.is_empty() {
+        say(image, ui, "You have not bought anything yet.", ui_theme::TEXT_MUTED, LIST_LEFT + 8, LIST_TOP + 6, 13.0);
+        return;
+    }
+    let now = now_secs();
+    for (row, purchase) in view.history.iter().enumerate().take(10) {
+        let rect = UiRect::new(LIST_LEFT, LIST_TOP + row as i32 * HISTORY_ROW, width, HISTORY_ROW - 3);
+        draw_card(image, rect, WidgetState::Normal);
+        say(image, ui, &purchase.name, ui_theme::TEXT, rect.x + 8, rect.y + 5, 12.0);
+        let when = ago(purchase.bought_at, now);
+        say(image, ui, &when, ui_theme::TEXT_MUTED, rect.x + 200, rect.y + 5, 12.0);
+        let price = format!("{} CPs", thousands(u64::from(purchase.price_cps)));
+        let x = rect.x + rect.width - 8 - width_of(ui, &price, 12.0) as i32;
+        say(image, ui, &price, ui_theme::TEXT_GOLD, x, rect.y + 5, 12.0);
+    }
+}
+
 /// The action under `cursor`, in the panel's own coordinates.
 pub fn action_at(view: &StoreView, cursor: [f32; 2]) -> Option<StoreAction> {
-    if let Some(index) = (0..CATEGORIES.len()).find(|index| category_tab(*index).contains_local(cursor)) {
+    if let Some(index) = (0..=CATEGORIES.len()).find(|index| category_tab(*index).contains_local(cursor)) {
         return Some(StoreAction::Category(index as u32));
     }
     if VIP_RIGHTS.contains_local(cursor) {
         return Some(StoreAction::VipRights);
+    }
+    if view.category == HISTORY {
+        return None;
     }
     let products = view.in_category();
     if let Some(row) = (0..products.len().min(5)).find(|row| product_row(*row).contains_local(cursor)) {
@@ -318,6 +373,29 @@ mod tests {
     }
 
     #[test]
+    fn history_starts_over_and_reads_how_long_ago() {
+        let mut view = StoreView::default();
+        let purchase = |index, total, name: &str| StorePurchase {
+            index,
+            total,
+            name: name.to_owned(),
+            ..Default::default()
+        };
+        view.receive_purchase(purchase(0, 2, "Meteor"));
+        view.receive_purchase(purchase(1, 2, "DragonBall"));
+        assert_eq!(view.history.len(), 2);
+        view.receive_purchase(purchase(0, 0, ""));
+        assert!(view.history.is_empty(), "no purchases");
+        assert_eq!(action_at(&view, centre(category_tab(5))), Some(StoreAction::Category(HISTORY)));
+        assert_eq!((ago(100, 130), ago(0, 600), ago(0, 7_200), ago(0, 3 * 86_400)), (
+            "just now".to_owned(),
+            "10m ago".to_owned(),
+            "2h ago".to_owned(),
+            "3d ago".to_owned()
+        ));
+    }
+
+    #[test]
     fn vip_time_reads_shortly() {
         assert_eq!(vip_left(0, 100), None);
         assert_eq!(vip_left(100 + 6 * 86_400 + 3 * 3_600, 100).as_deref(), Some("6d 3h"));
@@ -339,7 +417,11 @@ mod preview {
             (2, 0, 0, 30, 1_800, u32::MAX, "30 Days of VIP", "VIP for your whole account."),
             (10, 1, 723_017, 0, 50, u32::MAX, "Exp Potion", "Doubles the experience you gain for one hour."),
             (11, 1, 723_700, 0, 200, 7, "Exp Ball", "Grants the experience of hours of training at once."),
-            (12, 1, 1_200_000, 0, 300, u32::MAX, "Heaven's Blessing (3 days)", "Offline training, and revive where you fall, for three days."),
+            (15, 1, 720_393, 0, 180, u32::MAX, "Exp Pill (3x)", "Triples the experience you gain for two hours."),
+            (16, 1, 720_394, 0, 450, 20, "Exp Amrita (5x)", "Five times the experience you gain for two hours."),
+            (12, 3, 1_200_000, 0, 300, u32::MAX, "Heaven's Blessing (3 days)", "Offline training, and revive where you fall, for three days."),
+            (30, 4, 181_355, 0, 600, u32::MAX, "Dark Wizard", "A garment worn over your armor."),
+            (33, 4, 182_325, 0, 800, u32::MAX, "Angelical Dress", "A dress for sweet girls and lovely boys, worn over your armor."),
             (20, 2, 1_088_001, 0, 13, u32::MAX, "Meteor", "Raises the level of an item with a chance of success."),
             (21, 2, 720_027, 0, 125, u32::MAX, "Meteor Scroll", "Opens into ten Meteors."),
             (22, 2, 1_088_000, 0, 215, u32::MAX, "DragonBall", "Raises the quality of an item, among many other uses."),
@@ -349,7 +431,7 @@ mod preview {
         for (index, (id, category, item_type, vip_days, price, stock, name, description)) in products.into_iter().enumerate() {
             view.receive(StoreProduct {
                 index: index as u32,
-                total: 9,
+                total: 13,
                 product_id: id,
                 category,
                 item_type,
@@ -363,7 +445,16 @@ mod preview {
         }
         view.state.cps = 1_250;
         view.state.vip_until = now_secs() + 6 * 86_400 + 3 * 3_600;
-        for (name, category, selected) in [("vip", 0, None), ("consumables", 1, Some(11)), ("upgrades", 2, Some(22))] {
+        for (index, (name, price)) in [("Meteor", 13), ("7 Days of VIP", 500), ("Exp Pill (3x)", 180)].into_iter().enumerate() {
+            view.receive_purchase(gravak_protocol::StorePurchase {
+                index: index as u32,
+                total: 3,
+                price_cps: price,
+                bought_at: now_secs() - 5_000 * index as u64 * index as u64,
+                name: name.into(),
+            });
+        }
+        for (name, category, selected) in [("vip", 0, None), ("experience", 1, Some(16)), ("upgrades", 2, Some(22)), ("cosmetics", 4, None), ("history", HISTORY, None)] {
             view.category = category;
             view.selected = selected;
             let mut content = RgbaImage::new(520, 420);

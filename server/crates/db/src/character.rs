@@ -58,6 +58,8 @@ pub struct Character {
     pub equipped_title: i64,
     pub double_experience_until: i64,
     pub heaven_blessing_until: i64,
+    /// How many times the experience while `double_experience_until` lasts.
+    pub experience_multiplier: i64,
 }
 
 #[derive(Debug)]
@@ -167,8 +169,9 @@ impl Character {
                 level = $19,
                 experience = $20,
                 double_experience_until = $21,
-                heaven_blessing_until = $22
-            WHERE character_id = $23;
+                heaven_blessing_until = $22,
+                experience_multiplier = $23
+            WHERE character_id = $24;
             ",
         )
         .bind(self.name)
@@ -193,6 +196,7 @@ impl Character {
         .bind(self.experience)
         .bind(self.double_experience_until)
         .bind(self.heaven_blessing_until)
+        .bind(self.experience_multiplier)
         .bind(self.character_id)
         .execute(pool)
         .await?;

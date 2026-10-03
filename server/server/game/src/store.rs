@@ -202,6 +202,41 @@ pub async fn buy(
     }))
 }
 
+/// Purchases shown in the Store's history.
+pub const HISTORY_LENGTH: i64 = 10;
+
+/// A past purchase: the product's name, its price and when (seconds since
+/// 1970).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PastPurchase {
+    pub name: String,
+    pub price_cps: u32,
+    pub bought_at: u64,
+}
+
+/// A character's latest purchases, newest first.
+pub async fn history(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<PastPurchase>, Error> {
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT p.name, s.price_cps, s.bought_at
+         FROM store_purchases s JOIN store_products p ON p.product_id = s.product_id
+         WHERE s.character_id = $1
+         ORDER BY s.purchase_id DESC
+         LIMIT $2",
+    )
+    .bind(i64::from(character_id))
+    .bind(HISTORY_LENGTH)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, price_cps, bought_at)| PastPurchase {
+            name,
+            price_cps: u32::try_from(price_cps).unwrap_or_default(),
+            bought_at: u64::try_from(bought_at).unwrap_or_default(),
+        })
+        .collect())
+}
+
 /// The account's VIP end (seconds since 1970); 0 without VIP.
 pub async fn vip_until(pool: &sqlx::PgPool, account_id: u32) -> Result<u64, Error> {
     let until: Option<i64> = sqlx::query_scalar("SELECT vip_until FROM accounts WHERE account_id = $1")
@@ -301,6 +336,10 @@ mod tests {
         assert_eq!(buy(&pool, &character, 1, 2).await?, Err(Refusal::NotEnoughCps(1_800)));
         assert_eq!(character.cps(), 487, "a refused purchase costs nothing");
         assert_eq!(buy(&pool, &character, 1, 999).await?, Err(Refusal::NoSuchProduct));
+
+        let past = history(&pool, character.database_id()).await?;
+        let names: Vec<_> = past.iter().map(|purchase| (purchase.name.as_str(), purchase.price_cps)).collect();
+        assert_eq!(names, [("7 Days of VIP", 500), ("Meteor", 13)], "newest first, refusals left out");
         Ok(())
     }
 

@@ -73,6 +73,8 @@ pub struct Character {
     weapon_proficiencies: Mutex<HashMap<u32, WeaponProficiency>>,
     statuses: StatusEffects,
     double_experience_until: Mutex<Option<SystemTime>>,
+    /// How many times the experience while the boost above lasts.
+    experience_multiplier: std::sync::atomic::AtomicU8,
     heaven_blessing_until: Mutex<Option<SystemTime>>,
     refineries: Mutex<HashMap<u32, crate::refinery::RefineryEffect>>,
     artifacts: Mutex<HashMap<u32, crate::refinery::ArtifactEffect>>,
@@ -450,6 +452,7 @@ impl Character {
             attributes.agility = agility;
             attributes.spirit = spirit;
         }
+        let experience_multiplier = u8::try_from(inner.experience_multiplier.clamp(2, 10)).unwrap_or(2);
         let now = SystemTime::now();
         let double_experience_active = persisted_double_experience_until.is_some_and(|expires_at| expires_at > now);
         let heaven_blessing_active = persisted_heaven_blessing_until.is_some_and(|expires_at| expires_at > now);
@@ -502,6 +505,7 @@ impl Character {
                     .then_some(persisted_double_experience_until)
                     .flatten(),
             ),
+            experience_multiplier: std::sync::atomic::AtomicU8::new(experience_multiplier),
             heaven_blessing_until: Mutex::new(
                 heaven_blessing_active
                     .then_some(persisted_heaven_blessing_until)
@@ -4417,6 +4421,13 @@ impl Character {
     }
 
     pub fn activate_double_experience(&self, duration: Duration) {
+        self.activate_experience_boost(2, duration);
+    }
+
+    /// Experience times `multiplier` for `duration`, replacing the boost
+    /// under way.
+    pub fn activate_experience_boost(&self, multiplier: u8, duration: Duration) {
+        self.experience_multiplier.store(multiplier.max(2), Ordering::Relaxed);
         *self.double_experience_until.lock() = SystemTime::now().checked_add(duration);
         self.entity
             .set_flags(self.entity.flags() | crate::entities::Flags::DOUBLE_EXPERIENCE);
@@ -4449,6 +4460,15 @@ impl Character {
     pub fn double_experience_active(&self) -> bool {
         self.clear_expired_double_experience();
         self.double_experience_until.lock().is_some()
+    }
+
+    /// How many times the experience now: 1 without a boost.
+    pub fn experience_multiplier(&self) -> u8 {
+        if self.double_experience_active() {
+            self.experience_multiplier.load(Ordering::Relaxed)
+        } else {
+            1
+        }
     }
 
     fn clear_expired_heaven_blessing(&self) -> bool {
@@ -4509,7 +4529,7 @@ impl Character {
     pub fn grant_experience(&self, amount: u64) -> Option<u8> {
         // Redux `GainExperience`: double experience doubles it, Heaven's
         // Blessing adds a fifth, and the server rate multiplies it all.
-        let mut bonus = if self.double_experience_active() { 2.0 } else { 1.0 };
+        let mut bonus = f64::from(self.experience_multiplier());
         if self.heaven_blessing_active() {
             bonus += 0.2;
         }
@@ -5461,6 +5481,7 @@ impl Character {
             equipped_title: self.equipped_title() as _,
             double_experience_until: self.double_experience_until_unix(),
             heaven_blessing_until: self.heaven_blessing_until_unix(),
+            experience_multiplier: i64::from(self.experience_multiplier.load(Ordering::Relaxed)),
         };
         e.update(state.pool()).await?;
         Ok(())
@@ -6767,6 +6788,11 @@ mod tests {
         let restored_inner = tq_db::character::Character::by_id(state.pool(), database_character_id as i32).await?;
         let restored = Character::new(character.owner(), restored_inner);
         assert!(restored.double_experience_active());
+        assert_eq!(restored.experience_multiplier(), 2);
+        character.activate_experience_boost(5, Duration::from_secs(60));
+        character.save(&state).await?;
+        let boosted = tq_db::character::Character::by_id(state.pool(), database_character_id as i32).await?;
+        assert_eq!(Character::new(character.owner(), boosted).experience_multiplier(), 5);
         assert!(restored.entity().flags().contains(crate::entities::Flags::DOUBLE_EXPERIENCE));
         assert!(restored.heaven_blessing_active());
         assert!(restored
