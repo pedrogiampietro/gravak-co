@@ -48,9 +48,14 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
         ScentSword, Hercules (20-30) e XP skills (100). O "especial" do
         original é o CircleUp do círculo de XP cheio (Conquer.exe), agora
         desenhado enquanto o XP está pronto.
-12. [ ] Effects de itens: os encantos de arma (club, wand, Snow etc.).
+12. [x] Effects de itens: os encantos de arma (club, wand, Snow etc.).
         Referências: lâminas de gelo azul-claro subindo do chão perto do
         personagem (Snow); ícones de arma (arco, cetro e outro).
+        Feito: as 12 weapon skills do Redux (Snow no club, Phoenix nas
+        lâminas 420/421, WideStrike, Boreas, Halt, SpeedGun, Penetration,
+        StrandedMonster, Seizer, Rage, Celestial, Roamer) saem no ataque
+        normal pela chance do MagicType; aprendidas pelos livros 7250xx.
+        Earthquake, Boom e FreezingArrow (dano fixo + status) ficaram de fora.
 13. [ ] Contador na tela para Cyclone, Superman, Speed e outros buffs.
 14. [ ] Blade (Fast Blade / Scent Sword) com o effect certo. Referência:
         rastros verdes longos atravessando a tela, vários acertos de

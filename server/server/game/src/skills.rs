@@ -94,6 +94,11 @@ pub struct SkillDefinition {
     pub mana_heal: u32,
     /// Needs a shield in the left hand (Dash).
     pub needs_shield: bool,
+    /// A weapon skill (Redux `Common.WeaponSkills`): the weapon types
+    /// (item type / 1000) whose plain attacks may set it off instead...
+    pub weapon: Vec<u32>,
+    /// ...one attack in a hundred times this (MagicType `Percent`).
+    pub chance: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +138,12 @@ impl SkillCatalog {
 
     pub fn starter_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.skills.values().filter(|skill| skill.starter).map(|skill| skill.id)
+    }
+
+    /// The weapon skill a weapon of `weapon_type` (item type / 1000) can set
+    /// off.
+    pub fn weapon_skill(&self, weapon_type: u32) -> Option<&SkillDefinition> {
+        self.skills.values().find(|skill| skill.weapon.contains(&weapon_type))
     }
 
     pub fn skill_for_book(&self, item_type: u32) -> Option<&SkillDefinition> {
@@ -209,6 +220,8 @@ impl SkillCatalog {
                         dispatch_xp: false,
                         mana_heal: 0,
                         needs_shield: false,
+                        weapon: Vec::new(),
+                        chance: 0,
                     });
                 }
                 continue;
@@ -347,6 +360,19 @@ impl SkillCatalog {
                         .parse()
                         .map_err(|_| format!("invalid skill line at line {}", line_number + 1))?;
                 },
+                "Weapon" => {
+                    skill.weapon = value
+                        .split(',')
+                        .map(|id| id.trim().parse())
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| format!("invalid skill weapon at line {}", line_number + 1))?;
+                },
+                "Chance" => {
+                    skill.chance = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill chance at line {}", line_number + 1))?;
+                },
                 "Sector" => {
                     skill.sector = value
                         .trim()
@@ -472,6 +498,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -503,6 +531,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -534,6 +564,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -565,6 +597,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -596,6 +630,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -627,6 +663,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -658,6 +696,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         Self { skills }
@@ -690,6 +730,12 @@ mod tests {
         let volcano = catalog.get(1_125).expect("Volcano");
         assert!(volcano.xp && volcano.centered && volcano.flat_power == 300);
         assert_eq!(catalog.get(1_005).expect("Cure").heal, 20);
+        // Weapon skills: a club sets off Snow one attack in five.
+        let snow = catalog.weapon_skill(561).expect("Snow for clubs");
+        assert_eq!((snow.id, snow.chance, snow.learn_item), (5_010, 20, Some(725_026)));
+        assert!(snow.physical && snow.radius > 0.0 && snow.mana_cost == 0);
+        assert_eq!(catalog.weapon_skill(421).map(|skill| skill.id), Some(5_030), "both blades set off Phoenix");
+        assert!(catalog.weapon_skill(410).is_none(), "blades of 410 have none");
     }
 
     #[test]

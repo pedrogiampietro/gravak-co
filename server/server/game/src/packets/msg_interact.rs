@@ -1354,6 +1354,16 @@ impl PacketProcess for MsgInteract {
             tracing::trace!(character_id = character.id(), "Rejected attack during cooldown");
             return Ok(());
         }
+        // A weapon skill the weapon knows may go off instead of the plain hit.
+        if let Some(skill_id) = weapon_skill_roll(state, character) {
+            let mut cast = self.clone();
+            cast.action = InteractAction::MagicAttack as u32;
+            cast.value = skill_id;
+            let location = target_entity.location();
+            cast.x = location.x;
+            cast.y = location.y;
+            return cast.process_magic_attack(state, actor, character).await;
+        }
 
         let attacker_stats = character.combat_stats_with_catalog(Some(state.shop_catalog()));
         let weapon_bonus = character.weapon_proficiency_bonus_percent();
@@ -1498,6 +1508,18 @@ impl PacketProcess for MsgInteract {
         }
         Ok(())
     }
+}
+
+/// The weapon skill a plain attack sets off, if any: the right hand's first,
+/// then the left's, each going off `chance` times in a hundred (Redux
+/// `GetWeaponSkill`).
+fn weapon_skill_roll(state: &State, character: &crate::entities::Character) -> Option<u32> {
+    let skill = [4_u8, 5].into_iter().find_map(|slot| {
+        let weapon = character.equipment_item(slot)?;
+        let skill = state.skill_catalog().weapon_skill(weapon.item_type / 1_000)?;
+        character.has_skill(skill.id).then_some(skill)
+    })?;
+    (crate::combat::next_roll() % 100 < u32::from(skill.chance)).then_some(skill.id)
 }
 
 #[cfg(test)]
