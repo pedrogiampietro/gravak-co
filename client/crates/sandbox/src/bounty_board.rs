@@ -259,25 +259,132 @@ pub fn action_at(view: &BountyView, cursor: [f32; 2]) -> Option<BountyAction> {
         .map(|bonus| BountyAction::Upgrade(bonus as u32))
 }
 
-/// The kill counter under the minimap.
-pub fn tracker_image(line: &str) -> crate::assets::Result<RgbaImage> {
-    let font = labels::font()?;
-    let size = 14.0;
-    let text_width: f32 = line.chars().map(|character| font.metrics(character, size).advance_width).sum();
-    let width = text_width.ceil() as u32 + 20;
-    let mut image = RgbaImage::from_pixel(width, 24, image::Rgba([10, 14, 18, 190]));
-    crate::components::outline(&mut image, UiRect::new(0, 0, width as i32, 24), [176, 130, 48, 255]);
-    labels::text_sized(&mut image, &font, &[(line, ui_theme::TEXT_GOLD)], [10.0, 4.0], size);
-    Ok(image)
+/// What the tracker under the minimap shows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Tracker {
+    /// The bounty under way: monster, kills done and needed, grade.
+    pub hunt: Option<(String, u32, u32, u32)>,
+    pub daily_available: bool,
 }
 
-/// The line under the minimap, which opens the board when clicked: the kill
-/// counter during a bounty (`Bounty: Robin 37/150`), else its name and key.
-pub fn tracker_line(board: &BountyState) -> Option<String> {
-    Some(match board.active() {
-        Some(task) => format!("Bounty: {} {}/{}", task.monster_name, task.kills_done, task.kills),
-        None => "Bounty Tasks (B)".to_owned(),
-    })
+/// The tracker for a board: always there, so the board is one click away.
+pub fn tracker(board: &BountyState) -> Tracker {
+    Tracker {
+        hunt: board
+            .active()
+            .map(|task| (task.monster_name.clone(), task.kills_done, task.kills, task.grade)),
+        daily_available: board.daily_available != 0,
+    }
+}
+
+/// Size of the tracker.
+pub const TRACKER_SIZE: [u32; 2] = [206, 52];
+
+/// The bounty emblem: a gold ring with sight marks around the gold diamond
+/// that marks the bounty's monsters.
+fn draw_emblem(image: &mut RgbaImage, centre: [i32; 2], gold: [u8; 3], glow: bool) {
+    let mut put = |x: i32, y: i32, colour: [u8; 4]| {
+        if x >= 0 && y >= 0 && (x as u32) < image.width() && (y as u32) < image.height() {
+            let under = image.get_pixel(x as u32, y as u32).0;
+            let alpha = u16::from(colour[3]);
+            let mix = |a: u8, b: u8| ((u16::from(a) * alpha + u16::from(b) * (255 - alpha)) / 255) as u8;
+            image.put_pixel(x as u32, y as u32, image::Rgba([mix(colour[0], under[0]), mix(colour[1], under[1]), mix(colour[2], under[2]), 255]));
+        }
+    };
+    let [cx, cy] = centre;
+    let ring = [gold[0], gold[1], gold[2], 255];
+    let dark = [30, 22, 10, 255];
+    // A soft disc behind, brighter when hovered.
+    for dy in -15_i32..=15 {
+        for dx in -15_i32..=15 {
+            let distance = ((dx * dx + dy * dy) as f32).sqrt();
+            if distance <= 14.0 {
+                let alpha = if glow { 90 } else { 55 };
+                put(cx + dx, cy + dy, [8, 20, 26, alpha]);
+            }
+        }
+    }
+    // The ring, two pixels wide, with a dark edge.
+    for step in 0..360 {
+        let angle = (step as f32).to_radians();
+        for (radius, colour) in [(13.0_f32, dark), (12.0, ring), (11.0, ring)] {
+            put(cx + (angle.cos() * radius).round() as i32, cy + (angle.sin() * radius).round() as i32, colour);
+        }
+    }
+    // Sight marks through the ring.
+    for offset in 9..=15 {
+        for (x, y) in [(cx + offset, cy), (cx - offset, cy), (cx, cy + offset), (cx, cy - offset)] {
+            put(x, y, ring);
+        }
+    }
+    // The diamond.
+    for dy in -6_i32..=6 {
+        for dx in -(6 - dy.abs())..=(6 - dy.abs()) {
+            let edge = dx.abs() + dy.abs() >= 5;
+            put(cx + dx, cy + dy, if edge { [120, 82, 20, 255] } else { [255, 214, 96, 255] });
+        }
+    }
+}
+
+/// The tracker under the minimap, in the HUD's style: the emblem, then the
+/// hunt (monster, count and a progress bar) or the way to the board.
+pub fn tracker_image(assets: &mut crate::assets::Assets, tracker: &Tracker, hovered: bool) -> crate::assets::Result<RgbaImage> {
+    let [width, height] = TRACKER_SIZE;
+    let grade_colour: [u8; 3] = match tracker.hunt.as_ref().map(|hunt| hunt.3) {
+        Some(1) => [205, 214, 228],
+        Some(2) => [255, 202, 64],
+        _ => [176, 158, 104],
+    };
+    let frame = if hovered {
+        [grade_colour[0].saturating_add(50), grade_colour[1].saturating_add(50), grade_colour[2].saturating_add(50)]
+    } else {
+        grade_colour
+    };
+    let mut image = crate::hud::hud_style_panel(assets, width, height, frame);
+    draw_emblem(&mut image, [26, height as i32 / 2], grade_colour, hovered);
+    let cinzel = labels::decorative_font()?;
+    let ui = labels::font()?;
+    let shadow = [12, 22, 28];
+    let teal = [150, 214, 216];
+    let write = |image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], x: f32, y: f32, size: f32| {
+        labels::text_sized(image, font, &[(text, shadow)], [x + 1.0, y + 1.0], size);
+        labels::text_sized(image, font, &[(text, colour)], [x, y], size);
+    };
+    let width_of = |font: &Font, text: &str, size: f32| text.chars().map(|c| font.metrics(c, size).advance_width).sum::<f32>();
+    let left = 48.0;
+    let right = width as f32 - 12.0;
+    match &tracker.hunt {
+        Some((monster, done, kills, grade)) => {
+            let count = format!("{done}/{kills}");
+            let count_width = width_of(&ui, &count, 12.0);
+            let mut size = 14.0;
+            while size > 10.0 && width_of(&cinzel, monster, size) > right - left - count_width - 8.0 {
+                size -= 0.5;
+            }
+            let name_colour = if *grade > 0 { grade_colour } else { teal };
+            write(&mut image, &cinzel, monster, name_colour, left, 9.0, size);
+            write(&mut image, &ui, &count, ui_theme::TEXT, right - count_width, 11.0, 12.0);
+            draw_bar(
+                &mut image,
+                UiRect::new(left as i32, 31, (right - left) as i32, 9),
+                *done,
+                *kills,
+                [196, 150, 58, 255],
+                [10, 18, 22, 255],
+                [96, 84, 52, 255],
+            );
+        },
+        None => {
+            write(&mut image, &cinzel, "BOUNTY TASKS", teal, left, 9.0, 14.0);
+            let (hint, colour) = if tracker.daily_available {
+                ("Daily token ready!", ui_theme::TEXT_GOLD)
+            } else {
+                ("Press B to choose a hunt", ui_theme::TEXT_MUTED)
+            };
+            write(&mut image, &ui, hint, colour, left, 29.0, 11.0);
+        },
+    }
+    Ok(image)
 }
 
 #[cfg(test)]
@@ -325,7 +432,8 @@ mod tests {
         hunting.board.task = BountyTask { monster_type: 3, kills: 150, kills_done: 37, monster_name: "Robin".into(), ..Default::default() };
         assert_eq!(action_at(&hunting, centre(ABANDON)), Some(BountyAction::Abandon));
         assert_eq!(action_at(&hunting, centre(hunt_button(0))), None, "no offers while hunting");
-        assert_eq!(tracker_line(&hunting.board).as_deref(), Some("Bounty: Robin 37/150"));
+        assert_eq!(tracker(&hunting.board).hunt, Some(("Robin".to_owned(), 37, 150, 0)));
+        assert_eq!(tracker(&super::tests::board().board).hunt, None);
     }
 
     #[test]
@@ -373,8 +481,12 @@ mod preview {
             let mut image = crate::original_panels::framed_window(&mut assets, 520, 420).expect("frame");
             image::imageops::overlay(&mut image, &content, 0, 0);
             image.save(format!("{dir}/bounty-{name}.png")).expect("png");
-            if let Some(line) = super::tracker_line(&board) {
-                super::tracker_image(&line).expect("tracker").save(format!("{dir}/bounty-tracker.png")).expect("png");
+            let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+            for (hover, suffix) in [(false, ""), (true, "-hover")] {
+                super::tracker_image(&mut assets, &super::tracker(&board), hover)
+                    .expect("tracker")
+                    .save(format!("{dir}/bounty-tracker-{name}{suffix}.png"))
+                    .expect("png");
             }
         }
         crate::hud::revive_countdown_image(14).expect("countdown").save(format!("{dir}/revive-14.png")).expect("png");

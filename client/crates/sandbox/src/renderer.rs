@@ -2938,11 +2938,18 @@ impl Renderer {
             .map(|(key, _)| key.as_str());
         self.prune_textures("@revive-", &[countdown_key, Some("@revive-button"), Some("@revive-here-button")]);
         // The bounty under way, counted under the minimap.
-        let tracker = bounty.and_then(|view| crate::bounty_board::tracker_line(&view.board));
-        let tracker_key = tracker.as_ref().map(|line| format!("@bounty-tracker-{line}"));
-        if let (Some(line), Some(key)) = (&tracker, &tracker_key) {
+        let tracker = bounty.map(|view| crate::bounty_board::tracker(&view.board));
+        let tracker_hovered = self.bounty_tracker_at(cursor);
+        let tracker_key = tracker.as_ref().map(|tracker| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            tracker.hash(&mut hasher);
+            tracker_hovered.hash(&mut hasher);
+            format!("@bounty-tracker-{}", hasher.finish())
+        });
+        if let (Some(tracker), Some(key)) = (&tracker, &tracker_key) {
             if !self.textures.contains_key(key) {
-                self.upload(key, crate::bounty_board::tracker_image(line)?);
+                self.upload(key, crate::bounty_board::tracker_image(assets, tracker, tracker_hovered)?);
             }
             let top = self.minimap.as_ref().map_or(180.0, |minimap| minimap.bottom(viewport)) + 8.0;
             if let Some(texture) = self.textures.get(key) {

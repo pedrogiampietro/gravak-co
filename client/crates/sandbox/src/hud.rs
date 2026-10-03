@@ -300,8 +300,9 @@ pub const REVIVE_BUTTON: [u32; 2] = [136, 40];
 /// A button in the style of the HUD's "Skill" button: the HUD's diamond
 /// pattern on deep teal, a thin gold frame with corner brackets, and the
 /// client's serif text in pale teal.
-pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
-    let [width, height] = REVIVE_BUTTON;
+/// The panel of the HUD-style buttons: the HUD's diamond pattern on deep
+/// teal, a thin `frame` coloured frame with corner brackets.
+pub fn hud_style_panel(assets: &mut Assets, width: u32, height: u32, frame: [u8; 3]) -> RgbaImage {
     let mut image = RgbaImage::from_pixel(width, height, image::Rgba([12, 34, 44, 255]));
     // The diamond pattern beside the HUD's emblem (mainDialog2.dds).
     if let Ok(art) = assets.image("data/main/mainDialog2.dds") {
@@ -323,7 +324,7 @@ pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Resu
             pixel.0[3] = 255;
         }
     }
-    let gold = image::Rgba([176, 158, 104, 255]);
+    let gold = image::Rgba([frame[0], frame[1], frame[2], 255]);
     let shade = image::Rgba([40, 34, 20, 255]);
     let (w, h) = (width as i32, height as i32);
     let mut put = |x: i32, y: i32, colour: image::Rgba<u8>| {
@@ -352,6 +353,13 @@ pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Resu
         }
         put(cx + sx, cy + sy, gold);
     }
+    image
+}
+
+pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
+    let [width, height] = REVIVE_BUTTON;
+    let mut image = hud_style_panel(assets, width, height, [176, 158, 104]);
+    let (w, h) = (width as i32, height as i32);
     // Cinzel, the decorative font of the titles, with a one-pixel shadow.
     let font = crate::labels::decorative_font()?;
     let text_width = |size: f32| label.chars().map(|c| font.metrics(c, size).advance_width).sum::<f32>();
