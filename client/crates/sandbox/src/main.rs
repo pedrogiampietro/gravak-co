@@ -3540,8 +3540,14 @@ impl App {
             NetworkEvent::RemoteAction { id, action } => {
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
                     let now = self.started.elapsed().as_secs_f32();
+                    // The server's respawn (SpawnEffect): the `born` effect
+                    // over a monster that stands, not an action to play.
                     if action == 131 {
-                        actor.respawn_until = now + 0.9;
+                        actor.respawn_until = now + renderer::MONSTER_BORN_SECONDS;
+                        actor.action = 0;
+                        actor.animation_started = now;
+                        actor.animation_until = now;
+                        return;
                     }
                     actor.action = action as u8;
                     actor.animation_started = now;
@@ -3574,6 +3580,8 @@ impl App {
                             actor.animation_until = now + fall;
                         } else {
                             actor.action = 160;
+                            // A death ends any respawn effect still playing.
+                            actor.respawn_until = 0.0;
                             actor.animation_until = now + 1.2;
                         }
                     }
@@ -3765,6 +3773,8 @@ impl App {
                     if let Some(existing) = self.remote_actors.get_mut(&actor.id) {
                         existing.health = 0;
                         existing.action = 160;
+                        // A death ends any respawn effect still playing.
+                        existing.respawn_until = 0.0;
                         existing.animation_until = self.started.elapsed().as_secs_f32() + 1.2;
                     }
                     return;
@@ -3777,7 +3787,6 @@ impl App {
                     "player"
                 };
                 let id = actor.id;
-                let respawn_until = self.started.elapsed().as_secs_f32() + 0.9;
                 if !actor.npc && self.network_character_id == Some(id) {
                     self.status_flags = actor.status_flags;
                     self.renderer
@@ -3914,9 +3923,6 @@ impl App {
                     .get(&id)
                     .map(|old| old.maximum_health.max(actor.health))
                     .unwrap_or(actor.health);
-                if monster {
-                    actor.respawn_until = respawn_until;
-                }
                 self.remote_actors.insert(id, actor);
                 if let Some(actor) = self.remote_actors.get(&id) {
                     self.network_status = format!(

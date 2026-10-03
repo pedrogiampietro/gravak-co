@@ -228,6 +228,21 @@ mod tests {
 
     #[test]
     #[ignore = "Requires a local 5065 installation"]
+    fn the_monster_born_effect_loads() {
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let effect = effect(&mut assets, "born").expect("born in 3DEffect.ini");
+        assert_eq!(effect.layers.len(), 3);
+        for layer in &effect.layers {
+            let document = sandbox_data::c3::C3Document::parse(&assets.read(&layer.mesh).expect("c3 present"))
+                .expect("c3 parses");
+            assert!(!document.meshes.is_empty(), "{}", layer.mesh);
+            assert!(assets.image(&layer.texture).is_ok(), "{}", layer.texture);
+            println!("born: {} frames={:?} interval={}", layer.mesh, document.motions.iter().map(|m| m.frame_count).collect::<Vec<_>>(), effect.frame_interval);
+        }
+    }
+
+    #[test]
+    #[ignore = "Requires a local 5065 installation"]
     fn starter_skills_resolve_to_original_effects() {
         let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
         for skill in [1_000, 1_001, 1_002, 1_045, 1_110] {

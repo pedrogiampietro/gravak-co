@@ -62,6 +62,11 @@ pub struct SkillEffectInstance {
     pub expires: f32,
 }
 
+/// The original `born` effect (`3DEffect.ini`) over a respawning monster:
+/// 151 frames of 40 ms. The monster itself fades in over the first moments.
+pub const MONSTER_BORN_SECONDS: f32 = 6.04;
+const MONSTER_FADE_IN_SECONDS: f32 = 1.2;
+
 /// Upper bound kept by the client; each effect ends with its own animation.
 pub const SKILL_EFFECT_MAX_SECONDS: f32 = 4.0;
 
@@ -2293,9 +2298,12 @@ impl Renderer {
                 // Monster C3 files contain a first motion that is the neutral
                 // pose. Keep it static while idle; continuously advancing the
                 // raw motion made Pheasants render with wings permanently open.
-                let dynamic_kind = if actor.respawn_until > time
-                    || (actor.action == 160 && time < actor.animation_until)
-                {
+                // A respawning monster stands while the `born` effect plays
+                // and it fades in; the fall pose is for deaths only.
+                // Seconds since the respawn, while the effect plays.
+                let born = (actor.respawn_until > time)
+                    .then(|| (MONSTER_BORN_SECONDS - (actor.respawn_until - time)).max(0.0));
+                let dynamic_kind = if actor.action == 160 && time < actor.animation_until {
                     Some(0)
                 } else if time < actor.animation_until {
                     Some(if matches!(actor.action, 110 | 111 | 120 | 121) {
@@ -2359,7 +2367,7 @@ impl Renderer {
                                 viewport,
                             ),
                             uv,
-                            alpha: 1.0,
+                            alpha: born.map_or(1.0, |since| 0.25 + (since / MONSTER_FADE_IN_SECONDS).min(1.0) * 0.75),
                         }
                     })
                     .collect();
@@ -2369,6 +2377,17 @@ impl Renderer {
                     depth_test: true,
                     sort_depth: depth,
                 });
+                if let Some(since) = born {
+                    self.push_effect(
+                        assets,
+                        "born",
+                        origin,
+                        since,
+                        depth + 0.02,
+                        viewport,
+                        &mut draws,
+                    );
+                }
             } else if let Some(remote_character) = remote_models.get(&actor.id) {
                 let signature = appearance_signature(remote_character);
                 let facing_sector = (facing / std::f32::consts::FRAC_PI_4).round() as i8;
