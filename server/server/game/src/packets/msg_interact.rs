@@ -1257,6 +1257,9 @@ impl PacketProcess for MsgInteract {
         {
             return Ok(());
         }
+        if matches!(self.action_kind(), InteractAction::Attack | InteractAction::MagicAttack) {
+            character.end_revive_protection();
+        }
 
         if character.has_status(crate::entities::StatusEffect::Stunned) {
             actor

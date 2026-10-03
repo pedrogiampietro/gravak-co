@@ -239,6 +239,7 @@ fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, view_ran
     // Dead, invisible or flying players are out of reach.
     let flags = character.entity().flags();
     if character.entity().is_dead()
+        || character.revive_protected()
         || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
     {
         return None;
@@ -337,6 +338,9 @@ fn direction(dx: i16, dy: i16) -> u8 {
 }
 
 async fn attack(state: &State, monster: &crate::entities::Monster, character: &crate::entities::Character) {
+    if character.revive_protected() {
+        return;
+    }
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs() as u32)

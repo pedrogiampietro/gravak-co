@@ -10,7 +10,7 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 1. [x] Drops de equipamento (20%, do nível do monstro) e de poção (4%), como no
        Redux: família, nível e qualidade (Refined 10%, Unique 6%, Elite 1%,
        Super 0,3%); só itens que existem no itemtype.dat (~99% dos sorteios).
-2. [ ] Proteção ao reviver: 5 s sem receber dano depois de levantar.
+2. [x] Proteção ao reviver: 5 s sem receber dano depois de levantar.
 3. [ ] Bounty: listas de criaturas preferidas e evitadas (pagas com bounty
        points) e confirmação antes de gastar token ao abandonar.
 4. [ ] Store: histórico de compras e novos itens (poções de 3x/4x de exp,

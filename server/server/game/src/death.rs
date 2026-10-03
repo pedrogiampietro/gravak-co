@@ -263,6 +263,9 @@ async fn drop_equipment(
     victim.drop_inventory_item(state.pool(), item.uid).await
 }
 
+/// How long a revived player takes no damage, unless they attack first.
+pub const REVIVE_PROTECTION: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Revive and Pray: the dead player gets up where they lie.
 pub async fn revive_here(character: &Character) -> Result<(), Error> {
     character.entity().restore_health();

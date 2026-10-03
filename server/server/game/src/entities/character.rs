@@ -51,6 +51,8 @@ pub struct Character {
     kill_points: AtomicU16,
     /// When the character died; `None` while alive.
     died_at: Mutex<Option<std::time::Instant>>,
+    /// Until when the character, just revived, takes no damage.
+    protected_until: Mutex<Option<std::time::Instant>>,
     /// The blue flashing name after killing someone.
     flashing_until: Mutex<Option<std::time::Instant>>,
     /// When the next PK point wears off.
@@ -479,6 +481,7 @@ impl Character {
             spouse: Mutex::new("None".to_owned()),
             kill_points: AtomicU16::new(kill_points),
             died_at: Mutex::new(None),
+            protected_until: Mutex::new(None),
             flashing_until: Mutex::new(None),
             next_pk_decay: Mutex::new((kill_points > 0).then(|| std::time::Instant::now() + crate::death::PK_DECAY)),
             stamina: std::sync::atomic::AtomicU8::new(crate::vitals::MAX_STAMINA),
@@ -794,6 +797,9 @@ impl Character {
     /// currently implemented PK rules. Team relations are not available yet,
     /// so Team behaves as unrestricted until party/guild membership exists.
     pub fn can_attack_character(&self, target: &Character) -> bool {
+        if target.revive_protected() {
+            return false;
+        }
         match self.kill_mode() {
             0 | 2 => true,
             3 => target.entity().flags().contains(crate::entities::Flags::BLACK_NAME),
@@ -5032,6 +5038,20 @@ impl Character {
     pub fn refresh_after_revive(&self) {
         self.stamina.store(crate::vitals::MAX_STAMINA, Ordering::Relaxed);
         self.reset_xp();
+        *self.protected_until.lock() = Some(std::time::Instant::now() + crate::death::REVIVE_PROTECTION);
+    }
+
+    /// Whether the character got up a moment ago and takes no damage yet
+    /// (Redux `ReviveProtection`).
+    pub fn revive_protected(&self) -> bool {
+        self.protected_until
+            .lock()
+            .is_some_and(|until| std::time::Instant::now() < until)
+    }
+
+    /// Attacking gives the protection up.
+    pub fn end_revive_protection(&self) {
+        *self.protected_until.lock() = None;
     }
 
     /// Records the death; `false` when it was already recorded.
@@ -6018,6 +6038,19 @@ mod tests {
         character.set_kill_mode(3);
         assert!(!character.can_attack_character(&character));
         character.entity().set_flags(crate::entities::Flags::BLACK_NAME);
+        assert!(character.can_attack_character(&character));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_revived_player_is_spared_until_they_attack() -> Result<(), Error> {
+        let (_pool, character, _database_character_id) = test_character().await?;
+        character.set_kill_mode(0);
+        assert!(!character.revive_protected());
+        character.refresh_after_revive();
+        assert!(character.revive_protected());
+        assert!(!character.can_attack_character(&character));
+        character.end_revive_protection();
         assert!(character.can_attack_character(&character));
         Ok(())
     }
