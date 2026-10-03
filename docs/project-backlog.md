@@ -7,13 +7,16 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 
 ## P0 — segurança e dados (antes de abrir o servidor para outras pessoas)
 
-- [ ] **Login sem senha pelo game server**: o pacote `MsgTransfer` (4001) gera
-      um token de login para qualquer `account_id` a quem conectar na porta do
-      game. Exigir a chave `TRANSFER_SECRET` do auth server (ou, sem chave, só
-      conexões locais).
-- [ ] **Comandos `$` liberados para todos**: teleporte, itens de teste, prata,
-      `$gw start`... Criar o nível de GM na conta e recusar os comandos para
-      quem não é GM.
+- [x] **Login sem senha pelo game server**: o pacote `MsgTransfer` (4001) dava
+      um token de login para qualquer `account_id` a quem conectasse na porta
+      do game. Agora exige a chave `TRANSFER_SECRET` do auth server (ou, sem
+      chave, só conexões locais). Testado com um programa que pede o token da
+      conta 1: recusado e registrado no log com o IP.
+- [x] **Comandos `$` liberados para todos**: teleporte, itens de teste, prata,
+      `$gw start`... Coluna `accounts.gm` (as contas de desenvolvimento viram
+      GM); os demais só usam `dc`, `which`, `quest-status`, `nobility-*`,
+      `title-*` e `add-stat`. Os comandos também não vão mais para o chat de
+      quem está perto. Teste: `only_game_masters_run_game_master_commands`.
 - [ ] Contas de exemplo com senha `123456` (`shekohex`, `test1`) vêm das
       migrations: não criá-las fora do ambiente de desenvolvimento.
 - [ ] Backup do Postgres: `db-backup` diário automático no `run-server.bat`,

@@ -23,7 +23,7 @@ mod msg_item;
 pub use msg_item::MsgItem;
 
 mod msg_transfer;
-pub use msg_transfer::MsgTransfer;
+pub use msg_transfer::{MsgTransfer, MsgTransferKey};
 
 mod msg_register;
 pub use msg_register::{BaseClass, BodyType, MsgRegister};

@@ -24,6 +24,18 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             return Ok(());
         },
     };
+    if !c.commands.for_players() && !actor.is_gm() {
+        let name = args.first().copied().unwrap_or_default();
+        tracing::warn!(target: "auth", character = %me.entity().name(), command = name, "Game master command refused");
+        actor
+            .send(MsgTalk::from_system(
+                me.id(),
+                TalkChannel::System,
+                format!("${name} is for game masters."),
+            ))
+            .await?;
+        return Ok(());
+    }
     match c.commands {
         SubCommands::Dc(_) => {
             actor.shutdown().await?;
@@ -1063,6 +1075,25 @@ enum SubCommands {
     GuildWar(GuildWarCmd),
 }
 
+impl SubCommands {
+    /// The commands any player may use; the client sends some of them
+    /// itself (titles, nobility). The rest are for game masters.
+    fn for_players(&self) -> bool {
+        matches!(
+            self,
+            Self::Dc(_)
+                | Self::Which(_)
+                | Self::QuestStatus(_)
+                | Self::NobilityStatus(_)
+                | Self::NobilityDonate(_)
+                | Self::NobilityRanking(_)
+                | Self::TitleStatus(_)
+                | Self::TitleEquip(_)
+                | Self::AddAttribute(_)
+        )
+    }
+}
+
 /// Start or end the Guild War now (it also runs on Saturdays 20:00-22:00).
 #[derive(Debug, Clone, PartialEq, FromArgs)]
 #[argh(subcommand, name = "gw")]
@@ -1377,6 +1408,40 @@ struct UpgradeItemCmd {
 mod tests {
     use super::{Command, SubCommands};
     use argh::FromArgs;
+
+    #[tokio::test]
+    async fn only_game_masters_run_game_master_commands() -> Result<(), crate::Error> {
+        use tq_network::Actor;
+        let state = crate::State::with_pool(tq_db::testing::pool().await).await?;
+        let (tx, mut replies) = tokio::sync::mpsc::channel(64);
+        let actor = Actor::<crate::ActorState>::new(tx);
+        actor.set_id(1);
+        let inner = crate::packets::MsgRegister::build_character_with(
+            "gm-test".to_owned(),
+            crate::packets::BodyType::MuscularMale,
+            crate::packets::BaseClass::Trojan,
+            1,
+            1,
+        )?;
+        inner.save(state.pool()).await?;
+        let inner = tq_db::character::Character::from_account(state.pool(), 1)
+            .await?
+            .expect("character");
+        let screen = crate::systems::Screen::new(actor.handle());
+        actor.update(crate::entities::Character::new(actor.handle(), inner), screen);
+        let silver = || actor.entity().as_character().expect("character").silver();
+        let before = silver();
+
+        super::parse_and_execute(&state, &actor, &["silver", "5000"]).await?;
+        assert_eq!(silver(), before, "a player gets nothing");
+        super::parse_and_execute(&state, &actor, &["quest-status"]).await?;
+
+        actor.set_gm(true);
+        super::parse_and_execute(&state, &actor, &["silver", "5000"]).await?;
+        assert_eq!(silver(), before + 5000, "a game master gets the silver");
+        while replies.try_recv().is_ok() {}
+        Ok(())
+    }
 
     #[test]
     fn parses_learn_skill_command_with_optional_level() {

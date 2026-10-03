@@ -274,6 +274,8 @@ impl PacketProcess for MsgTalk {
             let (_, command) = self.message.split_at(1);
             let args: Vec<_> = command.split_whitespace().collect();
             commands::parse_and_execute(state, actor, &args).await?;
+            // Commands are for the server, not for the people around.
+            return Ok(());
         }
         // For now, we just broadcast the message to all players in our region.
         // TODO: Implement this properly.

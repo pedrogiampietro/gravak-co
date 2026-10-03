@@ -26,6 +26,9 @@ pub enum Message {
 pub struct Actor<S: ActorState> {
     handle: ActorHandle,
     state: S,
+    /// Where the connection comes from, when the server knows it.
+    #[cfg(feature = "std")]
+    peer: Option<std::net::SocketAddr>,
 }
 
 /// A Cheap to clone actor handle. This is used to send messages to the actor
@@ -89,7 +92,22 @@ impl<S: ActorState> Actor<S> {
                 id: Arc::new(AtomicUsize::new(0)),
                 tx,
             },
+            #[cfg(feature = "std")]
+            peer: None,
         }
+    }
+
+    /// The actor of a connection from `peer`.
+    #[cfg(feature = "std")]
+    pub fn with_peer(mut self, peer: std::net::SocketAddr) -> Self {
+        self.peer = Some(peer);
+        self
+    }
+
+    /// Where the connection comes from, when the server knows it.
+    #[cfg(feature = "std")]
+    pub fn peer(&self) -> Option<std::net::SocketAddr> {
+        self.peer
     }
 
     /// Returns a cheap clone of the actor handle

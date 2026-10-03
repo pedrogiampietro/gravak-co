@@ -77,9 +77,10 @@ pub trait TQServer: Sized + Send + Sync {
                 };
                 Builder::new().name("TCP Stream").spawn(async {
                     tracing::trace!("Calling on_connected lifetime hook");
-                    Self::on_connected(state, stream.peer_addr()?).await?;
+                    let peer = stream.peer_addr()?;
+                    Self::on_connected(state, peer).await?;
                     let (tx, rx) = mpsc::channel(1024);
-                    let actor = Actor::<Self::ActorState>::new(tx);
+                    let actor = Actor::<Self::ActorState>::new(tx).with_peer(peer);
                     match handle_stream::<Self>(stream, state, &actor, rx).await {
                         Err(e) => {
                             tracing::error!("{e}");

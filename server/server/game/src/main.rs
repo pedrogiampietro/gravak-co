@@ -71,6 +71,7 @@ pub enum Handler {
     MsgItem,
     MsgWalk,
     MsgTransfer,
+    MsgTransferKey,
     MsgNpc,
     MsgTaskDialog,
     MsgWarehouse,

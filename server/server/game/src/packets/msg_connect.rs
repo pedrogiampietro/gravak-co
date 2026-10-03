@@ -32,6 +32,11 @@ impl PacketProcess for MsgConnect {
             .map_err(|_| MsgTalk::login_invalid().error_packet())?;
         actor.generate_keys(self.token).await?;
         actor.set_id(info.account_id as usize);
+        let gm: Option<bool> = sqlx::query_scalar("SELECT gm FROM accounts WHERE account_id = $1")
+            .bind(i64::from(info.account_id))
+            .fetch_optional(state.pool())
+            .await?;
+        actor.set_gm(gm.unwrap_or(false));
         let maybe_character = tq_db::character::Character::from_account(state.pool(), info.account_id).await?;
         match maybe_character {
             Some(character) => {
