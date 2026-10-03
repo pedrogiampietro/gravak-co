@@ -11,7 +11,7 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
        Redux: família, nível e qualidade (Refined 10%, Unique 6%, Elite 1%,
        Super 0,3%); só itens que existem no itemtype.dat (~99% dos sorteios).
 2. [x] Proteção ao reviver: 5 s sem receber dano depois de levantar.
-3. [ ] Bounty: listas de criaturas preferidas e evitadas (pagas com bounty
+3. [x] Bounty: listas de criaturas preferidas e evitadas (pagas com bounty
        points) e confirmação antes de gastar token ao abandonar.
 4. [ ] Store: histórico de compras e novos itens (poções de 3x/4x de exp,
        Cosmetic Token).
@@ -23,6 +23,14 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 8. [ ] Mais quests (outras cidades, outros objetivos), banca com nome e prata
        da guild.
 9. [ ] Pagamento real dos CPs por um site (projeto à parte; decisões do Pedro).
+10. [ ] Validar skills, magias, effects e XP skills (Superman, Cyclone etc.)
+        contra o original.
+11. [ ] Stamina enchendo (sentado e parado) e o efeito especial quando enche.
+12. [ ] Effects de itens: gems/encantos de arma (club, wand, Snow etc.).
+13. [ ] Contador na tela para Cyclone, Superman, Speed e outros buffs.
+14. [ ] Blade (Fast Blade / Scent Sword) com o effect certo.
+15. [ ] Ao matar uma criatura, a alma/luz que sai dela e voa até o personagem.
+16. [ ] Ícones dos bônus ativos (VIP, exp dupla, Heaven Blessing etc.) na HUD.
 
 ## P0 — segurança e dados (antes de abrir o servidor para outras pessoas)
 

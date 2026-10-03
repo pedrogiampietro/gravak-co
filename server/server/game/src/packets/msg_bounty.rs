@@ -20,6 +20,13 @@ pub const PICK: u32 = 2;
 pub const CLAIM_DAILY: u32 = 3;
 /// Client: raise talisman bonus `param` (damage, leech, loot, double kills).
 pub const UPGRADE: u32 = 4;
+/// Client: put the monster of type `param` on the preferred list.
+pub const PREFER: u32 = 5;
+/// Client: put the monster of type `param` on the avoided list.
+pub const AVOID: u32 = 6;
+/// Client: take a name off a list; `param` is the list (0 preferred, 1
+/// avoided) times ten plus the name's place.
+pub const UNLIST: u32 = 7;
 /// Server: the task counted kills; `param` done of `extra`.
 pub const PROGRESS: u32 = 10;
 
@@ -74,6 +81,10 @@ pub struct MsgBountyState {
     pub offer1: BountyTaskWire,
     pub offer2: BountyTaskWire,
     pub task: BountyTaskWire,
+    /// The preferred monsters' names, joined by `|`.
+    pub preferred: String,
+    /// The avoided monsters' names, joined by `|`.
+    pub avoided: String,
 }
 
 impl From<&Board> for MsgBountyState {
@@ -94,6 +105,8 @@ impl From<&Board> for MsgBountyState {
             offer1: offer(1),
             offer2: offer(2),
             task: board.task.as_ref().map(BountyTaskWire::from).unwrap_or_default(),
+            preferred: board.lists.preferred.join("|"),
+            avoided: board.lists.avoided.join("|"),
         }
     }
 }
@@ -217,6 +230,18 @@ impl PacketProcess for MsgBounty {
                     .map(|level| Some(format!("Talisman {bonus:?} is now level {level}."))),
                 None => Ok(None),
             },
+            PREFER | AVOID => crate::bounty::list_monster(pool, id, self.param, self.action == AVOID)
+                .await?
+                .map(|name| {
+                    Some(if self.action == AVOID {
+                        format!("{name} will no longer be offered.")
+                    } else {
+                        format!("{name} will be offered more often.")
+                    })
+                }),
+            UNLIST => crate::bounty::unlist(pool, id, self.param / 10 == 1, (self.param % 10) as usize)
+                .await?
+                .map(|name| Some(format!("{name} is off your list."))),
             _ => Ok(None),
         };
         let line = match outcome {
@@ -261,6 +286,8 @@ mod tests {
                 monster_name: "Apparition".to_owned(),
                 ..Default::default()
             },
+            preferred: "Robin|Pheasant".to_owned(),
+            avoided: "Bandit".to_owned(),
             ..Default::default()
         };
         let (_, bytes) = state.clone().encode().expect("encodes");

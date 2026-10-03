@@ -20,6 +20,13 @@ pub const MAX_TOKENS: u32 = 10;
 pub const MAX_TALISMAN_LEVEL: u32 = 40;
 /// Monsters with fewer spawned than this (bosses, rare ones) are never asked.
 const MIN_SPAWNED: i64 = 10;
+/// Names each of a character's lists holds.
+pub const MAX_LISTED: usize = 3;
+/// Bounty points a name costs on the preferred list, and on the avoided one.
+pub const PREFER_COST: u32 = 10;
+pub const AVOID_COST: u32 = 5;
+/// How many times likelier a preferred monster is to be offered.
+const PREFERRED_WEIGHT: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Difficulty {
@@ -149,7 +156,15 @@ pub fn upgrade_cost(level: u32) -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub monster_type: u32,
+    pub name: String,
     pub level: u16,
+}
+
+/// The monsters a character prefers, and the ones it avoids, by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Lists {
+    pub preferred: Vec<String>,
+    pub avoided: Vec<String>,
 }
 
 /// One of the three offers, or the task under way.
@@ -166,19 +181,44 @@ pub struct Task {
 
 /// Up to three offers of `difficulty` from `candidates`, each roll in `rolls`
 /// used once (the caller passes random numbers; tests pass fixed ones).
+/// Avoided monsters are left out (unless nothing else fits), and preferred
+/// ones come up [`PREFERRED_WEIGHT`] times as often.
 pub fn roll_offers(
     candidates: &[Candidate],
     difficulty: Difficulty,
+    lists: &Lists,
     rolls: &mut impl Iterator<Item = u32>,
 ) -> Vec<(Candidate, u32, Grade, u32, u64)> {
     let (low, high) = difficulty.levels();
-    let mut pool: Vec<&Candidate> = candidates
+    let in_band: Vec<&Candidate> = candidates
         .iter()
         .filter(|candidate| (low..=high).contains(&candidate.level))
         .collect();
+    let wanted: Vec<&Candidate> = in_band
+        .iter()
+        .copied()
+        .filter(|candidate| !lists.avoided.contains(&candidate.name))
+        .collect();
+    let mut pool = if wanted.is_empty() { in_band } else { wanted };
+    let weight = |candidate: &Candidate| {
+        if lists.preferred.contains(&candidate.name) { PREFERRED_WEIGHT } else { 1 }
+    };
     let mut offers = Vec::new();
     while offers.len() < 3 && !pool.is_empty() {
-        let pick = pool.remove(rolls.next().unwrap_or(0) as usize % pool.len());
+        let total: u32 = pool.iter().map(|candidate| weight(candidate)).sum();
+        let mut target = rolls.next().unwrap_or(0) % total;
+        let index = pool
+            .iter()
+            .position(|candidate| {
+                let weight = weight(candidate);
+                if target < weight {
+                    return true;
+                }
+                target -= weight;
+                false
+            })
+            .unwrap_or(0);
+        let pick = pool.remove(index);
         let grade = Grade::roll(rolls.next().unwrap_or(0));
         let (kills_percent, points_percent, experience_percent) = grade.percents();
         let (fewest, most) = difficulty.kills();
@@ -280,6 +320,7 @@ pub struct Board {
     pub completed: u32,
     pub offers: Vec<Task>,
     pub task: Option<Task>,
+    pub lists: Lists,
 }
 
 impl Board {
@@ -307,6 +348,10 @@ pub enum Refusal {
     DailyTaken,
     TokensFull,
     NoMonsters,
+    NoSuchMonster,
+    AlreadyListed,
+    ListFull,
+    NotListed,
 }
 
 impl Refusal {
@@ -320,6 +365,10 @@ impl Refusal {
             Self::DailyTaken => "You already took today's reroll token.".to_owned(),
             Self::TokensFull => format!("You already hold {MAX_TOKENS} reroll tokens."),
             Self::NoMonsters => "No monsters of that difficulty roam the world yet.".to_owned(),
+            Self::NoSuchMonster => "That monster is not known.".to_owned(),
+            Self::AlreadyListed => "That monster is already on one of your lists.".to_owned(),
+            Self::ListFull => format!("That list already holds {MAX_LISTED} monsters."),
+            Self::NotListed => "That monster is no longer on your list.".to_owned(),
         }
     }
 }
@@ -357,8 +406,8 @@ fn random_rolls() -> impl Iterator<Item = u32> {
 async fn candidates(pool: &sqlx::PgPool) -> Result<Vec<Candidate>, Error> {
     // One per name; not guards, not the few-of-a-kind (bosses), and not the
     // training dummies of the tactics maps (life far beyond their level).
-    let rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT MIN(t.id), MAX(t.level)
+    let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+        "SELECT MIN(t.id), t.name, MAX(t.level)
          FROM monster_types t
          JOIN monster_spawns s ON s.monster_type_id = t.id
          WHERE t.name NOT ILIKE '%guard%' AND t.life <= 1000 * GREATEST(t.level, 1)
@@ -371,11 +420,101 @@ async fn candidates(pool: &sqlx::PgPool) -> Result<Vec<Candidate>, Error> {
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, level)| Candidate {
+        .map(|(id, name, level)| Candidate {
             monster_type: u32::try_from(id).unwrap_or_default(),
+            name,
             level: u16::try_from(level).unwrap_or_default(),
         })
         .collect())
+}
+
+/// A character's preferred and avoided monsters, oldest first.
+async fn lists<'e>(executor: impl sqlx::PgExecutor<'e>, character_id: i64) -> Result<Lists, Error> {
+    let rows: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT monster_name, avoided FROM bounty_lists WHERE character_id = $1 ORDER BY listed_at, monster_name",
+    )
+    .bind(character_id)
+    .fetch_all(executor)
+    .await?;
+    let mut lists = Lists::default();
+    for (name, avoided) in rows {
+        if avoided {
+            lists.avoided.push(name);
+        } else {
+            lists.preferred.push(name);
+        }
+    }
+    Ok(lists)
+}
+
+/// Puts the monster of `monster_type` on the preferred or the avoided list,
+/// for its cost in bounty points; the monster's name.
+pub async fn list_monster(
+    pool: &sqlx::PgPool,
+    character_id: i32,
+    monster_type: u32,
+    avoided: bool,
+) -> Result<Result<String, Refusal>, Error> {
+    let board = board(pool, character_id).await?;
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM monster_types WHERE id = $1")
+        .bind(i64::from(monster_type))
+        .fetch_optional(pool)
+        .await?;
+    let Some(name) = name else {
+        return Ok(Err(Refusal::NoSuchMonster));
+    };
+    if board.lists.preferred.contains(&name) || board.lists.avoided.contains(&name) {
+        return Ok(Err(Refusal::AlreadyListed));
+    }
+    let list = if avoided { &board.lists.avoided } else { &board.lists.preferred };
+    if list.len() >= MAX_LISTED {
+        return Ok(Err(Refusal::ListFull));
+    }
+    let cost = if avoided { AVOID_COST } else { PREFER_COST };
+    let id = i64::from(character_id);
+    let mut transaction = pool.begin().await?;
+    let paid = sqlx::query("UPDATE bounty_profiles SET points = points - $2 WHERE character_id = $1 AND points >= $2")
+        .bind(id)
+        .bind(i64::from(cost))
+        .execute(&mut *transaction)
+        .await?;
+    if paid.rows_affected() != 1 {
+        return Ok(Err(Refusal::NotEnoughPoints(cost)));
+    }
+    let listed = sqlx::query(
+        "INSERT INTO bounty_lists (character_id, monster_name, avoided) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(avoided)
+    .execute(&mut *transaction)
+    .await?;
+    if listed.rows_affected() != 1 {
+        return Ok(Err(Refusal::AlreadyListed));
+    }
+    transaction.commit().await?;
+    Ok(Ok(name))
+}
+
+/// Takes the `index`th name off a list (the points are not given back).
+pub async fn unlist(
+    pool: &sqlx::PgPool,
+    character_id: i32,
+    avoided: bool,
+    index: usize,
+) -> Result<Result<String, Refusal>, Error> {
+    let id = i64::from(character_id);
+    let lists = lists(pool, id).await?;
+    let list = if avoided { lists.avoided } else { lists.preferred };
+    let Some(name) = list.into_iter().nth(index) else {
+        return Ok(Err(Refusal::NotListed));
+    };
+    let removed = sqlx::query("DELETE FROM bounty_lists WHERE character_id = $1 AND monster_name = $2")
+        .bind(id)
+        .bind(&name)
+        .execute(pool)
+        .await?;
+    Ok(if removed.rows_affected() == 1 { Ok(name) } else { Err(Refusal::NotListed) })
 }
 
 /// Writes a new list of offers of `difficulty`; false when no monster fits.
@@ -389,7 +528,8 @@ async fn write_offers(
         .bind(character_id)
         .execute(&mut **transaction)
         .await?;
-    let offers = roll_offers(candidates, difficulty, &mut random_rolls());
+    let lists = lists(&mut **transaction, character_id).await?;
+    let offers = roll_offers(candidates, difficulty, &lists, &mut random_rolls());
     for (slot, (candidate, kills, grade, points, experience)) in offers.iter().enumerate() {
         sqlx::query(
             "INSERT INTO bounty_offers (character_id, slot, monster_type, kills, grade, points, experience)
@@ -468,6 +608,7 @@ pub async fn board(pool: &sqlx::PgPool, character_id: i32) -> Result<Board, Erro
     .bind(id)
     .fetch_optional(pool)
     .await?;
+    let lists = lists(pool, id).await?;
     let number = |value: i64| u32::try_from(value).unwrap_or_default();
     let tokens = number(tokens);
     Ok(Board {
@@ -498,6 +639,7 @@ pub async fn board(pool: &sqlx::PgPool, character_id: i32) -> Result<Board, Erro
             points: number(points),
             experience: u64::try_from(experience).unwrap_or_default(),
         }),
+        lists,
     })
 }
 
@@ -687,6 +829,7 @@ mod tests {
         (1..=12_u16)
             .map(|n| Candidate {
                 monster_type: u32::from(n),
+                name: format!("Monster {n}"),
                 level: n * 10,
             })
             .collect()
@@ -756,6 +899,18 @@ mod tests {
         let board = super::board(&pool, id).await?;
         assert_eq!((board.points, board.talisman), (15, [0, 1, 0, 0]));
 
+        // 15 points: one preferred monster (10), then the avoided list is
+        // short of points after one (5).
+        let monster = board.offers.first().map(|offer| offer.monster_type).unwrap_or(1);
+        let name = list_monster(&pool, id, monster, false).await?.expect("listed");
+        assert_eq!(list_monster(&pool, id, monster, true).await?, Err(Refusal::AlreadyListed));
+        assert_eq!(list_monster(&pool, id, u32::MAX, true).await?, Err(Refusal::NoSuchMonster));
+        let board = super::board(&pool, id).await?;
+        assert_eq!((board.points, board.lists.preferred.clone()), (5, vec![name.clone()]));
+        assert_eq!(unlist(&pool, id, false, 0).await?, Ok(name));
+        assert_eq!(unlist(&pool, id, false, 0).await?, Err(Refusal::NotListed));
+        assert_eq!(super::board(&pool, id).await?.lists, Lists::default());
+
         for _ in 0..4 {
             reroll(&pool, id, Difficulty::Beginner).await?.expect("tokens left");
         }
@@ -765,7 +920,7 @@ mod tests {
 
     #[test]
     fn offers_are_three_monsters_of_the_difficulty() {
-        let offers = roll_offers(&candidates(), Difficulty::Adept, &mut (0..).map(|n| n * 7));
+        let offers = roll_offers(&candidates(), Difficulty::Adept, &Lists::default(), &mut (0..).map(|n| n * 7));
         assert_eq!(offers.len(), 3);
         let mut types: Vec<_> = offers.iter().map(|offer| offer.0.monster_type).collect();
         types.dedup();
@@ -777,7 +932,35 @@ mod tests {
             assert_eq!(points, (7 * points_percent).div_ceil(100));
             assert!(experience > 0);
         }
-        assert!(roll_offers(&[], Difficulty::Master, &mut (0..)).is_empty());
+        assert!(roll_offers(&[], Difficulty::Master, &Lists::default(), &mut (0..)).is_empty());
+    }
+
+    #[test]
+    fn lists_steer_the_offers() {
+        // Adept draws from Monster 2..=7.
+        let avoid = Lists {
+            avoided: vec!["Monster 2".to_owned(), "Monster 3".to_owned(), "Monster 4".to_owned()],
+            ..Lists::default()
+        };
+        for seed in 0..50_u32 {
+            let offers = roll_offers(&candidates(), Difficulty::Adept, &avoid, &mut (seed..).map(|n| n * 13));
+            assert_eq!(offers.len(), 3);
+            assert!(offers.iter().all(|offer| !avoid.avoided.contains(&offer.0.name)));
+        }
+        // Avoiding every monster of a difficulty still brings a list.
+        let all = Lists {
+            avoided: (1..=12).map(|n| format!("Monster {n}")).collect(),
+            ..Lists::default()
+        };
+        assert_eq!(roll_offers(&candidates(), Difficulty::Adept, &all, &mut (0..)).len(), 3);
+        // A preferred monster takes the first offer four times in nine.
+        let prefer = Lists {
+            preferred: vec!["Monster 5".to_owned()],
+            ..Lists::default()
+        };
+        let first = |roll: u32| roll_offers(&candidates(), Difficulty::Adept, &prefer, &mut [roll, 0, 0].into_iter())[0].0.name.clone();
+        let hits = (0..9).filter(|roll| first(*roll) == "Monster 5").count();
+        assert_eq!(hits, 4);
     }
 
     #[test]
@@ -786,7 +969,7 @@ mod tests {
         assert_eq!(Grade::roll(69), Grade::Normal);
         assert_eq!(Grade::roll(70), Grade::Silver);
         assert_eq!(Grade::roll(92), Grade::Gold);
-        let gold = roll_offers(&candidates()[..1], Difficulty::Beginner, &mut [0, 95, 0].into_iter());
+        let gold = roll_offers(&candidates()[..1], Difficulty::Beginner, &Lists::default(), &mut [0, 95, 0].into_iter());
         assert_eq!((gold[0].1, gold[0].2, gold[0].3), (100, Grade::Gold, 8));
     }
 

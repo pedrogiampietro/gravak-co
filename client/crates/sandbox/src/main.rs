@@ -419,6 +419,9 @@ struct App {
     store: Option<store_panel::StoreView>,
     /// A purchase waiting for the player's yes.
     store_confirm: Option<u32>,
+    /// A reroll that would abandon the bounty under way, waiting for a yes:
+    /// the difficulty of the new list.
+    bounty_confirm: Option<u32>,
     ground_loot: Vec<(u32, [f32; 2], u32, f32)>,
     dialog: Option<DialogState>,
     shop: Option<shop::ShopState>,
@@ -2054,6 +2057,19 @@ impl App {
     /// The popup for a received team invite, a request to join the hero's
     /// team, or a trade request.
     fn prompt(&self) -> Option<shop::PromptDialog> {
+        if self.bounty_confirm.is_some() {
+            let task = self.bounty.as_ref()?.board.active()?;
+            let size = self.window.as_ref()?.inner_size();
+            return Some(
+                shop::PromptDialog::new(
+                    [size.width as f32, size.height as f32],
+                    "Abandon bounty",
+                    task.monster_name.clone(),
+                    format!("{}/{} kills lost, 1 token spent", task.kills_done, task.kills),
+                )
+                .with_buttons(["Abandon", "Keep"]),
+            );
+        }
         if let Some(product_id) = self.store_confirm {
             let view = self.store.as_ref()?;
             let product = view.products.iter().find(|product| product.product_id == product_id)?;
@@ -2090,6 +2106,12 @@ impl App {
     }
 
     fn answer_prompt(&mut self, accept: bool) {
+        if let Some(difficulty) = self.bounty_confirm.take() {
+            if accept && let Some(network) = &self.network {
+                network.send_bounty(gravak_protocol::BountyPacket::REROLL, difficulty);
+            }
+            return;
+        }
         if let Some(product_id) = self.store_confirm.take() {
             if accept && let Some(network) = &self.network {
                 network.send_store(gravak_protocol::StorePacket::BUY, product_id);
@@ -2292,13 +2314,25 @@ impl App {
                 return;
             }
             bounty_board::BountyAction::ClaimDaily => (BountyPacket::CLAIM_DAILY, 0),
+            // With a bounty under way, a new list abandons it: ask first.
+            bounty_board::BountyAction::Reroll(difficulty)
+                if self.bounty.as_ref().is_some_and(|view| view.board.active().is_some()) =>
+            {
+                self.bounty_confirm = Some(difficulty);
+                return;
+            }
             bounty_board::BountyAction::Reroll(difficulty) => (BountyPacket::REROLL, difficulty),
             bounty_board::BountyAction::Pick(slot) => (BountyPacket::PICK, slot),
-            bounty_board::BountyAction::Abandon => (
-                BountyPacket::REROLL,
-                self.bounty.as_ref().map_or(0, bounty_board::BountyView::selected),
-            ),
+            bounty_board::BountyAction::Abandon => {
+                self.bounty_confirm = Some(self.bounty.as_ref().map_or(0, bounty_board::BountyView::selected));
+                return;
+            }
             bounty_board::BountyAction::Upgrade(bonus) => (BountyPacket::UPGRADE, bonus),
+            bounty_board::BountyAction::Prefer(monster_type) => (BountyPacket::PREFER, monster_type),
+            bounty_board::BountyAction::Avoid(monster_type) => (BountyPacket::AVOID, monster_type),
+            bounty_board::BountyAction::Unlist { avoided, index } => {
+                (BountyPacket::UNLIST, u32::from(avoided) * 10 + index)
+            }
         };
         network.send_bounty(packet, param);
     }
@@ -7180,6 +7214,7 @@ fn run() -> Result<()> {
         bounty: None,
         store: None,
         store_confirm: None,
+        bounty_confirm: None,
         ground_loot: Vec::new(),
         dialog: None,
         shop: benchmark_shop,

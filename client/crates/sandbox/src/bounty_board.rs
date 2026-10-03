@@ -13,6 +13,12 @@ pub const DIFFICULTIES: [&str; 4] = ["Beginner", "Adept", "Expert", "Master"];
 const BONUSES: [&str; 4] = ["Damage", "Life leech", "Extra loot", "Double kills"];
 const MAX_TOKENS: u32 = 10;
 const MAX_TALISMAN_LEVEL: u32 = 40;
+/// Names a list holds, and what one costs (as the server).
+const MAX_LISTED: usize = 3;
+const PREFER_COST: u32 = 10;
+const AVOID_COST: u32 = 5;
+/// Greenish for preferred monsters.
+const PREFERRED: [u8; 3] = [150, 220, 140];
 
 /// The board as the server sent it, and the difficulty tab chosen here:
 /// browsing the tabs is free, and a reroll brings a list of the chosen one.
@@ -41,6 +47,12 @@ pub enum BountyAction {
     /// Drops the bounty under way, for a token.
     Abandon,
     Upgrade(u32),
+    /// Puts an offer's monster (by type) on the preferred list.
+    Prefer(u32),
+    /// Puts an offer's monster (by type) on the avoided list.
+    Avoid(u32),
+    /// Takes the `index`th name off a list.
+    Unlist { avoided: bool, index: u32 },
 }
 
 const DAILY: UiRect = UiRect::new(372, 50, 128, 22);
@@ -48,8 +60,11 @@ const REROLL: UiRect = UiRect::new(404, 84, 96, 22);
 const ABANDON: UiRect = UiRect::new(352, 222, 136, 24);
 
 /// Where the talisman rows start, and their spacing.
-const TALISMAN_TOP: i32 = 286;
-const TALISMAN_ROW: i32 = 23;
+const TALISMAN_TOP: i32 = 284;
+const TALISMAN_ROW: i32 = 21;
+/// The preferred list's row, and the avoided one's under it.
+const LISTS_TOP: i32 = 374;
+const LISTS_ROW: i32 = 20;
 
 fn difficulty_tab(index: usize) -> UiRect {
     UiRect::new(20 + index as i32 * 96, 84, 92, 22)
@@ -62,6 +77,40 @@ fn offer_card(slot: usize) -> UiRect {
 fn hunt_button(slot: usize) -> UiRect {
     let card = offer_card(slot);
     UiRect::new(card.x + 28, card.y + 108, 100, 24)
+}
+
+/// An offer's Prefer (0) or Avoid (1) button.
+fn list_button(slot: usize, avoided: bool) -> UiRect {
+    let card = offer_card(slot);
+    UiRect::new(card.x + 98, card.y + 48 + if avoided { 22 } else { 0 }, 50, 18)
+}
+
+/// A name's chip on a list's row.
+fn list_chip(avoided: bool, index: usize) -> UiRect {
+    UiRect::new(
+        96 + index as i32 * 136,
+        LISTS_TOP + if avoided { LISTS_ROW } else { 0 },
+        130,
+        17,
+    )
+}
+
+/// Whether `name` may still go on a list.
+fn can_list(board: &BountyState, name: &str, avoided: bool) -> bool {
+    let cost = if avoided { AVOID_COST } else { PREFER_COST };
+    !board.listed(false).contains(&name)
+        && !board.listed(true).contains(&name)
+        && board.listed(avoided).len() < MAX_LISTED
+        && board.points >= cost
+}
+
+/// `name`, cut to fit a list chip.
+fn short(name: &str) -> String {
+    if name.chars().count() <= 15 {
+        name.to_owned()
+    } else {
+        format!("{}..", name.chars().take(13).collect::<String>())
+    }
 }
 
 fn upgrade_button(bonus: usize) -> UiRect {
@@ -195,7 +244,16 @@ pub fn draw(image: &mut RgbaImage, font: &Font, view: Option<&BountyView>) {
             draw_card(image, card, WidgetState::Normal);
             let (grade_name, grade_colour) = grade(task);
             let x = card.x + 10;
-            say(image, font, &task.monster_name, ui_theme::TEXT_GOLD, x, card.y + 8);
+            let name_colour = if board.listed(false).contains(&task.monster_name.as_str()) {
+                PREFERRED
+            } else {
+                ui_theme::TEXT_GOLD
+            };
+            say(image, font, &task.monster_name, name_colour, x, card.y + 8);
+            for avoided in [false, true] {
+                let label = if avoided { "Avoid" } else { "Prefer" };
+                button(image, font, list_button(slot, avoided), label, can_list(board, &task.monster_name, avoided));
+            }
             say(image, font, grade_name, grade_colour, x, card.y + 28);
             say(image, font, &format!("Defeat {}", task.kills), ui_theme::TEXT, x, card.y + 50);
             say(image, font, &format!("{} points", task.points), ui_theme::TEXT_MUTED, x, card.y + 70);
@@ -229,6 +287,37 @@ pub fn draw(image: &mut RgbaImage, font: &Font, view: Option<&BountyView>) {
             button(image, font, upgrade_button(index), &format!("Upgrade ({cost})"), board.points >= cost);
         }
     }
+
+    for avoided in [false, true] {
+        let y = LISTS_TOP + if avoided { LISTS_ROW } else { 0 };
+        let (title, cost) = if avoided { ("Avoided", AVOID_COST) } else { ("Preferred", PREFER_COST) };
+        let colour = if avoided { [220, 140, 130] } else { PREFERRED };
+        say(image, font, title, colour, 22, y);
+        let names = board.listed(avoided);
+        for index in 0..MAX_LISTED {
+            let chip = list_chip(avoided, index);
+            match names.get(index) {
+                Some(name) => {
+                    draw_card(image, chip, WidgetState::Normal);
+                    let line = format!("{}  x", short(name));
+                    labels::text_sized(
+                        image,
+                        font,
+                        &[(line.as_str(), ui_theme::TEXT)],
+                        [chip.x as f32 + 6.0, chip.y as f32 + 1.0],
+                        11.0,
+                    );
+                }
+                None => labels::text_sized(
+                    image,
+                    font,
+                    &[(format!("- free ({cost} pts) -").as_str(), ui_theme::TEXT_MUTED)],
+                    [chip.x as f32 + 6.0, chip.y as f32 + 1.0],
+                    11.0,
+                ),
+            }
+        }
+    }
 }
 
 /// The action under `cursor`, in the panel's own coordinates.
@@ -247,8 +336,28 @@ pub fn action_at(view: &BountyView, cursor: [f32; 2]) -> Option<BountyAction> {
         if ABANDON.contains_local(cursor) && board.tokens > 0 {
             return Some(BountyAction::Abandon);
         }
-    } else if let Some(slot) = (0..board.offers().len()).find(|slot| hunt_button(*slot).contains_local(cursor)) {
-        return Some(BountyAction::Pick(slot as u32));
+    } else {
+        let offers = board.offers();
+        if let Some(slot) = (0..offers.len()).find(|slot| hunt_button(*slot).contains_local(cursor)) {
+            return Some(BountyAction::Pick(slot as u32));
+        }
+        for (slot, offer) in offers.iter().enumerate() {
+            for avoided in [false, true] {
+                if list_button(slot, avoided).contains_local(cursor) && can_list(board, &offer.monster_name, avoided) {
+                    return Some(if avoided {
+                        BountyAction::Avoid(offer.monster_type)
+                    } else {
+                        BountyAction::Prefer(offer.monster_type)
+                    });
+                }
+            }
+        }
+    }
+    for avoided in [false, true] {
+        let count = board.listed(avoided).len();
+        if let Some(index) = (0..count).find(|index| list_chip(avoided, *index).contains_local(cursor)) {
+            return Some(BountyAction::Unlist { avoided, index: index as u32 });
+        }
     }
     (0..4)
         .find(|bonus| upgrade_button(*bonus).contains_local(cursor))

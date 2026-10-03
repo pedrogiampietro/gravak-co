@@ -208,6 +208,13 @@ impl BountyPacket {
     pub const PICK: u32 = 2;
     pub const CLAIM_DAILY: u32 = 3;
     pub const UPGRADE: u32 = 4;
+    /// Puts monster type `param` on the preferred list.
+    pub const PREFER: u32 = 5;
+    /// Puts monster type `param` on the avoided list.
+    pub const AVOID: u32 = 6;
+    /// Takes a name off a list: `param` = list (0 preferred, 1 avoided) * 10
+    /// + the name's place.
+    pub const UNLIST: u32 = 7;
     pub const PROGRESS: u32 = 10;
 
     pub fn new(action: u32, param: u32) -> Self {
@@ -298,9 +305,19 @@ pub struct BountyState {
     pub offer1: BountyTask,
     pub offer2: BountyTask,
     pub task: BountyTask,
+    /// Preferred monsters' names, joined by `|`.
+    pub preferred: String,
+    /// Avoided monsters' names, joined by `|`.
+    pub avoided: String,
 }
 
 impl BountyState {
+    /// The preferred monsters (`avoided` false) or the avoided ones.
+    pub fn listed(&self, avoided: bool) -> Vec<&str> {
+        let joined = if avoided { &self.avoided } else { &self.preferred };
+        joined.split('|').filter(|name| !name.is_empty()).collect()
+    }
+
     /// The bounties on offer.
     pub fn offers(&self) -> Vec<&BountyTask> {
         [&self.offer0, &self.offer1, &self.offer2]
