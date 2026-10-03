@@ -106,21 +106,48 @@ pub async fn send_board(state: &State, character: &crate::entities::Character) -
     Ok(())
 }
 
-/// Counts a kill of `monster_type` toward a character's bounty, twice when
-/// the talisman says so, and pays a finished one; the level reached, if any.
+/// Counts a kill of a monster toward a character's bounty, twice when the
+/// talisman says so, and pays a finished one; the level reached, if any.
 pub async fn count_kill(
     state: &State,
     character: &crate::entities::Character,
     monster_type: u32,
+    monster_name: &str,
 ) -> Result<Option<u8>, Error> {
     let Some(talisman) = state.talismans().get(character.id()) else {
         return Ok(None);
     };
-    if talisman.monster_type != monster_type {
+    if !talisman.hunts(monster_name) {
         return Ok(None);
     }
-    let kills = if talisman.double_kill(monster_type, crate::combat::next_roll()) { 2 } else { 1 };
-    match crate::bounty::record_kills(state.pool(), character.database_id(), monster_type, kills).await? {
+    let kills = if talisman.double_kill(monster_name, crate::combat::next_roll()) { 2 } else { 1 };
+    let progress = crate::bounty::record_kills(state.pool(), character.database_id(), monster_type, kills).await?;
+    settle(state, character, progress).await
+}
+
+/// Counts `kills` toward a character's bounty without a monster (a game
+/// master's test); the level reached, if any.
+pub async fn add_kills(
+    state: &State,
+    character: &crate::entities::Character,
+    kills: u32,
+) -> Result<Result<Option<u8>, &'static str>, Error> {
+    let board = crate::bounty::board(state.pool(), character.database_id()).await?;
+    let Some(task) = board.task else {
+        return Ok(Err("No bounty under way."));
+    };
+    let progress =
+        crate::bounty::record_kills(state.pool(), character.database_id(), task.monster_type, kills).await?;
+    Ok(Ok(settle(state, character, progress).await?))
+}
+
+/// Tells a character what kills did to its bounty, and pays a finished one.
+async fn settle(
+    state: &State,
+    character: &crate::entities::Character,
+    progress: crate::bounty::Progress,
+) -> Result<Option<u8>, Error> {
+    match progress {
         crate::bounty::Progress::None => Ok(None),
         crate::bounty::Progress::Counted { done, required } => {
             character

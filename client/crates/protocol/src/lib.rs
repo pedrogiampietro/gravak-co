@@ -1,6 +1,6 @@
 //! Minimal Conquer Online 5065-compatible wire protocol used by the client.
 //!
-//! The server currently exposes the CoEmu 5017-era packet IDs. Keeping the
+//! The server currently exposes the 5017-era packet IDs of its CoEmu base. Keeping the
 //! transport and the first authentication messages in a small crate gives us
 //! a stable place to measure and close that compatibility gap.
 
@@ -1876,13 +1876,13 @@ mod tests {
 
     #[test]
     fn account_login_matches_server_wire_shape() {
-        let packet = AccountLogin::new("test1", "123456", "CoEmu")
+        let packet = AccountLogin::new("test1", "123456", "Gravak")
             .encode()
             .expect("account packet should encode");
         assert_eq!(packet.0, MSG_ACCOUNT);
         assert_eq!(packet.1.len(), 48);
         assert_eq!(&packet.1[..6], b"test1\0");
-        assert_eq!(&packet.1[32..37], b"CoEmu");
+        assert_eq!(&packet.1[32..38], b"Gravak");
     }
 
     #[test]
@@ -1909,7 +1909,7 @@ mod tests {
             TQCodec::new(client_stream, CQCipher::new()).split();
         let (_server_encoder, mut server_decoder) =
             TQCodec::new(server_stream, TQCipher::new()).split();
-        let packet = AccountLogin::new("test1", "123456", "CoEmu")
+        let packet = AccountLogin::new("test1", "123456", "Gravak")
             .encode()
             .expect("account packet should encode");
 

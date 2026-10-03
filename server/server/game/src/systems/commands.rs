@@ -100,6 +100,82 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             }
             Ok(())
         },
+        SubCommands::BountyGo(_) => {
+            let board = crate::bounty::board(state.pool(), me.database_id()).await?;
+            let Some(task) = board.task else {
+                actor
+                    .send(MsgTalk::from_system(me.id(), TalkChannel::System, "No bounty under way."))
+                    .await?;
+                return Ok(());
+            };
+            // The biggest spawn of any monster type of that name.
+            let spawn: Option<(i64, i64, i64)> = sqlx::query_as(
+                "SELECT s.map_id, s.x, s.y FROM monster_spawns s
+                 JOIN monster_types t ON t.id = s.monster_type_id
+                 WHERE t.name = $1 ORDER BY s.amount DESC, s.id LIMIT 1",
+            )
+            .bind(&task.monster_name)
+            .fetch_optional(state.pool())
+            .await?;
+            let Some((map_id, x, y)) = spawn else {
+                actor
+                    .send(MsgTalk::from_system(me.id(), TalkChannel::System, "That monster roams nowhere."))
+                    .await?;
+                return Ok(());
+            };
+            let map_id = u32::try_from(map_id).unwrap_or_default();
+            let map = state.try_map(map_id)?;
+            map.load().await?;
+            let origin = primitives::Location::new(
+                u16::try_from(x).unwrap_or_default(),
+                u16::try_from(y).unwrap_or_default(),
+                0,
+            );
+            let spot = map.nearest_walkable_position(origin, 12).unwrap_or(origin);
+            move_to(state, &actor.entity(), map_id, (spot.x, spot.y)).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("{} roam here.", task.monster_name),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::BountyKills(info) => {
+            let kills = info.amount.unwrap_or(10).max(1);
+            match crate::packets::add_bounty_kills(state, me, kills).await? {
+                Ok(leveled) => {
+                    if let Some(level) = leveled {
+                        crate::leveling::after_level_up(state, me, level).await?;
+                    }
+                    me.save(state).await?;
+                    actor.send(MsgUserInfo::from(me)).await?;
+                },
+                Err(reason) => {
+                    actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, reason)).await?;
+                },
+            }
+            Ok(())
+        },
+        SubCommands::BountyPoints(info) => {
+            let points = info.amount.unwrap_or(100);
+            crate::bounty::board(state.pool(), me.database_id()).await?;
+            sqlx::query("UPDATE bounty_profiles SET points = points + $2 WHERE character_id = $1")
+                .bind(i64::from(me.database_id()))
+                .bind(i64::from(points))
+                .execute(state.pool())
+                .await?;
+            crate::packets::send_board(state, me).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Added {points} bounty points."),
+                ))
+                .await?;
+            Ok(())
+        },
         SubCommands::Which(which) => {
             if which.map {
                 let map_id = me.entity().map_id();
@@ -1109,6 +1185,9 @@ enum SubCommands {
     SetPk(SetPkCmd),
     SetVirtue(SetVirtueCmd),
     GuildWar(GuildWarCmd),
+    BountyGo(BountyGoCmd),
+    BountyKills(BountyKillsCmd),
+    BountyPoints(BountyPointsCmd),
 }
 
 impl SubCommands {
@@ -1164,6 +1243,29 @@ struct SetLevelCmd {
     /// new level (1-130)
     #[argh(positional)]
     level: u16,
+}
+
+/// Go to where the monster of your bounty roams.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-go")]
+struct BountyGoCmd {}
+
+/// Count kills toward your bounty, for testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-kills")]
+struct BountyKillsCmd {
+    /// kills to count (default 10)
+    #[argh(positional)]
+    amount: Option<u32>,
+}
+
+/// Add bounty points, for testing the talisman.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-points")]
+struct BountyPointsCmd {
+    /// points to add (default 100)
+    #[argh(positional)]
+    amount: Option<u32>,
 }
 
 /// Add silver to the current character for local testing.

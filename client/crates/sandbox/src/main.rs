@@ -364,6 +364,11 @@ struct App {
     remote_models: HashMap<u32, character::Character>,
     remote_npcs: HashMap<u32, character::NpcModel>,
     remote_monsters: HashMap<u32, character::NpcModel>,
+    /// The ghost models by look (98, 99), loaded at the first death.
+    ghosts: HashMap<u32, character::NpcModel>,
+    ghosts_requested: bool,
+    /// Players drawn as ghosts, through `remote_monsters`.
+    ghost_actors: HashSet<u32>,
     combat_numbers: Vec<(u32, u32, f32)>,
     skill_effects: Vec<renderer::SkillEffectInstance>,
     known_skills: HashMap<u32, (u16, u32)>,
@@ -420,7 +425,15 @@ struct App {
 }
 
 /// The client offers Revive this long after dying (server `REVIVE_DELAY`).
-const REVIVE_DELAY_SECONDS: f32 = 18.0;
+const REVIVE_DELAY_SECONDS: f32 = 20.0;
+/// Model jobs for the ghosts use ids above every actor's.
+const GHOST_ID_BASE: u32 = 0xFFFF_0000;
+
+/// The 5065 ghost a dead body turns into: 98 for the male bodies
+/// (1003/1004), 99 for the female ones (2001/2002).
+fn ghost_look(body: u32) -> u32 {
+    if body % 10_000 / 1_000 == 2 { 99 } else { 98 }
+}
 /// Task id of the local Revive dialog; it never reaches an NPC.
 const REVIVE_TASK_ID: u32 = u32::MAX;
 
@@ -958,12 +971,23 @@ impl ApplicationHandler for App {
                     let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
                     self.player.action = Action::Die;
                     local_action_progress = Some(((elapsed - died_at) / fall).clamp(0.0, 1.0));
-                    if elapsed - died_at >= REVIVE_DELAY_SECONDS && self.dialog.is_none() {
+                    // The revive window opens at death and counts down; its
+                    // Revive button appears when the server allows it.
+                    let remaining = (REVIVE_DELAY_SECONDS - (elapsed - died_at)).ceil().max(0.0) as u32;
+                    let (lines, options) = if remaining == 0 {
+                        (vec!["You are dead.".to_owned()], vec![(1, "Revive".to_owned())])
+                    } else {
+                        (vec!["You are dead.".to_owned(), format!("You can revive in {remaining} s.")], Vec::new())
+                    };
+                    let showing = self.dialog.as_ref().is_some_and(|dialog| dialog.task_id == REVIVE_TASK_ID);
+                    let changed = !showing
+                        || self.dialog.as_ref().is_some_and(|dialog| dialog.lines != lines || dialog.options != options);
+                    if (showing || self.dialog.is_none()) && changed {
                         self.dialog = Some(DialogState {
                             task_id: REVIVE_TASK_ID,
                             avatar: 0,
-                            lines: vec!["You are dead.".to_owned()],
-                            options: vec![(1, "Revive".to_owned())],
+                            lines,
+                            options,
                             edit: None,
                             input: String::new(),
                             input_focused: false,
@@ -1008,6 +1032,11 @@ impl ApplicationHandler for App {
                 let prompt = self.prompt();
                 let hovered_player = self.hovered_player();
                 let team_pins = self.team_pins();
+                self.sync_ghosts(elapsed);
+                let local_ghost_look = self
+                    .dead_since
+                    .filter(|died_at| elapsed - died_at >= self.character.duration(Action::Die).as_secs_f32())
+                    .map(|_| ghost_look(self.character.body_id));
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1032,6 +1061,7 @@ impl ApplicationHandler for App {
                         &self.remote_models,
                         &self.remote_npcs,
                         &self.remote_monsters,
+                        local_ghost_look.and_then(|look| self.ghosts.get(&look)),
                         &self.combat_numbers,
                         &self.skill_effects,
                         &self.ground_loot,
@@ -1248,6 +1278,12 @@ impl App {
                         Err(error) => eprintln!("NPC {id} model unavailable: {error}"),
                     }
                 }
+                RemoteModelResult::Monster { id, model } if id >= GHOST_ID_BASE => match model {
+                    Ok(model) => {
+                        self.ghosts.insert(id - GHOST_ID_BASE, model);
+                    }
+                    Err(error) => eprintln!("Ghost {} model unavailable: {error}", id - GHOST_ID_BASE),
+                },
                 RemoteModelResult::Monster { id, model } => {
                     self.remote_monsters_loading.remove(&id);
                     match model {
@@ -4540,6 +4576,50 @@ impl App {
         }
     }
 
+    /// Dead players turn into ghosts once they have fallen: their id draws
+    /// the ghost model through `remote_monsters` until they get up.
+    fn sync_ghosts(&mut self, time: f32) {
+        let dead = |actor: &RemoteActor| {
+            !actor.npc
+                && !(400_001..=499_999).contains(&actor.id)
+                && actor.action == renderer::REMOTE_DEAD
+                && time >= actor.animation_until
+        };
+        let anyone_dead = self.dead_since.is_some() || self.remote_actors.values().any(|actor| dead(actor));
+        if anyone_dead && !self.ghosts_requested {
+            self.ghosts_requested = true;
+            if let Some(loader) = &self.remote_model_loader {
+                for look in [98, 99] {
+                    let _ = loader.requests.send(RemoteModelJob::Monster { id: GHOST_ID_BASE + look, mesh: look });
+                }
+            }
+        }
+        let ghosts: Vec<(u32, u32)> = self
+            .remote_actors
+            .values()
+            .filter(|actor| dead(actor))
+            .map(|actor| (actor.id, ghost_look(actor.body)))
+            .collect();
+        for (id, look) in &ghosts {
+            if !self.ghost_actors.contains(id)
+                && let Some(model) = self.ghosts.get(look)
+            {
+                self.remote_monsters.insert(*id, model.clone());
+                self.ghost_actors.insert(*id);
+            }
+        }
+        let risen: Vec<u32> = self
+            .ghost_actors
+            .iter()
+            .copied()
+            .filter(|id| !ghosts.iter().any(|(ghost, _)| ghost == id))
+            .collect();
+        for id in risen {
+            self.ghost_actors.remove(&id);
+            self.remote_monsters.remove(&id);
+        }
+    }
+
     fn on_own_death(&mut self) {
         if self.dead_since.is_some() {
             return;
@@ -6425,7 +6505,7 @@ fn run() -> Result<()> {
     // Without --username, online mode opens the login screens.
     let mut username = None;
     let mut password = "123456".to_owned();
-    let mut realm = "CoEmu".to_owned();
+    let mut realm = "Gravak".to_owned();
     let mut character_name = None;
     // The installed client: `gravak.ini` beside it names the game data and
     // the server, and it goes straight to the login screens.
@@ -6933,6 +7013,9 @@ fn run() -> Result<()> {
         remote_models: HashMap::new(),
         remote_npcs: HashMap::new(),
         remote_monsters: HashMap::new(),
+        ghosts: HashMap::new(),
+        ghosts_requested: false,
+        ghost_actors: HashSet::new(),
         combat_numbers: Vec::new(),
         skill_effects: Vec::new(),
         known_skills: HashMap::new(),

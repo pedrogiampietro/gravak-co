@@ -25,7 +25,7 @@ param(
     [string]$Assets = "R:\5065",
     # The login server written into gravak.ini.
     [string]$Auth = "127.0.0.1:9958",
-    [string]$Realm = "CoEmu",
+    [string]$Realm = "Gravak",
     # Skip the installer even when Inno Setup is present.
     [switch]$NoInstaller
 )

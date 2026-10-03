@@ -37,7 +37,7 @@ Para abrir o cliente conectado ao servidor local:
 
 ```powershell
 cd R:\gravak-co\client
-cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
+cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm Gravak
 ```
 
 ### Diagnóstico de performance

@@ -1760,6 +1760,7 @@ impl Renderer {
         remote_models: &HashMap<u32, Character>,
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
         remote_monsters: &HashMap<u32, crate::character::NpcModel>,
+        local_ghost: Option<&crate::character::NpcModel>,
         combat_numbers: &[(u32, u32, f32)],
         skill_effects: &[SkillEffectInstance],
         ground_loot: &[(u32, [f32; 2], u32, f32)],
@@ -2057,7 +2058,42 @@ impl Renderer {
             && action_progress.is_none();
         let local_signature = appearance_signature(character);
         let local_facing_sector = (player.facing / std::f32::consts::FRAC_PI_4).round() as i8;
-        for (part_index, part) in character.parts.iter().enumerate() {
+        // A dead character, once fallen, is a ghost until revived.
+        if let Some(ghost) = local_ghost {
+            self.texture(assets, &ghost.texture);
+            let vertices = if player.moving() {
+                Arc::new(ghost.vertices_walk(time, player.facing))
+            } else if let Some(vertices) = self.cached_static_npc_vertices(ghost, player.facing) {
+                vertices
+            } else {
+                Arc::new(ghost.vertices_walk(0.0, player.facing))
+            };
+            let triangles = ghost
+                .mesh
+                .opaque_indices
+                .iter()
+                .chain(&ghost.mesh.alpha_indices)
+                .map(|i| {
+                    let (p, uv) = vertices[*i as usize];
+                    Vertex {
+                        position: clip(
+                            [origin[0] + p[0], origin[1] + p[1]],
+                            (0.5 + p[2] * 0.0005).clamp(0.001, 0.999),
+                            viewport,
+                        ),
+                        uv,
+                        alpha: 1.0,
+                    }
+                })
+                .collect();
+            draws.push(Draw {
+                texture: ghost.texture.clone(),
+                vertices: triangles,
+                depth_test: true,
+                sort_depth: actor_depth,
+            });
+        }
+        for (part_index, part) in character.parts.iter().enumerate().filter(|_| local_ghost.is_none()) {
             self.texture(assets, &part.texture);
             let vertices = if local_idle {
                 let Some(vertices) = self.queue_character_idle_geometry(

@@ -358,7 +358,7 @@ mod smoke {
         let auth = std::env::var("GRAVAK_AUTH").unwrap_or_else(|_| "127.0.0.1:9958".into());
         let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 1_000_000;
         let account = format!("smoke{suffix}");
-        let client = LoginClient::start(auth, "CoEmu".into());
+        let client = LoginClient::start(auth, "Gravak".into());
 
         client.send(LoginCommand::Register { username: account.clone(), password: "pass1234".into() });
         assert!(matches!(next(&client), LoginEvent::Registered(name) if name == account));

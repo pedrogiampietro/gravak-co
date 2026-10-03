@@ -883,7 +883,7 @@ impl MsgInteract {
             if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
                 crate::bounty::empower(
                     &talisman,
-                    monster_type_of(monster),
+                    monster_name_of(monster),
                     &mut outcome,
                     u32::from(health_before.current),
                 );
@@ -998,8 +998,8 @@ fn team_mode_spares(state: &State, attacker: &crate::entities::Character, target
         .is_some_and(|kind| kind == "ally")
 }
 
-fn monster_type_of(monster: &crate::entities::Monster) -> u32 {
-    u32::try_from(monster.monster_type().id).unwrap_or_default()
+fn monster_name_of(monster: &crate::entities::Monster) -> &str {
+    &monster.monster_type().name
 }
 
 /// The bounty talisman's life leech: part of the damage dealt to the task's
@@ -1013,7 +1013,7 @@ async fn bounty_leech(
     let Some(talisman) = state.talismans().get(character.id()) else {
         return Ok(());
     };
-    let leeched = talisman.leech(monster_type_of(monster), damage);
+    let leeched = talisman.leech(monster_name_of(monster), damage);
     if leeched == 0 || character.entity().hp().current == 0 {
         return Ok(());
     }
@@ -1056,7 +1056,8 @@ pub(crate) async fn reward_monster_defeat(
             crate::leveling::after_level_up(state, recipient, level).await?;
         }
         let quests = crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
-        let bounty_leveled = super::msg_bounty::count_kill(state, recipient, monster_type_id).await?;
+        let bounty_leveled =
+            super::msg_bounty::count_kill(state, recipient, monster_type_id, &monster.monster_type().name).await?;
         if let Some(level) = bounty_leveled {
             crate::leveling::after_level_up(state, recipient, level).await?;
         }
@@ -1153,7 +1154,7 @@ pub(crate) async fn reward_monster_defeat(
     if state
         .talismans()
         .get(character.id())
-        .is_some_and(|talisman| talisman.extra_loot(monster_type_id, next_roll()))
+        .is_some_and(|talisman| talisman.extra_loot(&monster.monster_type().name, next_roll()))
     {
         drops.extend(
             state
@@ -1360,7 +1361,7 @@ impl PacketProcess for MsgInteract {
             outcome.defeated = false;
         }
         if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
-            crate::bounty::empower(&talisman, monster_type_of(monster), &mut outcome, life_before);
+            crate::bounty::empower(&talisman, monster_name_of(monster), &mut outcome, life_before);
         }
         target_entity.apply_damage(outcome.damage);
         if let Some(monster) = target.as_monster() {

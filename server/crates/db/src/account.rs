@@ -55,7 +55,7 @@ impl Account {
     /// published password (`123456`).
     pub async fn with_published_password(pool: &sqlx::PgPool) -> Result<Vec<String>, crate::Error> {
         let accounts: Vec<(String, String)> =
-            sqlx::query_as("SELECT username, password FROM accounts WHERE username IN ('shekohex', 'test1') ORDER BY username")
+            sqlx::query_as("SELECT username, password FROM accounts WHERE username IN ('gravak', 'test1') ORDER BY username")
                 .fetch_all(pool)
                 .await?;
         Ok(accounts

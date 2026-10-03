@@ -144,12 +144,12 @@ pub fn upgrade_cost(level: u32) -> u32 {
     5 + 12 * level
 }
 
-/// A monster a task may ask for.
+/// A monster a task may ask for. Several monster types can share a name
+/// (one per spawn area); a task asks for the name, and any of them counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub monster_type: u32,
     pub level: u16,
-    pub life: u32,
 }
 
 /// One of the three offers, or the task under way.
@@ -185,8 +185,9 @@ pub fn roll_offers(
         let kills = fewest + rolls.next().unwrap_or(0) % (most - fewest + 1);
         let kills = kills * kills_percent / 100;
         let points = (difficulty.points() * points_percent).div_ceil(100);
-        // Twice the monster's life a kill: about what hunting them gives again.
-        let experience = u64::from(kills) * u64::from(pick.life.max(1)) * 2 * u64::from(experience_percent) / 100;
+        // A Normal hunt of a hundred pays half a level at the monster's level.
+        let level = u8::try_from(pick.level).unwrap_or(u8::MAX).max(1);
+        let experience = crate::leveling::required(level) * u64::from(kills) / 200 * u64::from(experience_percent) / 100;
         offers.push((pick.clone(), kills, grade, points, experience));
     }
     offers
@@ -194,9 +195,10 @@ pub fn roll_offers(
 
 /// The talisman's bonuses against the monster of a character's task, kept in
 /// memory for combat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Talisman {
-    pub monster_type: u32,
+    /// The bounty's monster, by name: any of its types counts.
+    pub monster_name: String,
     pub damage_bp: u32,
     pub leech_bp: u32,
     pub loot_bp: u32,
@@ -204,38 +206,43 @@ pub struct Talisman {
 }
 
 impl Talisman {
-    /// `damage` with the damage bonus, when `monster_type` is the task's.
-    pub fn boost(&self, monster_type: u32, damage: u32) -> u32 {
-        if self.monster_type != monster_type || damage == 0 {
+    /// Whether `monster_name` is the bounty's monster.
+    pub fn hunts(&self, monster_name: &str) -> bool {
+        !self.monster_name.is_empty() && self.monster_name == monster_name
+    }
+
+    /// `damage` with the damage bonus, when the monster is the task's.
+    pub fn boost(&self, monster_name: &str, damage: u32) -> u32 {
+        if !self.hunts(monster_name) || damage == 0 {
             return damage;
         }
         let boosted = u64::from(damage) * u64::from(10_000 + self.damage_bp) / 10_000;
         u32::try_from(boosted).unwrap_or(u32::MAX)
     }
 
-    /// Life leeched from `damage` dealt to `monster_type`.
-    pub fn leech(&self, monster_type: u32, damage: u32) -> u32 {
-        if self.monster_type != monster_type {
+    /// Life leeched from `damage` dealt to the monster.
+    pub fn leech(&self, monster_name: &str, damage: u32) -> u32 {
+        if !self.hunts(monster_name) {
             return 0;
         }
         u32::try_from(u64::from(damage) * u64::from(self.leech_bp) / 10_000).unwrap_or(u32::MAX)
     }
 
-    /// Whether a `roll` (0..10000) earns an extra loot roll from `monster_type`.
-    pub fn extra_loot(&self, monster_type: u32, roll: u32) -> bool {
-        self.monster_type == monster_type && roll % 10_000 < self.loot_bp
+    /// Whether a `roll` (0..10000) earns an extra loot roll from the monster.
+    pub fn extra_loot(&self, monster_name: &str, roll: u32) -> bool {
+        self.hunts(monster_name) && roll % 10_000 < self.loot_bp
     }
 
-    /// Whether a `roll` (0..10000) makes a kill of `monster_type` count twice.
-    pub fn double_kill(&self, monster_type: u32, roll: u32) -> bool {
-        self.monster_type == monster_type && roll % 10_000 < self.double_kill_bp
+    /// Whether a `roll` (0..10000) makes a kill of the monster count twice.
+    pub fn double_kill(&self, monster_name: &str, roll: u32) -> bool {
+        self.hunts(monster_name) && roll % 10_000 < self.double_kill_bp
     }
 }
 
 /// Raises a hit on the task's monster by the talisman's damage bonus, never
 /// past the life the monster had.
-pub fn empower(talisman: &Talisman, monster_type: u32, outcome: &mut crate::combat::DamageOutcome, life_before: u32) {
-    let damage = talisman.boost(monster_type, outcome.damage).min(life_before);
+pub fn empower(talisman: &Talisman, monster_name: &str, outcome: &mut crate::combat::DamageOutcome, life_before: u32) {
+    let damage = talisman.boost(monster_name, outcome.damage).min(life_before);
     outcome.damage = damage;
     outcome.remaining_health = life_before - damage;
     outcome.defeated = outcome.remaining_health == 0;
@@ -249,7 +256,7 @@ pub struct TalismanBook {
 
 impl TalismanBook {
     pub fn get(&self, character_id: u32) -> Option<Talisman> {
-        self.talismans.lock().get(&character_id).copied()
+        self.talismans.lock().get(&character_id).cloned()
     }
 
     pub fn set(&self, character_id: u32, talisman: Option<Talisman>) {
@@ -280,7 +287,7 @@ impl Board {
     pub fn talisman(&self) -> Option<Talisman> {
         let task = self.task.as_ref()?;
         Some(Talisman {
-            monster_type: task.monster_type,
+            monster_name: task.monster_name.clone(),
             damage_bp: Bonus::Damage.basis_points(self.talisman[0]),
             leech_bp: Bonus::Leech.basis_points(self.talisman[1]),
             loot_bp: Bonus::Loot.basis_points(self.talisman[2]),
@@ -348,24 +355,25 @@ fn random_rolls() -> impl Iterator<Item = u32> {
 }
 
 async fn candidates(pool: &sqlx::PgPool) -> Result<Vec<Candidate>, Error> {
-    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT t.id, t.level, t.life
+    // One per name; not guards, not the few-of-a-kind (bosses), and not the
+    // training dummies of the tactics maps (life far beyond their level).
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT MIN(t.id), MAX(t.level)
          FROM monster_types t
          JOIN monster_spawns s ON s.monster_type_id = t.id
-         WHERE t.name NOT ILIKE '%guard%'
-         GROUP BY t.id, t.level, t.life
+         WHERE t.name NOT ILIKE '%guard%' AND t.life <= 1000 * GREATEST(t.level, 1)
+         GROUP BY t.name
          HAVING SUM(s.amount) >= $1
-         ORDER BY t.id",
+         ORDER BY MIN(t.id)",
     )
     .bind(MIN_SPAWNED)
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, level, life)| Candidate {
+        .map(|(id, level)| Candidate {
             monster_type: u32::try_from(id).unwrap_or_default(),
             level: u16::try_from(level).unwrap_or_default(),
-            life: u32::try_from(life).unwrap_or_default(),
         })
         .collect())
 }
@@ -403,14 +411,27 @@ async fn write_offers(
 /// The Task Board of a character, made on first use with a free Beginner list.
 pub async fn board(pool: &sqlx::PgPool, character_id: i32) -> Result<Board, Error> {
     let id = i64::from(character_id);
-    let created = sqlx::query("INSERT INTO bounty_profiles (character_id) VALUES ($1) ON CONFLICT DO NOTHING")
+    sqlx::query("INSERT INTO bounty_profiles (character_id) VALUES ($1) ON CONFLICT DO NOTHING")
         .bind(id)
         .execute(pool)
         .await?;
-    if created.rows_affected() == 1 {
+    // A new board, or one whose offers were cleared, gets a free list of its
+    // difficulty.
+    let (empty, difficulty): (bool, i64) = sqlx::query_as(
+        "SELECT NOT EXISTS (SELECT 1 FROM bounty_offers WHERE character_id = $1)
+                AND NOT EXISTS (SELECT 1 FROM bounty_tasks WHERE character_id = $1),
+                difficulty
+         FROM bounty_profiles WHERE character_id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    if empty {
+        let difficulty =
+            Difficulty::from_u32(u32::try_from(difficulty).unwrap_or_default()).unwrap_or(Difficulty::Beginner);
         let candidates = candidates(pool).await?;
         let mut transaction = pool.begin().await?;
-        write_offers(&mut transaction, &candidates, id, Difficulty::Beginner).await?;
+        write_offers(&mut transaction, &candidates, id, difficulty).await?;
         transaction.commit().await?;
     }
     let (points, tokens, claimed_on, difficulty, damage, leech, loot, double_kill, completed): (
@@ -601,9 +622,11 @@ pub async fn record_kills(
 ) -> Result<Progress, Error> {
     let id = i64::from(character_id);
     let counted: Option<(i64, i64)> = sqlx::query_as(
-        "UPDATE bounty_tasks SET kills_done = LEAST(kills_done + $3, kills_required)
-         WHERE character_id = $1 AND monster_type = $2
-         RETURNING kills_done, kills_required",
+        "UPDATE bounty_tasks b SET kills_done = LEAST(b.kills_done + $3, b.kills_required)
+         WHERE b.character_id = $1
+           AND (SELECT name FROM monster_types WHERE id = b.monster_type)
+             = (SELECT name FROM monster_types WHERE id = $2)
+         RETURNING b.kills_done, b.kills_required",
     )
     .bind(id)
     .bind(i64::from(monster_type))
@@ -665,7 +688,6 @@ mod tests {
             .map(|n| Candidate {
                 monster_type: u32::from(n),
                 level: n * 10,
-                life: 100 * u32::from(n),
             })
             .collect()
     }
@@ -702,9 +724,9 @@ mod tests {
         let task = board.task.clone().expect("task under way");
         assert_eq!((task.monster_type, task.kills_done), (chosen.monster_type, 0));
         assert!(board.offers.is_empty());
-        assert_eq!(board.talisman().map(|talisman| talisman.monster_type), Some(chosen.monster_type));
+        assert_eq!(board.talisman().map(|talisman| talisman.monster_name), Some(chosen.monster_name.clone()));
 
-        assert_eq!(record_kills(&pool, id, chosen.monster_type + 100_000, 1).await?, Progress::None);
+        assert_eq!(record_kills(&pool, id, 900, 1).await?, Progress::None, "a guard is not the bounty");
         assert_eq!(
             record_kills(&pool, id, chosen.monster_type, 2).await?,
             Progress::Counted { done: 2, required: task.kills }
@@ -781,17 +803,18 @@ mod tests {
     #[test]
     fn the_talisman_works_only_against_the_task_monster() {
         let talisman = Talisman {
-            monster_type: 7,
+            monster_name: "Robin".to_owned(),
             damage_bp: 1_000,
             leech_bp: 500,
             loot_bp: 2_500,
             double_kill_bp: 2_000,
         };
-        assert_eq!(talisman.boost(7, 1_000), 1_100);
-        assert_eq!(talisman.boost(8, 1_000), 1_000);
-        assert_eq!(talisman.leech(7, 1_000), 50);
-        assert_eq!(talisman.leech(8, 1_000), 0);
-        assert!(talisman.extra_loot(7, 2_499) && !talisman.extra_loot(7, 2_500));
-        assert!(talisman.double_kill(7, 1_999) && !talisman.double_kill(8, 0));
+        assert_eq!(talisman.boost("Robin", 1_000), 1_100);
+        assert_eq!(talisman.boost("Pheasant", 1_000), 1_000);
+        assert_eq!(talisman.leech("Robin", 1_000), 50);
+        assert_eq!(talisman.leech("Pheasant", 1_000), 0);
+        assert!(talisman.extra_loot("Robin", 2_499) && !talisman.extra_loot("Robin", 2_500));
+        assert!(talisman.double_kill("Robin", 1_999) && !talisman.double_kill("Pheasant", 0));
+        assert!(!Talisman::default().hunts(""), "no bounty, no bonus");
     }
 }

@@ -11,7 +11,7 @@ use crate::state::GroundItem;
 use crate::{Error, State};
 
 /// The client offers Revive after this long.
-pub const REVIVE_DELAY: Duration = Duration::from_secs(18);
+pub const REVIVE_DELAY: Duration = Duration::from_secs(20);
 /// A killer's name flashes blue this long.
 pub const PK_FLASH: Duration = Duration::from_secs(180);
 /// Attacking a player who is not fair game flashes the name this long.

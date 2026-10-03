@@ -209,7 +209,7 @@ fn login_path() -> Option<PathBuf> {
 /// [Client]
 /// Assets=game
 /// Auth=127.0.0.1:9958
-/// Realm=CoEmu
+/// Realm=Gravak
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientConfig {
@@ -252,10 +252,10 @@ mod client_config_tests {
     #[test]
     fn reads_the_installers_ini() {
         let dir = std::path::Path::new("C:/Games/Gravak");
-        let config = parse_client_config("[Client]\nAssets=game\nAuth = 10.0.0.2:9958\nRealm=CoEmu\n; note\n", dir);
+        let config = parse_client_config("[Client]\nAssets=game\nAuth = 10.0.0.2:9958\nRealm=Gravak\n; note\n", dir);
         assert_eq!(config.assets, Some(dir.join("game")));
         assert_eq!(config.auth.as_deref(), Some("10.0.0.2:9958"));
-        assert_eq!(config.realm.as_deref(), Some("CoEmu"));
+        assert_eq!(config.realm.as_deref(), Some("Gravak"));
         // An absolute path stays as written.
         let config = parse_client_config("Assets=R:/5065", dir);
         assert_eq!(config.assets, Some(std::path::PathBuf::from("R:/5065")));

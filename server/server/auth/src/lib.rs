@@ -268,7 +268,7 @@ mod tests {
         let msg = MsgAccount {
             username: String::from("test").into(),
             password: String::from("test").into(),
-            realm: String::from("coemu").into(),
+            realm: String::from("Gravak").into(),
             ..Default::default()
         };
         let actor = Actor::<()>::new(tx);

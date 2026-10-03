@@ -1,7 +1,7 @@
 [workspace.package]
-authors = ["Shady Khalifa <dev+coemu@shadykhalifa>"]
+authors = ["Pedro Giampietro"]
 edition = "2021"
-repository = "https://github.com/shekohex/coemu.git"
+repository = "https://github.com/pedrogiampietro/gravak-co.git"
 license = "GPL-3.0-only"
 
 [workspace]

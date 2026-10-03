@@ -142,7 +142,7 @@ async fn main() -> Result<(), Error> {
             }
         }
     });
-    let realm = tq_db::realm::Realm::by_name(state.pool(), "CoEmu")
+    let realm = tq_db::realm::Realm::by_name(state.pool(), "Gravak")
         .await?
         .ok_or(Error::RealmNotFound)?;
     let game_port = realm.game_port;

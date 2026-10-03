@@ -141,4 +141,4 @@ mod msg_item_rarity_reroll;
 pub use msg_item_rarity_reroll::MsgItemRarityReroll;
 
 mod msg_bounty;
-pub use msg_bounty::{send_board, MsgBounty, MsgBountyState};
+pub use msg_bounty::{add_kills as add_bounty_kills, send_board, MsgBounty, MsgBountyState};

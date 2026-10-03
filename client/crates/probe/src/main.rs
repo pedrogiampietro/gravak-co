@@ -12,7 +12,7 @@ async fn main() {
     let address = args.first().map(String::as_str).unwrap_or("127.0.0.1:9958");
     let username = args.get(1).map(String::as_str).unwrap_or("test1");
     let password = args.get(2).map(String::as_str).unwrap_or("123456");
-    let realm = args.get(3).map(String::as_str).unwrap_or("CoEmu");
+    let realm = args.get(3).map(String::as_str).unwrap_or("Gravak");
 
     println!("Connecting to auth {address} as {username} on realm {realm}...");
     let server = match authenticate(address, username, password, realm).await {

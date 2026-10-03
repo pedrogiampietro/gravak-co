@@ -15,6 +15,8 @@ pub struct Realm {
 #[cfg(feature = "sqlx")]
 impl Realm {
     pub async fn by_name(pool: &sqlx::PgPool, name: &str) -> Result<Option<Self>, crate::Error> {
+        // Clients installed before the realm became Gravak still ask for CoEmu.
+        let name = if name.eq_ignore_ascii_case("CoEmu") { "Gravak" } else { name };
         let realm = sqlx::query_as::<_, Self>("SELECT * FROM realms WHERE name = $1;")
             .bind(name)
             .fetch_optional(pool)

@@ -53,7 +53,7 @@ try {
             '--auth', '127.0.0.1:9958',
             '--username', $Username,
             '--password', $Password,
-            '--realm', 'CoEmu'
+            '--realm', 'Gravak'
         )
     }
     if ($Spawn.Count -eq 2) {
