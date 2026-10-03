@@ -1037,7 +1037,7 @@ pub(crate) async fn reward_monster_defeat(
 ) -> Result<(), Error> {
     character.add_xp_point();
     let level = monster.monster_type().level.max(1) as u32;
-    let silver_drop = level + next_roll() % (level.saturating_mul(104).saturating_add(1));
+    let silver_drop = crate::drops::roll_silver(level, next_roll(), next_roll());
     let experience = monster.monster_type().level.max(1) as u64 * 25;
     let recipients = team_reward_recipients(state, character);
     let recipient_count = recipients.len().max(1) as u64;
@@ -1127,7 +1127,7 @@ pub(crate) async fn reward_monster_defeat(
         }
     }
 
-    for entity in &recipients {
+    for entity in recipients.iter().filter(|_| silver_drop.is_some()) {
         let Some(recipient) = entity.as_character() else {
             continue;
         };
@@ -1136,18 +1136,22 @@ pub(crate) async fn reward_monster_defeat(
             .send(MsgTalk::from_system(
                 recipient.id(),
                 TalkChannel::System,
-                format!("Loot: {silver_drop} silver dropped."),
+                format!("Loot: {} silver dropped.", silver_drop.unwrap_or_default()),
             ))
             .await?;
     }
     let location = monster.entity().location();
     let monster_level = monster.monster_type().level.max(0) as u16;
-    let mut drops = vec![(silver_item_id(silver_drop), silver_drop)];
+    let mut drops = silver_drop
+        .map(|silver| (silver_item_id(silver), silver))
+        .into_iter()
+        .collect::<Vec<_>>();
     drops.extend(
         state
             .drop_catalog()
             .roll(monster_type_id, monster_level)
             .into_iter()
+            .chain(state.drop_catalog().roll_rares())
             .map(|item_id| (item_id, 0)),
     );
     // The bounty talisman's loot bonus: one more roll of the drop table.
@@ -1192,7 +1196,7 @@ pub(crate) async fn reward_monster_defeat(
         x: location.x,
         y: location.y,
         action: InteractAction::Kill as u32,
-        value: silver_drop,
+        value: silver_drop.unwrap_or_default(),
         reserved: [0; 12],
     };
     character.owner().send(kill.clone()).await?;

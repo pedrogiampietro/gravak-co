@@ -14,6 +14,39 @@ pub struct MonsterDrop {
     pub max_monster_level: u16,
 }
 
+/// Meteor and DragonBall chances of every monster, in parts per million
+/// (Redux `CHANCE_METEOR` 0.72% and `CHANCE_DRAGONBALL` 0.0556%).
+pub const METEOR_PPM: u32 = 7_200;
+pub const DRAGONBALL_PPM: u32 = 556;
+pub const METEOR: u32 = 1_088_001;
+pub const DRAGONBALL: u32 = 1_088_000;
+
+/// Silver drops one kill in five (Redux), between the monster's level and
+/// fifteen times it at Redux's gold rate of 5.
+pub const SILVER_CHANCE_PERCENT: u32 = 20;
+const GOLD_RATE: u32 = 5;
+
+fn rares(mut meteor_roll: impl FnMut() -> u32, mut dragonball_roll: impl FnMut() -> u32) -> Vec<u32> {
+    let mut rares = Vec::new();
+    if meteor_roll() % 1_000_000 < METEOR_PPM {
+        rares.push(METEOR);
+    }
+    if dragonball_roll() % 1_000_000 < DRAGONBALL_PPM {
+        rares.push(DRAGONBALL);
+    }
+    rares
+}
+
+/// The silver a kill of a `level` monster drops, if any.
+pub fn roll_silver(level: u32, chance_roll: u32, value_roll: u32) -> Option<u32> {
+    if chance_roll % 100 >= SILVER_CHANCE_PERCENT {
+        return None;
+    }
+    let level = level.max(1);
+    let most = level.saturating_mul(15 * GOLD_RATE);
+    Some(level + value_roll % (most - level + 1))
+}
+
 #[derive(Debug, Default)]
 pub struct DropCatalog {
     drops: HashMap<u32, Vec<MonsterDrop>>,
@@ -88,6 +121,12 @@ impl DropCatalog {
         self.drops.values().all(Vec::is_empty)
     }
 
+    /// The rares any monster may drop, as Redux: a Meteor 0.72% of the time
+    /// and a DragonBall 0.0556%, besides its own table.
+    pub fn roll_rares(&self) -> Vec<u32> {
+        rares(next_roll, next_roll)
+    }
+
     pub fn roll(&self, monster_type_id: u32, monster_level: u16) -> Vec<u32> {
         self.select(monster_type_id, monster_level, || next_roll() % 100, || next_roll())
     }
@@ -151,6 +190,25 @@ where
 mod tests {
     use super::{DropCatalog, MonsterDrop};
     use std::collections::HashMap;
+
+    #[test]
+    fn rares_and_silver_follow_redux_chances() {
+        assert_eq!(super::rares(|| 7_199, || 999_999), vec![super::METEOR]);
+        assert_eq!(super::rares(|| 7_200, || 555), vec![super::DRAGONBALL]);
+        assert!(super::rares(|| 500_000, || 500_000).is_empty());
+        assert_eq!(super::roll_silver(10, 19, 0), Some(10));
+        assert_eq!(super::roll_silver(10, 20, 0), None, "four kills in five drop no silver");
+        assert_eq!(super::roll_silver(10, 0, 740), Some(750), "at most fifteen times the level, times five");
+        // Over many kills: about 0.72% Meteors and 20% silver.
+        let mut seed = 12_345_u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed >> 8
+        };
+        let kills = 200_000;
+        let meteors = (0..kills).filter(|_| super::rares(&mut next, || u32::MAX).contains(&super::METEOR)).count();
+        assert!((1_100..1_800).contains(&meteors), "{meteors} Meteors in {kills} kills");
+    }
 
     #[test]
     fn selects_items_by_monster_and_chance() {
