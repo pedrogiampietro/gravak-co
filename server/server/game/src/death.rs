@@ -215,6 +215,11 @@ pub async fn kill_character(
         }
     }
 
+    // A bounty is collected by any player kill outside the arena.
+    if let Some(slayer) = killer.filter(|killer| killer.id() != victim.id()) {
+        crate::bounty::collect(state, slayer, victim).await?;
+    }
+
     let killer = killer.filter(|killer| killer.id() != victim.id() && map_counts_pk(map_flags));
     let penalty = pk_penalty(victim.entity().flags());
     if let (Some(killer), Some(penalty)) = (killer, penalty) {

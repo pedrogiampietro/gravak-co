@@ -544,6 +544,11 @@ impl Character {
         self.inner.character_id
     }
 
+    /// The account that owns the character.
+    pub fn account_id(&self) -> i32 {
+        self.inner.account_id
+    }
+
     pub fn elevation(&self) -> u16 {
         self.elevation.load(Ordering::Relaxed)
     }

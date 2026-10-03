@@ -13,6 +13,8 @@ pub use msg_user_info::MsgUserInfo;
 mod msg_nobility;
 pub use msg_nobility::MsgNobility;
 
+mod msg_bounty;
+pub use msg_bounty::{send_bounty_list, MsgBounty};
 mod msg_nobility_ranking;
 pub use msg_nobility_ranking::{send_nobility_ranking, MsgNobilityRanking};
 

@@ -175,6 +175,40 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             actor.send(MsgNobility::from(me)).await?;
             Ok(())
         },
+        SubCommands::BountyList(_) => crate::packets::send_bounty_list(state, actor).await,
+        SubCommands::BountyPlace(info) => {
+            use crate::bounty::{PlaceOutcome, MIN_BOUNTY};
+            let reply = match crate::bounty::place(state.pool(), me, &info.target, info.amount).await? {
+                PlaceOutcome::Placed {
+                    target_id,
+                    target,
+                    amount,
+                    total,
+                } => {
+                    crate::audit::economic("bounty_place", me.id(), target_id, 0, amount);
+                    actor.send(MsgUserInfo::from(me)).await?;
+                    crate::bounty::announce(
+                        state,
+                        format!(
+                            "{} put a bounty of {amount} silver on {target}! The reward on their head is now {total} silver.",
+                            me.entity().name()
+                        ),
+                    )
+                    .await;
+                    crate::packets::send_bounty_list(state, actor).await?;
+                    format!("Bounty placed: {amount} silver on {target}.")
+                },
+                PlaceOutcome::TargetNotFound => format!("There is no character named {}.", info.target),
+                PlaceOutcome::OwnHead => "You cannot put a bounty on your own head.".to_owned(),
+                PlaceOutcome::TooSmall => format!("A bounty must be at least {MIN_BOUNTY} silver."),
+                PlaceOutcome::TooLarge => "That head cannot be worth any more.".to_owned(),
+                PlaceOutcome::NotEnoughSilver => "You do not have that much silver.".to_owned(),
+            };
+            actor
+                .send(MsgTalk::from_system(me.id(), TalkChannel::System, reply))
+                .await?;
+            Ok(())
+        },
         SubCommands::TitleEquip(info) => {
             match me.equip_title(state.pool(), info.title_id).await? {
                 crate::titles::EquipOutcome::Equipped(title_id) => {
@@ -1028,6 +1062,8 @@ enum SubCommands {
     NobilityRanking(NobilityRankingCmd),
     TitleStatus(TitleStatusCmd),
     TitleEquip(TitleEquipCmd),
+    BountyList(BountyListCmd),
+    BountyPlace(BountyPlaceCmd),
     CreateGuild(CreateGuildCmd),
     GuildDeposit(GuildDepositCmd),
     GuildWithdraw(GuildWithdrawCmd),
@@ -1168,6 +1204,23 @@ struct NobilityRankingCmd {}
 #[derive(Debug, Clone, PartialEq, FromArgs)]
 #[argh(subcommand, name = "title-status")]
 struct TitleStatusCmd {}
+
+/// List the bounties, richest first (the client's Bounty window).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-list")]
+struct BountyListCmd {}
+
+/// Put silver on a character's head; whoever slays them collects it.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-place")]
+struct BountyPlaceCmd {
+    /// the wanted character's name
+    #[argh(positional)]
+    target: String,
+    /// silver to add to the reward
+    #[argh(positional)]
+    amount: u32,
+}
 
 /// Equip a title by catalog id. Use id 0 to clear the equipped title.
 #[derive(Debug, Clone, PartialEq, FromArgs)]
@@ -1435,6 +1488,21 @@ mod tests {
     fn parses_stun_test_command() {
         let command = Command::from_args(&["commands"], &["test-stun"]).expect("test-stun command should parse");
         assert_eq!(command.commands, SubCommands::TestStun(super::TestStunCmd {}));
+    }
+
+    #[test]
+    fn parses_bounty_commands() {
+        let list = Command::from_args(&["commands"], &["bounty-list"]).expect("bounty list should parse");
+        assert_eq!(list.commands, SubCommands::BountyList(super::BountyListCmd {}));
+        let place = Command::from_args(&["commands"], &["bounty-place", "Outlaw", "50000"])
+            .expect("bounty place should parse");
+        assert_eq!(
+            place.commands,
+            SubCommands::BountyPlace(super::BountyPlaceCmd {
+                target: "Outlaw".into(),
+                amount: 50_000
+            })
+        );
     }
 
     #[test]
