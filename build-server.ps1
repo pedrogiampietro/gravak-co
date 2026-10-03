@@ -10,14 +10,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $serverRoot 'Cargo.toml') -PathType 
     throw "Server workspace not found: $serverRoot"
 }
 
-# Windows locks a running executable, so stop the servers before relinking.
-foreach ($name in 'game-server', 'auth-server') {
-    $running = Get-Process -Name $name -ErrorAction SilentlyContinue
-    if ($running) {
-        Write-Host "Stopping $name..." -ForegroundColor Yellow
-        $running | Stop-Process -Force
-        $running | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
-    }
+# Windows locks a running executable, so stop the servers before relinking;
+# the game server saves everyone online as it stops.
+if (Get-Process -Name game-server, auth-server -ErrorAction SilentlyContinue) {
+    Write-Host 'Stopping the servers...' -ForegroundColor Yellow
+    & (Join-Path $serverRoot 'scripts\stop-servers.ps1')
 }
 
 Push-Location $serverRoot

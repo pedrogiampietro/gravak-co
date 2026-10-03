@@ -84,8 +84,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SERVER_DIR%\scripts\db
 rem -- Start servers -----------------------------------------------
 rem A server left over from an earlier run holds its port, and the new one
 rem would exit with "address in use"; stop the old ones first.
-taskkill /IM auth-server.exe /F >nul 2>&1
-taskkill /IM game-server.exe /F >nul 2>&1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SERVER_DIR%\scripts\stop-servers.ps1" >nul
 taskkill /FI "WINDOWTITLE eq CoEmu - Auth Server*" /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq CoEmu - Game Server*" /F >nul 2>&1
 
@@ -140,17 +139,10 @@ goto :eof
 
 rem -- Stop servers ------------------------------------------------
 :stop
-echo Encerrando servidores...
-taskkill /IM auth-server.exe /F >nul 2>&1 && (
-    echo   [OK] Auth Server encerrado.
-) || (
-    echo   [--] Auth Server nao estava rodando.
-)
-taskkill /IM game-server.exe /F >nul 2>&1 && (
-    echo   [OK] Game Server encerrado.
-) || (
-    echo   [--] Game Server nao estava rodando.
-)
+echo Encerrando servidores (o game salva quem esta online)...
+rem Ctrl+Break in each server's window, as if it were closed; the game
+rem server saves everyone online before it exits.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SERVER_DIR%\scripts\stop-servers.ps1"
 rem Close the console windows that hosted the servers.
 taskkill /FI "WINDOWTITLE eq CoEmu - Auth Server*" /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq CoEmu - Game Server*" /F >nul 2>&1

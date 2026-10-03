@@ -31,13 +31,16 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
       duas vezes; teste com 20 rodadas). Amizade já era idempotente (`ON
       CONFLICT DO NOTHING` dos dois lados); trade e banca já conferiam cada
       remoção; a criação de guild passa pelo `GuildManager` em memória.
-- [ ] `run-server.bat stop` mata os servidores sem salvar (até 30 s de
-      progresso perdidos): parar o game de forma que ele salve todos.
+- [x] `run-server.bat stop` matava os servidores sem salvar (até 30 s de
+      progresso perdidos). Agora `server/scripts/stop-servers.ps1` manda
+      Ctrl+Break para a janela de cada servidor, e o game salva todos antes de
+      sair; fechar a janela no X também salva. Testado: parada em 2 s, com
+      `Saved everyone online` no log.
 
 ## P1 — operação
 
 - [ ] Linha de status com a saúde do banco (latência, conexões em uso).
-- [ ] Contagem de personagens salvos no desligamento, no log.
+- [x] Contagem de personagens salvos no desligamento, no log.
 - [ ] Tentativas de hack (portal fora da tela, NPC fora da tela) viram `warn`
       com a conta, em vez de `debug` silencioso.
 - [ ] Limite de tentativas de login por IP no auth server.

@@ -295,9 +295,13 @@ impl State {
         debug!("Clean up ..");
         debug!("Saving Entities data ..");
         let entities = self.drain_entities();
+        let mut saved = 0;
         for e in entities {
             match e.as_ref() {
-                GameEntity::Character(character) => character.save(&self).await?,
+                GameEntity::Character(character) => {
+                    character.save(&self).await?;
+                    saved += 1;
+                },
                 GameEntity::Npc(_) => {
                     // Do nothing for now
                 },
@@ -307,6 +311,7 @@ impl State {
                 },
             }
         }
+        tracing::info!(target: "server", characters = saved, "Saved everyone online");
         self.pool().close().await;
         debug!("Closed Database Connection ..");
         Ok(())
