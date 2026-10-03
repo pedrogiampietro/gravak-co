@@ -200,3 +200,23 @@ pub fn save_last_account(account: &str) {
 fn login_path() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("settings").join("login.ini"))
 }
+
+/// `settings/hud_icons.ini`: `key=path` lines naming the installation's art
+/// for the HUD icons (`bounty`, `mentor`, `lock`, `vip`, `mall`, `bug`) and
+/// the Revive plate (`revive`).
+pub fn load_hud_icon_paths() -> Vec<(String, String)> {
+    let Some(text) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("settings").join("hud_icons.ini")))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+    else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with(';') && !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, path)| (key.trim().to_ascii_lowercase(), path.trim().to_owned()))
+        .filter(|(key, path)| !key.is_empty() && !path.is_empty())
+        .collect()
+}

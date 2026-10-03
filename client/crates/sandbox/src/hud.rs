@@ -98,6 +98,8 @@ pub struct SkillHud {
     pub info: Vec<String>,
     /// Skill under the cursor in the bar; filled in by the renderer.
     pub hovered: Option<u32>,
+    /// Dead: seconds until Revive can be pressed (0 when it can).
+    pub revive_in: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +156,8 @@ const HOVER_SLOT: u8 = 20;
 const HOVER_CHAT: u8 = 40;
 const HOVER_TAB: u8 = 60;
 const HOVER_ORB: u8 = 80;
+const HOVER_ICON: u8 = 100;
+const HOVER_REVIVE: u8 = 120;
 
 const SKILL_SLOT: i32 = 50;
 const SKILL_ROW_CAPACITY: usize = 10;
@@ -353,7 +357,78 @@ pub fn contains(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     if cursor[0] < 0.0 || cursor[1] < 0.0 || cursor[0] >= viewport[0] || cursor[1] >= viewport[1] {
         return false;
     }
-    layout::main_hud_solid_at(viewport, cursor) || chat_tab_at(viewport, cursor).is_some()
+    layout::main_hud_solid_at(viewport, cursor)
+        || chat_tab_at(viewport, cursor).is_some()
+        || crate::hud_icons::icon_at(viewport, cursor).is_some()
+}
+
+/// The feature icon (Bounty, VIP, ...) under the cursor.
+pub fn feature_icon_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<crate::hud_icons::FeatureIcon> {
+    crate::hud_icons::icon_at(viewport, cursor).map(|index| crate::hud_icons::FeatureIcon::ALL[index])
+}
+
+/// The Revive button shown while dead, above the kill counter.
+fn revive_button_rect(viewport: [f32; 2]) -> Rect {
+    let [_, hud_y] = hud_origin(viewport);
+    Rect(viewport[0] as i32 - 10 - REVIVE_WIDTH, hud_y - 54, REVIVE_WIDTH, 40)
+}
+
+const REVIVE_WIDTH: i32 = 156;
+
+pub fn revive_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    revive_button_rect(viewport).contains(cursor)
+}
+
+/// A plate like the original's: the panels' teal lattice in a double gold
+/// frame, with "Revive" in the gold serif, or the seconds left before it.
+fn draw_revive(img: &mut RgbaImage, viewport: [f32; 2], seconds_left: u32, hovered: bool) {
+    let rect = revive_button_rect(viewport);
+    let Rect(x, y, w, h) = rect;
+    let ready = seconds_left == 0;
+    let lit = ready && hovered;
+    // The installation's own plate, when one is set; the label goes on it.
+    let original = crate::hud_icons::art("revive");
+    if let Some(plate) = &original {
+        let plate = imageops::resize(plate, w as u32, h as u32, imageops::FilterType::Triangle);
+        imageops::overlay(img, &plate, i64::from(x), i64::from(y));
+    }
+    for row in 0..if original.is_some() { 0 } else { h } {
+        let t = row as f32 / h as f32;
+        let base = if lit { [48.0, 104.0, 112.0] } else { [26.0, 70.0, 80.0] };
+        let c = [
+            (base[0] * (1.15 - t * 0.5)) as u8,
+            (base[1] * (1.15 - t * 0.5)) as u8,
+            (base[2] * (1.15 - t * 0.5)) as u8,
+            235,
+        ];
+        for column in 0..w {
+            // The diamond lattice of the game's panels.
+            let (u, v) = ((column + row) % 10, (column - row).rem_euclid(10));
+            let line = u == 0 || v == 0;
+            let mut colour = c;
+            if line {
+                colour = [c[0].saturating_add(16), c[1].saturating_add(22), c[2].saturating_add(22), 235];
+            }
+            blend(img, x + column, y + row, colour);
+        }
+    }
+    if original.is_none() || lit {
+        outline(img, Rect(x - 1, y - 1, w + 2, h + 2), [10, 16, 18, 255]);
+        outline(img, rect, if lit { [255, 226, 140, 255] } else { [196, 160, 86, 255] });
+    }
+    if original.is_none() {
+        outline(img, Rect(x + 2, y + 2, w - 4, h - 4), [120, 96, 48, 220]);
+    }
+    let Ok(font) = main_hud::label_font() else {
+        return;
+    };
+    let (label, size, colour) = if ready {
+        ("Revive".to_owned(), 18.0, if lit { [255, 248, 220, 255] } else { [255, 226, 150, 255] })
+    } else {
+        (format!("Revive in {seconds_left}s"), 15.0, [190, 184, 170, 255])
+    };
+    let width = main_hud::text_width(font, &label, size);
+    main_hud::text(img, font, &label, size, [x + (w - width) / 2, y + (h - size as i32) / 2 - 2], colour, None);
 }
 
 pub fn items_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -414,6 +489,12 @@ pub fn chat_tab_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u16> {
 }
 
 pub fn hovered_button(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
+    if let Some(index) = crate::hud_icons::icon_at(viewport, cursor) {
+        return Some(HOVER_ICON + index as u8);
+    }
+    if revive_button_at(viewport, cursor) {
+        return Some(HOVER_REVIVE);
+    }
     if let Some(slot) = layout::hotkey_slot_at(viewport, cursor) {
         return Some(HOVER_SLOT + slot as u8);
     }
@@ -824,6 +905,17 @@ pub fn image(
     draw_skill_bar(&mut img, assets, font, viewport, skills);
     if hud_config.kill_counter {
         draw_kill_counter(&mut img, viewport, skills.kill_count);
+    }
+    crate::hud_icons::draw(
+        &mut img,
+        viewport,
+        hover
+            .and_then(|code| code.checked_sub(HOVER_ICON))
+            .map(usize::from)
+            .filter(|index| *index < crate::hud_icons::FeatureIcon::ALL.len()),
+    );
+    if let Some(seconds_left) = skills.revive_in {
+        draw_revive(&mut img, viewport, seconds_left, hover == Some(HOVER_REVIVE));
     }
     draw_hotkeys(&mut img, assets, font, viewport, action_bar, hover)?;
 

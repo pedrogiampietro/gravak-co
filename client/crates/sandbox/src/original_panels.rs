@@ -9,7 +9,8 @@
 use crate::assets::{Assets, Result};
 use crate::network::TradeAmount;
 use crate::shop::{
-    FriendsPanelAction, GuildPanelAction, QuickPanel, TeamPanelAction, TradePanelAction,
+    BountyField, BountyPanelAction, BountyView, FeatureKind, FriendsPanelAction, GuildPanelAction,
+    QuickPanel, TeamPanelAction, TradePanelAction,
 };
 use image::{Pixel, Rgba, RgbaImage, imageops};
 
@@ -23,7 +24,9 @@ enum Anchor {
 }
 
 struct Frame {
-    art: &'static str,
+    /// Original dialog art at its native size, or `None` for the friend
+    /// dialog's frame cut to `size` (see [`framed_window`]).
+    art: Option<&'static str>,
     size: [u32; 2],
     anchor: Anchor,
     /// Small top-right close button and, optionally, a bottom "Close".
@@ -34,45 +37,57 @@ fn frame(panel: QuickPanel) -> Option<Frame> {
     Some(match panel {
         // [0-160] plus [160-1681] close.
         QuickPanel::Friends => Frame {
-            art: "data/main/GeneralBG.dds",
+            art: Some("data/main/GeneralBG.dds"),
             size: [208, 375],
             anchor: Anchor::Left,
             close: &[[175, 10, 15, 15]],
         },
         // [0-141] plus [141-1642] close.
         QuickPanel::Team => Frame {
-            art: "data/main/DialogGroup.dds",
+            art: Some("data/main/DialogGroup.dds"),
             size: [290, 114],
             anchor: Anchor::TopCenter,
             close: &[[263, 10, 15, 15]],
         },
         // [0-133] plus [133-1510]/[133-1511].
         QuickPanel::Guild => Frame {
-            art: "data/main/DialogQuery_Faction.dds",
+            art: Some("data/main/DialogQuery_Faction.dds"),
             size: [250, 392],
             anchor: Anchor::Left,
             close: &[[210, 23, 15, 15], [144, 350, 63, 21]],
         },
         // [0-137] plus [137-1138].
         QuickPanel::Trade => Frame {
-            art: "data/main/DialogTrade.dds",
+            art: Some("data/main/DialogTrade.dds"),
             size: [335, 297],
             anchor: Anchor::Left,
             close: &[[303, 8, 15, 15]],
         },
         // [0-138] plus [138-1535]/[138-1531].
         QuickPanel::Settings => Frame {
-            art: "data/main/DialogSetup.dds",
+            art: Some("data/main/DialogSetup.dds"),
             size: [370, 294],
             anchor: Anchor::Center,
             close: &[[340, 23, 15, 15], [244, 261, 62, 20]],
         },
         // [0-232] plus [232-1281]/[232-1283].
         QuickPanel::Mail => Frame {
-            art: "data/main/DialogMsgSend.dds",
+            art: Some("data/main/DialogMsgSend.dds"),
             size: [396, 261],
             anchor: Anchor::Center,
             close: &[[372, 20, 16, 16], [290, 230, 64, 24]],
+        },
+        QuickPanel::Bounty => Frame {
+            art: None,
+            size: BOUNTY_SIZE,
+            anchor: Anchor::Center,
+            close: &[BOUNTY_CLOSE, BOUNTY_CLOSE_BUTTON],
+        },
+        QuickPanel::Feature(_) => Frame {
+            art: None,
+            size: FEATURE_SIZE,
+            anchor: Anchor::Center,
+            close: &[FEATURE_CLOSE, FEATURE_CLOSE_BUTTON],
         },
         _ => return None,
     })
@@ -981,6 +996,152 @@ pub fn player_card(assets: &mut Assets, name: &str, level: Option<u16>, inner: u
 pub const LABEL_GOLD: [u8; 4] = [232, 206, 148, 255];
 
 // ---------------------------------------------------------------------------
+// Bounty board and the "coming soon" windows, in the friend dialog's frame
+
+const BOUNTY_SIZE: [u32; 2] = [400, 452];
+const BOUNTY_CLOSE: [i32; 4] = [370, 11, 15, 15];
+const BOUNTY_CLOSE_BUTTON: [i32; 4] = [294, 410, 84, 22];
+const BOUNTY_ROWS: usize = 10;
+const BOUNTY_ROW_TOP: i32 = 90;
+const BOUNTY_ROW: i32 = 22;
+const BOUNTY_TARGET: [i32; 4] = [26, 352, 170, 22];
+const BOUNTY_AMOUNT: [i32; 4] = [206, 352, 110, 22];
+const BOUNTY_PLACE: [i32; 4] = [324, 351, 54, 24];
+const BOUNTY_REFRESH: [i32; 4] = [26, 410, 84, 22];
+const FEATURE_SIZE: [u32; 2] = [320, 196];
+const FEATURE_CLOSE: [i32; 4] = [290, 11, 15, 15];
+const FEATURE_CLOSE_BUTTON: [i32; 4] = [118, 154, 84, 22];
+
+fn bounty_row_rect(index: usize) -> [i32; 4] {
+    [22, BOUNTY_ROW_TOP + index as i32 * BOUNTY_ROW, 356, BOUNTY_ROW - 2]
+}
+
+fn bounty_controls(rows: usize) -> Vec<Control<BountyPanelAction>> {
+    use BountyPanelAction as A;
+    let mut controls = vec![
+        control(BOUNTY_CLOSE, Face::Art("data/main/CloseBtnS.dds"), None),
+        control(BOUNTY_TARGET, Face::Label(""), Some(A::Focus(BountyField::Target))),
+        control(BOUNTY_AMOUNT, Face::Label(""), Some(A::Focus(BountyField::Amount))),
+        control(BOUNTY_PLACE, Face::Label("Place"), Some(A::Place)),
+        control(BOUNTY_REFRESH, Face::Label("Refresh"), Some(A::Refresh)),
+        control(BOUNTY_CLOSE_BUTTON, Face::Label("Close"), None),
+    ];
+    for index in 0..rows.min(BOUNTY_ROWS) {
+        controls.push(control(bounty_row_rect(index), Face::Label(""), Some(A::Pick(index))));
+    }
+    controls
+}
+
+pub fn bounty_action_at(viewport: [f32; 2], cursor: [f32; 2], view: &BountyView) -> Option<BountyPanelAction> {
+    hit(&bounty_controls(view.rows.len()), local(QuickPanel::Bounty, viewport, cursor)?)
+}
+
+/// `1234567` as `1,234,567`.
+pub fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+fn plate(image: &mut RgbaImage, rect: [i32; 4], lit: bool) {
+    fill(image, rect, if lit { [120, 90, 30, 160] } else { [0, 0, 0, 110] });
+    outline(image, rect, if lit { [255, 214, 102, 255] } else { [168, 128, 52, 255] });
+}
+
+fn input_box(image: &mut RgbaImage, rect: [i32; 4], value: &str, focused: bool) {
+    fill(image, rect, [0, 0, 0, 170]);
+    outline(image, rect, if focused { [255, 214, 102, 255] } else { [168, 128, 52, 255] });
+    let shown = if focused { format!("{value}_") } else { value.to_owned() };
+    text(image, &shown, rect[0] + 6, rect[1] + 4, WHITE, rect[2] - 10);
+}
+
+fn paint_bounty(image: &mut RgbaImage, assets: &mut Assets, view: &BountyView) -> Result<()> {
+    let centre = BOUNTY_SIZE[0] as i32 / 2;
+    label_centered(image, "Bounty Board", 15.0, centre, 11, LABEL_GOLD);
+    text(image, "Slay a wanted player to collect the silver on their head.", 26, 46, GREY, 350);
+    for (caption, x) in [("#", 28), ("Name", 50), ("Lv", 214), ("Reward", 300)] {
+        text(image, caption, x, 70, GOLD, 120);
+    }
+    fill(image, [22, 86, 356, 1], [168, 128, 52, 160]);
+    if view.rows.is_empty() {
+        let line = if view.loading { "Loading..." } else { "No bounties yet. Be the first to put a price on a head." };
+        let width = crate::main_hud::font().map_or(0, |font| crate::main_hud::text_width(font, line, 12.0));
+        text(image, line, centre - width / 2, BOUNTY_ROW_TOP + 80, GREY, 340);
+    }
+    for (index, row) in view.rows.iter().take(BOUNTY_ROWS).enumerate() {
+        let rect = bounty_row_rect(index);
+        if index % 2 == 0 {
+            fill(image, rect, [0, 0, 0, 60]);
+        }
+        let y = rect[1] + 3;
+        let colour = if index == 0 { [255, 214, 102, 255] } else { WHITE };
+        text(image, &(index + 1).to_string(), 28, y, GOLD, 20);
+        // Online players get a green mark before the name.
+        fill(image, [42, y + 4, 4, 4], if row.online { [90, 220, 110, 255] } else { [90, 90, 90, 255] });
+        text(image, &row.name, 50, y, colour, 160);
+        text(image, &row.level.to_string(), 214, y, WHITE, 40);
+        let reward = format!("{} silver", grouped(row.reward));
+        let width = crate::main_hud::font().map_or(0, |font| crate::main_hud::text_width(font, &reward, 12.0));
+        text(image, &reward, 372 - width, y, [255, 220, 120, 255], 160);
+    }
+    fill(image, [22, 316, 356, 1], [168, 128, 52, 160]);
+    text(image, "Place a bounty", 26, 322, GOLD, 200);
+    text(image, "Name", 28, 338, GREY, 100);
+    text(image, "Silver", 208, 338, GREY, 100);
+    input_box(image, BOUNTY_TARGET, &view.target, view.focus == Some(BountyField::Target));
+    input_box(image, BOUNTY_AMOUNT, &view.amount, view.focus == Some(BountyField::Amount));
+    for rect in [BOUNTY_PLACE, BOUNTY_REFRESH, BOUNTY_CLOSE_BUTTON] {
+        plate(image, rect, rect == BOUNTY_PLACE);
+    }
+    let notice = if view.notice.is_empty() {
+        format!("At least {} silver. Rewards add up.", grouped(10_000))
+    } else {
+        view.notice.clone()
+    };
+    text(image, &notice, 26, 384, GREY, 352);
+    paint(image, assets, &bounty_controls(view.rows.len()))
+}
+
+fn paint_feature(image: &mut RgbaImage, assets: &mut Assets, kind: FeatureKind) -> Result<()> {
+    let centre = FEATURE_SIZE[0] as i32 / 2;
+    label_centered(image, kind.title(), 15.0, centre, 11, LABEL_GOLD);
+    label_centered(image, "Coming soon", 20.0, centre, 56, [255, 220, 120, 255]);
+    let font = crate::main_hud::font()?;
+    let mut line = String::new();
+    let mut y = 92;
+    for word in kind.description().split_whitespace() {
+        let candidate = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+        if crate::main_hud::text_width(font, &candidate, 12.0) > 260 && !line.is_empty() {
+            let width = crate::main_hud::text_width(font, &line, 12.0);
+            text(image, &line, centre - width / 2, y, WHITE, 280);
+            y += 16;
+            line = word.to_owned();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        let width = crate::main_hud::text_width(font, &line, 12.0);
+        text(image, &line, centre - width / 2, y, WHITE, 280);
+    }
+    plate(image, FEATURE_CLOSE_BUTTON, false);
+    paint(
+        image,
+        assets,
+        &[
+            control::<()>(FEATURE_CLOSE, Face::Art("data/main/CloseBtnS.dds"), None),
+            control(FEATURE_CLOSE_BUTTON, Face::Label("Close"), None),
+        ],
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Painting
 
 pub struct PanelData<'a> {
@@ -998,6 +1159,8 @@ pub struct PanelData<'a> {
     pub trade: &'a crate::network::TradeView,
     /// The player's options, for the Options window.
     pub options: crate::hud::HudConfig,
+    /// The Bounty window's list and form.
+    pub bounty: &'a BountyView,
 }
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -1084,7 +1247,10 @@ fn item_icon(assets: &mut Assets, item_type: u32) -> Option<RgbaImage> {
 pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result<RgbaImage> {
     let frame = frame(panel).ok_or("panel has no original dialog")?;
     let mut image = RgbaImage::new(frame.size[0], frame.size[1]);
-    crate::original_ui::overlay_asset(&mut image, assets, frame.art, 0, 0)?;
+    match frame.art {
+        Some(art) => crate::original_ui::overlay_asset(&mut image, assets, art, 0, 0)?,
+        None => imageops::overlay(&mut image, &framed_window(assets, frame.size[0], frame.size[1])?, 0, 0),
+    }
     match panel {
         QuickPanel::Friends => {
             paint(
@@ -1283,6 +1449,8 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 outline(&mut image, [112, 261, 62, 20], [255, 215, 108, 255]);
             }
         }
+        QuickPanel::Bounty => paint_bounty(&mut image, assets, data.bounty)?,
+        QuickPanel::Feature(kind) => paint_feature(&mut image, assets, kind)?,
         QuickPanel::Settings => {
             if data.options.options_page != 0 {
                 // The original middle rows give way to the client's own
@@ -1306,6 +1474,52 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_bounty() -> BountyView {
+        BountyView {
+            rows: [("Outlaw", 112, 12_500_000, true), ("Rogue", 87, 400_000, false)]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (name, level, reward, online))| crate::network::BountyRow {
+                    target_id: index as u32 + 1,
+                    name: name.to_owned(),
+                    level,
+                    reward,
+                    online,
+                })
+                .collect(),
+            target: "Outlaw".into(),
+            amount: "50000".into(),
+            focus: Some(BountyField::Amount),
+            notice: String::new(),
+            loading: false,
+        }
+    }
+
+    #[test]
+    fn bounty_board_is_hit_where_it_is_painted() {
+        let viewport = [1366.0, 768.0];
+        let view = sample_bounty();
+        let at = |rect: [i32; 4]| {
+            let [left, top] = position(QuickPanel::Bounty, viewport).expect("bounty board");
+            [left + rect[0] as f32 + rect[2] as f32 * 0.5, top + rect[1] as f32 + rect[3] as f32 * 0.5]
+        };
+        assert_eq!(bounty_action_at(viewport, at(bounty_row_rect(1)), &view), Some(BountyPanelAction::Pick(1)));
+        // Only listed rows can be picked.
+        assert_eq!(bounty_action_at(viewport, at(bounty_row_rect(5)), &view), None);
+        assert_eq!(bounty_action_at(viewport, at(BOUNTY_PLACE), &view), Some(BountyPanelAction::Place));
+        assert_eq!(
+            bounty_action_at(viewport, at(BOUNTY_AMOUNT), &view),
+            Some(BountyPanelAction::Focus(BountyField::Amount))
+        );
+        assert!(close_at(QuickPanel::Bounty, viewport, at(BOUNTY_CLOSE_BUTTON)));
+        let feature = QuickPanel::Feature(FeatureKind::Vip);
+        let [left, top] = position(feature, viewport).expect("feature window");
+        let close = FEATURE_CLOSE_BUTTON;
+        assert!(close_at(feature, viewport, [left + close[0] as f32 + 4.0, top + close[1] as f32 + 4.0]));
+        assert_eq!(grouped(12_500_000), "12,500,000");
+        assert_eq!(grouped(999), "999");
+    }
 
     #[test]
     fn controls_are_hit_where_they_are_painted() {
@@ -1434,6 +1648,7 @@ mod tests {
         let mut trade = crate::network::TradeView::default();
         trade.active = true;
         trade.own_silver = 1_500;
+        let bounty = sample_bounty();
         for panel in [
             QuickPanel::Friends,
             QuickPanel::Team,
@@ -1441,6 +1656,8 @@ mod tests {
             QuickPanel::Trade,
             QuickPanel::Settings,
             QuickPanel::Mail,
+            QuickPanel::Bounty,
+            QuickPanel::Feature(FeatureKind::Vip),
         ] {
             let data = PanelData {
                 character: &character,
@@ -1460,6 +1677,7 @@ mod tests {
                 selected_target_name: Some("Sheko"),
                 trade: &trade,
                 options: crate::hud::HudConfig::default(),
+                bounty: &bounty,
             };
             image(&mut assets, panel, &data)?.save(output.join(format!("{panel:?}.png")))?;
         }

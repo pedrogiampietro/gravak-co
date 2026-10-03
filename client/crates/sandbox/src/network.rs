@@ -124,6 +124,16 @@ pub struct SocialEntry {
     pub online: bool,
 }
 
+/// A wanted character in the Bounty window.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BountyRow {
+    pub target_id: u32,
+    pub name: String,
+    pub level: u32,
+    pub reward: u64,
+    pub online: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NobilityEntry {
     pub position: u32,
@@ -224,6 +234,10 @@ pub enum NetworkEvent {
         title_id: u32,
     },
     NobilityRanking(NobilityEntry),
+    /// The whole bounty list, richest first.
+    BountyList(Vec<BountyRow>),
+    /// This player's kill collected the bounty on `name`.
+    BountyClaimed { name: String, reward: u64 },
     ExperienceGain {
         experience: u64,
     },
@@ -663,6 +677,8 @@ impl NetworkHandle {
                 | NetworkEvent::Attributes { .. }
                 | NetworkEvent::Nobility { .. }
                 | NetworkEvent::NobilityRanking(_)
+                | NetworkEvent::BountyList(_)
+                | NetworkEvent::BountyClaimed { .. }
                 | NetworkEvent::ExperienceGain { .. }
                 | NetworkEvent::InventoryItem(_)
                 | NetworkEvent::InventoryItemRemoved(_)
@@ -1164,6 +1180,8 @@ pub(crate) async fn play(
     mut commands: UnboundedReceiver<NetworkCommand>,
 ) -> Result<(), String> {
     send_status(&events, &format!("loading {}", user.character_name));
+    // Bounty rows arrive one per packet between CLEAR and END.
+    let mut bounty_rows = Vec::new();
     session
         .send(&ActionPacket::send_location(user.character_id))
         .await
@@ -1380,6 +1398,26 @@ pub(crate) async fn play(
                         title_id: info.title_id,
                     });
                 }
+                Some(GameEvent::Bounty(info)) => match info.action {
+                    0 => bounty_rows.clear(),
+                    1 => bounty_rows.push(BountyRow {
+                        target_id: info.target_id,
+                        name: info.name,
+                        level: info.level,
+                        reward: info.reward,
+                        online: info.online != 0,
+                    }),
+                    2 => {
+                        let _ = events.send(NetworkEvent::BountyList(std::mem::take(&mut bounty_rows)));
+                    }
+                    3 => {
+                        let _ = events.send(NetworkEvent::BountyClaimed {
+                            name: info.name,
+                            reward: info.reward,
+                        });
+                    }
+                    _ => {}
+                },
                 Some(GameEvent::NobilityRanking(info)) if info.action == 1 => {
                     let _ = events.send(NetworkEvent::NobilityRanking(NobilityEntry {
                         position: info.position,

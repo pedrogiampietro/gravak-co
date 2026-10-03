@@ -1244,9 +1244,15 @@ mod art_probe {
         "sex",
     ];
 
-    fn interesting(text: &str) -> bool {
+    /// The original client's feature icons and the Revive button.
+    const HUD_KEYWORDS: [&str; 13] = [
+        "mentor", "lock", "vip", "mall", "shop", "bug", "report", "revive", "relive", "reborn",
+        "wanted", "activity", "event",
+    ];
+
+    fn interesting(keywords: &[&str], text: &str) -> bool {
         let lower = text.to_ascii_lowercase();
-        KEYWORDS.iter().any(|keyword| lower.contains(keyword))
+        keywords.iter().any(|keyword| lower.contains(keyword))
     }
 
     fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
@@ -1270,11 +1276,23 @@ mod art_probe {
     #[test]
     #[ignore = "Needs the 5065 installation"]
     fn probe_login_art() -> crate::assets::Result<()> {
+        probe(&KEYWORDS, "login-art-probe")
+    }
+
+    /// Like [`probe_login_art`], for the HUD's feature icons and the Revive
+    /// button (default output ./hud-art-probe).
+    #[test]
+    #[ignore = "Needs the 5065 installation"]
+    fn probe_hud_art() -> crate::assets::Result<()> {
+        probe(&HUD_KEYWORDS, "hud-art-probe")
+    }
+
+    fn probe(keywords: &[&str], default_out: &str) -> crate::assets::Result<()> {
         let root = std::path::PathBuf::from(
             std::env::var("GRAVAK_CLIENT").unwrap_or_else(|_| "R:/5065".into()),
         );
         let out = std::path::PathBuf::from(
-            std::env::var("GRAVAK_PROBE_OUT").unwrap_or_else(|_| "login-art-probe".into()),
+            std::env::var("GRAVAK_PROBE_OUT").unwrap_or_else(|_| default_out.into()),
         );
         std::fs::create_dir_all(&out)?;
         let mut assets = crate::assets::Assets::open(&root)?;
@@ -1294,7 +1312,7 @@ mod art_probe {
             let image = [".dds", ".jpg", ".jpeg", ".bmp", ".tga", ".png"]
                 .iter()
                 .any(|ext| lower.ends_with(ext));
-            if image && interesting(file) {
+            if image && interesting(keywords, file) {
                 report.push(format!("loose image: {file}"));
                 candidates.push(file.clone());
             }
@@ -1336,7 +1354,7 @@ mod art_probe {
                     section = name.to_owned();
                     continue;
                 }
-                if !(interesting(&section) || interesting(line)) {
+                if !(interesting(keywords, &section) || interesting(keywords, line)) {
                     continue;
                 }
                 hits += 1;

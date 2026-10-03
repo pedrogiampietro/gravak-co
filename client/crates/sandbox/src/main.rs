@@ -8,6 +8,7 @@ mod character;
 mod components;
 mod debug_log;
 mod hud;
+mod hud_icons;
 mod labels;
 mod launcher;
 mod launcher_art;
@@ -400,6 +401,8 @@ struct App {
     player_shop_open: bool,
     player_shop_price: String,
     player_shop_price_focused: bool,
+    /// The Bounty board's list and form.
+    bounty: shop::BountyView,
     ground_loot: Vec<(u32, [f32; 2], u32, f32)>,
     dialog: Option<DialogState>,
     shop: Option<shop::ShopState>,
@@ -559,6 +562,14 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.quick_panel == Some(shop::QuickPanel::Bounty) && self.bounty.focus.is_some() =>
+            {
+                if event.state == ElementState::Pressed {
+                    self.handle_bounty_key(&event);
                 }
                 return;
             }
@@ -940,17 +951,8 @@ impl ApplicationHandler for App {
                     let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
                     self.player.action = Action::Die;
                     local_action_progress = Some(((elapsed - died_at) / fall).clamp(0.0, 1.0));
-                    if elapsed - died_at >= REVIVE_DELAY_SECONDS && self.dialog.is_none() {
-                        self.dialog = Some(DialogState {
-                            task_id: REVIVE_TASK_ID,
-                            avatar: 0,
-                            lines: vec!["You are dead.".to_owned()],
-                            options: vec![(1, "Revive".to_owned())],
-                            edit: None,
-                            input: String::new(),
-                            input_focused: false,
-                        });
-                    }
+                    // The Revive button above the kill counter lights up
+                    // after REVIVE_DELAY_SECONDS (see `skill_hud`).
                 }
                 let action_animation_progress = self
                     .action_animation_started
@@ -1068,6 +1070,7 @@ impl ApplicationHandler for App {
                         self.player_shop_open,
                         &self.player_shop_price,
                         self.player_shop_price_focused,
+                        &self.bounty,
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -1493,6 +1496,16 @@ impl App {
                     return true;
                 }
             }
+            if self.quick_panel == Some(shop::QuickPanel::Bounty) {
+                if let Some(action) =
+                    crate::original_panels::bounty_action_at(viewport, self.cursor, &self.bounty)
+                {
+                    self.handle_bounty_action(action);
+                    self.held = false;
+                    return true;
+                }
+                self.bounty.focus = None;
+            }
             if self.quick_panel == Some(shop::QuickPanel::Trade) {
                 let action = shop::trade_panel_action_at(viewport, self.cursor, &self.trade);
                 // Leaving an amount box sends what was typed in it.
@@ -1608,6 +1621,38 @@ impl App {
                 self.held = false;
                 return true;
             }
+        }
+        // Dead, the Revive button above the kill counter gets the player up.
+        if self.dead_since.is_some() && hud::revive_button_at(viewport, self.cursor) {
+            if self.skill_hud().revive_in == Some(0) {
+                if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                    network.revive(character_id);
+                    self.network_status = "online: reviving".into();
+                }
+            }
+            self.held = false;
+            return true;
+        }
+        if let Some(icon) = hud::feature_icon_at(viewport, self.cursor) {
+            use hud_icons::FeatureIcon as F;
+            let feature = match icon {
+                F::Bounty => None,
+                F::MentorReward => Some(shop::FeatureKind::MentorReward),
+                F::ItemLock => Some(shop::FeatureKind::ItemLock),
+                F::Vip => Some(shop::FeatureKind::Vip),
+                F::ShoppingMall => Some(shop::FeatureKind::ShoppingMall),
+                F::BugReport => Some(shop::FeatureKind::BugReport),
+            };
+            match feature {
+                None if self.quick_panel == Some(shop::QuickPanel::Bounty) => self.quick_panel = None,
+                None => self.open_bounty(),
+                Some(kind) if self.quick_panel == Some(shop::QuickPanel::Feature(kind)) => {
+                    self.quick_panel = None;
+                }
+                Some(kind) => self.quick_panel = Some(shop::QuickPanel::Feature(kind)),
+            }
+            self.held = false;
+            return true;
         }
         if let Some(button) = hud::quick_button_at(viewport, self.cursor) {
             match button {
@@ -2123,6 +2168,115 @@ impl App {
             .get(&id)
             .map(|actor| actor.name.clone())
             .unwrap_or_default()
+    }
+
+    /// Opens the Bounty board and asks the server for the list.
+    fn open_bounty(&mut self) {
+        self.quick_panel = Some(shop::QuickPanel::Bounty);
+        self.bounty.focus = None;
+        self.bounty.notice.clear();
+        self.request_bounty_list();
+    }
+
+    fn request_bounty_list(&mut self) {
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.send_chat(character_id, &self.character.name, "$bounty-list");
+            self.bounty.loading = true;
+        } else {
+            self.bounty.notice = "The bounty board needs the server.".into();
+        }
+    }
+
+    fn handle_bounty_action(&mut self, action: shop::BountyPanelAction) {
+        use shop::{BountyField, BountyPanelAction as A};
+        match action {
+            A::Focus(field) => self.bounty.focus = Some(field),
+            A::Pick(index) => {
+                if let Some(row) = self.bounty.rows.get(index) {
+                    self.bounty.target = row.name.clone();
+                    self.bounty.focus = Some(BountyField::Amount);
+                }
+            }
+            A::Refresh => self.request_bounty_list(),
+            A::Place => self.place_bounty(),
+        }
+    }
+
+    fn place_bounty(&mut self) {
+        let target = self.bounty.target.trim().to_owned();
+        let amount = self.bounty.amount.parse::<u32>().unwrap_or(0);
+        self.bounty.focus = None;
+        if target.is_empty() {
+            self.bounty.notice = "Write the name of the wanted player.".into();
+            return;
+        }
+        if target.eq_ignore_ascii_case(&self.character.name) {
+            self.bounty.notice = "You cannot put a bounty on your own head.".into();
+            return;
+        }
+        if amount < 10_000 {
+            self.bounty.notice = "A bounty must be at least 10,000 silver.".into();
+            return;
+        }
+        if u64::from(amount) > u64::from(self.silver) {
+            self.bounty.notice = "You do not have that much silver.".into();
+            return;
+        }
+        let Some((network, character_id)) = self.network.as_ref().zip(self.network_character_id) else {
+            self.bounty.notice = "The bounty board needs the server.".into();
+            return;
+        };
+        network.send_chat(character_id, &self.character.name, &format!("$bounty-place {target} {amount}"));
+        self.bounty.notice = format!(
+            "Placing {} silver on {target}...",
+            crate::original_panels::grouped(u64::from(amount))
+        );
+        self.bounty.amount.clear();
+    }
+
+    fn handle_bounty_key(&mut self, event: &winit::event::KeyEvent) {
+        use shop::BountyField;
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::Escape) => self.bounty.focus = None,
+            PhysicalKey::Code(KeyCode::Tab) => {
+                self.bounty.focus = Some(match self.bounty.focus {
+                    Some(BountyField::Target) => BountyField::Amount,
+                    _ => BountyField::Target,
+                });
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.place_bounty(),
+            PhysicalKey::Code(KeyCode::Backspace) => match self.bounty.focus {
+                Some(BountyField::Target) => {
+                    self.bounty.target.pop();
+                }
+                Some(BountyField::Amount) => {
+                    self.bounty.amount.pop();
+                }
+                None => {}
+            },
+            _ => {
+                let Some(text) = event.text.as_ref() else {
+                    return;
+                };
+                match self.bounty.focus {
+                    Some(BountyField::Target) => {
+                        for c in text.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_') {
+                            if self.bounty.target.len() < 15 {
+                                self.bounty.target.push(c);
+                            }
+                        }
+                    }
+                    Some(BountyField::Amount) => {
+                        for c in text.chars().filter(char::is_ascii_digit) {
+                            if self.bounty.amount.len() < 10 {
+                                self.bounty.amount.push(c);
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
     }
 
     /// The Status button opens the Character window on its first tab,
@@ -2887,6 +3041,11 @@ impl App {
                     format!("friend {name} ({friend_id}) action {action} {state}");
             }
             NetworkEvent::ChatMessage(message) => {
+                // The server answers a bounty with a system line; show it on
+                // the board too.
+                if message.channel == 2007 && self.bounty.notice.starts_with("Placing") {
+                    self.bounty.notice = message.message.clone();
+                }
                 let display = if message.channel == 2001 {
                     format!("Whisper from {}: {}", message.sender_name, message.message)
                 } else {
@@ -3033,6 +3192,18 @@ impl App {
                         renderer.invalidate_status();
                     }
                 }
+            }
+            NetworkEvent::BountyList(rows) => {
+                self.bounty.rows = rows;
+                self.bounty.loading = false;
+            }
+            NetworkEvent::BountyClaimed { name, reward } => {
+                let text = format!(
+                    "You collected the bounty of {} silver on {name}!",
+                    crate::original_panels::grouped(reward)
+                );
+                self.bounty.notice = text.clone();
+                self.network_status = text;
             }
             NetworkEvent::NobilityRanking(entry) => {
                 if entry.position == 1 {
@@ -4166,6 +4337,10 @@ impl App {
             kill_mode: self.kill_mode,
             info: self.info_lines(),
             hovered: None,
+            revive_in: self.dead_since.map(|died_at| {
+                let left = REVIVE_DELAY_SECONDS - (self.started.elapsed().as_secs_f32() - died_at);
+                left.max(0.0).ceil() as u32
+            }),
         }
     }
 
@@ -6465,6 +6640,13 @@ fn run() -> Result<()> {
         network = Some(handle);
     }
     let map_id = map_id.unwrap_or(1002);
+    // The installation's art for the HUD icons, where settings name it.
+    for (key, path) in settings::load_hud_icon_paths() {
+        match assets.image(&path) {
+            Ok(image) => hud_icons::set_art(&key, image),
+            Err(error) => eprintln!("HUD icon {key}: {path}: {error}"),
+        }
+    }
     let npc_catalog = character::NpcCatalog::load(&mut assets)?;
     let map = map::Map::load(&mut assets, map_id)?;
     // Online, the body (and so the sex) is the server's, not the sample
@@ -6862,6 +7044,7 @@ fn run() -> Result<()> {
         player_shop_open: false,
         player_shop_price: "1000".into(),
         player_shop_price_focused: false,
+        bounty: shop::BountyView::default(),
         ground_loot: Vec::new(),
         dialog: None,
         shop: benchmark_shop,

@@ -62,7 +62,7 @@ pub fn blend(image: &mut RgbaImage, x: i32, y: i32, colour: [u8; 4]) {
     }
 }
 
-fn with_alpha(colour: [u8; 4], alpha: f32) -> [u8; 4] {
+pub(crate) fn with_alpha(colour: [u8; 4], alpha: f32) -> [u8; 4] {
     [
         colour[0],
         colour[1],
@@ -71,7 +71,7 @@ fn with_alpha(colour: [u8; 4], alpha: f32) -> [u8; 4] {
     ]
 }
 
-fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [u8; 3] {
+pub(crate) fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [u8; 3] {
     let t = t.clamp(0.0, 1.0);
     [
         (a[0] + (b[0] - a[0]) * t) as u8,
@@ -151,7 +151,7 @@ pub fn radial_glow(image: &mut RgbaImage, cx: i32, cy: i32, radius: i32, colour:
 
 /// Paints the pixels of `rect` for which `shape` (in pixel space) is
 /// inside, antialiased with 4x4 supersampling.
-fn shape(
+pub(crate) fn shape(
     image: &mut RgbaImage,
     rect: [i32; 4],
     colour: impl Fn(f32, f32) -> [u8; 4],
@@ -187,7 +187,7 @@ fn shape(
 // ---------------------------------------------------------------------------
 // Geometry in emblem space: the unit disc, y pointing down.
 
-type Point = (f32, f32);
+pub(crate) type Point = (f32, f32);
 
 fn segment_distance(p: Point, a: Point, b: Point) -> f32 {
     let (px, py) = (p.0 - a.0, p.1 - a.1);
@@ -196,15 +196,15 @@ fn segment_distance(p: Point, a: Point, b: Point) -> f32 {
     ((px - bx * t).powi(2) + (py - by * t).powi(2)).sqrt()
 }
 
-fn capsule(p: Point, a: Point, b: Point, radius: f32) -> bool {
+pub(crate) fn capsule(p: Point, a: Point, b: Point, radius: f32) -> bool {
     segment_distance(p, a, b) <= radius
 }
 
-fn circle(p: Point, centre: Point, radius: f32) -> bool {
+pub(crate) fn circle(p: Point, centre: Point, radius: f32) -> bool {
     (p.0 - centre.0).powi(2) + (p.1 - centre.1).powi(2) <= radius * radius
 }
 
-fn polygon(p: Point, points: &[Point]) -> bool {
+pub(crate) fn polygon(p: Point, points: &[Point]) -> bool {
     let mut inside = false;
     let mut j = points.len() - 1;
     for i in 0..points.len() {
@@ -217,7 +217,7 @@ fn polygon(p: Point, points: &[Point]) -> bool {
     inside
 }
 
-fn rotate(p: Point, angle: f32) -> Point {
+pub(crate) fn rotate(p: Point, angle: f32) -> Point {
     let (sin, cos) = angle.sin_cos();
     (p.0 * cos - p.1 * sin, p.0 * sin + p.1 * cos)
 }

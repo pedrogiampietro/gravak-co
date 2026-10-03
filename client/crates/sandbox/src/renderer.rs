@@ -308,6 +308,7 @@ enum UiTextureJob {
         player_shop_price: String,
         player_shop_price_focused: bool,
         hud_config: crate::hud::HudConfig,
+        bounty: crate::shop::BountyView,
     },
     ShopBase {
         path: String,
@@ -573,6 +574,7 @@ impl UiTextureJob {
                 player_shop_price,
                 player_shop_price_focused,
                 hud_config,
+                bounty,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -599,6 +601,7 @@ impl UiTextureJob {
                 &player_shop_price,
                 player_shop_price_focused,
                 hud_config,
+                &bounty,
             ),
         };
         image.map_err(|error| error.to_string())
@@ -1757,6 +1760,7 @@ impl Renderer {
         player_shop_open: bool,
         player_shop_price: &str,
         player_shop_price_focused: bool,
+        bounty: &crate::shop::BountyView,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -3169,6 +3173,7 @@ impl Renderer {
             player_shop_price.hash(&mut hasher);
             player_shop_price_focused.hash(&mut hasher);
             hud_config.hash(&mut hasher);
+            bounty.hash(&mut hasher);
             friends.hash(&mut hasher);
             ignores.hash(&mut hasher);
             pending_friend_name.hash(&mut hasher);
@@ -3208,6 +3213,7 @@ impl Renderer {
                         player_shop_price: player_shop_price.to_owned(),
                         player_shop_price_focused,
                         hud_config,
+                        bounty: bounty.clone(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);

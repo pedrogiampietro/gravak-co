@@ -22,6 +22,8 @@ pub const MSG_WALK: u16 = 1005;
 pub const MSG_USER_INFO: u16 = 1006;
 pub const MSG_NOBILITY: u16 = 2064;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
+/// Bounty list rows and claims (project packet, not part of 5065).
+pub const MSG_BOUNTY: u16 = 9010;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
 pub const MSG_ASSIGN_ATTRIBUTES: u16 = 1024;
@@ -1235,6 +1237,19 @@ pub struct NobilityRankingInfo {
     pub character_name: String,
 }
 
+/// A row of the Bounty window, or a claimed bounty ([`MSG_BOUNTY`]).
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct BountyInfo {
+    /// 0 clear, 1 entry, 2 end of list, 3 claimed by this player.
+    pub action: u32,
+    pub target_id: u32,
+    pub reward: u64,
+    pub level: u32,
+    pub online: u32,
+    pub list_count: u8,
+    pub name: String,
+}
+
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct ServerData {
     pub action: u32,
@@ -1312,6 +1327,7 @@ pub enum GameEvent {
     UserInfo(UserInfo),
     Nobility(NobilityInfo),
     NobilityRanking(NobilityRankingInfo),
+    Bounty(BountyInfo),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
@@ -1408,6 +1424,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_NOBILITY_RANKING => Ok(GameEvent::NobilityRanking(
             NobilityRankingInfo::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_BOUNTY => Ok(GameEvent::Bounty(
+            BountyInfo::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,
@@ -2061,6 +2080,45 @@ mod tests {
         assert_eq!(decoded.name, "Leader".into());
         assert_eq!(decoded.rank, 1000);
         assert_eq!(decoded.online, 1);
+    }
+
+    #[test]
+    fn decodes_bounty_rows_as_the_server_sends_them() {
+        // The game server's MsgBounty.
+        #[derive(Debug, Serialize, PacketID)]
+        #[packet(id = 9010)]
+        struct BountyWire {
+            action: u32,
+            target_id: u32,
+            reward: u64,
+            level: u32,
+            online: u32,
+            list_count: u8,
+            name: String,
+        }
+
+        let encoded = BountyWire {
+            action: 1,
+            target_id: 7,
+            reward: 2_500_000,
+            level: 112,
+            online: 1,
+            list_count: 1,
+            name: "Outlaw".to_owned(),
+        }
+        .encode()
+        .expect("bounty row should encode");
+        assert_eq!(encoded.0, MSG_BOUNTY);
+        let decoded = BountyInfo::decode(&encoded.1).expect("bounty row should decode");
+        assert_eq!(decoded.target_id, 7);
+        assert_eq!(decoded.reward, 2_500_000);
+        assert_eq!(decoded.level, 112);
+        assert_eq!(decoded.online, 1);
+        assert_eq!(decoded.name, "Outlaw");
+        assert!(matches!(
+            decode_game_event(MSG_BOUNTY, &encoded.1),
+            Ok(GameEvent::Bounty(_))
+        ));
     }
 
     #[test]

@@ -576,6 +576,70 @@ pub enum QuickPanel {
     Team,
     System,
     Settings,
+    /// The Bounty board.
+    Bounty,
+    /// A feature that is not available yet; its window says so.
+    Feature(FeatureKind),
+}
+
+/// The HUD's feature icons that have no window of their own yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FeatureKind {
+    MentorReward,
+    ItemLock,
+    Vip,
+    ShoppingMall,
+    BugReport,
+}
+
+impl FeatureKind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::MentorReward => "Mentor Reward",
+            Self::ItemLock => "Item Lock",
+            Self::Vip => "VIP",
+            Self::ShoppingMall => "Shopping Mall",
+            Self::BugReport => "Bug Report",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::MentorReward => "Mentors will be rewarded as their apprentices grow. This feature is on its way.",
+            Self::ItemLock => "Lock your precious items so they cannot be sold, dropped or traded by mistake.",
+            Self::Vip => "VIP privileges and rewards are being prepared for Gravak.",
+            Self::ShoppingMall => "The Shopping Mall will sell items for CPs. Its doors open soon.",
+            Self::BugReport => "Found a problem? An in-game report form is coming; until then, tell us on Discord.",
+        }
+    }
+}
+
+/// The Bounty window's list and the bounty being placed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct BountyView {
+    pub rows: Vec<crate::network::BountyRow>,
+    pub target: String,
+    pub amount: String,
+    pub focus: Option<BountyField>,
+    /// The last answer or claim, shown under the form.
+    pub notice: String,
+    /// The list was asked for and has not arrived yet.
+    pub loading: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BountyField {
+    Target,
+    Amount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BountyPanelAction {
+    Focus(BountyField),
+    /// A row was clicked: its name goes into the form.
+    Pick(usize),
+    Place,
+    Refresh,
 }
 
 pub use crate::original_panels::SettingsAction as SettingsPanelAction;
@@ -668,6 +732,8 @@ impl QuickPanel {
             Self::Guild => "GUILD",
             Self::Friends => "FRIENDS",
             Self::Trade => "TRADE",
+            Self::Bounty => "BOUNTY",
+            Self::Feature(_) => "FEATURE",
             Self::Mail => "MAIL",
             Self::Market => "MARKET",
             Self::Team => "TEAM",
@@ -976,6 +1042,7 @@ pub fn quick_panel_image(
     player_shop_price: &str,
     player_shop_price_focused: bool,
     hud_config: crate::hud::HudConfig,
+    bounty: &BountyView,
 ) -> Result<RgbaImage> {
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(
@@ -999,6 +1066,7 @@ pub fn quick_panel_image(
                 selected_target_name,
                 trade,
                 options: hud_config,
+                bounty,
             },
         );
     }
@@ -1429,6 +1497,8 @@ pub fn quick_panel_image(
                 );
             }
         }
+        // Painted by `original_panels` in the friend dialog's frame.
+        QuickPanel::Bounty | QuickPanel::Feature(_) => {}
         QuickPanel::Mail => {
             labels::text(
                 &mut image,
