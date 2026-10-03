@@ -394,8 +394,16 @@ impl MsgAction {
         let loc = me.entity().location();
         let mymap_id = me.entity().map_id();
         if !tq_math::in_screen((loc.x, loc.y), (portal_x, portal_y)) {
-            // TODO: Jail for using Portal Hack.
-            tracing::debug!(%portal_x, %portal_y, %loc.x, %loc.y, "Using Portal Hack");
+            tracing::warn!(
+                target: "world",
+                character = %me.entity().name(),
+                account = actor.id(),
+                %portal_x,
+                %portal_y,
+                %loc.x,
+                %loc.y,
+                "Portal used from out of sight; sent back"
+            );
             me.kick_back().await?;
             return Ok(());
         }

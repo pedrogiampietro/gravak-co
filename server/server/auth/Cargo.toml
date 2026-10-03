@@ -35,6 +35,7 @@ rkyv = { workspace = true, default-features = false, features = ["alloc", "size_
 msg-account.workspace = true
 msg-connect.workspace = true
 msg-transfer.workspace = true
+msg-connect-ex = { workspace = true, features = ["std"] }
 
 
 [dependencies.tq-server]

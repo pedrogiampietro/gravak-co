@@ -39,11 +39,14 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 
 ## P1 — operação
 
-- [ ] Linha de status com a saúde do banco (latência, conexões em uso).
+- [x] Linha de status com a saúde do banco (`db_ms`, conexões, ociosas); erro
+      em vermelho se o banco não responder.
 - [x] Contagem de personagens salvos no desligamento, no log.
-- [ ] Tentativas de hack (portal fora da tela, NPC fora da tela) viram `warn`
-      com a conta, em vez de `debug` silencioso.
-- [ ] Limite de tentativas de login por IP no auth server.
+- [x] Tentativas de hack (portal fora da tela, NPC fora da tela) viram `warn`
+      com personagem e conta, em vez de `debug` silencioso.
+- [x] Limite de tentativas de login por IP no auth server: 10 por minuto
+      (login e registro); a 11ª recebe o código 51 do protocolo, "muitas
+      tentativas". Conexões locais não contam. Teste em `auth::limits`.
 
 ## P2 — gameplay e conteúdo
 

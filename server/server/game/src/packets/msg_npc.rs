@@ -63,8 +63,13 @@ impl PacketProcess for MsgNpc {
         let npc_loc = npc.entity().location();
         let in_screen = tq_math::in_screen(my_loc.into(), npc_loc.into());
         if !in_screen {
-            // TODO: Player is using some kind of hack to interact with NPCs
-            // that are not in the screen.
+            tracing::warn!(
+                target: "world",
+                character = %me.basic().name(),
+                account = actor.id(),
+                npc = npc.id(),
+                "NPC used from out of sight; ignored"
+            );
             return Ok(());
         }
         let npc_id = npc.id();

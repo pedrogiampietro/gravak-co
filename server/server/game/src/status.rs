@@ -1,5 +1,5 @@
-//! A status line in the log every few minutes: who is online and for how
-//! long the server has been up.
+//! A status line in the log every few minutes: who is online, for how long
+//! the server has been up, and how the database answers.
 
 use crate::State;
 use std::time::{Duration, Instant};
@@ -15,7 +15,26 @@ pub fn start(state: &'static State, started: Instant) {
         loop {
             ticks.tick().await;
             let online = state.entities().iter().filter(|entity| entity.is_character()).count();
-            tracing::info!(target: "status", online, uptime = %uptime(started.elapsed()), "Server status");
+            let pool = state.pool();
+            let asked = Instant::now();
+            match sqlx::query("SELECT 1").execute(pool).await {
+                Ok(_) => tracing::info!(
+                    target: "status",
+                    online,
+                    uptime = %uptime(started.elapsed()),
+                    db_ms = asked.elapsed().as_millis() as u64,
+                    db_connections = pool.size(),
+                    db_idle = pool.num_idle(),
+                    "Server status"
+                ),
+                Err(error) => tracing::error!(
+                    target: "status",
+                    online,
+                    uptime = %uptime(started.elapsed()),
+                    %error,
+                    "Server status: the database does not answer"
+                ),
+            }
         }
     });
 }
