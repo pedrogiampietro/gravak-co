@@ -67,6 +67,9 @@ pub struct SkillEffectInstance {
 pub const MONSTER_BORN_SECONDS: f32 = 6.04;
 const MONSTER_FADE_IN_SECONDS: f32 = 1.2;
 
+/// TEMPORARY: shows the VIP title over one's own name on a 10 s cycle.
+const VIP_TAG_PREVIEW: bool = true;
+
 /// The server's VIP status flag (a Gravak runtime bit).
 pub const VIP_FLAG: u64 = 1 << 46;
 
@@ -2777,7 +2780,11 @@ impl Renderer {
                 sort_depth: WORLD_OVERLAY_SORT,
             });
         }
-        if status_flags & VIP_FLAG != 0 {
+        // TEMPORARY, for judging the VIP title: it shows over one's own name
+        // five seconds out of ten even without VIP. Remove with
+        // VIP_TAG_PREVIEW once approved.
+        let preview = VIP_TAG_PREVIEW && time.rem_euclid(10.0) < 5.0;
+        if status_flags & VIP_FLAG != 0 || preview {
             self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
         }
         if minimap_visible && self.minimap_map != Some(map.id) {
