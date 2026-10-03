@@ -161,79 +161,152 @@ fn icon(assets: &mut Assets, product: &StoreProduct, size: u32) -> Option<RgbaIm
 }
 
 /// Size of the Store button by the HUD.
-pub const BUTTON_SIZE: [u32; 2] = [88, 24];
+pub const BUTTON_SIZE: [u32; 2] = [120, 32];
 
-/// The Store button: a blue pill with the gold Gravak "G" and "Store".
+/// The Store button: a blue glass pill with a thin gold edge, a gold
+/// Gravak coin as a medallion over its left end, and STORE in Cinzel.
+/// Everything is drawn by signed distance, so the edges are smooth.
 pub fn button_image(hovered: bool) -> crate::assets::Result<RgbaImage> {
+    use crate::paint::{self, hex};
     let [width, height] = BUTTON_SIZE;
-    let (w, h) = (width as i32, height as i32);
     let mut image = RgbaImage::new(width, height);
-    let lift = if hovered { 28 } else { 0 };
-    for y in 0..h {
-        // A blue gradient, lighter at the top.
-        let t = y as f32 / (h - 1) as f32;
-        let top = [44 + lift, 96 + lift, 176 + lift.min(40)];
-        let bottom = [14, 36, 92];
-        let colour = [0, 1, 2].map(|c| (top[c] as f32 + (bottom[c] as f32 - top[c] as f32) * t) as u8);
-        for x in 0..w {
-            // Rounded ends.
-            let inset = match y.min(h - 1 - y) {
-                0 => 3,
-                1 => 1,
-                _ => 0,
-            };
-            if x < inset || x >= w - inset {
-                continue;
-            }
-            image.put_pixel(x as u32, y as u32, image::Rgba([colour[0], colour[1], colour[2], 255]));
-        }
+    let mid = height as f32 / 2.0;
+
+    // The pill, from under the coin to the right end.
+    let (pill_left, pill_right, pill_half) = (12.0_f32, width as f32 - 3.0, 11.0_f32);
+    let pill_centre = [(pill_left + pill_right) / 2.0, mid];
+    let pill_half_size = [(pill_right - pill_left) / 2.0, pill_half];
+    let pill = |x: f32, y: f32| paint::rounded_rect(x, y, pill_centre, pill_half_size, pill_half);
+
+    if hovered {
+        paint::glow(&mut image, pill, 4.0, hex(0x6fb0ff), 0.55);
     }
-    let edge = if hovered { [190, 220, 255, 255] } else { [120, 160, 220, 255] };
-    let dark = [6, 14, 34, 255];
-    for x in 3..w - 3 {
-        image.put_pixel(x as u32, 1, image::Rgba(edge));
-        image.put_pixel(x as u32, (h - 1) as u32, image::Rgba(dark));
-    }
-    for y in 3..h - 3 {
-        image.put_pixel(0, y as u32, image::Rgba(dark));
-        image.put_pixel((w - 1) as u32, y as u32, image::Rgba(dark));
-    }
-    // The emblem: a navy disc in a gold ring, and the Gravak G.
-    let (cx, cy) = (13_i32, h / 2);
-    for dy in -10_i32..=10 {
-        for dx in -10_i32..=10 {
-            let distance = ((dx * dx + dy * dy) as f32).sqrt();
-            let colour = if distance > 10.0 {
-                continue;
-            } else if distance > 9.0 {
-                [120, 84, 20, 255]
-            } else if distance > 7.2 {
-                // The gold ring, lit from the top left.
-                let light = (40.0 - (dx + dy) as f32 * 4.0).clamp(0.0, 60.0) as u8;
-                [216u8.saturating_add(light / 2), 170u8.saturating_add(light / 2), 60, 255]
-            } else {
-                [10, 22, 58, 255]
-            };
-            let (x, y) = (cx + dx, cy + dy);
-            if x >= 0 && y >= 0 && x < w && y < h {
-                image.put_pixel(x as u32, y as u32, image::Rgba(colour));
-            }
-        }
-    }
+    // A soft shadow under it.
+    paint::fill(&mut image, |x, y| pill(x, y - 1.5), |_, _| hex(0x000814), 0.45);
+    // The glass: deep blue, lighter at the top, a hard step at the middle.
+    let (top, upper, lower, bottom) = if hovered {
+        (hex(0x6aa8ff), hex(0x3a78dc), hex(0x2459b8), hex(0x113478))
+    } else {
+        (hex(0x4f8ee6), hex(0x2c64c4), hex(0x1c4aa2), hex(0x0c2862))
+    };
+    let body_top = mid - pill_half;
+    paint::fill(
+        &mut image,
+        pill,
+        |_, y| {
+            let t = (y - body_top) / (pill_half * 2.0);
+            paint::gradient(&[(0.0, top), (0.48, upper), (0.52, lower), (1.0, bottom)], t)
+        },
+        1.0,
+    );
+    // The gloss over the upper half.
+    let gloss = |x: f32, y: f32| {
+        paint::rounded_rect(x, y, [pill_centre[0] + 4.0, mid - 5.0], [pill_half_size[0] - 9.0, 4.5], 4.5)
+    };
+    paint::fill(&mut image, gloss, |_, _| hex(0xffffff), 0.22);
+    // A bevel: light along the inside top, dark along the inside bottom.
+    paint::stroke(
+        &mut image,
+        |x, y| pill(x, y) + 1.4,
+        1.0,
+        |_, y| if y < mid { hex(0xa8ccff) } else { hex(0x061a44) },
+        0.55,
+    );
+    // The thin gold edge.
+    paint::stroke(
+        &mut image,
+        pill,
+        1.2,
+        |_, y| paint::mix(hex(0xf3d488), hex(0x9a6a1c), (y - body_top) / (pill_half * 2.0)),
+        0.95,
+    );
+
+    // The medallion: a gold coin with the Gravak G.
+    let coin_centre = [16.0_f32, mid];
+    let coin_radius = 14.5_f32;
+    paint::fill(
+        &mut image,
+        |x, y| paint::circle(x, y, [coin_centre[0] + 1.0, coin_centre[1] + 1.5], coin_radius),
+        |_, _| hex(0x000814),
+        0.5,
+    );
+    paint::fill(&mut image, |x, y| paint::circle(x, y, coin_centre, coin_radius), |_, _| hex(0x5e3806), 1.0);
+    let light = [coin_centre[0] - 5.0, coin_centre[1] - 6.0];
+    paint::fill(
+        &mut image,
+        |x, y| paint::circle(x, y, coin_centre, coin_radius - 1.3),
+        |x, y| {
+            let t = ((x - light[0]).powi(2) + (y - light[1]).powi(2)).sqrt() / 24.0;
+            paint::gradient(
+                &[(0.0, hex(0xfff6cf)), (0.3, hex(0xf6cf6a)), (0.7, hex(0xcf9326)), (1.0, hex(0x8c5612))],
+                t,
+            )
+        },
+        1.0,
+    );
+    // A struck inner ring: a dark groove with light below it.
+    paint::stroke(
+        &mut image,
+        |x, y| paint::circle(x, y, [coin_centre[0], coin_centre[1] + 0.8], 10.2),
+        0.9,
+        |_, _| hex(0xffeaa6),
+        0.55,
+    );
+    paint::stroke(&mut image, |x, y| paint::circle(x, y, coin_centre, 10.2), 1.0, |_, _| hex(0x8f5c14), 0.85);
+    // The G, struck into the coin.
     let ui = labels::font()?;
-    // The Gravak G, bold: drawn twice a pixel apart.
-    let g_size = 14.0;
-    let g_x = (cx as f32 - width_of(&ui, "G", g_size) / 2.0 - 0.5).round();
-    let g_y = (cy as f32 - g_size / 2.0 - 1.0).round();
-    labels::text_sized(&mut image, &ui, &[("G", [4, 8, 24])], [g_x + 1.0, g_y + 1.0], g_size);
-    for offset in [0.0, 1.0] {
-        labels::text_sized(&mut image, &ui, &[("G", [255, 222, 110])], [g_x + offset, g_y], g_size);
+    let g_size = 17.0;
+    let g_width = paint::text_width(&ui, "G", g_size, 0.0);
+    let g_origin = [coin_centre[0] - g_width / 2.0, coin_centre[1] - g_size * 0.62];
+    let mask = paint::text_mask(&ui, "G", g_size, 0.0, g_origin, [width, height]);
+    paint::paint_mask(&mut image, &mask, [0, 1], |_, _| hex(0xfff0bd), 0.7);
+    paint::paint_mask(
+        &mut image,
+        &mask,
+        [0, 0],
+        |_, y| paint::mix(hex(0x6e4306), hex(0x4a2a02), (y - (mid - 8.0)) / 16.0),
+        1.0,
+    );
+    // A glint on the rim.
+    let glint = [coin_centre[0] - 7.5, coin_centre[1] - 8.5];
+    for (dx, dy, alpha) in [
+        (0, 0, 1.0),
+        (1, 0, 0.6),
+        (-1, 0, 0.6),
+        (0, 1, 0.6),
+        (0, -1, 0.6),
+        (2, 0, 0.25),
+        (-2, 0, 0.25),
+        (0, 2, 0.25),
+        (0, -2, 0.25),
+    ] {
+        paint::blend(&mut image, glint[0] as i32 + dx, glint[1] as i32 + dy, hex(0xffffff), alpha);
     }
-    let size = 13.0;
-    let text_x = 28.0 + ((w - 28) as f32 - width_of(&ui, "Store", size)) / 2.0;
-    let text_y = (h as f32 - size) / 2.0 - 1.0;
-    labels::text_sized(&mut image, &ui, &[("Store", [4, 12, 30])], [text_x + 1.0, text_y + 1.0], size);
-    labels::text_sized(&mut image, &ui, &[("Store", [240, 246, 255])], [text_x, text_y], size);
+
+    // STORE, spaced, white fading to ice blue, over a dark drop.
+    let cinzel = labels::decorative_font()?;
+    let (size, spacing) = (14.0_f32, 1.6_f32);
+    let text_left = coin_centre[0] + coin_radius + 3.0;
+    let text_width = paint::text_width(&cinzel, "STORE", size, spacing);
+    let origin = [
+        (text_left + (pill_right - 4.0 - text_left - text_width) / 2.0).round(),
+        (mid - size * 0.66).round(),
+    ];
+    let mask = paint::text_mask(&cinzel, "STORE", size, spacing, origin, [width, height]);
+    paint::paint_mask(&mut image, &mask, [0, 1], |_, _| hex(0x020c26), 0.85);
+    if hovered {
+        paint::paint_mask(&mut image, &mask, [0, 0], |_, _| hex(0xcfe6ff), 0.35);
+    }
+    // Cinzel is thin at this size: a second pass a pixel over thickens it.
+    for (shift, alpha) in [(1, 0.45), (0, 1.0)] {
+        paint::paint_mask(
+            &mut image,
+            &mask,
+            [shift, 0],
+            |_, y| paint::mix(hex(0xffffff), hex(0xc4d9ff), (y - origin[1]) / size),
+            alpha,
+        );
+    }
     Ok(image)
 }
 
