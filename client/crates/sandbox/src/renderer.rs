@@ -66,6 +66,20 @@ pub struct SkillEffectInstance {
     pub trail: bool,
 }
 
+/// A slain monster's soul (the original's `soul` effect): it rises over the
+/// body, then flies to the one who slew it.
+#[derive(Debug, Clone, Copy)]
+struct Soul {
+    /// Where the monster fell, in cells.
+    from: [f32; 2],
+    killer_id: u32,
+    started: f32,
+}
+
+/// How long a soul lingers over the body, then how long it flies.
+const SOUL_RISE_SECONDS: f32 = 0.5;
+const SOUL_FLIGHT_SECONDS: f32 = 0.7;
+
 /// The original `born` effect (`3DEffect.ini`) over a respawning monster:
 /// 151 frames of 40 ms. The monster itself fades in over the first moments.
 pub const MONSTER_BORN_SECONDS: f32 = 6.04;
@@ -702,6 +716,8 @@ pub struct Renderer {
     /// Where the revive buttons were drawn (and whether each revives
     /// here), for clicks.
     revive_rects: Vec<([f32; 4], bool)>,
+    /// Souls of slain monsters on their way to whoever slew them.
+    souls: Vec<Soul>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
     effects: HashMap<String, Option<std::rc::Rc<LoadedEffect>>>,
@@ -903,6 +919,7 @@ impl Renderer {
             bounty_tracker_rect: None,
             store_icon_rect: None,
             revive_rects: Vec::new(),
+            souls: Vec::new(),
             level_up_layers: None,
             effects: HashMap::new(),
             last_hud_key: None,
@@ -1786,6 +1803,11 @@ impl Renderer {
             });
         }
         Ok(())
+    }
+
+    /// A soul leaves the monster slain at `from` for `killer_id`.
+    pub fn add_soul(&mut self, from: [f32; 2], killer_id: u32, now: f32) {
+        self.souls.push(Soul { from, killer_id, started: now });
     }
 
     /// Whether `position` is on the Store icon.
@@ -2732,6 +2754,30 @@ impl Renderer {
                     viewport,
                     &mut draws,
                 );
+            }
+        }
+        // Souls of the slain, rising and then flying to their slayer.
+        self.souls
+            .retain(|soul| time - soul.started < SOUL_RISE_SECONDS + SOUL_FLIGHT_SECONDS);
+        for soul in self.souls.clone() {
+            let elapsed = time - soul.started;
+            let killer = remote_actors
+                .get(&soul.killer_id)
+                .map(|actor| actor.position)
+                .unwrap_or(player.position);
+            let flight = ((elapsed - SOUL_RISE_SECONDS) / SOUL_FLIGHT_SECONDS).clamp(0.0, 1.0);
+            let eased = flight * flight * (3.0 - 2.0 * flight);
+            let from = map.project(soul.from);
+            let to = map.project(killer);
+            let rise = (elapsed / SOUL_RISE_SECONDS).clamp(0.0, 1.0) * 30.0;
+            let arc = (eased * std::f32::consts::PI).sin() * 30.0;
+            let origin = [
+                from[0] + (to[0] - from[0]) * eased - camera[0],
+                from[1] + (to[1] - from[1]) * eased - camera[1] - 40.0 - rise * (1.0 - eased) - arc,
+            ];
+            if world_point_visible(origin, viewport, 128.0) {
+                let depth = soul.from[0] + soul.from[1] + 0.07;
+                self.push_looping_effect(assets, "soul", origin, elapsed, depth, viewport, &mut draws);
             }
         }
         // Map portals glow with the original client's `Exit` effect

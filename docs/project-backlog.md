@@ -65,9 +65,11 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
         Feito: o MagicType guarda um rastro .tme (FastBlade windblade4.tme,
         ScentSword swordrain4.tme); o cliente desenha os effects dele um
         após o outro na direção do golpe, para toda skill que tiver um.
-15. [ ] Ao matar uma criatura, a alma/luz que sai dela e voa até o
+15. [x] Ao matar uma criatura, a alma/luz que sai dela e voa até o
         personagem. Referência: figura azul translúcida (a alma) subindo
         perto dos personagens numa caverna.
+        Feito: o effect `soul` do original (Conquer.exe, MagicEffect.cpp) sobe
+        do monstro morto e voa num arco até quem o matou.
 16. [x] Ícones dos bônus ativos (VIP, exp dupla, Heaven Blessing etc.) na
         HUD. Referência: fileira de ícones pequenos (verde, escuro, roxo,
         verde) no canto da tela.

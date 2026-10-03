@@ -3830,6 +3830,13 @@ impl App {
                     }
                     let now = self.started.elapsed().as_secs_f32();
                     let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
+                    // A slain monster's soul flies to its slayer.
+                    if (400001..=499999).contains(&target_id)
+                        && let (Some(monster), Some(renderer)) =
+                            (self.remote_actors.get(&target_id), self.renderer.as_mut())
+                    {
+                        renderer.add_soul(monster.position, id, now);
+                    }
                     if let Some(actor) = self.remote_actors.get_mut(&target_id) {
                         actor.health = 0;
                         let player = !actor.npc && !(400001..=499999).contains(&target_id);
