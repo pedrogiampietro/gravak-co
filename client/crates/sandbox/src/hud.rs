@@ -374,6 +374,14 @@ pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Resu
     Ok(image)
 }
 
+/// The Store button: beside the round buttons over the orb, above the chat
+/// strip. Left, top, width and height in window pixels.
+pub fn store_button_rect(viewport: [f32; 2]) -> [f32; 4] {
+    let [x, y] = layout::main_hud_position(viewport);
+    let [width, height] = crate::store_panel::BUTTON_SIZE;
+    [x + 100.0, y + 40.0, width as f32, height as f32]
+}
+
 fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {
     let [x, y] = layout::main_hud_position(viewport);
     [x.round() as i32, y.round() as i32]

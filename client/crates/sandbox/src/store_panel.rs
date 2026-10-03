@@ -108,6 +108,23 @@ fn say(image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], x: i32, 
     labels::text_sized(image, font, &[(text, colour)], [x as f32, y as f32], size);
 }
 
+/// A small gold coin for the CP balance.
+fn draw_coin(image: &mut RgbaImage, centre: [i32; 2]) {
+    for dy in -7_i32..=7 {
+        for dx in -7_i32..=7 {
+            let distance = dx * dx + dy * dy;
+            let colour = if distance > 49 {
+                continue;
+            } else if distance > 30 {
+                [150, 100, 20, 255]
+            } else {
+                [236, 186, 64, 255]
+            };
+            image.put_pixel((centre[0] + dx) as u32, (centre[1] + dy) as u32, image::Rgba(colour));
+        }
+    }
+}
+
 /// Words of `text` in lines no wider than `width`.
 fn wrap(font: &Font, text: &str, size: f32, width: f32) -> Vec<String> {
     let mut lines = Vec::new();
@@ -143,40 +160,80 @@ fn icon(assets: &mut Assets, product: &StoreProduct, size: u32) -> Option<RgbaIm
     Some(badge)
 }
 
-/// Size of the Store icon under the bounty icon.
-pub const ICON_SIZE: [u32; 2] = [52, 52];
+/// Size of the Store button by the HUD.
+pub const BUTTON_SIZE: [u32; 2] = [88, 24];
 
-/// The way into the Store: a gold coin, as the bounty icon in the HUD's
-/// style.
-pub fn icon_image(assets: &mut Assets, hovered: bool) -> crate::assets::Result<RgbaImage> {
-    let [width, height] = ICON_SIZE;
-    let frame = if hovered { [226, 208, 154] } else { [176, 158, 104] };
-    let mut image = crate::hud::hud_style_panel(assets, width, height, frame);
-    let (cx, cy) = (width as i32 / 2, height as i32 / 2);
-    for dy in -15_i32..=15 {
-        for dx in -15_i32..=15 {
-            let distance = ((dx * dx + dy * dy) as f32).sqrt();
-            let colour = if distance > 14.5 {
-                continue;
-            } else if distance > 13.0 {
-                [110, 70, 14, 255]
-            } else if distance > 10.5 {
-                // The rim, lit from the top left.
-                let light = (60.0 - (dx + dy) as f32 * 2.0).clamp(0.0, 90.0) as u8;
-                [200u8.saturating_add(light / 2), 150u8.saturating_add(light / 2), 40, 255]
-            } else if distance > 9.5 {
-                [140, 96, 20, 255]
-            } else {
-                [228, 176, 58, 255]
+/// The Store button: a blue pill with the gold Gravak "G" and "Store".
+pub fn button_image(hovered: bool) -> crate::assets::Result<RgbaImage> {
+    let [width, height] = BUTTON_SIZE;
+    let (w, h) = (width as i32, height as i32);
+    let mut image = RgbaImage::new(width, height);
+    let lift = if hovered { 28 } else { 0 };
+    for y in 0..h {
+        // A blue gradient, lighter at the top.
+        let t = y as f32 / (h - 1) as f32;
+        let top = [44 + lift, 96 + lift, 176 + lift.min(40)];
+        let bottom = [14, 36, 92];
+        let colour = [0, 1, 2].map(|c| (top[c] as f32 + (bottom[c] as f32 - top[c] as f32) * t) as u8);
+        for x in 0..w {
+            // Rounded ends.
+            let inset = match y.min(h - 1 - y) {
+                0 => 3,
+                1 => 1,
+                _ => 0,
             };
-            image.put_pixel((cx + dx) as u32, (cy + dy) as u32, image::Rgba(colour));
+            if x < inset || x >= w - inset {
+                continue;
+            }
+            image.put_pixel(x as u32, y as u32, image::Rgba([colour[0], colour[1], colour[2], 255]));
         }
     }
-    let font = labels::decorative_font()?;
+    let edge = if hovered { [190, 220, 255, 255] } else { [120, 160, 220, 255] };
+    let dark = [6, 14, 34, 255];
+    for x in 3..w - 3 {
+        image.put_pixel(x as u32, 1, image::Rgba(edge));
+        image.put_pixel(x as u32, (h - 1) as u32, image::Rgba(dark));
+    }
+    for y in 3..h - 3 {
+        image.put_pixel(0, y as u32, image::Rgba(dark));
+        image.put_pixel((w - 1) as u32, y as u32, image::Rgba(dark));
+    }
+    // The emblem: a navy disc in a gold ring, and the Gravak G.
+    let (cx, cy) = (13_i32, h / 2);
+    for dy in -10_i32..=10 {
+        for dx in -10_i32..=10 {
+            let distance = ((dx * dx + dy * dy) as f32).sqrt();
+            let colour = if distance > 10.0 {
+                continue;
+            } else if distance > 9.0 {
+                [120, 84, 20, 255]
+            } else if distance > 7.2 {
+                // The gold ring, lit from the top left.
+                let light = (40.0 - (dx + dy) as f32 * 4.0).clamp(0.0, 60.0) as u8;
+                [216u8.saturating_add(light / 2), 170u8.saturating_add(light / 2), 60, 255]
+            } else {
+                [10, 22, 58, 255]
+            };
+            let (x, y) = (cx + dx, cy + dy);
+            if x >= 0 && y >= 0 && x < w && y < h {
+                image.put_pixel(x as u32, y as u32, image::Rgba(colour));
+            }
+        }
+    }
+    let ui = labels::font()?;
+    // The Gravak G, bold: drawn twice a pixel apart.
+    let g_size = 14.0;
+    let g_x = (cx as f32 - width_of(&ui, "G", g_size) / 2.0 - 0.5).round();
+    let g_y = (cy as f32 - g_size / 2.0 - 1.0).round();
+    labels::text_sized(&mut image, &ui, &[("G", [4, 8, 24])], [g_x + 1.0, g_y + 1.0], g_size);
+    for offset in [0.0, 1.0] {
+        labels::text_sized(&mut image, &ui, &[("G", [255, 222, 110])], [g_x + offset, g_y], g_size);
+    }
     let size = 13.0;
-    let x = cx as f32 - width_of(&font, "CP", size) / 2.0;
-    labels::text_sized(&mut image, &font, &[("CP", [120, 72, 10])], [x + 1.0, cy as f32 - size / 2.0], size);
-    labels::text_sized(&mut image, &font, &[("CP", [255, 236, 170])], [x, cy as f32 - size / 2.0 - 1.0], size);
+    let text_x = 28.0 + ((w - 28) as f32 - width_of(&ui, "Store", size)) / 2.0;
+    let text_y = (h as f32 - size) / 2.0 - 1.0;
+    labels::text_sized(&mut image, &ui, &[("Store", [4, 12, 30])], [text_x + 1.0, text_y + 1.0], size);
+    labels::text_sized(&mut image, &ui, &[("Store", [240, 246, 255])], [text_x, text_y], size);
     Ok(image)
 }
 
@@ -191,7 +248,8 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&StoreView>
     };
 
     // The CPs and VIP.
-    say(image, &ui, &format!("CPs: {}", thousands(view.state.cps)), ui_theme::TEXT_GOLD, 22, 46, 14.0);
+    draw_coin(image, [30, 54]);
+    say(image, &ui, &format!("{} CPs", thousands(view.state.cps)), ui_theme::TEXT_GOLD, 42, 46, 14.0);
     let vip = vip_left(view.state.vip_until, now_secs())
         .map_or_else(|| "No VIP".to_owned(), |left| format!("VIP: {left} left"));
     let vip_colour = if view.state.vip_until > now_secs() { [255, 202, 64] } else { ui_theme::TEXT_MUTED };
@@ -374,6 +432,13 @@ mod preview {
             image::imageops::overlay(&mut image, &content, 0, 0);
             image.save(format!("{dir}/store-{name}.png")).expect("png");
         }
-        icon_image(&mut assets, false).expect("icon").save(format!("{dir}/store-icon.png")).expect("png");
+        button_image(false).expect("button").save(format!("{dir}/store-button.png")).expect("png");
+        button_image(true).expect("button").save(format!("{dir}/store-button-hover.png")).expect("png");
+        crate::shop::PromptDialog::new([1024.0, 768.0], "Store", "Meteor - 13 CPs (1237 left)".to_owned(), "Buy this item?")
+            .with_buttons(["Buy", "Cancel"])
+            .image(&mut assets, Some(true))
+            .expect("prompt")
+            .save(format!("{dir}/store-confirm.png"))
+            .expect("png");
     }
 }

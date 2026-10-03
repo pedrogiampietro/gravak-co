@@ -415,6 +415,8 @@ struct App {
     bounty: Option<bounty_board::BountyView>,
     /// The Store, as the server last sent it.
     store: Option<store_panel::StoreView>,
+    /// A purchase waiting for the player's yes.
+    store_confirm: Option<u32>,
     ground_loot: Vec<(u32, [f32; 2], u32, f32)>,
     dialog: Option<DialogState>,
     shop: Option<shop::ShopState>,
@@ -2038,6 +2040,21 @@ impl App {
     /// The popup for a received team invite, a request to join the hero's
     /// team, or a trade request.
     fn prompt(&self) -> Option<shop::PromptDialog> {
+        if let Some(product_id) = self.store_confirm {
+            let view = self.store.as_ref()?;
+            let product = view.products.iter().find(|product| product.product_id == product_id)?;
+            let size = self.window.as_ref()?.inner_size();
+            let left = view.state.cps.saturating_sub(u64::from(product.price_cps));
+            return Some(
+                shop::PromptDialog::new(
+                    [size.width as f32, size.height as f32],
+                    "Store",
+                    format!("{} - {} CPs ({left} left)", product.name, product.price_cps),
+                    "Buy this item?",
+                )
+                .with_buttons(["Buy", "Cancel"]),
+            );
+        }
         let (title, id, text) = if let Some(leader) = self.pending_team_invite {
             ("Team", leader, "invites you to the team")
         } else if let Some(requester) = self.pending_team_join_request {
@@ -2059,6 +2076,12 @@ impl App {
     }
 
     fn answer_prompt(&mut self, accept: bool) {
+        if let Some(product_id) = self.store_confirm.take() {
+            if accept && let Some(network) = &self.network {
+                network.send_store(gravak_protocol::StorePacket::BUY, product_id);
+            }
+            return;
+        }
         if self.pending_team_invite.is_some() || self.pending_team_join_request.is_some() {
             self.answer_team_prompt(accept);
         } else if self.trade_request_pending() {
@@ -2224,11 +2247,8 @@ impl App {
                 view.selected = None;
             }
             store_panel::StoreAction::Select(product_id) => view.selected = Some(product_id),
-            store_panel::StoreAction::Buy(product_id) => {
-                if let Some(network) = &self.network {
-                    network.send_store(gravak_protocol::StorePacket::BUY, product_id);
-                }
-            }
+            // The purchase waits for the confirmation prompt.
+            store_panel::StoreAction::Buy(product_id) => self.store_confirm = Some(product_id),
         }
     }
 
@@ -7137,6 +7157,7 @@ fn run() -> Result<()> {
         player_shop_price_focused: false,
         bounty: None,
         store: None,
+        store_confirm: None,
         ground_loot: Vec::new(),
         dialog: None,
         shop: benchmark_shop,

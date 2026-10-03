@@ -3023,39 +3023,34 @@ impl Renderer {
             }
         }
         self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
-        // The Store icon, under the bounty one.
+        // The Store button, by the round buttons over the orb.
+        let [left, top, width, height] = crate::hud::store_button_rect(viewport);
+        self.store_icon_rect = Some([left, top, width, height]);
         let store_hovered = self.store_icon_at(cursor);
-        let store_key = if store_hovered { "@store-icon-hover" } else { "@store-icon" };
+        let store_key = if store_hovered { "@store-button-hover" } else { "@store-button" };
         if !self.textures.contains_key(store_key) {
-            self.upload(store_key, crate::store_panel::icon_image(assets, store_hovered)?);
+            self.upload(store_key, crate::store_panel::button_image(store_hovered)?);
         }
-        let store_size = self.textures.get(store_key).map(|texture| texture.size);
-        if let (Some(size), Some([_, top, _, height])) = (store_size, self.bounty_tracker_rect) {
-            let position = [viewport[0] - size[0] - 8.0, top + height + 6.0];
-            self.store_icon_rect = Some([position[0], position[1], size[0], size[1]]);
+        if self.textures.contains_key(store_key) {
             draws.push(Draw {
                 texture: store_key.to_owned(),
-                vertices: quad(position, size, viewport),
+                vertices: quad([left, top], [width, height], viewport),
                 depth_test: false,
                 sort_depth: f32::INFINITY,
             });
-            if store_hovered {
-                let tip_key = "@store-tip";
-                if !self.textures.contains_key(tip_key) {
-                    self.upload(tip_key, crate::labels::tooltip_image("Store (P)")?);
-                }
-                if let Some(tip) = self.textures.get(tip_key) {
-                    draws.push(Draw {
-                        texture: tip_key.to_owned(),
-                        vertices: quad(
-                            [position[0] - tip.size[0] - 6.0, position[1] + (size[1] - tip.size[1]) * 0.5],
-                            tip.size,
-                            viewport,
-                        ),
-                        depth_test: false,
-                        sort_depth: f32::INFINITY,
-                    });
-                }
+        }
+        if store_hovered {
+            let tip_key = "@store-tip";
+            if !self.textures.contains_key(tip_key) {
+                self.upload(tip_key, crate::labels::tooltip_image("Store (P)")?);
+            }
+            if let Some(tip) = self.textures.get(tip_key) {
+                draws.push(Draw {
+                    texture: tip_key.to_owned(),
+                    vertices: quad([left, top - tip.size[1] - 4.0], tip.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
             }
         }
         // Each status message is its own texture; keep only the latest.
@@ -4041,7 +4036,7 @@ impl Renderer {
         }
         if let Some(prompt) = prompt {
             let hovered = prompt.button_at(cursor);
-            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, prompt.text));
+            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, prompt.text, prompt.buttons));
             if !self.textures.contains_key(&key) {
                 self.upload(&key, prompt.image(assets, hovered)?);
             }

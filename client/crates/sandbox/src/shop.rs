@@ -4255,6 +4255,8 @@ pub struct PromptDialog {
     /// The player asking, drawn bright under the title.
     pub name: String,
     pub text: &'static str,
+    /// The two buttons: yes, then no.
+    pub buttons: [&'static str; 2],
     /// Top-left corner in window pixels.
     pub position: [i32; 2],
 }
@@ -4270,11 +4272,17 @@ impl PromptDialog {
             title,
             name,
             text,
+            buttons: ["Accept", "Refuse"],
             position: [
                 ((viewport[0] - width) * 0.5).max(8.0) as i32,
                 (viewport[1] * 0.22).max(8.0) as i32,
             ],
         }
+    }
+
+    /// The same prompt with other button labels.
+    pub fn with_buttons(self, buttons: [&'static str; 2]) -> Self {
+        Self { buttons, ..self }
     }
 
     fn size() -> [i32; 2] {
@@ -4306,7 +4314,7 @@ impl PromptDialog {
         label_centered(&mut image, self.title, 14.0, center, 12, LABEL_GOLD);
         label_centered(&mut image, &self.name, 14.0, center, 50, [255, 244, 214, 255]);
         label_centered(&mut image, self.text, 13.0, center, 70, LABEL_GOLD);
-        for (index, ([x, y, width, height], label)) in PROMPT_BUTTONS.into_iter().zip(["Accept", "Refuse"]).enumerate() {
+        for (index, ([x, y, width, height], label)) in PROMPT_BUTTONS.into_iter().zip(self.buttons).enumerate() {
             let hot = hovered == Some(index == 0);
             fill(&mut image, [x, y, width, height], if hot { [120, 90, 30, 150] } else { [0, 0, 0, 90] });
             ui_theme::outline(
