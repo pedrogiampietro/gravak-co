@@ -60,7 +60,11 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
       classe; demais elementos de gems e tipos de refinaria.
 - [ ] Reborn: promoção e progressão por classe.
 - [ ] IA: patrulha, regras especiais e drops especiais.
-- [ ] Chat por região (`msg_talk`: hoje envia para toda a região do mapa).
+- [x] Chat por canal: time, guild, amigos, cônjuge e mundo chegavam só a quem
+      estava na mesma região do mapa. Agora cada canal vai a quem deve, sempre
+      com o nome real de quem fala, e canais do servidor (System, Center,
+      Broadcast...) enviados por um cliente são ignorados. Teste:
+      `world_chat_reaches_everyone_under_the_real_name`.
 - [ ] `$teleport ... all` (teleportar todos), pendente no comando.
 
 ## P3 — cliente e interface
