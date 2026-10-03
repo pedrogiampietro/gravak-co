@@ -99,6 +99,14 @@ impl MsgTalk {
         }
     }
 
+    /// The name over `owner`'s booth (the original's Vendor channel); an
+    /// empty name takes the sign down.
+    pub fn booth(owner: &crate::entities::Character, name: &str) -> Self {
+        let mut message = Self::from_system(owner.id(), TalkChannel::Vendor, name);
+        message.sender_name = owner.entity().name().to_owned();
+        message
+    }
+
     pub fn login_invalid() -> Self {
         Self::from_system(0, TalkChannel::Login, "Login Invalid")
     }
@@ -337,6 +345,30 @@ pub async fn send_chat_history(
     Ok(())
 }
 
+/// Names a character's booth, kept for next time; an open booth shows it at
+/// once.
+async fn rename_booth(
+    state: &State,
+    actor: &tq_network::Actor<crate::ActorState>,
+    me: &crate::entities::Character,
+    name: &str,
+) -> Result<(), crate::Error> {
+    let Some(name) = crate::player_shop::clean_name(name) else {
+        return Ok(());
+    };
+    crate::player_shop::save_name(state.pool(), me.database_id(), &name).await?;
+    if me.booth_name().is_some() {
+        me.set_booth_name(Some(name.clone()));
+        let sign = MsgTalk::booth(me, &name);
+        actor.send(sign.clone()).await?;
+        actor.screen().send_message(sign).await?;
+    }
+    actor
+        .send(MsgTalk::from_system(me.id(), TalkChannel::System, format!("Your booth is called {name}.")))
+        .await?;
+    Ok(())
+}
+
 #[async_trait]
 impl PacketProcess for MsgTalk {
     type ActorState = ActorState;
@@ -358,6 +390,10 @@ impl PacketProcess for MsgTalk {
         }
         let entity = actor.entity();
         let me = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+        // On the Vendor channel the seller names their booth.
+        if self.channel == u16::from(TalkChannel::Vendor) {
+            return rename_booth(state, actor, me, &self.message).await;
+        }
         // The client says who speaks and on which channel; only what a player
         // may say goes out, and always under their own name.
         let route = route(self.channel);

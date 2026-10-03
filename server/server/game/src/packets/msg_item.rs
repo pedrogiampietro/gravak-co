@@ -232,7 +232,8 @@ impl PacketProcess for MsgItem {
                     .player_shop_manager()
                     .add_item(character.id(), item.uid, self.amount)
                 {
-                    Ok(_) => {
+                    Ok(listing) => {
+                        crate::player_shop::save_listing(state.pool(), character.database_id(), listing).await?;
                         economic_audit_log(
                             "player_shop_list",
                             character.id(),
@@ -271,6 +272,7 @@ impl PacketProcess for MsgItem {
                 }
                 match state.player_shop_manager().remove_item(character.id(), self.param0) {
                     Ok(listing) => {
+                        crate::player_shop::forget_listing(state.pool(), listing.item_uid).await?;
                         economic_audit_log(
                             "player_shop_remove",
                             character.id(),
@@ -399,6 +401,7 @@ impl PacketProcess for MsgItem {
                 {
                     Some(transfer) => {
                         economic_audit_log("player_shop_buy", buyer.id(), seller.id(), item.uid, listing.price);
+                        crate::player_shop::forget_listing(state.pool(), item.uid).await?;
                         for removed in transfer.left_removed {
                             seller.owner().send(MsgItemInfo::remove_inventory_item(removed)).await?;
                         }

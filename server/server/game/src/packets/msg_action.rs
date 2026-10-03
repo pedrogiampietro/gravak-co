@@ -185,6 +185,12 @@ impl MsgAction {
         let entity = actor.try_entity()?;
         let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
         state.player_shop_manager().close(character.id());
+        if character.booth_name().is_some() {
+            character.set_booth_name(None);
+            let sign = MsgTalk::booth(character, "");
+            actor.send(sign.clone()).await?;
+            actor.screen().send_message(sign).await?;
+        }
         // Remove Player from Booth.
         let myscreen = actor.screen();
         myscreen.clear()?;
@@ -226,12 +232,36 @@ impl MsgAction {
                 response.data1 = character.id();
                 actor.send(response.clone()).await?;
                 actor.screen().send_message(response).await?;
+                // The booth's name, and what it listed last time, still in the bag.
+                let pool = state.pool();
+                let name = crate::player_shop::saved_name(pool, character.database_id())
+                    .await?
+                    .unwrap_or_else(|| format!("{}'s Shop", character.entity().name()));
+                character.set_booth_name(Some(name.clone()));
+                let sign = MsgTalk::booth(character, &name);
+                actor.send(sign.clone()).await?;
+                actor.screen().send_message(sign).await?;
+                let bag = character.inventory_items();
+                let mut restored = 0;
+                for listing in crate::player_shop::saved_listings(pool, character.database_id()).await? {
+                    let item = bag.iter().find(|item| item.uid == listing.item_uid);
+                    match item {
+                        Some(item) if state.player_shop_manager().restore_item(character.id(), listing).is_ok() => {
+                            actor
+                                .send(super::MsgVendorItem::new(character.id(), *item, listing.price))
+                                .await?;
+                            restored += 1;
+                        },
+                        _ => crate::player_shop::forget_listing(pool, listing.item_uid).await?,
+                    }
+                }
+                let line = if restored > 0 {
+                    format!("{name} is open again with {restored} item(s) from last time.")
+                } else {
+                    format!("{name} is open. Add items to sell.")
+                };
                 actor
-                    .send(MsgTalk::from_system(
-                        character.id(),
-                        TalkChannel::System,
-                        "Player shop opened. Add items with BoothAdd.",
-                    ))
+                    .send(MsgTalk::from_system(character.id(), TalkChannel::System, line))
                     .await?;
             },
             Err(error) => {

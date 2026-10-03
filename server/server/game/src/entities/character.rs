@@ -53,6 +53,8 @@ pub struct Character {
     died_at: Mutex<Option<std::time::Instant>>,
     /// Until when the character, just revived, takes no damage.
     protected_until: Mutex<Option<std::time::Instant>>,
+    /// The name over the character's booth while it is open.
+    booth_name: Mutex<Option<String>>,
     /// The blue flashing name after killing someone.
     flashing_until: Mutex<Option<std::time::Instant>>,
     /// When the next PK point wears off.
@@ -485,6 +487,7 @@ impl Character {
             kill_points: AtomicU16::new(kill_points),
             died_at: Mutex::new(None),
             protected_until: Mutex::new(None),
+            booth_name: Mutex::new(None),
             flashing_until: Mutex::new(None),
             next_pk_decay: Mutex::new((kill_points > 0).then(|| std::time::Instant::now() + crate::death::PK_DECAY)),
             stamina: std::sync::atomic::AtomicU8::new(crate::vitals::MAX_STAMINA),
@@ -763,6 +766,16 @@ impl Character {
         };
         self.silver.store(balance.max(0) as u64, Ordering::Relaxed);
         Ok(Some(balance.max(0).min(i64::from(u32::MAX)) as u32))
+    }
+
+    /// The name over the character's open booth.
+    pub fn booth_name(&self) -> Option<String> {
+        self.booth_name.lock().clone()
+    }
+
+    /// Opens (`Some`) or closes the booth's name.
+    pub fn set_booth_name(&self, name: Option<String>) {
+        *self.booth_name.lock() = name;
     }
 
     /// Moves `amount` silver between the character and their guild's fund in
@@ -5531,6 +5544,10 @@ impl Character {
     pub(super) async fn send_spawn(&self, to: &ActorHandle) -> Result<(), Error> {
         let msg = MsgPlayer::from(self);
         to.send(msg).await?;
+        // An open booth shows its name to whoever comes near.
+        if let Some(name) = self.booth_name() {
+            to.send(crate::packets::MsgTalk::booth(self, &name)).await?;
+        }
         tracing::trace!("Sent Spawn");
         Ok(())
     }
