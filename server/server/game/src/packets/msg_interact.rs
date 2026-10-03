@@ -1220,6 +1220,13 @@ impl PacketProcess for MsgInteract {
             return Ok(());
         }
 
+        // Ghosts walk, but do not fight.
+        if character.entity().is_dead()
+            && matches!(self.action_kind(), InteractAction::Attack | InteractAction::MagicAttack)
+        {
+            return Ok(());
+        }
+
         if character.has_status(crate::entities::StatusEffect::Stunned) {
             actor
                 .send(MsgTalk::from_system(

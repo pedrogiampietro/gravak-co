@@ -686,6 +686,8 @@ pub struct Renderer {
     quick_panel_signature: Option<u64>,
     /// Where the bounty line under the minimap was drawn, for clicks.
     bounty_tracker_rect: Option<[f32; 4]>,
+    /// Where the REVIVE button was drawn, for clicks.
+    revive_rect: Option<[f32; 4]>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
     effects: HashMap<String, Option<std::rc::Rc<LoadedEffect>>>,
@@ -885,6 +887,7 @@ impl Renderer {
             transient_used: HashMap::new(),
             quick_panel_signature: None,
             bounty_tracker_rect: None,
+            revive_rect: None,
             level_up_layers: None,
             effects: HashMap::new(),
             last_hud_key: None,
@@ -1718,6 +1721,13 @@ impl Renderer {
             p[1] - self.config.height as f32 * 0.5,
         ]
     }
+    /// Whether `position` is on the REVIVE button.
+    pub fn revive_at(&self, position: [f32; 2]) -> bool {
+        self.revive_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
     /// Whether `position` is on the bounty line under the minimap.
     pub fn bounty_tracker_at(&self, position: [f32; 2]) -> bool {
         self.bounty_tracker_rect.is_some_and(|[left, top, width, height]| {
@@ -1761,6 +1771,7 @@ impl Renderer {
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
         remote_monsters: &HashMap<u32, crate::character::NpcModel>,
         local_ghost: Option<&crate::character::NpcModel>,
+        revive_remaining: Option<u32>,
         combat_numbers: &[(u32, u32, f32)],
         skill_effects: &[SkillEffectInstance],
         ground_loot: &[(u32, [f32; 2], u32, f32)],
@@ -2879,6 +2890,28 @@ impl Renderer {
                 });
             }
         }
+        // Dead: the revive countdown above the KO counter, then the button.
+        self.revive_rect = None;
+        let revive_key = revive_remaining.map(|remaining| format!("@revive-{remaining}"));
+        if let (Some(remaining), Some(key)) = (revive_remaining, &revive_key) {
+            if !self.textures.contains_key(key) {
+                self.upload(key, crate::hud::revive_image(remaining)?);
+            }
+            if let Some(texture) = self.textures.get(key) {
+                let [right, bottom] = crate::hud::revive_anchor(viewport);
+                let position = [right - texture.size[0], bottom - texture.size[1]];
+                if remaining == 0 {
+                    self.revive_rect = Some([position[0], position[1], texture.size[0], texture.size[1]]);
+                }
+                draws.push(Draw {
+                    texture: key.clone(),
+                    vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        self.prune_textures("@revive-", &[revive_key.as_deref()]);
         // The bounty under way, counted under the minimap.
         let tracker = bounty.and_then(|view| crate::bounty_board::tracker_line(&view.board));
         let tracker_key = tracker.as_ref().map(|line| format!("@bounty-tracker-{line}"));

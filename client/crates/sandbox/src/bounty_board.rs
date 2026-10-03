@@ -377,6 +377,8 @@ mod preview {
                 super::tracker_image(&line).expect("tracker").save(format!("{dir}/bounty-tracker.png")).expect("png");
             }
         }
+        crate::hud::revive_image(14).expect("countdown").save(format!("{dir}/revive-14.png")).expect("png");
+        crate::hud::revive_image(0).expect("button").save(format!("{dir}/revive-0.png")).expect("png");
         crate::labels::monster_image("Robin", 70, 100, true).expect("label").save(format!("{dir}/bounty-label.png")).expect("png");
     }
 }

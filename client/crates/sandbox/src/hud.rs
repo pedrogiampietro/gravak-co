@@ -272,6 +272,42 @@ fn draw_kill_counter(img: &mut RgbaImage, viewport: [f32; 2], kills: u32) {
     crate::main_hud::glow_text(img, glyph, "斩", 34.0, [glyph_x, hud_y], [150, 110, 255]);
 }
 
+/// The revive countdown and button sit above the KO counter, against the
+/// right edge: this is their bottom right corner.
+pub fn revive_anchor(viewport: [f32; 2]) -> [f32; 2] {
+    let [_, hud_y] = hud_origin(viewport);
+    [viewport[0] - 10.0, hud_y as f32 - 8.0]
+}
+
+/// While dead: "Revive 14" in the KO counter's glow, then, at 0, a REVIVE
+/// button.
+pub fn revive_image(remaining: u32) -> crate::assets::Result<RgbaImage> {
+    if remaining == 0 {
+        let font = crate::labels::font()?;
+        let mut image = RgbaImage::new(150, 38);
+        crate::components::draw_button(
+            &mut image,
+            &font,
+            crate::ui::UiRect::new(2, 2, 146, 34),
+            "REVIVE",
+            crate::components::WidgetState::Hovered,
+        );
+        crate::components::outline(&mut image, crate::ui::UiRect::new(0, 0, 150, 38), [255, 214, 102, 255]);
+        return Ok(image);
+    }
+    let (digits, glyph) = (crate::main_hud::italic_font()?, crate::main_hud::client_font()?);
+    let label = "Revive";
+    let number = remaining.to_string();
+    let label_width = crate::main_hud::text_width(glyph, label, 22.0);
+    let number_width = crate::main_hud::text_width(digits, &number, 34.0);
+    let width = (label_width + number_width + 22).max(1) as u32;
+    let mut image = RgbaImage::new(width, 42);
+    let glow = [150, 110, 255];
+    crate::main_hud::glow_text(&mut image, glyph, label, 22.0, [4, 12], glow);
+    crate::main_hud::glow_text(&mut image, digits, &number, 34.0, [label_width + 14, 2], glow);
+    Ok(image)
+}
+
 fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {
     let [x, y] = layout::main_hud_position(viewport);
     [x.round() as i32, y.round() as i32]

@@ -58,6 +58,10 @@ impl PacketProcess for MsgGroundItem {
         }
         let entity = actor.entity();
         let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        // Ghosts cannot pick anything up.
+        if character.entity().is_dead() {
+            return Ok(());
+        }
         let Some(ground_item) = state.ground_item(self.uid) else {
             return Ok(());
         };

@@ -822,6 +822,13 @@ impl ApplicationHandler for App {
                 if state == ElementState::Released {
                     return;
                 }
+                if self.dead_since.is_some()
+                    && self.renderer.as_ref().is_some_and(|renderer| renderer.revive_at(self.cursor))
+                {
+                    self.request_revive();
+                    self.held = false;
+                    return;
+                }
                 if self
                     .renderer
                     .as_ref()
@@ -838,10 +845,12 @@ impl ApplicationHandler for App {
                     return;
                 }
                 self.held = state == ElementState::Pressed;
-                if self.held && self.pickup_ground_loot_at_cursor() {
+                // A ghost only walks: no targets, no loot.
+                let ghost = self.dead_since.is_some();
+                if self.held && !ghost && self.pickup_ground_loot_at_cursor() {
                     return;
                 }
-                if self.held && !self.select_actor_at_cursor() {
+                if self.held && (ghost || !self.select_actor_at_cursor()) {
                     self.move_cursor();
                 }
             }
@@ -967,33 +976,19 @@ impl ApplicationHandler for App {
                     self.player.action = Action::Sit;
                     local_action_progress = Some(1.0);
                 }
-                if let Some(died_at) = self.dead_since {
+                // Dead: the body falls, then a ghost walks until revived.
+                if let Some(died_at) = self.dead_since
+                    && !self.fallen()
+                {
                     let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
                     self.player.action = Action::Die;
                     local_action_progress = Some(((elapsed - died_at) / fall).clamp(0.0, 1.0));
-                    // The revive window opens at death and counts down; its
-                    // Revive button appears when the server allows it.
-                    let remaining = (REVIVE_DELAY_SECONDS - (elapsed - died_at)).ceil().max(0.0) as u32;
-                    let (lines, options) = if remaining == 0 {
-                        (vec!["You are dead.".to_owned()], vec![(1, "Revive".to_owned())])
-                    } else {
-                        (vec!["You are dead.".to_owned(), format!("You can revive in {remaining} s.")], Vec::new())
-                    };
-                    let showing = self.dialog.as_ref().is_some_and(|dialog| dialog.task_id == REVIVE_TASK_ID);
-                    let changed = !showing
-                        || self.dialog.as_ref().is_some_and(|dialog| dialog.lines != lines || dialog.options != options);
-                    if (showing || self.dialog.is_none()) && changed {
-                        self.dialog = Some(DialogState {
-                            task_id: REVIVE_TASK_ID,
-                            avatar: 0,
-                            lines,
-                            options,
-                            edit: None,
-                            input: String::new(),
-                            input_focused: false,
-                        });
-                    }
                 }
+                // The revive countdown, then the REVIVE button, when the
+                // server allows it.
+                let revive_remaining = self
+                    .dead_since
+                    .map(|died_at| (REVIVE_DELAY_SECONDS - (elapsed - died_at)).ceil().max(0.0) as u32);
                 let action_animation_progress = self
                     .action_animation_started
                     .map(|started| {
@@ -1062,6 +1057,7 @@ impl ApplicationHandler for App {
                         &self.remote_npcs,
                         &self.remote_monsters,
                         local_ghost_look.and_then(|look| self.ghosts.get(&look)),
+                        revive_remaining,
                         &self.combat_numbers,
                         &self.skill_effects,
                         &self.ground_loot,
@@ -2735,7 +2731,8 @@ impl App {
     }
 
     fn move_cursor(&mut self) {
-        if self.dead_since.is_some() {
+        // A falling body stays down; the ghost it becomes walks.
+        if self.dead_since.is_some() && !self.fallen() {
             return;
         }
         self.follow_target = None;
@@ -4579,11 +4576,13 @@ impl App {
     /// Dead players turn into ghosts once they have fallen: their id draws
     /// the ghost model through `remote_monsters` until they get up.
     fn sync_ghosts(&mut self, time: f32) {
+        // The server's DEAD status flag (1 << 10) marks a dead player even
+        // while their ghost walks; the fall plays first.
         let dead = |actor: &RemoteActor| {
             !actor.npc
                 && !(400_001..=499_999).contains(&actor.id)
-                && actor.action == renderer::REMOTE_DEAD
-                && time >= actor.animation_until
+                && (actor.status_flags & (1 << 10) != 0 || actor.action == renderer::REMOTE_DEAD)
+                && !(actor.action == renderer::REMOTE_DEAD && time < actor.animation_until)
         };
         let anyone_dead = self.dead_since.is_some() || self.remote_actors.values().any(|actor| dead(actor));
         if anyone_dead && !self.ghosts_requested {
@@ -4617,6 +4616,21 @@ impl App {
         for id in risen {
             self.ghost_actors.remove(&id);
             self.remote_monsters.remove(&id);
+        }
+    }
+
+    /// Whether the dead character has finished falling (and is a ghost).
+    fn fallen(&self) -> bool {
+        self.dead_since.is_some_and(|died_at| {
+            self.started.elapsed().as_secs_f32() - died_at >= self.character.duration(Action::Die).as_secs_f32()
+        })
+    }
+
+    /// Asks the server to revive; it refuses before the delay.
+    fn request_revive(&mut self) {
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.revive(character_id);
+            self.network_status = "online: reviving".into();
         }
     }
 
