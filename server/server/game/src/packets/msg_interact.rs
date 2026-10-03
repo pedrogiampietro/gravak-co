@@ -1015,9 +1015,8 @@ pub(crate) async fn reward_monster_defeat(
         if let Some(level) = leveled {
             crate::leveling::after_level_up(state, recipient, level).await?;
         }
-        let quest_completions =
-            crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
-        let quest_leveled = quest_completions.iter().filter_map(|quest| quest.leveled_to).max();
+        let quests = crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
+        let quest_leveled = quests.completed.iter().filter_map(|quest| quest.leveled_to).max();
         recipient.save(state).await?;
         let owner = recipient.owner();
         owner.send(MsgUserInfo::from(recipient)).await?;
@@ -1043,14 +1042,35 @@ pub(crate) async fn reward_monster_defeat(
                 ))
                 .await?;
         }
-        for quest in quest_completions {
+        for quest in quests.completed {
+            let item = quest
+                .definition
+                .reward_item
+                .map(|item_type| format!(" and {}", crate::quests::item_name(item_type)))
+                .unwrap_or_default();
+            if let Some(item) = quest.reward_item {
+                owner.send(crate::packets::MsgItemInfo::inventory_item(item)).await?;
+            }
             owner
                 .send(MsgTalk::from_system(
                     recipient.id(),
                     TalkChannel::System,
                     format!(
-                        "Quest complete: {}. Reward: {} silver and {} experience.",
+                        "Quest complete: {}. Reward: {} silver, {} experience{item}.",
                         quest.definition.name, quest.reward_silver, quest.reward_experience
+                    ),
+                ))
+                .await?;
+        }
+        for quest in quests.waiting_for_room {
+            owner
+                .send(MsgTalk::from_system(
+                    recipient.id(),
+                    TalkChannel::System,
+                    format!(
+                        "Quest {}: make room in your bag for {}, then defeat one more.",
+                        quest.name,
+                        crate::quests::item_name(quest.reward_item.unwrap_or_default())
                     ),
                 ))
                 .await?;

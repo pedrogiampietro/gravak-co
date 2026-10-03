@@ -186,7 +186,7 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
                 (1, "How can I become stronger?".into()),
                 (2, "I will return later.".into()),
                 (3, "Teach me a skill.".into()),
-                (4, "Accept a Pheasant Hunt quest.".into()),
+                (4, "Do you have a task for me?".into()),
             ],
             47,
         );
@@ -237,7 +237,7 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
                 (1, "How can I become stronger?".into()),
                 (2, "I will return later.".into()),
                 (3, "Teach me a skill.".into()),
-                (4, "Accept a Pheasant Hunt quest.".into()),
+                (4, "Do you have a task for me?".into()),
             ],
             47,
         ),

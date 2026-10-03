@@ -50,8 +50,14 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 
 ## P2 — gameplay e conteúdo
 
-- [ ] Quests: cadeias, requisitos, objetivos além de matar monstros, recompensas
-      (hoje só existe `Pheasant Hunt`).
+- [x] Quests em cadeia: o Old General Yang oferece a próxima tarefa disponível
+      (quest anterior feita + nível mínimo). Seis etapas pelos monstros de Twin
+      City (Pheasant → Turtledove → Robin → Apparition → Poltergeist →
+      WarGhost), com prata, experiência e Meteor/DragonBall; a recompensa em
+      item espera espaço na bolsa em vez de se perder. Testado no servidor real
+      com o probe `--quest`.
+- [ ] Quests com outros objetivos (coletar itens, falar com NPCs, entregar) e
+      cadeias de outros NPCs e cidades.
 - [ ] Banca (player shop): nome visível, persistência e volta após reconnect.
 - [ ] Trade: voltar à troca após reconnect; rejeições com mensagem clara.
 - [ ] Guild: ranking, cargos avançados, depósito/saque de prata da guild.

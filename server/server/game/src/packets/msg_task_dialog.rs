@@ -296,19 +296,25 @@ impl PacketProcess for MsgTaskDialog {
                     .await?;
                 return Ok(());
             }
-            let response = match crate::quests::start(_state.pool(), character.database_id(), 1).await? {
-                crate::quests::StartOutcome::Started(quest) => {
-                    format!("Quest accepted: {}. {}", quest.name, quest.description)
-                },
-                crate::quests::StartOutcome::AlreadyActive(quest, progress) => format!(
-                    "Quest already active: {} ({}/{}).",
-                    quest.name, progress, quest.required_count
-                ),
-                crate::quests::StartOutcome::AlreadyCompleted(quest) => {
-                    format!("Quest already completed: {}.", quest.name)
-                },
-                crate::quests::StartOutcome::NotFound => "This quest is not available.".to_owned(),
-            };
+            let level = character.entity().level();
+            let response =
+                match crate::quests::offer(_state.pool(), character.database_id(), level, self.task_id).await? {
+                    crate::quests::Offer::Started(quest) => {
+                        format!("Quest accepted: {}. {}", quest.name, quest.description)
+                    },
+                    crate::quests::Offer::Active(quest, progress) => format!(
+                        "Finish what you started first: {} ({}/{}).",
+                        quest.name, progress, quest.required_count
+                    ),
+                    crate::quests::Offer::TooLow(quest) => format!(
+                        "Old General Yang: come back at level {} for {}.",
+                        quest.min_level, quest.name
+                    ),
+                    crate::quests::Offer::AllDone => {
+                        "Old General Yang: you have done all I could ask of you. Twin City is grateful.".to_owned()
+                    },
+                    crate::quests::Offer::Nothing => "This quest is not available.".to_owned(),
+                };
             actor
                 .send(super::MsgTalk::from_system(
                     character.id(),
