@@ -317,6 +317,8 @@ enum UiTextureJob {
         player_shop_open: bool,
         player_shop_price: String,
         player_shop_price_focused: bool,
+        player_shop_name: String,
+        player_shop_name_focused: bool,
         hud_config: crate::hud::HudConfig,
         bounty: Option<crate::bounty_board::BountyView>,
         store: Option<crate::store_panel::StoreView>,
@@ -585,6 +587,8 @@ impl UiTextureJob {
                 player_shop_open,
                 player_shop_price,
                 player_shop_price_focused,
+                player_shop_name,
+                player_shop_name_focused,
                 hud_config,
                 bounty,
                 store,
@@ -613,6 +617,8 @@ impl UiTextureJob {
                 player_shop_open,
                 &player_shop_price,
                 player_shop_price_focused,
+                &player_shop_name,
+                player_shop_name_focused,
                 hud_config,
                 bounty.as_ref(),
                 store.as_ref(),
@@ -1767,6 +1773,27 @@ impl Renderer {
         Ok(())
     }
 
+    /// A booth's name on a small ornate plate, above `name_top`.
+    fn push_booth_sign(&mut self, booth: &str, name_top: [f32; 2], viewport: [f32; 2], draws: &mut Vec<Draw>) -> Result<()> {
+        let key = format!("@booth-{booth}");
+        if !self.textures.contains_key(&key) {
+            self.upload(&key, crate::ornate::booth_sign(booth)?);
+        }
+        if let Some(sign) = self.textures.get(&key) {
+            draws.push(Draw {
+                texture: key,
+                vertices: quad(
+                    [(name_top[0] - sign.size[0] * 0.5).round(), (name_top[1] - sign.size[1]).round()],
+                    sign.size,
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+        Ok(())
+    }
+
     /// Whether `position` is on the Store icon.
     pub fn store_icon_at(&self, position: [f32; 2]) -> bool {
         self.store_icon_rect.is_some_and(|[left, top, width, height]| {
@@ -1868,6 +1895,8 @@ impl Renderer {
         player_shop_open: bool,
         player_shop_price: &str,
         player_shop_price_focused: bool,
+        player_shop_name: &str,
+        player_shop_name_focused: bool,
         bounty: Option<&crate::bounty_board::BountyView>,
         store: Option<&crate::store_panel::StoreView>,
         item_context: Option<crate::shop::ItemContext>,
@@ -2593,8 +2622,13 @@ impl Renderer {
                         sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
-                if !actor.npc && !monster && actor.status_flags & VIP_FLAG != 0 {
+                let vip = !actor.npc && !monster && actor.status_flags & VIP_FLAG != 0;
+                if vip {
                     self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
+                }
+                if let Some(booth) = actor.booth.as_deref().filter(|_| !actor.npc && !monster) {
+                    let top = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
+                    self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
                 }
             }
         }
@@ -2779,6 +2813,10 @@ impl Renderer {
         }
         if status_flags & VIP_FLAG != 0 {
             self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
+        }
+        if let Some(booth) = character.booth.as_deref() {
+            let top = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
+            self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
         }
         if minimap_visible && self.minimap_map != Some(map.id) {
             self.minimap_map = Some(map.id);
@@ -3468,6 +3506,8 @@ impl Renderer {
             player_shop_open.hash(&mut hasher);
             player_shop_price.hash(&mut hasher);
             player_shop_price_focused.hash(&mut hasher);
+            player_shop_name.hash(&mut hasher);
+            player_shop_name_focused.hash(&mut hasher);
             hud_config.hash(&mut hasher);
             if panel == crate::shop::QuickPanel::Quest {
                 bounty.hash(&mut hasher);
@@ -3526,6 +3566,8 @@ impl Renderer {
                         player_shop_open,
                         player_shop_price: player_shop_price.to_owned(),
                         player_shop_price_focused,
+                        player_shop_name: player_shop_name.to_owned(),
+                        player_shop_name_focused,
                         hud_config,
                         bounty: bounty.cloned(),
                         store: store.cloned(),

@@ -734,6 +734,12 @@ pub fn player_shop_panel_action_at(
     None
 }
 
+/// The booth name field, right of the Query button.
+pub fn player_shop_name_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
+    (left + 268.0..=left + 500.0).contains(&cursor[0]) && (top + 144.0..=top + 172.0).contains(&cursor[1])
+}
+
 pub fn player_shop_price_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
     (left + 268.0..=left + 420.0).contains(&cursor[0])
@@ -984,6 +990,8 @@ pub fn quick_panel_image(
     player_shop_open: bool,
     player_shop_price: &str,
     player_shop_price_focused: bool,
+    player_shop_name: &str,
+    player_shop_name_focused: bool,
     hud_config: crate::hud::HudConfig,
     bounty: Option<&crate::bounty_board::BountyView>,
     store: Option<&crate::store_panel::StoreView>,
@@ -1488,6 +1496,28 @@ pub fn quick_panel_image(
                 );
                 team_button(&mut image, &font, 24, 112, "ABRIR BANCA");
             }
+            // The booth's name: shown over the seller while open, kept for
+            // the next time. Enter saves it.
+            labels::text(&mut image, &font, &[("Nome da banca", [255, 224, 146])], [268.0, 146.0]);
+            let shown_name = if player_shop_name.is_empty() && !player_shop_name_focused {
+                "clique e digite; Enter salva"
+            } else {
+                player_shop_name
+            };
+            let name_colour = if player_shop_name_focused {
+                [255, 255, 255]
+            } else if player_shop_name.is_empty() {
+                [150, 150, 150]
+            } else {
+                [220, 210, 175]
+            };
+            let caret = if player_shop_name_focused { "_" } else { "" };
+            labels::text(
+                &mut image,
+                &font,
+                &[(shown_name, name_colour), (caret, [255, 255, 255])],
+                [268.0, 162.0],
+            );
             if selected_target_name.is_some() {
                 team_button(&mut image, &font, 24, 146, "CONSULTAR ALVO");
             } else {

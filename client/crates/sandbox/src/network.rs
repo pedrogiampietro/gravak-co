@@ -410,6 +410,8 @@ pub struct RemoteActor {
     pub npc: bool,
     /// Player level from MsgPlayer; 0 for NPCs.
     pub level: u16,
+    /// The name over the player's booth while it is open.
+    pub booth: Option<String>,
 }
 
 pub(crate) enum NetworkCommand {
@@ -1080,6 +1082,11 @@ impl NetworkHandle {
 
     pub fn send_chat(&self, character_id: u32, sender_name: &str, message: &str) {
         let packet = TalkPacket::public(character_id, sender_name, message);
+        let _ = self.commands.send(NetworkCommand::Talk { packet });
+    }
+
+    pub fn send_booth_name(&self, character_id: u32, sender_name: &str, name: &str) {
+        let packet = TalkPacket::booth(character_id, sender_name, name);
         let _ = self.commands.send(NetworkCommand::Talk { packet });
     }
 
@@ -2112,6 +2119,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         step_right: false,
         npc: false,
         level: player.level.max(0) as u16,
+        booth: None,
     }
 }
 
@@ -2153,6 +2161,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         step_right: false,
         npc: true,
         level: 0,
+        booth: None,
     }
 }
 

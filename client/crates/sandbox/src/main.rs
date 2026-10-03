@@ -413,6 +413,11 @@ struct App {
     player_shop_open: bool,
     player_shop_price: String,
     player_shop_price_focused: bool,
+    /// The booth name being typed in the player shop window.
+    player_shop_name: String,
+    player_shop_name_focused: bool,
+    /// Open booths around, by their seller's name: the booth's name.
+    booths: HashMap<String, String>,
     /// The bounty Task Board, as the server last sent it.
     bounty: Option<bounty_board::BountyView>,
     /// The Store, as the server last sent it.
@@ -557,6 +562,30 @@ impl ApplicationHandler for App {
                 self.queued_jump = None;
                 self.chat_focused = false;
                 self.player.stop();
+            }
+            WindowEvent::KeyboardInput { event, .. } if self.player_shop_name_focused => {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => self.player_shop_name_focused = false,
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            self.player_shop_name_focused = false;
+                            self.send_booth_name();
+                        }
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            self.player_shop_name.pop();
+                        }
+                        _ => {
+                            if let Some(text) = event.text.as_ref() {
+                                for ch in text.chars().filter(|ch| !ch.is_control()) {
+                                    if self.player_shop_name.chars().count() < 24 {
+                                        self.player_shop_name.push(ch);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.warehouse_amount_focused || self.player_shop_price_focused =>
@@ -713,6 +742,14 @@ impl ApplicationHandler for App {
                     });
                     if !inside_price {
                         self.player_shop_price_focused = false;
+                    }
+                    let inside_name = self.window.as_ref().is_some_and(|window| {
+                        let size = window.inner_size();
+                        self.quick_panel == Some(shop::QuickPanel::Market)
+                            && shop::player_shop_name_at([size.width as f32, size.height as f32], self.cursor)
+                    });
+                    if !inside_name {
+                        self.player_shop_name_focused = false;
                     }
                 }
                 // A release can be consumed by a UI drag below, so clear the
@@ -1057,6 +1094,16 @@ impl ApplicationHandler for App {
                     .dead_since
                     .filter(|died_at| elapsed - died_at >= self.character.duration(Action::Die).as_secs_f32())
                     .map(|_| ghost_look(self.character.body_id));
+                // Booth signs follow their sellers; a seller gone from
+                // sight takes theirs along.
+                let own_name = self.character.name.clone();
+                let actors = &self.remote_actors;
+                self.booths
+                    .retain(|seller, _| *seller == own_name || actors.values().any(|actor| actor.name == *seller));
+                for actor in self.remote_actors.values_mut() {
+                    actor.booth = self.booths.get(&actor.name).cloned();
+                }
+                self.character.booth = self.booths.get(&own_name).cloned();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1137,6 +1184,8 @@ impl ApplicationHandler for App {
                         self.player_shop_open,
                         &self.player_shop_price,
                         self.player_shop_price_focused,
+                        &self.player_shop_name,
+                        self.player_shop_name_focused,
                         self.bounty.as_ref(),
                         self.store.as_ref(),
                         self.item_context.clone(),
@@ -1499,9 +1548,19 @@ impl App {
                 return true;
             }
             if self.quick_panel == Some(shop::QuickPanel::Market)
+                && shop::player_shop_name_at(viewport, self.cursor)
+            {
+                self.warehouse_amount_focused = false;
+                self.player_shop_price_focused = false;
+                self.player_shop_name_focused = true;
+                self.held = false;
+                return true;
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Market)
                 && shop::player_shop_price_at(viewport, self.cursor)
             {
                 self.warehouse_amount_focused = false;
+                self.player_shop_name_focused = false;
                 self.player_shop_price_focused = true;
                 self.held = false;
                 return true;
@@ -2800,6 +2859,17 @@ impl App {
         }
     }
 
+    /// Sends the typed booth name; the server keeps it for the next opening.
+    fn send_booth_name(&mut self) {
+        let name = self.player_shop_name.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.send_booth_name(character_id, &self.character.name, &name);
+        }
+    }
+
     fn handle_player_shop_panel_action(&mut self, action: shop::PlayerShopPanelAction) {
         let Some(network) = &self.network else {
             self.network_status = "banca indisponível: servidor offline".into();
@@ -3178,6 +3248,14 @@ impl App {
                 }
                 self.network_status =
                     format!("friend {name} ({friend_id}) action {action} {state}");
+            }
+            // A booth's name (the Vendor channel); empty when it closes.
+            NetworkEvent::ChatMessage(message) if message.channel == 2104 => {
+                if message.message.is_empty() {
+                    self.booths.remove(&message.sender_name);
+                } else {
+                    self.booths.insert(message.sender_name, message.message);
+                }
             }
             NetworkEvent::ChatMessage(message) => {
                 let display = if message.channel == 2001 {
@@ -7246,6 +7324,9 @@ fn run() -> Result<()> {
         player_shop_open: false,
         player_shop_price: "1000".into(),
         player_shop_price_focused: false,
+        player_shop_name: String::new(),
+        player_shop_name_focused: false,
+        booths: HashMap::new(),
         bounty: None,
         store: None,
         store_confirm: None,

@@ -573,6 +573,14 @@ pub struct TalkPacket {
 }
 
 impl TalkPacket {
+    /// Names the sender's booth (the original's Vendor channel, 2104).
+    pub fn booth(character_id: u32, sender_name: &str, name: &str) -> Self {
+        Self {
+            channel: 2104,
+            ..Self::public(character_id, sender_name, name)
+        }
+    }
+
     pub fn public(character_id: u32, sender_name: &str, message: &str) -> Self {
         Self {
             color: 0x00FF_FFFF,
