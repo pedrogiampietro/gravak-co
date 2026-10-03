@@ -9,7 +9,7 @@
 -- covers the same spot, and its own spawn 2 is the next Pheasant pack.
 DELETE FROM monster_spawns WHERE id = 2 AND monster_type_id = 1 AND x = 384 AND y = 458;
 
-INSERT OR IGNORE INTO monster_types (id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds)
+INSERT INTO monster_types (id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds)
 VALUES
   (1, 'Pheasant', 104, 1, 33, 5, 6, 0, 500, 10),
   (2, 'Turtledove', 304, 7, 81, 10, 15, 0, 500, 10),
@@ -415,9 +415,10 @@ VALUES
   (11170, 'IcyBladeDevil', 329, 127, 65535, 5000, 5000, 0, 500, 10),
   (3589, 'SnowBanshee', 951, 135, 655, 1500, 5000, 0, 500, 10),
   (3590, 'SwordMaster', 953, 140, 655, 1500, 3500, 0, 500, 10),
-  (11171, 'Slinger', 145, 105, 30110, 800, 1000, 0, 500, 10);
+  (11171, 'Slinger', 145, 105, 30110, 800, 1000, 0, 500, 10)
+ON CONFLICT DO NOTHING;
 
-INSERT OR IGNORE INTO monster_spawns (id, monster_type_id, map_id, x, y, amount, radius)
+INSERT INTO monster_spawns (id, monster_type_id, map_id, x, y, amount, radius)
 VALUES
   (1, 1, 1002, 384, 458, 10, 7),
   (2, 1, 1002, 436, 478, 10, 7),
@@ -1423,4 +1424,7 @@ VALUES
   (1259, 123, 1075, 714, 618, 15, 25),
   (1260, 123, 1075, 705, 662, 15, 20),
   (1261, 123, 1075, 715, 708, 15, 20),
-  (1265, 55, 1014, 57, 107, 3, 6);
+  (1265, 55, 1014, 57, 107, 3, 6)
+ON CONFLICT DO NOTHING;
+
+SELECT sync_identity_sequences();

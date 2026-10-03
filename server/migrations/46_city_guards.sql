@@ -1,6 +1,6 @@
 -- City guards (Redux spawns left out by migration 39 until PK existed).
 -- They attack only players with a flashing blue or a black name.
-INSERT OR IGNORE INTO monster_spawns (id, monster_type_id, map_id, x, y, amount, radius)
+INSERT INTO monster_spawns (id, monster_type_id, map_id, x, y, amount, radius)
 VALUES
   (4, 900, 1002, 445, 435, 1, 1),
   (5, 900, 1002, 436, 436, 1, 1),
@@ -31,4 +31,7 @@ VALUES
   (332, 900, 1000, 487, 625, 1, 1),
   (447, 900, 1001, 316, 649, 1, 1),
   (448, 900, 1001, 309, 642, 1, 1),
-  (785, 900, 1000, 531, 515, 1, 1);
+  (785, 900, 1000, 531, 515, 1, 1)
+ON CONFLICT DO NOTHING;
+
+SELECT sync_identity_sequences();

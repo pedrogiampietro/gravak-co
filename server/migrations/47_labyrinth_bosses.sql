@@ -11,7 +11,7 @@ VALUES
   (3149, 1353, 456, 360, 1, 0),
   (3156, 1354, 432, 384, 1, 0);
 
-INSERT OR IGNORE INTO monster_drops (monster_type_id, item_id, chance_percent)
+INSERT INTO monster_drops (monster_type_id, item_id, chance_percent)
 VALUES
   (3143, 721537, 100),
   (3146, 721538, 100),
@@ -24,4 +24,7 @@ VALUES
   (3143, 1088001, 100),
   (3146, 1088001, 100),
   (3149, 1088001, 100),
-  (3156, 1088001, 100);
+  (3156, 1088001, 100)
+ON CONFLICT DO NOTHING;
+
+SELECT sync_identity_sequences();

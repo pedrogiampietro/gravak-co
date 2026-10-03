@@ -39,4 +39,4 @@ features = ["rt-multi-thread", "macros", "signal"]
 [dependencies.sqlx]
 workspace = true
 default-features = false
-features = ["runtime-tokio-rustls", "sqlite", "macros"]
+features = ["runtime-tokio-rustls", "postgres", "macros"]

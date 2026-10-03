@@ -73,7 +73,7 @@ async fn main() -> Result<(), Error> {
         concat!("v", env!("CARGO_PKG_VERSION")),
         &[
             ("Listening", format!("0.0.0.0:{auth_port}")),
-            ("Database", env::var("DATA_LOCATION").unwrap_or_else(|_| "./data".into())),
+            ("Database", tq_db::database_label()),
             ("Log level", log_level_name(log_verbosity).to_owned()),
             ("Log files", "logs/auth.log.<date>".to_owned()),
             ("Started in", format!("{:.2} s", started.elapsed().as_secs_f32())),

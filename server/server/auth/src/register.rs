@@ -53,14 +53,14 @@ pub fn valid_password(password: &str) -> bool {
     PASSWORD_LENGTH.contains(&password.len()) && password.chars().all(|c| c.is_ascii_graphic())
 }
 
-pub async fn register(pool: &sqlx::SqlitePool, username: &str, password: &str) -> RegisterResult {
+pub async fn register(pool: &sqlx::PgPool, username: &str, password: &str) -> RegisterResult {
     if !valid_username(username) {
         return RegisterResult::InvalidUsername;
     }
     if !valid_password(password) {
         return RegisterResult::InvalidPassword;
     }
-    let taken = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE username = ? COLLATE NOCASE;")
+    let taken = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE lower(username) = lower($1);")
         .bind(username)
         .fetch_one(pool)
         .await;
@@ -95,7 +95,7 @@ pub async fn register(pool: &sqlx::SqlitePool, username: &str, password: &str) -
 
 pub async fn process(
     msg: MsgRegisterAccount,
-    pool: &sqlx::SqlitePool,
+    pool: &sqlx::PgPool,
     actor: &Actor<()>,
 ) -> Result<(), crate::error::Error> {
     let result = register(pool, &msg.username, &msg.password).await;
@@ -107,10 +107,8 @@ pub async fn process(
 mod tests {
     use super::*;
 
-    async fn pool() -> sqlx::SqlitePool {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
-        pool
+    async fn pool() -> sqlx::PgPool {
+        tq_db::testing::pool().await
     }
 
     #[test]

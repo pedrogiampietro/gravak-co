@@ -677,11 +677,12 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             // character eligible for the first trainer skill, and persists
             // the fixture before the real NPC dialog is exercised.
             let starter_ids: Vec<u32> = state.skill_catalog().starter_ids().collect();
-            let placeholders = std::iter::repeat_n("?", starter_ids.len())
+            let placeholders = (2..starter_ids.len() + 2)
+                .map(|n| format!("${n}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let query =
-                format!("DELETE FROM character_skills WHERE character_id = ? AND skill_id NOT IN ({placeholders})");
+                format!("DELETE FROM character_skills WHERE character_id = $1 AND skill_id NOT IN ({placeholders})");
             let mut statement = sqlx::query(&query).bind(me.database_id());
             for skill_id in &starter_ids {
                 statement = statement.bind(i64::from(*skill_id));

@@ -1,29 +1,30 @@
 use crate::error::Error;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::postgres::{PgPool, PgPoolOptions};
 
 #[derive(Debug, Clone)]
 pub struct State {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 impl State {
     /// Init The State.
     /// Should only get called once.
     pub async fn init() -> Result<Self, Error> {
-        let data_dir = dotenvy::var("DATA_LOCATION")?;
-        let default_db_location = format!("sqlite://{data_dir}/coemu.db?mode=rwc");
-        let db_url = dotenvy::var("DATABASE_URL").unwrap_or(default_db_location);
-        let pool = SqlitePoolOptions::new()
+        let db_url = dotenvy::var("DATABASE_URL").unwrap_or_else(|_| tq_db::DEFAULT_DATABASE_URL.to_owned());
+        let pool = PgPoolOptions::new()
             .max_connections(42)
             .min_connections(4)
             .connect(&db_url)
             .await?;
-        let state = Self { pool };
-        Ok(state)
+        Ok(Self::with_pool(pool))
+    }
+
+    pub fn with_pool(pool: PgPool) -> Self {
+        Self { pool }
     }
 
     /// Get access to the database pool
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 }

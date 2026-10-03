@@ -4,16 +4,18 @@
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::FromRow))]
 pub struct Realm {
+    #[cfg_attr(feature = "sqlx", sqlx(try_from = "i64"))]
     pub realm_id: i32,
     pub name: String,
     pub game_ip_address: String,
+    #[cfg_attr(feature = "sqlx", sqlx(try_from = "i64"))]
     pub game_port: i16,
 }
 
 #[cfg(feature = "sqlx")]
 impl Realm {
-    pub async fn by_name(pool: &sqlx::SqlitePool, name: &str) -> Result<Option<Self>, crate::Error> {
-        let realm = sqlx::query_as::<_, Self>("SELECT * FROM realms WHERE name = ?;")
+    pub async fn by_name(pool: &sqlx::PgPool, name: &str) -> Result<Option<Self>, crate::Error> {
+        let realm = sqlx::query_as::<_, Self>("SELECT * FROM realms WHERE name = $1;")
             .bind(name)
             .fetch_optional(pool)
             .await?;

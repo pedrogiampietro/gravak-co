@@ -199,7 +199,7 @@ async fn persist_chat_for_owners(state: &State, owner_ids: &[u32], message: &Msg
     owners.dedup();
     for owner_id in owners {
         sqlx::query(
-            "INSERT INTO character_chat_history (character_id, channel, sender_name, recipient_name, message) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO character_chat_history (character_id, channel, sender_name, recipient_name, message) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(owner_id)
         .bind(i64::from(message.channel))
@@ -209,7 +209,7 @@ async fn persist_chat_for_owners(state: &State, owner_ids: &[u32], message: &Msg
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
-            "DELETE FROM character_chat_history WHERE character_id = ? AND id NOT IN (SELECT id FROM character_chat_history WHERE character_id = ? ORDER BY id DESC LIMIT 40)",
+            "DELETE FROM character_chat_history WHERE character_id = $1 AND id NOT IN (SELECT id FROM character_chat_history WHERE character_id = $2 ORDER BY id DESC LIMIT 40)",
         )
         .bind(owner_id)
         .bind(owner_id)
@@ -229,8 +229,8 @@ pub async fn send_chat_history(
     actor: &Actor<ActorState>,
     character_id: u32,
 ) -> Result<(), crate::Error> {
-    let rows = sqlx::query_as::<_, (u16, String, String, String, i64)>(
-        "SELECT channel, sender_name, recipient_name, message, created_at FROM character_chat_history WHERE character_id = ? AND channel IN (?, ?, ?) ORDER BY id ASC LIMIT 40",
+    let rows = sqlx::query_as::<_, (i64, String, String, String, i64)>(
+        "SELECT channel, sender_name, recipient_name, message, created_at FROM character_chat_history WHERE character_id = $1 AND channel IN ($2, $3, $4) ORDER BY id ASC LIMIT 40",
     )
     .bind(database_id(character_id))
     .bind(i64::from(TalkChannel::Talk as u16))
@@ -242,7 +242,7 @@ pub async fn send_chat_history(
         actor
             .send(MsgTalk {
                 color: 0x00FF_FFFF,
-                channel,
+                channel: u16::try_from(channel).unwrap_or_default(),
                 style: TalkStyle::Normal.into(),
                 character_id,
                 recipient_mesh: 0,
@@ -265,7 +265,7 @@ impl PacketProcess for MsgTalk {
     type State = State;
 
     async fn process(&self, state: &Self::State, actor: &Actor<Self::ActorState>) -> Result<(), Self::Error> {
-        if self.channel == TalkChannel::Whisper.into() {
+        if self.channel == u16::from(TalkChannel::Whisper) {
             return deliver_whisper(state, actor, self).await;
         }
         let is_command = self.message.starts_with('$');

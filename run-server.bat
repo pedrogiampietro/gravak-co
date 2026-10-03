@@ -56,6 +56,27 @@ rem -- Parse arguments ---------------------------------------------
 if /I "%~1"=="stop" goto stop
 if /I "%~1"=="status" goto status
 
+rem -- Database ----------------------------------------------------
+rem The servers keep their data in the Postgres container of
+rem server\docker-compose.yml; start it (and Docker Desktop) if needed.
+docker info >nul 2>&1 || (
+    echo Iniciando o Docker Desktop...
+    start "" "%ProgramFiles%\Docker\Docker\Docker Desktop.exe"
+    powershell.exe -NoProfile -Command "for ($i = 0; $i -lt 90; $i++) { docker info *> $null; if ($LASTEXITCODE -eq 0) { exit 0 }; Start-Sleep 2 }; exit 1"
+)
+docker info >nul 2>&1 || (
+    echo [ERRO] O Docker nao respondeu; abra o Docker Desktop e tente de novo.
+    pause
+    exit /b 1
+)
+echo Iniciando o Postgres...
+docker compose -f "%SERVER_DIR%\docker-compose.yml" up -d --wait >nul
+if errorlevel 1 (
+    echo [ERRO] O Postgres nao subiu; veja: docker compose -f server\docker-compose.yml logs
+    pause
+    exit /b 1
+)
+
 rem -- Start servers -----------------------------------------------
 rem A server left over from an earlier run holds its port, and the new one
 rem would exit with "address in use"; stop the old ones first.

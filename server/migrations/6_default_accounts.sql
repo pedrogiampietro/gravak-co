@@ -13,3 +13,5 @@ VALUES (
     -- username
     '$2b$12$gdikPiJmesxrkUFyKQRh1ushZFv.urQhd1st8H9R5OxyQe4nzK5cq'
   ) ON CONFLICT(username) DO NOTHING;
+
+SELECT sync_identity_sequences();

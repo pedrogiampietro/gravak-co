@@ -37,12 +37,12 @@ pub struct QuestState {
     pub completed: bool,
 }
 
-pub async fn start(pool: &sqlx::SqlitePool, character_id: i32, quest_id: u32) -> Result<StartOutcome, Error> {
+pub async fn start(pool: &sqlx::PgPool, character_id: i32, quest_id: u32) -> Result<StartOutcome, Error> {
     let Some(definition) = load_definition(pool, quest_id).await? else {
         return Ok(StartOutcome::NotFound);
     };
     let existing = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT state, progress FROM character_quests WHERE character_id = ? AND quest_id = ?",
+        "SELECT state, progress FROM character_quests WHERE character_id = $1 AND quest_id = $2",
     )
     .bind(i64::from(character_id))
     .bind(i64::from(quest_id))
@@ -56,7 +56,7 @@ pub async fn start(pool: &sqlx::SqlitePool, character_id: i32, quest_id: u32) ->
         )),
         Some(_) => Ok(StartOutcome::AlreadyActive(definition, 0)),
         None => {
-            sqlx::query("INSERT INTO character_quests (character_id, quest_id, progress, state) VALUES (?, ?, 0, 1)")
+            sqlx::query("INSERT INTO character_quests (character_id, quest_id, progress, state) VALUES ($1, $2, 0, 1)")
                 .bind(i64::from(character_id))
                 .bind(i64::from(quest_id))
                 .execute(pool)
@@ -66,14 +66,14 @@ pub async fn start(pool: &sqlx::SqlitePool, character_id: i32, quest_id: u32) ->
     }
 }
 
-pub async fn list(pool: &sqlx::SqlitePool, character_id: i32) -> Result<Vec<QuestState>, Error> {
+pub async fn list(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<QuestState>, Error> {
     let rows = sqlx::query_as::<_, (i64, i64, String, String, i64, i64, i64, i64, i64, i64)>(
         "SELECT q.quest_id, q.npc_id, q.name, q.description, q.target_monster_type,
                 q.required_count, q.reward_silver, q.reward_experience,
                 cq.progress, cq.state
          FROM character_quests cq
          INNER JOIN quest_definitions q ON q.quest_id = cq.quest_id
-         WHERE cq.character_id = ?
+         WHERE cq.character_id = $1
          ORDER BY cq.state, q.quest_id",
     )
     .bind(i64::from(character_id))
@@ -112,7 +112,7 @@ pub async fn list(pool: &sqlx::SqlitePool, character_id: i32) -> Result<Vec<Ques
 }
 
 pub async fn record_monster_defeat(
-    pool: &sqlx::SqlitePool,
+    pool: &sqlx::PgPool,
     character: &Character,
     monster_type_id: u32,
 ) -> Result<Vec<Completion>, Error> {
@@ -121,7 +121,7 @@ pub async fn record_monster_defeat(
                 q.required_count, q.reward_silver, q.reward_experience, cq.progress
          FROM quest_definitions q
          INNER JOIN character_quests cq ON cq.quest_id = q.quest_id
-         WHERE cq.character_id = ? AND cq.state = 1 AND q.target_monster_type = ?
+         WHERE cq.character_id = $1 AND cq.state = 1 AND q.target_monster_type = $2
          ORDER BY q.quest_id",
     )
     .bind(i64::from(character.database_id()))
@@ -144,9 +144,9 @@ pub async fn record_monster_defeat(
         let next_progress = progress.saturating_add(1).min(required_count);
         let updated = sqlx::query(
             "UPDATE character_quests
-             SET progress = ?, state = CASE WHEN ? >= ? THEN 2 ELSE 1 END,
-                 completed_at = CASE WHEN ? >= ? THEN unixepoch() ELSE completed_at END
-             WHERE character_id = ? AND quest_id = ? AND state = 1 AND progress = ?",
+             SET progress = $1, state = CASE WHEN $2 >= $3 THEN 2 ELSE 1 END,
+                 completed_at = CASE WHEN $4 >= $5 THEN EXTRACT(EPOCH FROM now())::BIGINT ELSE completed_at END
+             WHERE character_id = $6 AND quest_id = $7 AND state = 1 AND progress = $8",
         )
         .bind(next_progress)
         .bind(next_progress)
@@ -192,11 +192,11 @@ pub async fn record_monster_defeat(
     Ok(completed)
 }
 
-async fn load_definition(pool: &sqlx::SqlitePool, quest_id: u32) -> Result<Option<QuestDefinition>, Error> {
+async fn load_definition(pool: &sqlx::PgPool, quest_id: u32) -> Result<Option<QuestDefinition>, Error> {
     let row = sqlx::query_as::<_, (i64, i64, String, String, i64, i64, i64, i64)>(
         "SELECT quest_id, npc_id, name, description, target_monster_type, required_count,
                 reward_silver, reward_experience
-         FROM quest_definitions WHERE quest_id = ?",
+         FROM quest_definitions WHERE quest_id = $1",
     )
     .bind(i64::from(quest_id))
     .fetch_optional(pool)
@@ -229,18 +229,10 @@ async fn load_definition(pool: &sqlx::SqlitePool, quest_id: u32) -> Result<Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
     use tq_network::Actor;
 
-    async fn test_character() -> Result<(sqlx::SqlitePool, Character), Error> {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(2)
-            .connect("sqlite::memory:")
-            .await?;
-        sqlx::migrate!("../../migrations")
-            .run(&pool)
-            .await
-            .map_err(|error| Error::Other(error.to_string()))?;
+    async fn test_character() -> Result<(sqlx::PgPool, Character), Error> {
+        let pool = tq_db::testing::pool().await;
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
         let actor = Actor::<crate::ActorState>::new(tx);
         actor.set_id(1);
@@ -288,7 +280,7 @@ mod tests {
         assert!(states[0].completed);
 
         let row: (i64, i64) =
-            sqlx::query_as("SELECT state, progress FROM character_quests WHERE character_id = ? AND quest_id = 1")
+            sqlx::query_as("SELECT state, progress FROM character_quests WHERE character_id = $1 AND quest_id = 1")
                 .bind(i64::from(character.database_id()))
                 .fetch_one(&pool)
                 .await?;

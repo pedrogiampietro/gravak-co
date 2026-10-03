@@ -1,6 +1,6 @@
 use crate::combat::next_roll;
 use crate::Error;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,7 @@ struct MonsterDropRow {
 }
 
 impl DropCatalog {
-    pub async fn load(pool: &SqlitePool) -> Result<Self, Error> {
+    pub async fn load(pool: &PgPool) -> Result<Self, Error> {
         let rows = sqlx::query_as::<_, MonsterDropRow>(
             "SELECT monster_type_id, item_id, chance_percent, min_quantity, max_quantity,
                     drop_group, min_monster_level, max_monster_level

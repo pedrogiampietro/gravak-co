@@ -15,7 +15,7 @@ VALUES
   (4036, 1000, 207, 374, 1, 0),
   (4033, 1000, 252, 310, 1, 0);
 
-INSERT OR IGNORE INTO monster_drops (monster_type_id, item_id, chance_percent)
+INSERT INTO monster_drops (monster_type_id, item_id, chance_percent)
 VALUES
   (3644, 1088001, 100),
   (3644, 1088000, 50),
@@ -48,4 +48,7 @@ VALUES
   (4036, 1088001, 100),
   (4036, 1088000, 50),
   (4036, 720027, 20),
-  (4036, 700001, 10);
+  (4036, 700001, 10)
+ON CONFLICT DO NOTHING;
+
+SELECT sync_identity_sequences();

@@ -63,12 +63,16 @@ features = ["rt-multi-thread", "macros", "signal", "sync", "parking_lot", "traci
 [dependencies.sqlx]
 workspace = true
 default-features = false
-features = ["runtime-tokio-rustls", "sqlite", "time", "migrate"]
+features = ["runtime-tokio-rustls", "postgres", "time", "migrate"]
 
 [dev-dependencies.sqlx]
 workspace = true
 default-features = false
-features = ["runtime-tokio-rustls", "sqlite", "time", "migrate"]
+features = ["runtime-tokio-rustls", "postgres", "time", "migrate"]
+
+[dev-dependencies.tq-db]
+workspace = true
+features = ["sqlx", "testing"]
 
 [features]
 default = []

@@ -1,6 +1,6 @@
 use crate::constants::CHARACTER_ID_MIN;
 use parking_lot::Mutex;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 
 pub const MAX_GUILD_MEMBERS: usize = 50;
@@ -100,7 +100,7 @@ pub struct GuildManager {
 }
 
 impl GuildManager {
-    pub async fn load(pool: &SqlitePool) -> Result<Self, sqlx::Error> {
+    pub async fn load(pool: &PgPool) -> Result<Self, sqlx::Error> {
         let guild_rows =
             sqlx::query_as::<_, (i64, String, i64)>("SELECT guild_id, name, leader_id FROM guilds ORDER BY guild_id")
                 .fetch_all(pool)
@@ -108,7 +108,7 @@ impl GuildManager {
         let mut book = GuildBook::default();
         for (guild_id, name, leader_id) in guild_rows {
             let member_rows = sqlx::query_as::<_, (i64, i64)>(
-                "SELECT character_id, role FROM guild_members WHERE guild_id = ? ORDER BY joined_at, character_id",
+                "SELECT character_id, role FROM guild_members WHERE guild_id = $1 ORDER BY joined_at, character_id",
             )
             .bind(guild_id)
             .fetch_all(pool)
@@ -149,16 +149,16 @@ impl GuildManager {
         Ok(Self { book: Mutex::new(book) })
     }
 
-    pub async fn persist_created(pool: &SqlitePool, guild: &GuildInfo) -> Result<(), sqlx::Error> {
+    pub async fn persist_created(pool: &PgPool, guild: &GuildInfo) -> Result<(), sqlx::Error> {
         let mut transaction = pool.begin().await?;
-        sqlx::query("INSERT INTO guilds (guild_id, name, leader_id) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO guilds (guild_id, name, leader_id) VALUES ($1, $2, $3)")
             .bind(i64::from(guild.id))
             .bind(&guild.name)
             .bind(database_id(guild.leader_id))
             .execute(&mut *transaction)
             .await?;
         for member_id in &guild.members {
-            sqlx::query("INSERT INTO guild_members (guild_id, character_id, role) VALUES (?, ?, ?)")
+            sqlx::query("INSERT INTO guild_members (guild_id, character_id, role) VALUES ($1, $2, $3)")
                 .bind(i64::from(guild.id))
                 .bind(database_id(*member_id))
                 .bind(if *member_id == guild.leader_id {
@@ -169,15 +169,15 @@ impl GuildManager {
                 .execute(&mut *transaction)
                 .await?;
         }
-        sqlx::query("INSERT OR IGNORE INTO guild_warehouse_silver (guild_id, silver) VALUES (?, 0)")
+        sqlx::query("INSERT INTO guild_warehouse_silver (guild_id, silver) VALUES ($1, 0) ON CONFLICT DO NOTHING")
             .bind(i64::from(guild.id))
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await
     }
 
-    pub async fn persist_member(pool: &SqlitePool, guild: &GuildInfo, member_id: u32) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT OR IGNORE INTO guild_members (guild_id, character_id, role) VALUES (?, ?, ?)")
+    pub async fn persist_member(pool: &PgPool, guild: &GuildInfo, member_id: u32) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO guild_members (guild_id, character_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
             .bind(i64::from(guild.id))
             .bind(database_id(member_id))
             .bind(if member_id == guild.leader_id {
@@ -187,7 +187,7 @@ impl GuildManager {
             })
             .execute(pool)
             .await?;
-        sqlx::query("UPDATE guilds SET leader_id = ? WHERE guild_id = ?")
+        sqlx::query("UPDATE guilds SET leader_id = $1 WHERE guild_id = $2")
             .bind(database_id(guild.leader_id))
             .bind(i64::from(guild.id))
             .execute(pool)
@@ -195,26 +195,26 @@ impl GuildManager {
         Ok(())
     }
 
-    pub async fn persist_removal(pool: &SqlitePool, guild: &GuildInfo, removed_id: u32) -> Result<(), sqlx::Error> {
+    pub async fn persist_removal(pool: &PgPool, guild: &GuildInfo, removed_id: u32) -> Result<(), sqlx::Error> {
         let mut transaction = pool.begin().await?;
-        sqlx::query("DELETE FROM guild_members WHERE guild_id = ? AND character_id = ?")
+        sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND character_id = $2")
             .bind(i64::from(guild.id))
             .bind(database_id(removed_id))
             .execute(&mut *transaction)
             .await?;
         if guild.members.is_empty() {
-            sqlx::query("DELETE FROM guilds WHERE guild_id = ?")
+            sqlx::query("DELETE FROM guilds WHERE guild_id = $1")
                 .bind(i64::from(guild.id))
                 .execute(&mut *transaction)
                 .await?;
         } else {
-            sqlx::query("UPDATE guilds SET leader_id = ? WHERE guild_id = ?")
+            sqlx::query("UPDATE guilds SET leader_id = $1 WHERE guild_id = $2")
                 .bind(database_id(guild.leader_id))
                 .bind(i64::from(guild.id))
                 .execute(&mut *transaction)
                 .await?;
             sqlx::query(
-                "UPDATE guild_members SET role = CASE WHEN character_id = ? THEN 1000 ELSE 200 END WHERE guild_id = ?",
+                "UPDATE guild_members SET role = CASE WHEN character_id = $1 THEN 1000 ELSE 200 END WHERE guild_id = $2",
             )
             .bind(database_id(guild.leader_id))
             .bind(i64::from(guild.id))
@@ -408,27 +408,27 @@ impl GuildManager {
             .map(GuildRecord::info)
     }
 
-    pub async fn persist_disband(pool: &SqlitePool, guild_id: u32) -> Result<(), sqlx::Error> {
+    pub async fn persist_disband(pool: &PgPool, guild_id: u32) -> Result<(), sqlx::Error> {
         let mut transaction = pool.begin().await?;
         for table in ["guild_members", "guild_relations"] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = ?"))
+            sqlx::query(&format!("DELETE FROM {table} WHERE guild_id = $1"))
                 .bind(i64::from(guild_id))
                 .execute(&mut *transaction)
                 .await?;
         }
-        sqlx::query("DELETE FROM guild_relations WHERE other_guild_id = ?")
+        sqlx::query("DELETE FROM guild_relations WHERE other_guild_id = $1")
             .bind(i64::from(guild_id))
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("DELETE FROM guilds WHERE guild_id = ?")
+        sqlx::query("DELETE FROM guilds WHERE guild_id = $1")
             .bind(i64::from(guild_id))
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await
     }
 
-    pub async fn persist_role(pool: &SqlitePool, member_id: u32, role: u32) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE guild_members SET role = ? WHERE character_id = ?")
+    pub async fn persist_role(pool: &PgPool, member_id: u32, role: u32) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE guild_members SET role = $1 WHERE character_id = $2")
             .bind(i64::from(role))
             .bind(database_id(member_id))
             .execute(pool)
@@ -439,7 +439,7 @@ impl GuildManager {
     /// Adds or removes an ally ("ally") or an enemy ("enemy") guild.
     pub async fn set_relation(
         &self,
-        pool: &SqlitePool,
+        pool: &PgPool,
         guild_id: u32,
         other_guild_id: u32,
         kind: Option<&str>,
@@ -458,7 +458,7 @@ impl GuildManager {
         match kind {
             Some(kind) => {
                 sqlx::query(
-                    "INSERT INTO guild_relations (guild_id, other_guild_id, kind) VALUES (?, ?, ?)
+                    "INSERT INTO guild_relations (guild_id, other_guild_id, kind) VALUES ($1, $2, $3)
                      ON CONFLICT(guild_id, other_guild_id) DO UPDATE SET kind = excluded.kind",
                 )
                 .bind(i64::from(guild_id))
@@ -468,7 +468,7 @@ impl GuildManager {
                 .await?;
             },
             None => {
-                sqlx::query("DELETE FROM guild_relations WHERE guild_id = ? AND other_guild_id = ?")
+                sqlx::query("DELETE FROM guild_relations WHERE guild_id = $1 AND other_guild_id = $2")
                     .bind(i64::from(guild_id))
                     .bind(i64::from(other_guild_id))
                     .execute(pool)

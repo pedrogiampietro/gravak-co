@@ -62,11 +62,12 @@ features = []
 [dependencies.sqlx]
 workspace = true
 default-features = false
-features = ["sqlite"]
+features = ["postgres"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-sqlx = { workspace = true, features = ["sqlite", "runtime-tokio", "migrate"] }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "migrate"] }
+tq-db = { workspace = true, features = ["testing"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
 
 msg-connect-ex.workspace = true

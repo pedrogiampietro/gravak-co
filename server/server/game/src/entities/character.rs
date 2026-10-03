@@ -565,8 +565,8 @@ impl Character {
     }
 
     /// Reads the spouse from the marriages table.
-    pub async fn load_spouse(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
-        let name = sqlx::query_scalar::<_, String>("SELECT spouse_name FROM marriages WHERE character_id = ?")
+    pub async fn load_spouse(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
+        let name = sqlx::query_scalar::<_, String>("SELECT spouse_name FROM marriages WHERE character_id = $1")
             .bind(self.inner.character_id)
             .fetch_optional(pool)
             .await?;
@@ -601,7 +601,7 @@ impl Character {
     /// Sets the plus (+n) of a worn item.
     pub async fn set_equipment_plus(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         position: u8,
         plus: u8,
     ) -> Result<Option<InventoryItem>, Error> {
@@ -611,7 +611,7 @@ impl Character {
         item.plus = plus;
         sqlx::query(
             "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus",
         )
         .bind(i64::from(item.uid))
@@ -651,7 +651,7 @@ impl Character {
 
     pub async fn equip_title(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         title_id: u32,
     ) -> Result<crate::titles::EquipOutcome, Error> {
         use crate::titles::{EquipOutcome, NONE};
@@ -667,7 +667,7 @@ impl Character {
                 return Ok(EquipOutcome::Locked);
             }
         }
-        sqlx::query("UPDATE characters SET equipped_title = ? WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET equipped_title = $1 WHERE character_id = $2")
             .bind(i64::from(title_id))
             .bind(self.inner.character_id)
             .execute(pool)
@@ -685,7 +685,7 @@ impl Character {
     /// spend the same silver twice or overflow the persisted donation.
     pub async fn donate_nobility(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         amount: u32,
     ) -> Result<crate::nobility::DonateOutcome, Error> {
         use crate::nobility::{DonateOutcome, MIN_DONATION, MIN_LEVEL};
@@ -699,8 +699,8 @@ impl Character {
         let max_donation = i64::MAX.saturating_sub(amount);
         let Some((silver, donation)) = sqlx::query_as::<_, (i64, i64)>(
             "UPDATE characters
-             SET silver = silver - ?, nobility_donation = nobility_donation + ?
-             WHERE character_id = ? AND silver >= ? AND nobility_donation <= ?
+             SET silver = silver - $1, nobility_donation = nobility_donation + $2
+             WHERE character_id = $3 AND silver >= $4 AND nobility_donation <= $5
              RETURNING silver, nobility_donation",
         )
         .bind(amount)
@@ -720,12 +720,12 @@ impl Character {
         Ok(DonateOutcome::Donated(crate::nobility::status_for(donation)))
     }
 
-    pub async fn grant_silver(&self, pool: &sqlx::SqlitePool, amount: u32) -> Result<u32, Error> {
+    pub async fn grant_silver(&self, pool: &sqlx::PgPool, amount: u32) -> Result<u32, Error> {
         if amount == 0 {
             return Ok(self.silver().min(u64::from(u32::MAX)) as u32);
         }
         let balance = sqlx::query_scalar::<_, i64>(
-            "UPDATE characters SET silver = silver + ? WHERE character_id = ? AND silver <= ? RETURNING silver",
+            "UPDATE characters SET silver = silver + $1 WHERE character_id = $2 AND silver <= $3 RETURNING silver",
         )
         .bind(i64::from(amount))
         .bind(self.inner.character_id)
@@ -739,12 +739,12 @@ impl Character {
 
     /// Debits `amount` silver only when the balance covers it. Returns the new
     /// balance, or `None` without charging anything when it does not.
-    pub async fn spend_silver(&self, pool: &sqlx::SqlitePool, amount: u32) -> Result<Option<u32>, Error> {
+    pub async fn spend_silver(&self, pool: &sqlx::PgPool, amount: u32) -> Result<Option<u32>, Error> {
         if amount == 0 {
             return Ok(Some(self.silver().min(u64::from(u32::MAX)) as u32));
         }
         let balance = sqlx::query_scalar::<_, i64>(
-            "UPDATE characters SET silver = silver - ? WHERE character_id = ? AND silver >= ? RETURNING silver",
+            "UPDATE characters SET silver = silver - $1 WHERE character_id = $2 AND silver >= $3 RETURNING silver",
         )
         .bind(i64::from(amount))
         .bind(self.inner.character_id)
@@ -803,12 +803,12 @@ impl Character {
 
     pub async fn load_skills(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         catalog: &crate::skills::SkillCatalog,
     ) -> Result<(), Error> {
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             "SELECT skill_id, level, experience, proficiency
-             FROM character_skills WHERE character_id = ? ORDER BY skill_id",
+             FROM character_skills WHERE character_id = $1 ORDER BY skill_id",
         )
         .bind(self.inner.character_id)
         .fetch_all(pool)
@@ -845,9 +845,9 @@ impl Character {
                 continue;
             }
             sqlx::query(
-                "INSERT OR IGNORE INTO character_skills
+                "INSERT INTO character_skills
                  (character_id, skill_id, level, experience, proficiency)
-                 VALUES (?, ?, 1, 0, 0)",
+                 VALUES ($1, $2, 1, 0, 0) ON CONFLICT DO NOTHING",
             )
             .bind(self.inner.character_id)
             .bind(i64::from(skill_id))
@@ -872,7 +872,7 @@ impl Character {
 
     /// Learns `skill_id` unless it is already known, like the trainers'
     /// `LearnNewSkill`: a skill that was trained further keeps its level.
-    pub async fn learn_new_skill(&self, pool: &sqlx::SqlitePool, skill_id: u32) -> Result<Option<SkillProgress>, Error> {
+    pub async fn learn_new_skill(&self, pool: &sqlx::PgPool, skill_id: u32) -> Result<Option<SkillProgress>, Error> {
         if self.has_skill(skill_id) {
             return Ok(None);
         }
@@ -884,7 +884,7 @@ impl Character {
     /// when asked, an open first socket. `None` means the inventory is full.
     pub async fn grant_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         catalog: &ShopCatalog,
         item_type: u32,
         open_socket: bool,
@@ -898,7 +898,7 @@ impl Character {
         if open_socket {
             sqlx::query(
                 "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-                 VALUES (?, 0, 0, 0, 1, 0, 0)
+                 VALUES ($1, 0, 0, 0, 1, 0, 0)
                  ON CONFLICT(item_uid) DO UPDATE SET socket_one = 1",
             )
             .bind(i64::from(item.uid))
@@ -913,7 +913,7 @@ impl Character {
     }
 
     /// Consumes one inventory item of `item_type`, returning it.
-    pub async fn take_item(&self, pool: &sqlx::SqlitePool, item_type: u32) -> Result<Option<InventoryItem>, Error> {
+    pub async fn take_item(&self, pool: &sqlx::PgPool, item_type: u32) -> Result<Option<InventoryItem>, Error> {
         let Some(item) = self
             .inventory_items()
             .into_iter()
@@ -921,7 +921,7 @@ impl Character {
         else {
             return Ok(None);
         };
-        let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+        let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND item_type = $3")
             .bind(i64::from(item.uid))
             .bind(self.inner.character_id)
             .bind(i64::from(item_type))
@@ -942,10 +942,10 @@ impl Character {
         self.skills.lock().get(&skill_id).copied()
     }
 
-    pub async fn load_weapon_proficiencies(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+    pub async fn load_weapon_proficiencies(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             "SELECT weapon_family, level, experience, proficiency
-             FROM character_weapon_proficiencies WHERE character_id = ? ORDER BY weapon_family",
+             FROM character_weapon_proficiencies WHERE character_id = $1 ORDER BY weapon_family",
         )
         .bind(self.inner.character_id)
         .fetch_all(pool)
@@ -1084,7 +1084,7 @@ impl Character {
 
     pub async fn practice_weapon_proficiency(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_type: u32,
         amount: u32,
     ) -> Result<Option<WeaponProficiency>, Error> {
@@ -1113,7 +1113,7 @@ impl Character {
         sqlx::query(
             "INSERT INTO character_weapon_proficiencies
              (character_id, weapon_family, level, experience, proficiency)
-             VALUES (?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT(character_id, weapon_family) DO UPDATE SET
                level = excluded.level, experience = excluded.experience,
                proficiency = excluded.proficiency",
@@ -1129,11 +1129,11 @@ impl Character {
         Ok(Some(next))
     }
 
-    pub async fn learn_skill(&self, pool: &sqlx::SqlitePool, skill_id: u32, level: u16) -> Result<(), Error> {
+    pub async fn learn_skill(&self, pool: &sqlx::PgPool, skill_id: u32, level: u16) -> Result<(), Error> {
         let level = level.max(1);
         sqlx::query(
             "INSERT INTO character_skills (character_id, skill_id, level, experience, proficiency)
-             VALUES (?, ?, ?, 0, 0)
+             VALUES ($1, $2, $3, 0, 0)
              ON CONFLICT(character_id, skill_id) DO UPDATE SET level = excluded.level",
         )
         .bind(self.inner.character_id)
@@ -1157,7 +1157,7 @@ impl Character {
     /// means the skill was already learned or the character could not pay.
     pub async fn learn_skill_with_cost(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         skill_id: u32,
         level: u16,
         cost: u32,
@@ -1167,9 +1167,9 @@ impl Character {
         }
         let mut transaction = pool.begin().await?;
         let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO character_skills
+            "INSERT INTO character_skills
              (character_id, skill_id, level, experience, proficiency)
-             VALUES (?, ?, ?, 0, 0)",
+             VALUES ($1, $2, $3, 0, 0) ON CONFLICT DO NOTHING",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(skill_id))
@@ -1181,8 +1181,8 @@ impl Character {
             return Ok(None);
         }
         let balance = sqlx::query_scalar::<_, i64>(
-            "UPDATE characters SET silver = silver - ?
-             WHERE character_id = ? AND silver >= ?
+            "UPDATE characters SET silver = silver - $1
+             WHERE character_id = $2 AND silver >= $3
              RETURNING silver",
         )
         .bind(i64::from(cost))
@@ -1212,7 +1212,7 @@ impl Character {
     /// inventory delete and skill insert have committed successfully.
     pub async fn learn_skill_from_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         skill_id: u32,
     ) -> Result<Option<(InventoryItem, SkillProgress)>, Error> {
@@ -1222,7 +1222,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         let source = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability
-             FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40",
+             FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40",
         )
         .bind(i64::from(item_uid))
         .bind(self.inner.character_id)
@@ -1232,7 +1232,7 @@ impl Character {
             return Ok(None);
         };
         let deleted =
-            sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40")
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40")
                 .bind(i64::from(item_uid))
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
@@ -1242,7 +1242,7 @@ impl Character {
         }
         sqlx::query(
             "INSERT INTO character_skills (character_id, skill_id, level, experience, proficiency)
-             VALUES (?, ?, 1, 0, 0)",
+             VALUES ($1, $2, 1, 0, 0)",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(skill_id))
@@ -1279,7 +1279,7 @@ impl Character {
     /// is the lifetime skill experience shown by the 1103 update packet.
     pub async fn practice_skill(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         skill_id: u32,
         amount: u32,
     ) -> Result<Option<SkillProgress>, Error> {
@@ -1301,8 +1301,8 @@ impl Character {
         }
         sqlx::query(
             "UPDATE character_skills
-             SET level = ?, experience = ?, proficiency = ?
-             WHERE character_id = ? AND skill_id = ?",
+             SET level = $1, experience = $2, proficiency = $3
+             WHERE character_id = $4 AND skill_id = $5",
         )
         .bind(i64::from(next.level))
         .bind(i64::try_from(next.experience).unwrap_or(i64::MAX))
@@ -1315,14 +1315,14 @@ impl Character {
         Ok(Some(next))
     }
 
-    pub async fn load_inventory(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+    pub async fn load_inventory(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>(
             "SELECT i.item_uid, i.item_type, i.position, i.durability, i.max_durability,
                     COALESCE(u.plus, 0), COALESCE(u.rarity, 0), COALESCE(u.gem_one, 0), COALESCE(u.gem_two, 0),
                     COALESCE(u.socket_one, 0), COALESCE(u.socket_two, 0), COALESCE(u.enchant, 0)
              FROM inventory_items i
              LEFT JOIN item_upgrades u ON u.item_uid = i.item_uid
-             WHERE i.character_id = ? ORDER BY i.position",
+             WHERE i.character_id = $1 ORDER BY i.position",
         )
         .bind(self.inner.character_id)
         .fetch_all(pool)
@@ -1372,7 +1372,7 @@ impl Character {
     }
 
     /// Copies the stored blessings onto the items in memory.
-    async fn apply_blessings(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+    async fn apply_blessings(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
         let uids = self
             .inventory
             .lock()
@@ -1419,9 +1419,9 @@ impl Character {
     }
 
     /// Sets the blessing of an owned item.
-    pub async fn bless_item(&self, pool: &sqlx::SqlitePool, item_uid: u32, bless: u8) -> Result<Option<InventoryItem>, Error> {
+    pub async fn bless_item(&self, pool: &sqlx::PgPool, item_uid: u32, bless: u8) -> Result<Option<InventoryItem>, Error> {
         sqlx::query(
-            "INSERT INTO item_blessings (item_uid, bless) VALUES (?, ?)
+            "INSERT INTO item_blessings (item_uid, bless) VALUES ($1, $2)
              ON CONFLICT(item_uid) DO UPDATE SET bless = excluded.bless",
         )
         .bind(i64::from(item_uid))
@@ -1439,9 +1439,9 @@ impl Character {
     }
 
     /// Dyes an owned item.
-    pub async fn dye_item(&self, pool: &sqlx::SqlitePool, item_uid: u32, color: u8) -> Result<Option<InventoryItem>, Error> {
+    pub async fn dye_item(&self, pool: &sqlx::PgPool, item_uid: u32, color: u8) -> Result<Option<InventoryItem>, Error> {
         sqlx::query(
-            "INSERT INTO item_colors (item_uid, color) VALUES (?, ?)
+            "INSERT INTO item_colors (item_uid, color) VALUES ($1, $2)
              ON CONFLICT(item_uid) DO UPDATE SET color = excluded.color",
         )
         .bind(i64::from(item_uid))
@@ -1465,9 +1465,9 @@ impl Character {
     }
 
     /// Sets the HP enchantment of an owned item.
-    pub async fn enchant_item(&self, pool: &sqlx::SqlitePool, item_uid: u32, hp: u8) -> Result<Option<InventoryItem>, Error> {
+    pub async fn enchant_item(&self, pool: &sqlx::PgPool, item_uid: u32, hp: u8) -> Result<Option<InventoryItem>, Error> {
         sqlx::query(
-            "INSERT INTO item_enchants (item_uid, hp) VALUES (?, ?)
+            "INSERT INTO item_enchants (item_uid, hp) VALUES ($1, $2)
              ON CONFLICT(item_uid) DO UPDATE SET hp = excluded.hp",
         )
         .bind(i64::from(item_uid))
@@ -1506,14 +1506,14 @@ impl Character {
         self.inventory.lock().clone()
     }
 
-    pub async fn load_equipment(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+    pub async fn load_equipment(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>(
             "SELECT e.item_uid, e.item_type, e.position, e.durability, e.max_durability,
                     COALESCE(u.plus, 0), COALESCE(u.rarity, 0), COALESCE(u.gem_one, 0), COALESCE(u.gem_two, 0),
                     COALESCE(u.socket_one, 0), COALESCE(u.socket_two, 0), COALESCE(u.enchant, 0)
              FROM equipment_items e
              LEFT JOIN item_upgrades u ON u.item_uid = e.item_uid
-             WHERE e.character_id = ? ORDER BY e.position",
+             WHERE e.character_id = $1 ORDER BY e.position",
         )
         .bind(self.inner.character_id)
         .fetch_all(pool)
@@ -1566,7 +1566,7 @@ impl Character {
         self.equipment.lock().clone()
     }
 
-    pub async fn load_refineries(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+    pub async fn load_refineries(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|value| value.as_secs())
@@ -1574,8 +1574,8 @@ impl Character {
         sqlx::query(
             "DELETE FROM item_refineries
              WHERE item_uid IN (
-                 SELECT item_uid FROM equipment_items WHERE character_id = ?
-             ) AND expires_at > 0 AND expires_at <= ?",
+                 SELECT item_uid FROM equipment_items WHERE character_id = $1
+             ) AND expires_at > 0 AND expires_at <= $2",
         )
         .bind(self.inner.character_id)
         .bind(i64::try_from(now).unwrap_or(i64::MAX))
@@ -1585,7 +1585,7 @@ impl Character {
             "SELECT r.item_uid, r.refinery_type, r.refinery_level, r.effect, r.expires_at
              FROM item_refineries r
              INNER JOIN equipment_items e ON e.item_uid = r.item_uid
-             WHERE e.character_id = ? AND (r.expires_at = 0 OR r.expires_at > ?)",
+             WHERE e.character_id = $1 AND (r.expires_at = 0 OR r.expires_at > $2)",
         )
         .bind(self.inner.character_id)
         .bind(i64::try_from(now).unwrap_or(i64::MAX))
@@ -1620,7 +1620,7 @@ impl Character {
         self.refineries.lock().get(&item_uid).copied()
     }
 
-    pub async fn load_artifacts(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
+    pub async fn load_artifacts(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|value| value.as_secs())
@@ -1628,10 +1628,10 @@ impl Character {
         sqlx::query(
             "DELETE FROM item_artifacts
              WHERE item_uid IN (
-                 SELECT item_uid FROM inventory_items WHERE character_id = ?
+                 SELECT item_uid FROM inventory_items WHERE character_id = $1
                  UNION ALL
-                 SELECT item_uid FROM equipment_items WHERE character_id = ?
-             ) AND expires_at > 0 AND expires_at <= ?",
+                 SELECT item_uid FROM equipment_items WHERE character_id = $2
+             ) AND expires_at > 0 AND expires_at <= $3",
         )
         .bind(self.inner.character_id)
         .bind(self.inner.character_id)
@@ -1641,11 +1641,11 @@ impl Character {
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT a.item_uid, a.artifact_type, a.artifact_level, a.effect, a.expires_at
              FROM item_artifacts a
-             WHERE (a.expires_at = 0 OR a.expires_at > ?)
+             WHERE (a.expires_at = 0 OR a.expires_at > $1)
              AND a.item_uid IN (
-                 SELECT item_uid FROM inventory_items WHERE character_id = ?
+                 SELECT item_uid FROM inventory_items WHERE character_id = $2
                  UNION ALL
-                 SELECT item_uid FROM equipment_items WHERE character_id = ?
+                 SELECT item_uid FROM equipment_items WHERE character_id = $3
              )",
         )
         .bind(i64::try_from(now).unwrap_or(i64::MAX))
@@ -1697,7 +1697,7 @@ impl Character {
 
     pub async fn apply_artifact(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         artifact_uid: u32,
     ) -> Result<ArtifactOutcome, Error> {
@@ -1727,7 +1727,7 @@ impl Character {
         let expires_at = now.saturating_add(crate::refinery::REFINERY_DURATION_SECS);
         let mut transaction = pool.begin().await?;
         for uid in [artifact_uid, catalyst.uid] {
-            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
                 .bind(i64::from(uid))
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
@@ -1737,18 +1737,18 @@ impl Character {
                 return Ok(ArtifactOutcome::NotFound);
             }
         }
-        let target_exists: i64 =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE item_uid = ? AND character_id = ?)")
+        let target_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE item_uid = $1 AND character_id = $2)")
                 .bind(i64::from(item_uid))
                 .bind(self.inner.character_id)
                 .fetch_one(&mut *transaction)
                 .await?;
-        if target_exists == 0 {
+        if !target_exists {
             return Ok(ArtifactOutcome::InvalidTarget);
         }
         sqlx::query(
             "INSERT INTO item_artifacts (item_uid, artifact_type, artifact_level, effect, expires_at)
-             VALUES (?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT(item_uid) DO UPDATE SET
                  artifact_type = excluded.artifact_type,
                  artifact_level = excluded.artifact_level,
@@ -1783,7 +1783,7 @@ impl Character {
 
     pub async fn apply_refinery(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         material_uid: u32,
     ) -> Result<RefineryOutcome, Error> {
@@ -1806,7 +1806,7 @@ impl Character {
             .unwrap_or_default();
         let expires_at = now.saturating_add(crate::refinery::REFINERY_DURATION_SECS);
         let mut transaction = pool.begin().await?;
-        let material_deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+        let material_deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
             .bind(i64::from(material_uid))
             .bind(self.inner.character_id)
             .execute(&mut *transaction)
@@ -1815,9 +1815,9 @@ impl Character {
         if material_deleted != 1 {
             return Ok(RefineryOutcome::NotFound);
         }
-        let target_exists: i64 = sqlx::query_scalar(
+        let target_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                SELECT 1 FROM equipment_items WHERE item_uid = ? AND character_id = ? AND position = ?
+                SELECT 1 FROM equipment_items WHERE item_uid = $1 AND character_id = $2 AND position = $3
             )",
         )
         .bind(i64::from(item_uid))
@@ -1825,12 +1825,12 @@ impl Character {
         .bind(i64::from(target.position))
         .fetch_one(&mut *transaction)
         .await?;
-        if target_exists == 0 {
+        if !target_exists {
             return Ok(RefineryOutcome::InvalidTarget);
         }
         sqlx::query(
             "INSERT INTO item_refineries (item_uid, refinery_type, refinery_level, effect, expires_at)
-             VALUES (?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT(item_uid) DO UPDATE SET
                  refinery_type = excluded.refinery_type,
                  refinery_level = excluded.refinery_level,
@@ -1873,16 +1873,16 @@ impl Character {
     /// Increase an owned item's classic plus level. The UID ownership check
     /// and update happen inside one transaction; the runtime mirror changes
     /// only after the database commit succeeds.
-    pub async fn upgrade_item(&self, pool: &sqlx::SqlitePool, item_uid: u32) -> Result<ItemUpgradeOutcome, Error> {
+    pub async fn upgrade_item(&self, pool: &sqlx::PgPool, item_uid: u32) -> Result<ItemUpgradeOutcome, Error> {
         let Some(mut item) = self.item_in_memory(item_uid) else {
             return Ok(ItemUpgradeOutcome::NotFound);
         };
         let mut transaction = pool.begin().await?;
-        let owned: i64 = sqlx::query_scalar(
+        let owned: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                SELECT 1 FROM inventory_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM inventory_items WHERE item_uid = $1 AND character_id = $2
                 UNION ALL
-                SELECT 1 FROM equipment_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM equipment_items WHERE item_uid = $3 AND character_id = $4
              )",
         )
         .bind(i64::from(item_uid))
@@ -1891,17 +1891,17 @@ impl Character {
         .bind(self.inner.character_id)
         .fetch_one(&mut *transaction)
         .await?;
-        if owned == 0 {
+        if !owned {
             transaction.rollback().await?;
             return Ok(ItemUpgradeOutcome::NotFound);
         }
-        sqlx::query("INSERT OR IGNORE INTO item_upgrades (item_uid, plus) VALUES (?, 0)")
+        sqlx::query("INSERT INTO item_upgrades (item_uid, plus) VALUES ($1, 0) ON CONFLICT DO NOTHING")
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
         let next = sqlx::query_scalar::<_, i64>(
             "UPDATE item_upgrades SET plus = plus + 1
-             WHERE item_uid = ? AND plus < 12
+             WHERE item_uid = $1 AND plus < 12
              RETURNING plus",
         )
         .bind(i64::from(item_uid))
@@ -1928,7 +1928,7 @@ impl Character {
     /// a rejected or concurrent request cannot duplicate or destroy an item.
     pub async fn upgrade_item_with_meteor(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
     ) -> Result<(ItemUpgradeOutcome, Vec<InventoryItem>), Error> {
         let Some(mut item) = self.item_in_memory(item_uid) else {
@@ -1939,11 +1939,11 @@ impl Character {
             return Ok((ItemUpgradeOutcome::MaxLevel(item), Vec::new()));
         };
         let mut transaction = pool.begin().await?;
-        let owned: i64 = sqlx::query_scalar(
+        let owned: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                SELECT 1 FROM inventory_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM inventory_items WHERE item_uid = $1 AND character_id = $2
                 UNION ALL
-                SELECT 1 FROM equipment_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM equipment_items WHERE item_uid = $3 AND character_id = $4
              )",
         )
         .bind(i64::from(item_uid))
@@ -1952,15 +1952,15 @@ impl Character {
         .bind(self.inner.character_id)
         .fetch_one(&mut *transaction)
         .await?;
-        if owned == 0 {
+        if !owned {
             transaction.rollback().await?;
             return Ok((ItemUpgradeOutcome::NotFound, Vec::new()));
         }
         let catalysts = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability
              FROM inventory_items
-             WHERE character_id = ? AND item_type = 1088001 AND position < 40
-             ORDER BY position LIMIT ?",
+             WHERE character_id = $1 AND item_type = 1088001 AND position < 40
+             ORDER BY position LIMIT $2",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(meteor_cost))
@@ -1970,7 +1970,7 @@ impl Character {
             transaction.rollback().await?;
             return Ok((ItemUpgradeOutcome::MissingMeteor, Vec::new()));
         }
-        sqlx::query("INSERT OR IGNORE INTO item_upgrades (item_uid, plus) VALUES (?, 0)")
+        sqlx::query("INSERT INTO item_upgrades (item_uid, plus) VALUES ($1, 0) ON CONFLICT DO NOTHING")
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
@@ -1978,14 +1978,14 @@ impl Character {
         if upgraded {
             sqlx::query(
                 "UPDATE item_upgrades SET plus = plus + 1
-                 WHERE item_uid = ? AND plus < 12",
+                 WHERE item_uid = $1 AND plus < 12",
             )
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
         }
         for catalyst in &catalysts {
-            sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
                 .bind(catalyst.0)
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
@@ -2049,7 +2049,7 @@ impl Character {
     /// domain tests while the packet path uses the server RNG.
     pub async fn upgrade_quality_with_dragonball(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
     ) -> Result<(QualityUpgradeOutcome, Option<InventoryItem>), Error> {
         self.upgrade_quality_with_dragonball_roll(pool, item_uid, next_roll() % 100)
@@ -2058,7 +2058,7 @@ impl Character {
 
     async fn upgrade_quality_with_dragonball_roll(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         roll: u32,
     ) -> Result<(QualityUpgradeOutcome, Option<InventoryItem>), Error> {
@@ -2075,26 +2075,26 @@ impl Character {
         }
 
         let mut transaction = pool.begin().await?;
-        let inventory_owned: i64 =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE item_uid = ? AND character_id = ?)")
+        let inventory_owned: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE item_uid = $1 AND character_id = $2)")
                 .bind(i64::from(item_uid))
                 .bind(self.inner.character_id)
                 .fetch_one(&mut *transaction)
                 .await?;
-        let equipment_owned: i64 =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM equipment_items WHERE item_uid = ? AND character_id = ?)")
+        let equipment_owned: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM equipment_items WHERE item_uid = $1 AND character_id = $2)")
                 .bind(i64::from(item_uid))
                 .bind(self.inner.character_id)
                 .fetch_one(&mut *transaction)
                 .await?;
-        if inventory_owned == 0 && equipment_owned == 0 {
+        if !inventory_owned && !equipment_owned {
             transaction.rollback().await?;
             return Ok((QualityUpgradeOutcome::NotFound, None));
         }
         let Some(catalyst) = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability
              FROM inventory_items
-             WHERE character_id = ? AND item_type = 1088000 AND position < 40
+             WHERE character_id = $1 AND item_type = 1088000 AND position < 40
              ORDER BY position LIMIT 1",
         )
         .bind(self.inner.character_id)
@@ -2112,14 +2112,14 @@ impl Character {
         } else {
             item.max_durability / 2
         };
-        let table = if equipment_owned != 0 {
+        let table = if equipment_owned {
             "equipment_items"
         } else {
             "inventory_items"
         };
         let updated = sqlx::query(&format!(
-            "UPDATE {table} SET item_type = ?, durability = ?
-             WHERE item_uid = ? AND character_id = ? AND item_type = ?"
+            "UPDATE {table} SET item_type = $1, durability = $2
+             WHERE item_uid = $3 AND character_id = $4 AND item_type = $5"
         ))
         .bind(i64::from(if upgraded { next_item_type } else { item.item_type }))
         .bind(i64::from(next_durability))
@@ -2133,7 +2133,7 @@ impl Character {
             return Ok((QualityUpgradeOutcome::NotFound, None));
         }
         let deleted =
-            sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = 1088000")
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND item_type = 1088000")
                 .bind(catalyst.0)
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
@@ -2179,7 +2179,7 @@ impl Character {
     /// transaction; `None` means the item or the catalysts were missing.
     pub async fn reforge_equipment(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         position: u8,
         new_type: u32,
         catalyst_type: u32,
@@ -2201,7 +2201,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         for catalyst in &catalysts {
             let deleted =
-                sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+                sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND item_type = $3")
                     .bind(i64::from(catalyst.uid))
                     .bind(self.inner.character_id)
                     .bind(i64::from(catalyst_type))
@@ -2213,8 +2213,8 @@ impl Character {
             }
         }
         let updated = sqlx::query(
-            "UPDATE equipment_items SET item_type = ?
-             WHERE item_uid = ? AND character_id = ? AND item_type = ? AND position = ?",
+            "UPDATE equipment_items SET item_type = $1
+             WHERE item_uid = $2 AND character_id = $3 AND item_type = $4 AND position = $5",
         )
         .bind(i64::from(new_type))
         .bind(i64::from(item.uid))
@@ -2236,7 +2236,7 @@ impl Character {
             }
             sqlx::query(
                 "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT(item_uid) DO UPDATE SET socket_one = excluded.socket_one,
                    socket_two = excluded.socket_two",
             )
@@ -2262,7 +2262,7 @@ impl Character {
 
     pub async fn open_item_socket(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
     ) -> Result<(SocketOutcome, Vec<InventoryItem>), Error> {
         let Some(mut item) = self.item_in_memory(item_uid) else {
@@ -2292,7 +2292,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         for catalyst in &catalysts {
             let deleted =
-                sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+                sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND item_type = $3")
                     .bind(i64::from(catalyst.uid))
                     .bind(self.inner.character_id)
                     .bind(1_088_000_i64)
@@ -2305,7 +2305,7 @@ impl Character {
         }
         sqlx::query(
             "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus, gem_one = excluded.gem_one,
                gem_two = excluded.gem_two, socket_one = excluded.socket_one, socket_two = excluded.socket_two,
                rarity = excluded.rarity",
@@ -2337,7 +2337,7 @@ impl Character {
     /// `remove` follows the classic subtype convention (0 insert, 1 remove).
     pub async fn socket_gem(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         gem_uid: u32,
         socket: u8,
@@ -2374,7 +2374,7 @@ impl Character {
             }
             sqlx::query(
                 "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus, gem_one = excluded.gem_one,
                    gem_two = excluded.gem_two, socket_one = excluded.socket_one, socket_two = excluded.socket_two,
                    rarity = excluded.rarity",
@@ -2411,7 +2411,7 @@ impl Character {
             item.gem_two = code;
         }
         let mut transaction = pool.begin().await?;
-        let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+        let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
             .bind(i64::from(gem.uid))
             .bind(self.inner.character_id)
             .execute(&mut *transaction)
@@ -2422,7 +2422,7 @@ impl Character {
         }
         sqlx::query(
             "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus, gem_one = excluded.gem_one,
                gem_two = excluded.gem_two, socket_one = excluded.socket_one, socket_two = excluded.socket_two,
                rarity = excluded.rarity",
@@ -2448,7 +2448,7 @@ impl Character {
 
     /// Composes fifteen equal normal/refined gems into the next tier. The
     /// required silver and all item removals are committed atomically.
-    pub async fn compose_gems(&self, pool: &sqlx::SqlitePool, gem_type: u32) -> Result<GemComposeOutcome, Error> {
+    pub async fn compose_gems(&self, pool: &sqlx::PgPool, gem_type: u32) -> Result<GemComposeOutcome, Error> {
         let tier = gem_type % 10;
         if !matches!(tier, 1 | 2) || !GEM_FAMILY_BASES.iter().any(|base| *base + tier == gem_type) {
             return Ok(GemComposeOutcome::InvalidGem);
@@ -2476,8 +2476,8 @@ impl Character {
         };
         let mut transaction = pool.begin().await?;
         let balance = sqlx::query_scalar::<_, i64>(
-            "UPDATE characters SET silver = silver - ?
-             WHERE character_id = ? AND silver >= ? RETURNING silver",
+            "UPDATE characters SET silver = silver - $1
+             WHERE character_id = $2 AND silver >= $3 RETURNING silver",
         )
         .bind(i64::from(price))
         .bind(self.inner.character_id)
@@ -2490,7 +2490,7 @@ impl Character {
         };
         for item in &consumed {
             let deleted =
-                sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+                sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND item_type = $3")
                     .bind(i64::from(item.uid))
                     .bind(self.inner.character_id)
                     .bind(i64::from(gem_type))
@@ -2500,14 +2500,14 @@ impl Character {
                 transaction.rollback().await?;
                 return Ok(GemComposeOutcome::MissingGems);
             }
-            sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+            sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
                 .bind(i64::from(item.uid))
                 .execute(&mut *transaction)
                 .await?;
         }
         let created_uid: i64 = sqlx::query_scalar(
             "INSERT INTO inventory_items (character_id, item_type, position, durability, max_durability)
-             VALUES (?, ?, ?, 100, 100) RETURNING item_uid",
+             VALUES ($1, $2, $3, 100, 100) RETURNING item_uid",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(gem_type + 1))
@@ -2541,13 +2541,13 @@ impl Character {
     /// Destroys the worn item at `position` (spent arrows).
     pub async fn destroy_equipment_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         position: u8,
     ) -> Result<Option<InventoryItem>, Error> {
         let Some(item) = self.equipment_item(position) else {
             return Ok(None);
         };
-        let deleted = sqlx::query("DELETE FROM equipment_items WHERE character_id = ? AND item_uid = ?")
+        let deleted = sqlx::query("DELETE FROM equipment_items WHERE character_id = $1 AND item_uid = $2")
             .bind(self.inner.character_id)
             .bind(i64::from(item.uid))
             .execute(pool)
@@ -2555,7 +2555,7 @@ impl Character {
         if deleted.rows_affected() != 1 {
             return Ok(None);
         }
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
             .bind(i64::from(item.uid))
             .execute(pool)
             .await?;
@@ -2565,7 +2565,7 @@ impl Character {
 
     pub async fn degrade_equipment_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         position: u8,
         amount: u16,
     ) -> Result<Option<InventoryItem>, Error> {
@@ -2575,10 +2575,10 @@ impl Character {
         let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "UPDATE equipment_items
              SET durability = CASE
-                 WHEN durability > ? THEN durability - ?
+                 WHEN durability > $1 THEN durability - $2
                  ELSE 0
              END
-             WHERE character_id = ? AND position = ? AND durability > 0
+             WHERE character_id = $3 AND position = $4 AND durability > 0
              RETURNING item_uid, item_type, position, durability, max_durability",
         )
         .bind(i64::from(amount))
@@ -2616,14 +2616,14 @@ impl Character {
     /// transaction. `None` means the character could not pay the cost.
     pub async fn repair_all_equipment(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         cost: u32,
     ) -> Result<Option<Vec<InventoryItem>>, Error> {
         let mut transaction = pool.begin().await?;
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability
              FROM equipment_items
-             WHERE character_id = ? AND durability < max_durability
+             WHERE character_id = $1 AND durability < max_durability
              ORDER BY position",
         )
         .bind(self.inner.character_id)
@@ -2634,8 +2634,8 @@ impl Character {
             return Ok(Some(Vec::new()));
         }
         let balance = sqlx::query_scalar::<_, i64>(
-            "UPDATE characters SET silver = silver - ?
-             WHERE character_id = ? AND silver >= ?
+            "UPDATE characters SET silver = silver - $1
+             WHERE character_id = $2 AND silver >= $3
              RETURNING silver",
         )
         .bind(i64::from(cost))
@@ -2649,7 +2649,7 @@ impl Character {
         };
         sqlx::query(
             "UPDATE equipment_items SET durability = max_durability
-             WHERE character_id = ? AND durability < max_durability",
+             WHERE character_id = $1 AND durability < max_durability",
         )
         .bind(self.inner.character_id)
         .execute(&mut *transaction)
@@ -2691,7 +2691,7 @@ impl Character {
 
     pub async fn equip_inventory_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         position: u8,
     ) -> Result<Option<(InventoryItem, Option<InventoryItem>)>, Error> {
@@ -2701,7 +2701,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         let source = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability \
-             FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40",
+             FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40",
         )
         .bind(i64::from(item_uid))
         .bind(self.inner.character_id)
@@ -2724,7 +2724,7 @@ impl Character {
         };
         let destination = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability \
-             FROM equipment_items WHERE character_id = ? AND position = ?",
+             FROM equipment_items WHERE character_id = $1 AND position = $2",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(position))
@@ -2740,13 +2740,13 @@ impl Character {
                 .item_in_memory(u32::try_from(uid).unwrap_or_default())
                 .unwrap_or_default()
         });
-        sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+        sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
             .bind(i64::from(item_uid))
             .bind(self.inner.character_id)
             .execute(&mut *transaction)
             .await?;
         if let Some(item) = destination {
-            sqlx::query("DELETE FROM equipment_items WHERE item_uid = ? AND character_id = ?")
+            sqlx::query("DELETE FROM equipment_items WHERE item_uid = $1 AND character_id = $2")
                 .bind(i64::from(item.uid))
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
@@ -2754,7 +2754,7 @@ impl Character {
             sqlx::query(
                 "INSERT INTO inventory_items \
                  (item_uid, character_id, item_type, position, durability, max_durability) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(i64::from(item.uid))
             .bind(self.inner.character_id)
@@ -2768,7 +2768,7 @@ impl Character {
         sqlx::query(
             "INSERT INTO equipment_items \
              (item_uid, character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(i64::from(source.uid))
         .bind(self.inner.character_id)
@@ -2806,7 +2806,7 @@ impl Character {
 
     pub async fn unequip_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         inventory_position: u8,
     ) -> Result<Option<InventoryItem>, Error> {
@@ -2816,7 +2816,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         let source = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability \
-             FROM equipment_items WHERE item_uid = ? AND character_id = ?",
+             FROM equipment_items WHERE item_uid = $1 AND character_id = $2",
         )
         .bind(i64::from(item_uid))
         .bind(self.inner.character_id)
@@ -2825,17 +2825,17 @@ impl Character {
         let Some((uid, item_type, position, durability, max_durability)) = source else {
             return Ok(None);
         };
-        let occupied = sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM inventory_items WHERE character_id = ? AND position = ?)",
+        let occupied = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM inventory_items WHERE character_id = $1 AND position = $2)",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(inventory_position))
         .fetch_one(&mut *transaction)
         .await?;
-        if occupied != 0 {
+        if occupied {
             return Ok(None);
         }
-        sqlx::query("DELETE FROM equipment_items WHERE item_uid = ? AND character_id = ?")
+        sqlx::query("DELETE FROM equipment_items WHERE item_uid = $1 AND character_id = $2")
             .bind(i64::from(item_uid))
             .bind(self.inner.character_id)
             .execute(&mut *transaction)
@@ -2843,7 +2843,7 @@ impl Character {
         sqlx::query(
             "INSERT INTO inventory_items \
              (item_uid, character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(uid)
         .bind(self.inner.character_id)
@@ -2873,7 +2873,7 @@ impl Character {
 
     pub async fn move_inventory_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         position: u8,
     ) -> Result<Option<(InventoryItem, Option<InventoryItem>)>, Error> {
@@ -2884,7 +2884,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         let source_row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability \
-             FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40",
+             FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40",
         )
         .bind(i64::from(item_uid))
         .bind(self.inner.character_id)
@@ -2913,7 +2913,7 @@ impl Character {
 
         let destination_row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability \
-             FROM inventory_items WHERE character_id = ? AND position = ?",
+             FROM inventory_items WHERE character_id = $1 AND position = $2",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(position))
@@ -2939,12 +2939,12 @@ impl Character {
             .transpose()?;
 
         if let Some(destination) = destination {
-            sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
                 .bind(i64::from(destination.uid))
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
                 .await?;
-            sqlx::query("UPDATE inventory_items SET position = ? WHERE item_uid = ? AND character_id = ?")
+            sqlx::query("UPDATE inventory_items SET position = $1 WHERE item_uid = $2 AND character_id = $3")
                 .bind(i64::from(position))
                 .bind(i64::from(source.uid))
                 .bind(self.inner.character_id)
@@ -2953,7 +2953,7 @@ impl Character {
             sqlx::query(
                 "INSERT INTO inventory_items \
                  (item_uid, character_id, item_type, position, durability, max_durability) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(i64::from(destination.uid))
             .bind(self.inner.character_id)
@@ -2964,7 +2964,7 @@ impl Character {
             .execute(&mut *transaction)
             .await?;
         } else {
-            sqlx::query("UPDATE inventory_items SET position = ? WHERE item_uid = ? AND character_id = ?")
+            sqlx::query("UPDATE inventory_items SET position = $1 WHERE item_uid = $2 AND character_id = $3")
                 .bind(i64::from(position))
                 .bind(i64::from(source.uid))
                 .bind(self.inner.character_id)
@@ -2998,7 +2998,7 @@ impl Character {
     /// SQLite transaction so stale clients cannot duplicate an item or silver.
     pub async fn complete_trade(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         other: &Self,
         offered_uids: &[u32],
         requested_uids: &[u32],
@@ -3051,7 +3051,7 @@ impl Character {
                         COALESCE(u.socket_one, 0), COALESCE(u.socket_two, 0), COALESCE(u.enchant, 0)
                  FROM inventory_items i
                  LEFT JOIN item_upgrades u ON u.item_uid = i.item_uid
-                 WHERE i.item_uid = ? AND i.character_id = ? AND i.position < 40",
+                 WHERE i.item_uid = $1 AND i.character_id = $2 AND i.position < 40",
             )
             .bind(i64::from(*uid))
             .bind(self.database_id())
@@ -3070,7 +3070,7 @@ impl Character {
                         COALESCE(u.socket_one, 0), COALESCE(u.socket_two, 0), COALESCE(u.enchant, 0)
                  FROM inventory_items i
                  LEFT JOIN item_upgrades u ON u.item_uid = i.item_uid
-                 WHERE i.item_uid = ? AND i.character_id = ? AND i.position < 40",
+                 WHERE i.item_uid = $1 AND i.character_id = $2 AND i.position < 40",
             )
             .bind(i64::from(*uid))
             .bind(other.database_id())
@@ -3083,13 +3083,13 @@ impl Character {
         }
 
         let left_positions = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT item_uid, position FROM inventory_items WHERE character_id = ? AND position < 40",
+            "SELECT item_uid, position FROM inventory_items WHERE character_id = $1 AND position < 40",
         )
         .bind(self.database_id())
         .fetch_all(&mut *transaction)
         .await?;
         let right_positions = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT item_uid, position FROM inventory_items WHERE character_id = ? AND position < 40",
+            "SELECT item_uid, position FROM inventory_items WHERE character_id = $1 AND position < 40",
         )
         .bind(other.database_id())
         .fetch_all(&mut *transaction)
@@ -3117,7 +3117,7 @@ impl Character {
         };
         if offered_silver > 0 {
             let updated =
-                sqlx::query("UPDATE characters SET silver = silver - ? WHERE character_id = ? AND silver >= ?")
+                sqlx::query("UPDATE characters SET silver = silver - $1 WHERE character_id = $2 AND silver >= $3")
                     .bind(i64::from(offered_silver))
                     .bind(self.database_id())
                     .bind(i64::from(offered_silver))
@@ -3129,7 +3129,7 @@ impl Character {
         }
         if requested_silver > 0 {
             let updated =
-                sqlx::query("UPDATE characters SET silver = silver - ? WHERE character_id = ? AND silver >= ?")
+                sqlx::query("UPDATE characters SET silver = silver - $1 WHERE character_id = $2 AND silver >= $3")
                     .bind(i64::from(requested_silver))
                     .bind(other.database_id())
                     .bind(i64::from(requested_silver))
@@ -3143,7 +3143,7 @@ impl Character {
         let right_credit = i64::from(offered_silver);
         if left_credit > 0 {
             let updated =
-                sqlx::query("UPDATE characters SET silver = silver + ? WHERE character_id = ? AND silver <= ?")
+                sqlx::query("UPDATE characters SET silver = silver + $1 WHERE character_id = $2 AND silver <= $3")
                     .bind(left_credit)
                     .bind(self.database_id())
                     .bind(i64::from(u32::MAX) - left_credit)
@@ -3155,7 +3155,7 @@ impl Character {
         }
         if right_credit > 0 {
             let updated =
-                sqlx::query("UPDATE characters SET silver = silver + ? WHERE character_id = ? AND silver <= ?")
+                sqlx::query("UPDATE characters SET silver = silver + $1 WHERE character_id = $2 AND silver <= $3")
                     .bind(right_credit)
                     .bind(other.database_id())
                     .bind(i64::from(u32::MAX) - right_credit)
@@ -3172,7 +3172,7 @@ impl Character {
             if amount == 0 {
                 continue;
             }
-            let debited = sqlx::query("UPDATE characters SET cps = cps - ? WHERE character_id = ? AND cps >= ?")
+            let debited = sqlx::query("UPDATE characters SET cps = cps - $1 WHERE character_id = $2 AND cps >= $3")
                 .bind(i64::from(amount))
                 .bind(payer)
                 .bind(i64::from(amount))
@@ -3181,7 +3181,7 @@ impl Character {
             if debited.rows_affected() != 1 {
                 return Ok(None);
             }
-            sqlx::query("UPDATE characters SET cps = cps + ? WHERE character_id = ?")
+            sqlx::query("UPDATE characters SET cps = cps + $1 WHERE character_id = $2")
                 .bind(i64::from(amount))
                 .bind(receiver)
                 .execute(&mut *transaction)
@@ -3199,7 +3199,7 @@ impl Character {
             } else {
                 other.database_id()
             };
-            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
                 .bind(i64::from(item.uid))
                 .bind(owner_id)
                 .execute(&mut *transaction)
@@ -3212,7 +3212,7 @@ impl Character {
             sqlx::query(
                 "INSERT INTO inventory_items
                     (item_uid, character_id, item_type, position, durability, max_durability)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(i64::from(item.uid))
             .bind(other.database_id())
@@ -3227,7 +3227,7 @@ impl Character {
             sqlx::query(
                 "INSERT INTO inventory_items
                     (item_uid, character_id, item_type, position, durability, max_durability)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(i64::from(item.uid))
             .bind(self.database_id())
@@ -3292,12 +3292,12 @@ impl Character {
         }))
     }
 
-    pub async fn load_warehouse(&self, pool: &sqlx::SqlitePool) -> Result<(), Error> {
-        sqlx::query("INSERT OR IGNORE INTO warehouse_balances (character_id, silver) VALUES (?, 0)")
+    pub async fn load_warehouse(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
+        sqlx::query("INSERT INTO warehouse_balances (character_id, silver) VALUES ($1, 0) ON CONFLICT DO NOTHING")
             .bind(self.inner.character_id)
             .execute(pool)
             .await?;
-        let balance: i64 = sqlx::query_scalar("SELECT silver FROM warehouse_balances WHERE character_id = ?")
+        let balance: i64 = sqlx::query_scalar("SELECT silver FROM warehouse_balances WHERE character_id = $1")
             .bind(self.inner.character_id)
             .fetch_one(pool)
             .await?;
@@ -3308,7 +3308,7 @@ impl Character {
                     COALESCE(u.socket_one, 0), COALESCE(u.socket_two, 0), COALESCE(u.enchant, 0)
              FROM warehouse_items w
              LEFT JOIN item_upgrades u ON u.item_uid = w.item_uid
-             WHERE w.character_id = ? ORDER BY w.position",
+             WHERE w.character_id = $1 ORDER BY w.position",
         )
         .bind(self.inner.character_id)
         .fetch_all(pool)
@@ -3364,7 +3364,7 @@ impl Character {
     /// `plus` (composition/tier). All three progressions remain independent.
     pub async fn set_item_rarity(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         rarity: u8,
     ) -> Result<Option<InventoryItem>, Error> {
@@ -3375,13 +3375,13 @@ impl Character {
             return Ok(None);
         };
         let mut transaction = pool.begin().await?;
-        let owned: i64 = sqlx::query_scalar(
+        let owned: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                SELECT 1 FROM inventory_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM inventory_items WHERE item_uid = $1 AND character_id = $2
                 UNION ALL
-                SELECT 1 FROM equipment_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM equipment_items WHERE item_uid = $3 AND character_id = $4
                 UNION ALL
-                SELECT 1 FROM warehouse_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM warehouse_items WHERE item_uid = $5 AND character_id = $6
              )",
         )
         .bind(i64::from(item_uid))
@@ -3392,14 +3392,14 @@ impl Character {
         .bind(self.inner.character_id)
         .fetch_one(&mut *transaction)
         .await?;
-        if owned == 0 {
+        if !owned {
             transaction.rollback().await?;
             return Ok(None);
         }
         sqlx::query(
             "INSERT INTO item_upgrades
                 (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT(item_uid) DO UPDATE SET
                 plus = excluded.plus,
                 gem_one = excluded.gem_one,
@@ -3431,7 +3431,7 @@ impl Character {
     /// consumed for every attempt, including a failed roll.
     pub async fn upgrade_item_rarity_with_dragonballs(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
     ) -> Result<(RarityUpgradeOutcome, Vec<InventoryItem>), Error> {
         let Some(mut item) = self.item_in_memory(item_uid) else {
@@ -3441,11 +3441,11 @@ impl Character {
             return Ok((RarityUpgradeOutcome::MaxRarity(item), Vec::new()));
         };
         let mut transaction = pool.begin().await?;
-        let owned: i64 = sqlx::query_scalar(
+        let owned: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                SELECT 1 FROM inventory_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM inventory_items WHERE item_uid = $1 AND character_id = $2
                 UNION ALL
-                SELECT 1 FROM equipment_items WHERE item_uid = ? AND character_id = ?
+                SELECT 1 FROM equipment_items WHERE item_uid = $3 AND character_id = $4
              )",
         )
         .bind(i64::from(item_uid))
@@ -3454,15 +3454,15 @@ impl Character {
         .bind(self.inner.character_id)
         .fetch_one(&mut *transaction)
         .await?;
-        if owned == 0 {
+        if !owned {
             transaction.rollback().await?;
             return Ok((RarityUpgradeOutcome::NotFound, Vec::new()));
         }
         let catalysts = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability
              FROM inventory_items
-             WHERE character_id = ? AND item_type = 1088000 AND position < 40
-             ORDER BY position LIMIT ?",
+             WHERE character_id = $1 AND item_type = 1088000 AND position < 40
+             ORDER BY position LIMIT $2",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(dragon_ball_cost))
@@ -3476,9 +3476,9 @@ impl Character {
         if upgraded {
             let rarity_roll = u8::try_from((next_roll() % 255) + 1).unwrap_or(1);
             sqlx::query(
-                "INSERT OR IGNORE INTO item_upgrades
+                "INSERT INTO item_upgrades
                     (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity, enchant)
-                 VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                 VALUES ($1, $2, $3, $4, $5, $6, 0, $7)
                  ON CONFLICT(item_uid) DO UPDATE SET rarity = excluded.rarity, enchant = excluded.enchant",
             )
             .bind(i64::from(item_uid))
@@ -3490,14 +3490,14 @@ impl Character {
             .bind(i64::from(rarity_roll))
             .execute(&mut *transaction)
             .await?;
-            sqlx::query("UPDATE item_upgrades SET rarity = rarity + 1, enchant = ? WHERE item_uid = ?")
+            sqlx::query("UPDATE item_upgrades SET rarity = rarity + 1, enchant = $1 WHERE item_uid = $2")
                 .bind(i64::from(rarity_roll))
                 .bind(i64::from(item_uid))
                 .execute(&mut *transaction)
                 .await?;
         }
         for catalyst in &catalysts {
-            sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
                 .bind(catalyst.0)
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
@@ -3508,7 +3508,7 @@ impl Character {
         if upgraded {
             item.rarity = item.rarity.saturating_add(1).min(4);
             item.rarity_roll = u8::try_from(
-                sqlx::query_scalar::<_, i64>("SELECT enchant FROM item_upgrades WHERE item_uid = ?")
+                sqlx::query_scalar::<_, i64>("SELECT enchant FROM item_upgrades WHERE item_uid = $1")
                     .bind(i64::from(item_uid))
                     .fetch_one(pool)
                     .await?,
@@ -3553,7 +3553,7 @@ impl Character {
     /// unchanged.
     pub async fn reroll_item_rarity_bonus_with_dragonball(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
     ) -> Result<(RarityBonusOutcome, Option<InventoryItem>), Error> {
         let Some(mut item) = self.item_in_memory(item_uid) else {
@@ -3566,7 +3566,7 @@ impl Character {
         let Some(catalyst) = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability
              FROM inventory_items
-             WHERE character_id = ? AND item_type = 1088000 AND position < 40
+             WHERE character_id = $1 AND item_type = 1088000 AND position < 40
              ORDER BY position LIMIT 1",
         )
         .bind(self.inner.character_id)
@@ -3578,9 +3578,9 @@ impl Character {
         };
         let rarity_roll = u8::try_from((next_roll() % 255) + 1).unwrap_or(1);
         sqlx::query(
-            "INSERT OR IGNORE INTO item_upgrades
+            "INSERT INTO item_upgrades
                 (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity, enchant)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT(item_uid) DO UPDATE SET enchant = excluded.enchant",
         )
         .bind(i64::from(item_uid))
@@ -3593,7 +3593,7 @@ impl Character {
         .bind(i64::from(rarity_roll))
         .execute(&mut *transaction)
         .await?;
-        sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+        sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
             .bind(catalyst.0)
             .bind(self.inner.character_id)
             .execute(&mut *transaction)
@@ -3624,7 +3624,7 @@ impl Character {
 
     pub async fn transfer_warehouse_silver(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         amount: u32,
         deposit: bool,
     ) -> Result<Option<u32>, Error> {
@@ -3633,9 +3633,9 @@ impl Character {
         }
         let mut transaction = pool.begin().await?;
         let query = if deposit {
-            "UPDATE characters SET silver = silver - ? WHERE character_id = ? AND silver >= ? RETURNING silver"
+            "UPDATE characters SET silver = silver - $1 WHERE character_id = $2 AND silver >= $3 RETURNING silver"
         } else {
-            "UPDATE warehouse_balances SET silver = silver - ? WHERE character_id = ? AND silver >= ? RETURNING silver"
+            "UPDATE warehouse_balances SET silver = silver - $1 WHERE character_id = $2 AND silver >= $3 RETURNING silver"
         };
         let debit = sqlx::query_scalar::<_, i64>(query)
             .bind(i64::from(amount))
@@ -3647,9 +3647,9 @@ impl Character {
             return Ok(None);
         };
         let query = if deposit {
-            "UPDATE warehouse_balances SET silver = silver + ? WHERE character_id = ? AND silver <= ? RETURNING silver"
+            "UPDATE warehouse_balances SET silver = silver + $1 WHERE character_id = $2 AND silver <= $3 RETURNING silver"
         } else {
-            "UPDATE characters SET silver = silver + ? WHERE character_id = ? AND silver <= ? RETURNING silver"
+            "UPDATE characters SET silver = silver + $1 WHERE character_id = $2 AND silver <= $3 RETURNING silver"
         };
         let credit = sqlx::query_scalar::<_, i64>(query)
             .bind(i64::from(amount))
@@ -3675,7 +3675,7 @@ impl Character {
 
     pub async fn store_inventory_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         position: u8,
     ) -> Result<Option<(InventoryItem, InventoryItem)>, Error> {
@@ -3685,7 +3685,7 @@ impl Character {
         let source_upgrade = self.item_in_memory(item_uid).unwrap_or_default();
         let mut transaction = pool.begin().await?;
         let occupied: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM warehouse_items WHERE character_id = ? AND position = ?)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM warehouse_items WHERE character_id = $1 AND position = $2)")
                 .bind(self.inner.character_id)
                 .bind(i64::from(position))
                 .fetch_one(&mut *transaction)
@@ -3694,7 +3694,7 @@ impl Character {
             return Ok(None);
         }
         let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-            "DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40 \
+            "DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40 \
              RETURNING item_uid, item_type, position, durability, max_durability",
         )
         .bind(i64::from(item_uid))
@@ -3706,7 +3706,7 @@ impl Character {
         };
         let warehouse_uid: i64 = sqlx::query_scalar(
             "INSERT INTO warehouse_items (character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, ?) RETURNING item_uid",
+             VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
         )
         .bind(self.inner.character_id)
         .bind(item_type)
@@ -3724,7 +3724,7 @@ impl Character {
         {
             sqlx::query(
                 "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus, gem_one = excluded.gem_one,
                    gem_two = excluded.gem_two, socket_one = excluded.socket_one, socket_two = excluded.socket_two,
                    rarity = excluded.rarity",
@@ -3739,7 +3739,7 @@ impl Character {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
@@ -3768,7 +3768,7 @@ impl Character {
 
     pub async fn withdraw_warehouse_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         position: u8,
     ) -> Result<Option<(InventoryItem, InventoryItem)>, Error> {
@@ -3778,13 +3778,13 @@ impl Character {
         let source_upgrade = self.item_in_memory(item_uid).unwrap_or_default();
         let mut transaction = pool.begin().await?;
         let occupied: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE character_id = ? AND position = ?)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE character_id = $1 AND position = $2)")
                 .bind(self.inner.character_id)
                 .bind(i64::from(position))
                 .fetch_one(&mut *transaction)
                 .await?;
         let inventory_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE character_id = ? AND position < 40")
+            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE character_id = $1 AND position < 40")
                 .bind(self.inner.character_id)
                 .fetch_one(&mut *transaction)
                 .await?;
@@ -3792,7 +3792,7 @@ impl Character {
             return Ok(None);
         }
         let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-            "DELETE FROM warehouse_items WHERE item_uid = ? AND character_id = ? \
+            "DELETE FROM warehouse_items WHERE item_uid = $1 AND character_id = $2 \
              RETURNING item_uid, item_type, position, durability, max_durability",
         )
         .bind(i64::from(item_uid))
@@ -3804,7 +3804,7 @@ impl Character {
         };
         let inventory_uid: i64 = sqlx::query_scalar(
             "INSERT INTO inventory_items (character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, ?) RETURNING item_uid",
+             VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
         )
         .bind(self.inner.character_id)
         .bind(item_type)
@@ -3822,7 +3822,7 @@ impl Character {
         {
             sqlx::query(
                 "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus, gem_one = excluded.gem_one,
                    gem_two = excluded.gem_two, socket_one = excluded.socket_one, socket_two = excluded.socket_two,
                    rarity = excluded.rarity",
@@ -3837,7 +3837,7 @@ impl Character {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
@@ -3868,7 +3868,7 @@ impl Character {
     /// duplicated or lose plus/gem/socket data while crossing the boundary.
     pub async fn store_guild_warehouse_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         guild_id: u32,
         item_uid: u32,
         position: u8,
@@ -3879,7 +3879,7 @@ impl Character {
         let source_upgrade = self.item_in_memory(item_uid).unwrap_or_default();
         let mut transaction = pool.begin().await?;
         let occupied: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM guild_warehouse_items WHERE guild_id = ? AND position = ?)",
+            "SELECT EXISTS(SELECT 1 FROM guild_warehouse_items WHERE guild_id = $1 AND position = $2)",
         )
         .bind(i64::from(guild_id))
         .bind(i64::from(position))
@@ -3889,7 +3889,7 @@ impl Character {
             return Ok(None);
         }
         let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-            "DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40
+            "DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40
              RETURNING item_uid, item_type, position, durability, max_durability",
         )
         .bind(i64::from(item_uid))
@@ -3902,7 +3902,7 @@ impl Character {
         sqlx::query(
             "INSERT INTO guild_warehouse_items
                 (item_uid, guild_id, item_type, position, durability, max_durability)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(uid)
         .bind(i64::from(guild_id))
@@ -3933,7 +3933,7 @@ impl Character {
     /// inventory/equipment loaders. Slots are the Guild-local 0..39 values.
     pub async fn guild_warehouse_items(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         guild_id: u32,
     ) -> Result<Vec<InventoryItem>, Error> {
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>(
@@ -3942,7 +3942,7 @@ impl Character {
                     COALESCE(u.socket_one, 0), COALESCE(u.socket_two, 0), COALESCE(u.enchant, 0)
              FROM guild_warehouse_items g
              LEFT JOIN item_upgrades u ON u.item_uid = g.item_uid
-             WHERE g.guild_id = ? ORDER BY g.position",
+             WHERE g.guild_id = $1 ORDER BY g.position",
         )
         .bind(i64::from(guild_id))
         .fetch_all(pool)
@@ -3991,7 +3991,7 @@ impl Character {
     /// The operation is atomic and keeps the same UID and item upgrades.
     pub async fn withdraw_guild_warehouse_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         guild_id: u32,
         item_uid: u32,
         position: u8,
@@ -4001,13 +4001,13 @@ impl Character {
         }
         let mut transaction = pool.begin().await?;
         let occupied: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE character_id = ? AND position = ?)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM inventory_items WHERE character_id = $1 AND position = $2)")
                 .bind(self.inner.character_id)
                 .bind(i64::from(position))
                 .fetch_one(&mut *transaction)
                 .await?;
         let inventory_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE character_id = ? AND position < 40")
+            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE character_id = $1 AND position < 40")
                 .bind(self.inner.character_id)
                 .fetch_one(&mut *transaction)
                 .await?;
@@ -4020,7 +4020,7 @@ impl Character {
                     COALESCE(u.socket_one, 0), COALESCE(u.socket_two, 0), COALESCE(u.enchant, 0)
              FROM guild_warehouse_items g
              LEFT JOIN item_upgrades u ON u.item_uid = g.item_uid
-             WHERE g.guild_id = ? AND g.item_uid = ?",
+             WHERE g.guild_id = $1 AND g.item_uid = $2",
         )
         .bind(i64::from(guild_id))
         .bind(i64::from(item_uid))
@@ -4043,7 +4043,7 @@ impl Character {
         else {
             return Ok(None);
         };
-        sqlx::query("DELETE FROM guild_warehouse_items WHERE guild_id = ? AND item_uid = ?")
+        sqlx::query("DELETE FROM guild_warehouse_items WHERE guild_id = $1 AND item_uid = $2")
             .bind(i64::from(guild_id))
             .bind(uid)
             .execute(&mut *transaction)
@@ -4051,7 +4051,7 @@ impl Character {
         sqlx::query(
             "INSERT INTO inventory_items
                 (item_uid, character_id, item_type, position, durability, max_durability)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(uid)
         .bind(self.inner.character_id)
@@ -4087,10 +4087,10 @@ impl Character {
         Ok(Some((stored, withdrawn)))
     }
 
-    pub async fn sell_item(&self, pool: &sqlx::SqlitePool, item_uid: u32, silver: u32) -> Result<SaleOutcome, Error> {
+    pub async fn sell_item(&self, pool: &sqlx::PgPool, item_uid: u32, silver: u32) -> Result<SaleOutcome, Error> {
         let mut transaction = pool.begin().await?;
         let item = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-            "DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40 \
+            "DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40 \
              RETURNING item_uid, item_type, position, durability, max_durability",
         )
         .bind(i64::from(item_uid))
@@ -4105,8 +4105,8 @@ impl Character {
         }
         let balance_limit = i64::from(u32::MAX - silver);
         let updated = sqlx::query(
-            "UPDATE characters SET silver = silver + ? \
-             WHERE character_id = ? AND silver <= ?",
+            "UPDATE characters SET silver = silver + $1 \
+             WHERE character_id = $2 AND silver <= $3",
         )
         .bind(i64::from(silver))
         .bind(self.inner.character_id)
@@ -4116,7 +4116,7 @@ impl Character {
         if updated.rows_affected() == 0 {
             return Ok(SaleOutcome::SilverLimit);
         }
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
@@ -4141,11 +4141,11 @@ impl Character {
 
     pub async fn drop_inventory_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
     ) -> Result<Option<InventoryItem>, Error> {
         let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-            "DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40 \
+            "DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40 \
              RETURNING item_uid, item_type, position, durability, max_durability",
         )
         .bind(i64::from(item_uid))
@@ -4155,7 +4155,7 @@ impl Character {
         let Some((uid, item_type, position, durability, max_durability)) = row else {
             return Ok(None);
         };
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
             .bind(uid)
             .execute(pool)
             .await?;
@@ -4179,7 +4179,7 @@ impl Character {
     /// source item is only removed after all destination slots are reserved.
     pub async fn open_consumable_bundle(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_uid: u32,
         source_type: u32,
         contents_type: u32,
@@ -4191,7 +4191,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         let source = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             "SELECT item_uid, item_type, position, durability, max_durability \
-             FROM inventory_items WHERE item_uid = ? AND character_id = ? AND position < 40",
+             FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND position < 40",
         )
         .bind(i64::from(item_uid))
         .bind(self.inner.character_id)
@@ -4204,7 +4204,7 @@ impl Character {
             return Ok(None);
         }
         let occupied = sqlx::query_scalar::<_, i64>(
-            "SELECT position FROM inventory_items WHERE character_id = ? AND position < 40",
+            "SELECT position FROM inventory_items WHERE character_id = $1 AND position < 40",
         )
         .bind(self.inner.character_id)
         .fetch_all(&mut *transaction)
@@ -4216,12 +4216,12 @@ impl Character {
         if free_positions.len() != usize::from(amount) {
             return Ok(None);
         }
-        sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+        sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
             .bind(i64::from(item_uid))
             .bind(self.inner.character_id)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = ?")
+        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
@@ -4231,7 +4231,7 @@ impl Character {
             let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
                 "INSERT INTO inventory_items \
                  (character_id, item_type, position, durability, max_durability) \
-                 VALUES (?, ?, ?, ?, ?) \
+                 VALUES ($1, $2, $3, $4, $5) \
                  RETURNING item_uid, item_type, position, durability, max_durability",
             )
             .bind(self.inner.character_id)
@@ -4273,7 +4273,7 @@ impl Character {
 
     pub async fn purchase_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_type: u32,
         position: u8,
         price: u32,
@@ -4291,8 +4291,8 @@ impl Character {
         }
         let mut transaction = pool.begin().await?;
         let updated = sqlx::query(
-            "UPDATE characters SET silver = silver - ? \
-             WHERE character_id = ? AND silver >= ?",
+            "UPDATE characters SET silver = silver - $1 \
+             WHERE character_id = $2 AND silver >= $3",
         )
         .bind(i64::from(price))
         .bind(self.inner.character_id)
@@ -4306,7 +4306,7 @@ impl Character {
         let uid: i64 = sqlx::query_scalar(
             "INSERT INTO inventory_items \
              (character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, ?) RETURNING item_uid",
+             VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(item_type))
@@ -4333,7 +4333,7 @@ impl Character {
 
     pub async fn add_ground_item(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_type: u32,
         durability: u16,
         max_durability: u16,
@@ -4348,7 +4348,7 @@ impl Character {
         let uid: i64 = sqlx::query_scalar(
             "INSERT INTO inventory_items \
              (character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, ?) RETURNING item_uid",
+             VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
         )
         .bind(self.inner.character_id)
         .bind(i64::from(item_type))
@@ -4375,9 +4375,9 @@ impl Character {
     }
 
     /// Adds Conquer Points and saves them.
-    pub async fn grant_cps(&self, pool: &sqlx::SqlitePool, amount: u64) -> Result<u64, Error> {
+    pub async fn grant_cps(&self, pool: &sqlx::PgPool, amount: u64) -> Result<u64, Error> {
         let total = self.cps.fetch_add(amount, Ordering::Relaxed).saturating_add(amount);
-        sqlx::query("UPDATE characters SET cps = ? WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET cps = $1 WHERE character_id = $2")
             .bind(i64::try_from(total).unwrap_or(i64::MAX))
             .bind(self.inner.character_id)
             .execute(pool)
@@ -4550,7 +4550,7 @@ impl Character {
     /// The runtime mirror is only changed after SQLite confirms the update.
     pub async fn allocate_attribute(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         kind: AttributeKind,
         amount: u16,
     ) -> Result<AttributeAllocation, Error> {
@@ -4563,8 +4563,8 @@ impl Character {
         }
         let column = kind.column();
         let query = format!(
-            "UPDATE characters SET {column} = {column} + ?, attribute_points = attribute_points - ? \
-             WHERE character_id = ? AND attribute_points >= ? AND {column} + ? <= 65535 \
+            "UPDATE characters SET {column} = {column} + $1, attribute_points = attribute_points - $2 \
+             WHERE character_id = $3 AND attribute_points >= $4 AND {column} + $5 <= 65535 \
              RETURNING {column}, attribute_points"
         );
         let updated = sqlx::query_as::<_, (i64, i64)>(&query)
@@ -5071,8 +5071,8 @@ impl Character {
 
     /// Promotes the character to `class` (for example 11 Trojan or 142 Fire
     /// Taoist) and persists it.
-    pub async fn set_class(&self, pool: &sqlx::SqlitePool, class: u8) -> Result<(), Error> {
-        sqlx::query("UPDATE characters SET current_class = ? WHERE character_id = ?")
+    pub async fn set_class(&self, pool: &sqlx::PgPool, class: u8) -> Result<(), Error> {
+        sqlx::query("UPDATE characters SET current_class = $1 WHERE character_id = $2")
             .bind(i64::from(class))
             .bind(self.inner.character_id)
             .execute(pool)
@@ -5112,7 +5112,7 @@ impl Character {
     /// forgotten. The caller saves the character afterwards.
     pub async fn rebirth(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         new_class: u8,
         bonus_points: u16,
         learn: &[u32],
@@ -5120,20 +5120,20 @@ impl Character {
     ) -> Result<(), Error> {
         let mut transaction = pool.begin().await?;
         for skill_id in forget {
-            sqlx::query("DELETE FROM character_skills WHERE character_id = ? AND skill_id = ?")
+            sqlx::query("DELETE FROM character_skills WHERE character_id = $1 AND skill_id = $2")
                 .bind(self.inner.character_id)
                 .bind(i64::from(*skill_id))
                 .execute(&mut *transaction)
                 .await?;
         }
-        sqlx::query("UPDATE character_skills SET level = 1, experience = 0, proficiency = 0 WHERE character_id = ?")
+        sqlx::query("UPDATE character_skills SET level = 1, experience = 0, proficiency = 0 WHERE character_id = $1")
             .bind(self.inner.character_id)
             .execute(&mut *transaction)
             .await?;
         for skill_id in learn {
             sqlx::query(
                 "INSERT INTO character_skills (character_id, skill_id, level, experience, proficiency)
-                 VALUES (?, ?, 1, 0, 0)
+                 VALUES ($1, $2, 1, 0, 0)
                  ON CONFLICT(character_id, skill_id) DO NOTHING",
             )
             .bind(self.inner.character_id)
@@ -5141,7 +5141,7 @@ impl Character {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query("UPDATE characters SET current_class = ?, previous_class = ?, rebirths = ? WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET current_class = $1, previous_class = $2, rebirths = $3 WHERE character_id = $4")
             .bind(i64::from(new_class))
             .bind(i64::from(self.current_class()))
             .bind(i64::from(self.rebirths().saturating_add(1)))
@@ -5189,7 +5189,7 @@ impl Character {
     /// `None` nothing was taken.
     pub async fn consume_items(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         item_type: u32,
         count: usize,
     ) -> Result<Option<Vec<InventoryItem>>, Error> {
@@ -5205,7 +5205,7 @@ impl Character {
         let mut transaction = pool.begin().await?;
         for item in &items {
             let deleted =
-                sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ? AND item_type = ?")
+                sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND item_type = $3")
                     .bind(i64::from(item.uid))
                     .bind(self.inner.character_id)
                     .bind(i64::from(item_type))
@@ -5226,7 +5226,7 @@ impl Character {
     /// Removes these inventory items, all or none.
     pub async fn consume_item_uids(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         uids: &[u32],
     ) -> Result<Option<Vec<InventoryItem>>, Error> {
         let items = self
@@ -5239,7 +5239,7 @@ impl Character {
         }
         let mut transaction = pool.begin().await?;
         for item in &items {
-            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = ? AND character_id = ?")
+            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
                 .bind(i64::from(item.uid))
                 .bind(self.inner.character_id)
                 .execute(&mut *transaction)
@@ -5273,7 +5273,7 @@ impl Character {
     /// One proficiency level up for a weapon type (ProficiencyGod).
     pub async fn raise_weapon_proficiency(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         weapon_type: u32,
     ) -> Result<Option<WeaponProficiency>, Error> {
         let Some(mut progress) = self.weapon_type_proficiency(weapon_type) else {
@@ -5282,8 +5282,8 @@ impl Character {
         progress.level = progress.level.saturating_add(1);
         progress.proficiency = 0;
         sqlx::query(
-            "UPDATE character_weapon_proficiencies SET level = ?, proficiency = 0
-             WHERE character_id = ? AND weapon_family = ?",
+            "UPDATE character_weapon_proficiencies SET level = $1, proficiency = 0
+             WHERE character_id = $2 AND weapon_family = $3",
         )
         .bind(i64::from(progress.level))
         .bind(self.inner.character_id)
@@ -5297,7 +5297,7 @@ impl Character {
     /// Opens the first or second socket of a worn item.
     pub async fn open_equipment_socket(
         &self,
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         position: u8,
         second: bool,
     ) -> Result<Option<InventoryItem>, Error> {
@@ -5311,7 +5311,7 @@ impl Character {
         }
         sqlx::query(
             "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT(item_uid) DO UPDATE SET socket_one = excluded.socket_one, socket_two = excluded.socket_two",
         )
         .bind(i64::from(item.uid))
@@ -5437,18 +5437,10 @@ impl Character {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
     use tq_network::Actor;
 
-    async fn test_character() -> Result<(sqlx::SqlitePool, Character, u32), Error> {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(2)
-            .connect("sqlite::memory:")
-            .await?;
-        sqlx::migrate!("../../migrations")
-            .run(&pool)
-            .await
-            .expect("test database migrations should apply");
+    async fn test_character() -> Result<(sqlx::PgPool, Character, u32), Error> {
+        let pool = tq_db::testing::pool().await;
 
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
         let actor = Actor::<crate::ActorState>::new(tx);
@@ -5470,7 +5462,7 @@ mod tests {
     }
 
     async fn insert_inventory_item(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         character_id: u32,
         uid: u32,
         item_type: u32,
@@ -5479,7 +5471,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO inventory_items \
              (item_uid, character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, 100, 100)",
+             VALUES ($1, $2, $3, $4, 100, 100)",
         )
         .bind(i64::from(uid))
         .bind(i64::from(character_id))
@@ -5491,7 +5483,7 @@ mod tests {
     }
 
     async fn insert_equipment_item(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::PgPool,
         character_id: u32,
         uid: u32,
         item_type: u32,
@@ -5500,7 +5492,7 @@ mod tests {
         sqlx::query(
             "INSERT INTO equipment_items \
              (item_uid, character_id, item_type, position, durability, max_durability) \
-             VALUES (?, ?, ?, ?, 100, 100)",
+             VALUES ($1, $2, $3, $4, 100, 100)",
         )
         .bind(i64::from(uid))
         .bind(i64::from(character_id))
@@ -5542,7 +5534,7 @@ mod tests {
     #[tokio::test]
     async fn nobility_donation_is_atomic_and_persists_rank_progress() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
-        sqlx::query("UPDATE characters SET level = 70, silver = ? WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET level = 70, silver = $1 WHERE character_id = $2")
             .bind(3_500_000_i64)
             .bind(i64::from(database_character_id))
             .execute(&pool)
@@ -5571,7 +5563,7 @@ mod tests {
             crate::nobility::DonateOutcome::InsufficientSilver
         );
         let saved: (i64, i64) =
-            sqlx::query_as("SELECT silver, nobility_donation FROM characters WHERE character_id = ?")
+            sqlx::query_as("SELECT silver, nobility_donation FROM characters WHERE character_id = $1")
                 .bind(i64::from(database_character_id))
                 .fetch_one(&pool)
                 .await?;
@@ -5586,7 +5578,7 @@ mod tests {
     #[tokio::test]
     async fn nobility_ranking_orders_donation_and_breaks_ties_by_id() -> Result<(), Error> {
         let (pool, _character, database_character_id) = test_character().await?;
-        sqlx::query("UPDATE characters SET nobility_donation = 5000000 WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET nobility_donation = 5000000 WHERE character_id = $1")
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
@@ -5620,7 +5612,7 @@ mod tests {
             crate::titles::EquipOutcome::Locked
         );
 
-        sqlx::query("UPDATE characters SET level = 30 WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET level = 30 WHERE character_id = $1")
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
@@ -5631,7 +5623,7 @@ mod tests {
         );
         assert_eq!(character.equipped_title_name(), "Veteran");
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT equipped_title FROM characters WHERE character_id = ?",)
+            sqlx::query_scalar::<_, i64>("SELECT equipped_title FROM characters WHERE character_id = $1",)
                 .bind(i64::from(database_character_id))
                 .fetch_one(&pool)
                 .await?,
@@ -5648,11 +5640,11 @@ mod tests {
     #[tokio::test]
     async fn guild_warehouse_round_trip_preserves_uid_and_upgrades() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
-        sqlx::query("INSERT INTO guilds (guild_id, name, leader_id) VALUES (1, 'Knights', ?)")
+        sqlx::query("INSERT INTO guilds (guild_id, name, leader_id) VALUES (1, 'Knights', $1)")
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
-        sqlx::query("INSERT INTO guild_members (guild_id, character_id, role) VALUES (1, ?, 1000)")
+        sqlx::query("INSERT INTO guild_members (guild_id, character_id, role) VALUES (1, $1, 1000)")
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
@@ -5690,7 +5682,7 @@ mod tests {
         assert_eq!(withdrawn.gem_one, 13);
         let inventory_row: (i64, i64, i64, i64) = sqlx::query_as(
             "SELECT item_uid, item_type, position, durability FROM inventory_items
-             WHERE character_id = ? AND item_uid = 701",
+             WHERE character_id = $1 AND item_uid = 701",
         )
         .bind(i64::from(database_character_id))
         .fetch_one(&pool)
@@ -5706,7 +5698,7 @@ mod tests {
     #[tokio::test]
     async fn warehouse_silver_transfers_are_atomic_and_bounded() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
-        sqlx::query("UPDATE characters SET silver = 1000 WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET silver = 1000 WHERE character_id = $1")
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
@@ -5729,12 +5721,12 @@ mod tests {
 
         // Credit-side overflow is rejected atomically as well.
         let near_max = u64::from(u32::MAX) - 5;
-        sqlx::query("UPDATE characters SET silver = ? WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET silver = $1 WHERE character_id = $2")
             .bind(i64::try_from(near_max).expect("u32 max fits sqlite integer"))
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
-        sqlx::query("UPDATE warehouse_balances SET silver = 10 WHERE character_id = ?")
+        sqlx::query("UPDATE warehouse_balances SET silver = 10 WHERE character_id = $1")
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
@@ -5749,7 +5741,7 @@ mod tests {
             "SELECT c.silver, w.silver
              FROM characters c
              JOIN warehouse_balances w ON w.character_id = c.character_id
-             WHERE c.character_id = ?",
+             WHERE c.character_id = $1",
         )
         .bind(i64::from(database_character_id))
         .fetch_one(&pool)
@@ -5956,7 +5948,7 @@ mod tests {
         };
         assert_eq!((opened_again.socket_one, opened_again.socket_two), (1, 1));
         let remaining_dragonballs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE character_id = ? AND item_type = 1088000")
+            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE character_id = $1 AND item_type = 1088000")
                 .bind(i64::from(database_character_id))
                 .fetch_one(&pool)
                 .await?;
@@ -6001,7 +5993,7 @@ mod tests {
         assert_eq!(character.weapon_proficiency_bonus_percent(), 2);
         let persisted: (i64, i64, i64, i64) = sqlx::query_as(
             "SELECT weapon_family, level, experience, proficiency
-             FROM character_weapon_proficiencies WHERE character_id = ?",
+             FROM character_weapon_proficiencies WHERE character_id = $1",
         )
         .bind(i64::from(database_character_id))
         .fetch_one(&pool)
@@ -6157,7 +6149,7 @@ mod tests {
         for index in 0..15_u32 {
             insert_inventory_item(&pool, database_character_id, 800 + index, 700_001, index as u8).await?;
         }
-        sqlx::query("UPDATE characters SET silver = 100000 WHERE character_id = ?")
+        sqlx::query("UPDATE characters SET silver = 100000 WHERE character_id = $1")
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
@@ -6178,8 +6170,8 @@ mod tests {
         assert_eq!(character.silver(), silver_before - 10_000);
         let (normal_count, refined_count): (i64, i64) = sqlx::query_as(
             "SELECT
-               (SELECT COUNT(*) FROM inventory_items WHERE character_id = ? AND item_type = 700001),
-               (SELECT COUNT(*) FROM inventory_items WHERE character_id = ? AND item_type = 700002)",
+               (SELECT COUNT(*) FROM inventory_items WHERE character_id = $1 AND item_type = 700001),
+               (SELECT COUNT(*) FROM inventory_items WHERE character_id = $2 AND item_type = 700002)",
         )
         .bind(i64::from(database_character_id))
         .bind(i64::from(database_character_id))
@@ -6202,7 +6194,7 @@ mod tests {
             .is_none());
         assert_eq!(character.silver(), silver_before);
         let missing: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM character_skills WHERE character_id = ? AND skill_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM character_skills WHERE character_id = $1 AND skill_id = $2")
                 .bind(i64::from(database_character_id))
                 .bind(i64::from(crate::skills::WHIRLWIND_ID))
                 .fetch_one(&pool)
@@ -6233,7 +6225,7 @@ mod tests {
 
         character.learn_skill(&pool, crate::skills::BASIC_FIRE_ID, 3).await?;
         let saved_level: i64 =
-            sqlx::query_scalar("SELECT level FROM character_skills WHERE character_id = ? AND skill_id = ?")
+            sqlx::query_scalar("SELECT level FROM character_skills WHERE character_id = $1 AND skill_id = $2")
                 .bind(i64::from(database_character_id))
                 .bind(i64::from(crate::skills::BASIC_FIRE_ID))
                 .fetch_one(&pool)
@@ -6270,7 +6262,7 @@ mod tests {
 
         let (level, experience, proficiency): (i64, i64, i64) = sqlx::query_as(
             "SELECT level, experience, proficiency
-             FROM character_skills WHERE character_id = ? AND skill_id = ?",
+             FROM character_skills WHERE character_id = $1 AND skill_id = $2",
         )
         .bind(i64::from(database_character_id))
         .bind(i64::from(crate::skills::BASIC_FIRE_ID))
@@ -6296,12 +6288,12 @@ mod tests {
         assert!(character.inventory_items().iter().all(|item| item.uid != 701));
 
         let item_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE item_uid = 701 AND character_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE item_uid = 701 AND character_id = $1")
                 .bind(i64::from(database_character_id))
                 .fetch_one(&pool)
                 .await?;
         let skill_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM character_skills WHERE character_id = ? AND skill_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM character_skills WHERE character_id = $1 AND skill_id = $2")
                 .bind(i64::from(database_character_id))
                 .bind(i64::from(crate::skills::WHIRLWIND_ID))
                 .fetch_one(&pool)

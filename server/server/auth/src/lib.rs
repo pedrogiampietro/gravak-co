@@ -162,14 +162,7 @@ mod tests {
         let msg_connect = Module::from_file(&engine, msg_connect::WASM_BINARY.unwrap()).unwrap();
         let msg_account = Module::from_file(&engine, msg_account::WASM_BINARY.unwrap()).unwrap();
 
-        std::env::set_var("DATABASE_URL", "sqlite::memory:");
-        let state = State::init().await.unwrap();
-
-        // Run database migrations
-        sqlx::migrate!("../../migrations")
-            .run(state.pool())
-            .await
-            .expect("Failed to migrate database");
+        let state = State::with_pool(tq_db::testing::pool().await);
         let packets = Packets {
             msg_connect,
             msg_account,

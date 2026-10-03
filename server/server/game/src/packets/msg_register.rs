@@ -32,7 +32,7 @@ const ARMOR_SLOT: i64 = 3;
 /// Puts the starter coat on `character_id`, dyed `dye` when it is a Tinter
 /// colour (3..=9).
 pub async fn give_starter_coat(
-    pool: &sqlx::SqlitePool,
+    pool: &sqlx::PgPool,
     catalog: &crate::shop::ShopCatalog,
     character_id: i64,
     dye: u32,
@@ -42,7 +42,7 @@ pub async fn give_starter_coat(
         .map_or((1198, 1198), |coat| (coat.durability, coat.max_durability));
     let uid: i64 = sqlx::query_scalar(
         "INSERT INTO equipment_items (character_id, item_type, position, durability, max_durability) \
-         VALUES (?, ?, ?, ?, ?) RETURNING item_uid",
+         VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
     )
     .bind(character_id)
     .bind(i64::from(STARTER_COAT))
@@ -52,7 +52,7 @@ pub async fn give_starter_coat(
     .fetch_one(pool)
     .await?;
     if (3..=9).contains(&dye) {
-        sqlx::query("INSERT INTO item_colors (item_uid, color) VALUES (?, ?)")
+        sqlx::query("INSERT INTO item_colors (item_uid, color) VALUES ($1, $2)")
             .bind(uid)
             .bind(i64::from(dye))
             .execute(pool)
@@ -225,14 +225,10 @@ mod tests {
 
     #[tokio::test]
     async fn new_characters_wear_the_starter_coat_in_their_dye() -> Result<(), Error> {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(2)
-            .connect("sqlite::memory:")
-            .await?;
-        sqlx::migrate!("../../migrations").run(&pool).await.expect("migrations apply");
+        let pool = tq_db::testing::pool().await;
         let catalog = crate::shop::ShopCatalog::default();
         for (case, dye, colour) in [(1, 6, Some(6)), (2, 0, None), (3, 12, None)] {
-            let account: i64 = sqlx::query_scalar("INSERT INTO accounts (username, password) VALUES (?, '') RETURNING account_id")
+            let account: i64 = sqlx::query_scalar("INSERT INTO accounts (username, password) VALUES ($1, '') RETURNING account_id")
                 .bind(format!("coat{case}"))
                 .fetch_one(&pool)
                 .await?;
@@ -242,13 +238,13 @@ mod tests {
                 .await?;
             give_starter_coat(&pool, &catalog, i64::from(id), dye).await?;
             let (uid, item_type, position): (i64, i64, i64) = sqlx::query_as(
-                "SELECT item_uid, item_type, position FROM equipment_items WHERE character_id = ?",
+                "SELECT item_uid, item_type, position FROM equipment_items WHERE character_id = $1",
             )
             .bind(i64::from(id))
             .fetch_one(&pool)
             .await?;
             assert_eq!((item_type, position), (i64::from(STARTER_COAT), ARMOR_SLOT));
-            let stored: Option<i64> = sqlx::query_scalar("SELECT color FROM item_colors WHERE item_uid = ?")
+            let stored: Option<i64> = sqlx::query_scalar("SELECT color FROM item_colors WHERE item_uid = $1")
                 .bind(uid)
                 .fetch_optional(&pool)
                 .await?;

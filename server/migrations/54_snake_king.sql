@@ -1,6 +1,6 @@
 -- Monster magic resistance (Redux `MagicDefence`, a percent taken off
 -- spells, as `CalculateSkillDamage` uses it).
-ALTER TABLE monster_types ADD COLUMN magic_resistance INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE monster_types ADD COLUMN magic_resistance BIGINT NOT NULL DEFAULT 0;
 
 UPDATE monster_types SET magic_resistance = 5 WHERE id IN (6015);
 UPDATE monster_types SET magic_resistance = 10 WHERE id IN (3028, 8415);
@@ -53,8 +53,11 @@ UPDATE monster_types SET respawn_seconds = 7200, attack_mode = 1 WHERE id = 3102
 INSERT INTO monster_spawns (monster_type_id, map_id, x, y, amount, radius)
 VALUES (3102, 1015, 535, 520, 1, 0);
 
-INSERT OR IGNORE INTO monster_drops (monster_type_id, item_id, chance_percent)
+INSERT INTO monster_drops (monster_type_id, item_id, chance_percent)
 VALUES
   (3102, 1088000, 100),
   (3102, 1088001, 100),
-  (3102, 700003, 20);
+  (3102, 700003, 20)
+ON CONFLICT DO NOTHING;
+
+SELECT sync_identity_sequences();

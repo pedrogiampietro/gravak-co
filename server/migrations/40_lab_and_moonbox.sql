@@ -6,10 +6,12 @@
 -- up to whole percents.
 
 -- Death Tactic and Life Tactic (lineup.cmap like the other tactics).
-INSERT OR IGNORE INTO maps VALUES (1049, 1043, 'lineup.cmap', 60, 108, 8258, 0, 1002, 4294967295);
-INSERT OR IGNORE INTO maps VALUES (1050, 1043, 'lineup.cmap', 60, 108, 8258, 0, 1002, 4294967295);
+INSERT INTO maps VALUES (1049, 1043, 'lineup.cmap', 60, 108, 8258, 0, 1002, 4294967295)
+ON CONFLICT DO NOTHING;
+INSERT INTO maps VALUES (1050, 1043, 'lineup.cmap', 60, 108, 8258, 0, 1002, 4294967295)
+ON CONFLICT DO NOTHING;
 
-INSERT OR IGNORE INTO npcs (id, name, kind, look, map_id, x, y, base, sort, level, life, defense, magic_defense)
+INSERT INTO npcs (id, name, kind, look, map_id, x, y, base, sort, level, life, defense, magic_defense)
 VALUES
   (600076, 'Fortuneteller', 2, 6200, 1002, 338, 724, 0, 0, 0, 0, 0, 0),
   (1339, 'OldExplorer', 2, 9140, 1351, 487, 371, 0, 0, 0, 0, 0, 0),
@@ -36,7 +38,8 @@ VALUES
   (7662, 'LonelySpirit', 2, 7660, 1050, 96, 96, 0, 0, 0, 0, 0, 0),
   (7663, 'LonelySpirit', 2, 7660, 1050, 144, 120, 0, 0, 0, 0, 0, 0),
   (7664, 'LonelySpirit', 2, 7660, 1050, 168, 168, 0, 0, 0, 0, 0, 0),
-  (7665, 'LonelySpirit', 2, 7660, 1050, 192, 168, 0, 0, 0, 0, 0, 0);
+  (7665, 'LonelySpirit', 2, 7660, 1050, 192, 168, 0, 0, 0, 0, 0, 0)
+ON CONFLICT DO NOTHING;
 
 INSERT INTO monster_spawns (monster_type_id, map_id, x, y, amount, radius)
 VALUES
@@ -173,7 +176,7 @@ VALUES
   (6001, 1049, 168, 192, 4, 6),
   (6001, 1049, 192, 144, 4, 6);
 
-INSERT OR IGNORE INTO monster_drops (monster_type_id, item_id, chance_percent)
+INSERT INTO monster_drops (monster_type_id, item_id, chance_percent)
 VALUES
   (11171, 721533, 2),
   (11171, 721537, 1),
@@ -187,4 +190,7 @@ VALUES
   (6002, 721012, 3),
   (6003, 721013, 3),
   (6004, 721014, 3),
-  (6005, 721015, 3);
+  (6005, 721015, 3)
+ON CONFLICT DO NOTHING;
+
+SELECT sync_identity_sequences();

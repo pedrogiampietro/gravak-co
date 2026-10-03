@@ -1,0 +1,23 @@
+# Postgres for development and tests: `docker compose up -d`.
+# The credentials are for this local container only.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: gravak-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gravak
+      POSTGRES_PASSWORD: gravak
+      POSTGRES_DB: gravak
+    ports:
+      - "5432:5432"
+    volumes:
+      - gravak-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gravak -d gravak"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  gravak-postgres:

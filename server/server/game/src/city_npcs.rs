@@ -330,7 +330,7 @@ fn now_unix() -> i64 {
 }
 
 async fn timer_running(state: &State, character: &Character, kind: &str) -> Result<bool, Error> {
-    let until = sqlx::query_scalar::<_, i64>("SELECT until_unix FROM character_timers WHERE character_id = ? AND kind = ?")
+    let until = sqlx::query_scalar::<_, i64>("SELECT until_unix FROM character_timers WHERE character_id = $1 AND kind = $2")
         .bind(character.database_id())
         .bind(kind)
         .fetch_optional(state.pool())
@@ -340,7 +340,7 @@ async fn timer_running(state: &State, character: &Character, kind: &str) -> Resu
 
 async fn start_timer(state: &State, character: &Character, kind: &str, seconds: i64) -> Result<(), Error> {
     sqlx::query(
-        "INSERT INTO character_timers (character_id, kind, until_unix) VALUES (?, ?, ?)
+        "INSERT INTO character_timers (character_id, kind, until_unix) VALUES ($1, $2, $3)
          ON CONFLICT(character_id, kind) DO UPDATE SET until_unix = excluded.until_unix",
     )
     .bind(character.database_id())
@@ -564,7 +564,7 @@ fn body_sex(mesh: u32) -> u32 {
 }
 
 pub async fn spouse_of(state: &State, character: &Character) -> Result<Option<(u32, String)>, Error> {
-    let row = sqlx::query_as::<_, (i64, String)>("SELECT spouse_id, spouse_name FROM marriages WHERE character_id = ?")
+    let row = sqlx::query_as::<_, (i64, String)>("SELECT spouse_id, spouse_name FROM marriages WHERE character_id = $1")
         .bind(character.database_id())
         .fetch_optional(state.pool())
         .await?;
@@ -663,7 +663,7 @@ async fn love_stone(state: &State, actor: &Actor<ActorState>, character: &Charac
                 (character.database_id(), proposer.database_id(), proposer_name.clone()),
                 (proposer.database_id(), character.database_id(), character.entity().name().to_owned()),
             ] {
-                sqlx::query("INSERT OR REPLACE INTO marriages (character_id, spouse_id, spouse_name) VALUES (?, ?, ?)")
+                sqlx::query("INSERT INTO marriages (character_id, spouse_id, spouse_name) VALUES ($1, $2, $3) ON CONFLICT (character_id) DO UPDATE SET spouse_id = excluded.spouse_id, spouse_name = excluded.spouse_name")
                     .bind(me)
                     .bind(spouse_id)
                     .bind(spouse_name)
@@ -726,7 +726,7 @@ async fn starlit(state: &State, actor: &Actor<ActorState>, character: &Character
             if !take(state, actor, character, METEOR_TEAR, 1).await? {
                 return say(actor, NPC, "Sorry, I can not divorce you if you don't have a MeteorTear.", "Okay.").await;
             }
-            sqlx::query("DELETE FROM marriages WHERE character_id IN (?, ?)")
+            sqlx::query("DELETE FROM marriages WHERE character_id IN ($1, $2)")
                 .bind(character.database_id())
                 .bind(i64::from(spouse_id))
                 .execute(state.pool())
@@ -921,7 +921,7 @@ async fn guild_director(
             say(actor, NPC, reply, "Thanks.").await
         },
         11 | 12 if leader => {
-            let member_id = sqlx::query_scalar::<_, i64>("SELECT character_id FROM characters WHERE name = ?")
+            let member_id = sqlx::query_scalar::<_, i64>("SELECT character_id FROM characters WHERE name = $1")
                 .bind(typed.trim())
                 .fetch_optional(state.pool())
                 .await?
