@@ -139,3 +139,6 @@ pub use msg_item_rarity::MsgItemRarity;
 
 mod msg_item_rarity_reroll;
 pub use msg_item_rarity_reroll::MsgItemRarityReroll;
+
+mod msg_bounty;
+pub use msg_bounty::{send_board, MsgBounty, MsgBountyState};

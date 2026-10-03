@@ -859,7 +859,7 @@ impl MsgInteract {
                 .saturating_add(skill.flat_power)
                 .saturating_mul(100 + character.gem_bonus(crate::entities::GemFamily::Phoenix))
                 / 100;
-            let outcome = if skill.physical {
+            let mut outcome = if skill.physical {
                 resolve_physical_hit(
                     scale_skill_power(physical_stats, physical_power),
                     target_stats,
@@ -880,12 +880,21 @@ impl MsgInteract {
                     fire_resistance,
                 )
             };
+            if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
+                crate::bounty::empower(
+                    &talisman,
+                    monster_type_of(monster),
+                    &mut outcome,
+                    u32::from(health_before.current),
+                );
+            }
             let health_after = target_entity.apply_damage(outcome.damage);
             if let Some(victim) = target.as_character() {
                 crate::death::check_crime(state, character, victim).await?;
             }
             if let Some(monster) = target.as_monster() {
                 crate::systems::monster_ai::provoke(monster.id(), character.id());
+                bounty_leech(state, character, monster, outcome.damage).await?;
                 hit_experience += crate::leveling::combat_experience(
                     character.entity().level(),
                     u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
@@ -989,6 +998,37 @@ fn team_mode_spares(state: &State, attacker: &crate::entities::Character, target
         .is_some_and(|kind| kind == "ally")
 }
 
+fn monster_type_of(monster: &crate::entities::Monster) -> u32 {
+    u32::try_from(monster.monster_type().id).unwrap_or_default()
+}
+
+/// The bounty talisman's life leech: part of the damage dealt to the task's
+/// monster comes back as life.
+async fn bounty_leech(
+    state: &State,
+    character: &crate::entities::Character,
+    monster: &crate::entities::Monster,
+    damage: u32,
+) -> Result<(), Error> {
+    let Some(talisman) = state.talismans().get(character.id()) else {
+        return Ok(());
+    };
+    let leeched = talisman.leech(monster_type_of(monster), damage);
+    if leeched == 0 || character.entity().hp().current == 0 {
+        return Ok(());
+    }
+    let life = character.entity().heal_health(u16::try_from(leeched).unwrap_or(u16::MAX));
+    character
+        .owner()
+        .send(super::MsgUserAttrib::new(
+            character.id(),
+            super::UserAttribute::Life,
+            u64::from(life.current),
+        ))
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn reward_monster_defeat(
     state: &State,
     character: &crate::entities::Character,
@@ -1016,7 +1056,16 @@ pub(crate) async fn reward_monster_defeat(
             crate::leveling::after_level_up(state, recipient, level).await?;
         }
         let quests = crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
-        let quest_leveled = quests.completed.iter().filter_map(|quest| quest.leveled_to).max();
+        let bounty_leveled = super::msg_bounty::count_kill(state, recipient, monster_type_id).await?;
+        if let Some(level) = bounty_leveled {
+            crate::leveling::after_level_up(state, recipient, level).await?;
+        }
+        let quest_leveled = quests
+            .completed
+            .iter()
+            .filter_map(|quest| quest.leveled_to)
+            .chain(bounty_leveled)
+            .max();
         recipient.save(state).await?;
         let owner = recipient.owner();
         owner.send(MsgUserInfo::from(recipient)).await?;
@@ -1100,6 +1149,20 @@ pub(crate) async fn reward_monster_defeat(
             .into_iter()
             .map(|item_id| (item_id, 0)),
     );
+    // The bounty talisman's loot bonus: one more roll of the drop table.
+    if state
+        .talismans()
+        .get(character.id())
+        .is_some_and(|talisman| talisman.extra_loot(monster_type_id, next_roll()))
+    {
+        drops.extend(
+            state
+                .drop_catalog()
+                .roll(monster_type_id, monster_level)
+                .into_iter()
+                .map(|item_id| (item_id, 0)),
+        );
+    }
     for (index, item_id) in drops.into_iter().enumerate() {
         let (offset_x, offset_y) = drop_offset(index);
         let item_uid = state.next_ground_item_uid();
@@ -1296,9 +1359,13 @@ impl PacketProcess for MsgInteract {
             outcome.remaining_health = life_before;
             outcome.defeated = false;
         }
+        if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
+            crate::bounty::empower(&talisman, monster_type_of(monster), &mut outcome, life_before);
+        }
         target_entity.apply_damage(outcome.damage);
         if let Some(monster) = target.as_monster() {
             crate::systems::monster_ai::provoke(monster.id(), character.id());
+            bounty_leech(state, character, monster, outcome.damage).await?;
         }
         if let Some(victim) = target.as_character() {
             crate::death::check_crime(state, character, victim).await?;

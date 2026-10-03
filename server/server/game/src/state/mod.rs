@@ -55,6 +55,7 @@ pub struct State {
     player_shop_manager: PlayerShopManager,
     guild_manager: GuildManager,
     friend_requests: FriendRequests,
+    talismans: crate::bounty::TalismanBook,
     pool: PgPool,
 }
 
@@ -128,6 +129,7 @@ impl State {
             player_shop_manager: PlayerShopManager::default(),
             guild_manager,
             friend_requests: Default::default(),
+            talismans: Default::default(),
             pool,
         };
         Ok(state)
@@ -148,6 +150,11 @@ impl State {
 
     pub fn skill_catalog(&self) -> &SkillCatalog {
         &self.skill_catalog
+    }
+
+    /// The bounty talismans of the characters online with a task.
+    pub fn talismans(&self) -> &crate::bounty::TalismanBook {
+        &self.talismans
     }
 
     pub fn team_manager(&self) -> &TeamManager {

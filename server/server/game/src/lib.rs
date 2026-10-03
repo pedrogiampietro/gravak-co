@@ -1,6 +1,7 @@
 #![allow(non_upper_case_globals)]
 
 pub mod artisans;
+pub mod bounty;
 pub mod city_npcs;
 pub mod audit;
 pub mod combat;

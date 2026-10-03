@@ -36,6 +36,7 @@ impl TQServer for GameServer {
             me.try_screen()?.remove_from_observers().await?;
             ActorState::dispose(&actor, actor.handle()).await?;
             state.team_manager().remove_member(me.id());
+            state.talismans().set(me.id(), None);
             if let Some(game::trade::TradeChange::Closed { owner_id, target_id }) =
                 state.trade_manager().remove_member(me.id())
             {
@@ -86,6 +87,7 @@ pub enum Handler {
     MsgGuild,
     MsgGuildWarehouse,
     MsgTrade,
+    MsgBounty,
 }
 
 #[tokio::main]

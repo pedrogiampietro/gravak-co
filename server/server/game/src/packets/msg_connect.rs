@@ -131,6 +131,9 @@ impl PacketProcess for MsgConnect {
                         .await?;
                     super::send_guild_members(state, character_id, &guild).await?;
                 }
+                if let Some(me) = actor.entity().as_character() {
+                    super::send_board(state, me).await?;
+                }
                 actor.send(MsgData::now()).await?;
             },
             None => {
