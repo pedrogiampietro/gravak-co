@@ -1154,6 +1154,9 @@ pub(crate) async fn reward_monster_defeat(
             .roll(monster_type_id, monster_level)
             .into_iter()
             .chain(state.drop_catalog().roll_rares())
+            .chain(crate::drops::roll_extras(monster_level, next_roll, |item| {
+                state.shop_catalog().template(item).is_some()
+            }))
             .map(|item_id| (item_id, 0)),
     );
     // The bounty talisman's loot bonus: one more roll of the drop table.

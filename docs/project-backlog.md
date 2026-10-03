@@ -5,6 +5,25 @@ tarefa, marque `[x]` e diga como foi testada. `docs/server-backlog.md` guarda o
 histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 `docs/development-checklist.md`, o histórico detalhado.
 
+## Rodada atual (em ordem)
+
+1. [x] Drops de equipamento (20%, do nível do monstro) e de poção (4%), como no
+       Redux: família, nível e qualidade (Refined 10%, Unique 6%, Elite 1%,
+       Super 0,3%); só itens que existem no itemtype.dat (~99% dos sorteios).
+2. [ ] Proteção ao reviver: 5 s sem receber dano depois de levantar.
+3. [ ] Bounty: listas de criaturas preferidas e evitadas (pagas com bounty
+       points) e confirmação antes de gastar token ao abandonar.
+4. [ ] Store: histórico de compras e novos itens (poções de 3x/4x de exp,
+       Cosmetic Token).
+5. [ ] VIP: teleporte para qualquer cidade (1 min de espera) e filtro de loot.
+6. [ ] Botões ornamentados (`ornate.rs`) no resto da UI: Bounty, Revive,
+       confirmações e janelas.
+7. [ ] Comando de GM `$monster` para criar monstros (reorganizar como o mapa
+       guarda os monstros).
+8. [ ] Mais quests (outras cidades, outros objetivos), banca com nome e prata
+       da guild.
+9. [ ] Pagamento real dos CPs por um site (projeto à parte; decisões do Pedro).
+
 ## P0 — segurança e dados (antes de abrir o servidor para outras pessoas)
 
 - [x] **Login sem senha pelo game server**: o pacote `MsgTransfer` (4001) dava
