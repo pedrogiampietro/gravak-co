@@ -1194,6 +1194,12 @@ pub(crate) async fn play(
     let (map_id, position, deferred_events) = load_location(&mut session, user.character_id)
         .await
         .map_err(|error| error.to_string())?;
+    // The board the server sends at login goes by while the map loads; ask
+    // for it again so the bounty tracker shows from the start.
+    session
+        .send(&gravak_protocol::BountyPacket::new(gravak_protocol::BountyPacket::OPEN, 0))
+        .await
+        .map_err(|error| error.to_string())?;
     let local_character_id = user.character_id;
     let silver = user.silver;
     let health = u32::from(user.health_points);

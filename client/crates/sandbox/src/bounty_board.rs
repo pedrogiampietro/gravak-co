@@ -277,8 +277,42 @@ pub fn tracker(board: &BountyState) -> Tracker {
     }
 }
 
-/// Size of the tracker.
+/// Size of the tracker during a hunt, and of the icon without one.
 pub const TRACKER_SIZE: [u32; 2] = [206, 52];
+pub const ICON_SIZE: [u32; 2] = [52, 52];
+
+/// Without a hunt, the way to the board is a square icon: the emblem, and a
+/// gold badge while the daily token waits.
+fn icon_image(assets: &mut crate::assets::Assets, daily: bool, hovered: bool) -> crate::assets::Result<RgbaImage> {
+    let [width, height] = ICON_SIZE;
+    let gold = [176, 158, 104];
+    let frame = if hovered { [226, 208, 154] } else { gold };
+    let mut image = crate::hud::hud_style_panel(assets, width, height, frame);
+    draw_emblem(&mut image, [width as i32 / 2, height as i32 / 2], gold, hovered);
+    if daily {
+        // A small badge on the top right corner.
+        let (cx, cy) = (width as i32 - 11, 11_i32);
+        for dy in -5_i32..=5 {
+            for dx in -5_i32..=5 {
+                let distance = dx * dx + dy * dy;
+                if distance <= 25 {
+                    let colour = if distance >= 17 { [90, 52, 8, 255] } else { [255, 202, 64, 255] };
+                    image.put_pixel((cx + dx) as u32, (cy + dy) as u32, image::Rgba(colour));
+                }
+            }
+        }
+    }
+    Ok(image)
+}
+
+/// The words shown beside the icon under the cursor.
+pub fn icon_tooltip(tracker: &Tracker) -> &'static str {
+    if tracker.daily_available {
+        "Bounty Tasks (B) - daily token ready!"
+    } else {
+        "Bounty Tasks (B)"
+    }
+}
 
 /// The bounty emblem: a gold ring with sight marks around the gold diamond
 /// that marks the bounty's monsters.
@@ -329,6 +363,9 @@ fn draw_emblem(image: &mut RgbaImage, centre: [i32; 2], gold: [u8; 3], glow: boo
 /// The tracker under the minimap, in the HUD's style: the emblem, then the
 /// hunt (monster, count and a progress bar) or the way to the board.
 pub fn tracker_image(assets: &mut crate::assets::Assets, tracker: &Tracker, hovered: bool) -> crate::assets::Result<RgbaImage> {
+    if tracker.hunt.is_none() {
+        return icon_image(assets, tracker.daily_available, hovered);
+    }
     let [width, height] = TRACKER_SIZE;
     let grade_colour: [u8; 3] = match tracker.hunt.as_ref().map(|hunt| hunt.3) {
         Some(1) => [205, 214, 228],
@@ -482,6 +519,12 @@ mod preview {
             image::imageops::overlay(&mut image, &content, 0, 0);
             image.save(format!("{dir}/bounty-{name}.png")).expect("png");
             let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+            for daily in [false, true] {
+                super::icon_image(&mut assets, daily, false)
+                    .expect("icon")
+                    .save(format!("{dir}/bounty-icon-{daily}.png"))
+                    .expect("png");
+            }
             for (hover, suffix) in [(false, ""), (true, "-hover")] {
                 super::tracker_image(&mut assets, &super::tracker(&board), hover)
                     .expect("tracker")

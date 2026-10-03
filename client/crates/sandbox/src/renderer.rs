@@ -2938,7 +2938,11 @@ impl Renderer {
             .map(|(key, _)| key.as_str());
         self.prune_textures("@revive-", &[countdown_key, Some("@revive-button"), Some("@revive-here-button")]);
         // The bounty under way, counted under the minimap.
-        let tracker = bounty.map(|view| crate::bounty_board::tracker(&view.board));
+        // The icon shows even before the board arrives.
+        let tracker = Some(bounty.map_or(
+            crate::bounty_board::Tracker { hunt: None, daily_available: false },
+            |view| crate::bounty_board::tracker(&view.board),
+        ));
         let tracker_hovered = self.bounty_tracker_at(cursor);
         let tracker_key = tracker.as_ref().map(|tracker| {
             use std::hash::{Hash, Hasher};
@@ -2961,6 +2965,28 @@ impl Renderer {
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
+            }
+            // The icon's name under the cursor.
+            if tracker.hunt.is_none() && tracker_hovered {
+                let tip = crate::bounty_board::icon_tooltip(tracker);
+                let tip_key = format!("@bounty-tip-{tip}");
+                if !self.textures.contains_key(&tip_key) {
+                    self.upload(&tip_key, crate::labels::tooltip_image(tip)?);
+                }
+                if let (Some(texture), Some([left, top, _, height])) =
+                    (self.textures.get(&tip_key), self.bounty_tracker_rect)
+                {
+                    draws.push(Draw {
+                        texture: tip_key.clone(),
+                        vertices: quad(
+                            [left - texture.size[0] - 6.0, top + (height - texture.size[1]) * 0.5],
+                            texture.size,
+                            viewport,
+                        ),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
             }
         }
         self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
