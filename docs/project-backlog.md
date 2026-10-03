@@ -24,14 +24,31 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 8. [ ] Mais quests (outras cidades, outros objetivos), banca com nome e prata
        da guild.
 9. [ ] Pagamento real dos CPs por um site (projeto à parte; decisões do Pedro).
-10. [ ] Validar skills, magias, effects e XP skills (Superman, Cyclone etc.)
-        contra o original.
+10. [ ] Validar skills, magias, effects, XP skills e o "super especial" contra
+        o original. Referências que o Pedro mandou (imagens no chat de
+        2026-10-03):
+        - anel verde no chão com raios amarelos e números grandes azulados
+          (990, 1337) em vários monstros: skill de área;
+        - explosões roxas/brancas em anéis sobre vários monstros: magia de
+          área;
+        - pentagrama dourado no chão com raios brancos sob o personagem:
+          o efeito "super especial".
 11. [ ] Stamina enchendo (sentado e parado) e o efeito especial quando enche.
-12. [ ] Effects de itens: gems/encantos de arma (club, wand, Snow etc.).
+        Referência: personagem com raios azul-claros em volta dos pés e um
+        brilho branco (a confirmar se é esse o efeito da stamina cheia).
+12. [ ] Effects de itens: os encantos de arma (club, wand, Snow etc.).
+        Referências: lâminas de gelo azul-claro subindo do chão perto do
+        personagem (Snow); ícones de arma (arco, cetro e outro).
 13. [ ] Contador na tela para Cyclone, Superman, Speed e outros buffs.
-14. [ ] Blade (Fast Blade / Scent Sword) com o effect certo.
-15. [ ] Ao matar uma criatura, a alma/luz que sai dela e voa até o personagem.
-16. [ ] Ícones dos bônus ativos (VIP, exp dupla, Heaven Blessing etc.) na HUD.
+14. [ ] Blade (Fast Blade / Scent Sword) com o effect certo. Referência:
+        rastros verdes longos atravessando a tela, vários acertos de
+        50.000+.
+15. [ ] Ao matar uma criatura, a alma/luz que sai dela e voa até o
+        personagem. Referência: figura azul translúcida (a alma) subindo
+        perto dos personagens numa caverna.
+16. [ ] Ícones dos bônus ativos (VIP, exp dupla, Heaven Blessing etc.) na
+        HUD. Referência: fileira de ícones pequenos (verde, escuro, roxo,
+        verde) no canto da tela.
 
 ## P0 — segurança e dados (antes de abrir o servidor para outras pessoas)
 
