@@ -31,7 +31,7 @@ with open(args.csv_file, 'r') as csvfile:
     reader = csv.reader(csvfile, delimiter=',', skipinitialspace=True, dialect=csv.unix_dialect)
     next(reader) # skip header
     for row in reader:
-        # We are using SQLITE so we don't need to specify the columns
+        # The rows list every column in table order, so the columns are not named
         uniq_id = row[0]
         name = row[1]
         npc_type = row[2]

@@ -7,9 +7,6 @@ use async_trait::async_trait;
 use num_enum::{FromPrimitive, IntoPrimitive};
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tq_network::{Actor, PacketID, PacketProcess};
 
 /// Enumeration type for defining item actions that may be requested by the
@@ -70,18 +67,7 @@ pub struct MsgItem {
 }
 
 fn dragdrop_log(message: impl Display) {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    let line = format!("[{timestamp}] [DRAGDROP-SERVER] {message}");
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("dragdrop-server-debug.log")
-    {
-        let _ = writeln!(file, "{line}");
-    }
+    tracing::debug!(target: "economy", "Drag and drop: {message}");
 }
 
 fn item_audit_log(action: &str, character_id: u32, item_uid: u32, item_type: u32, details: impl std::fmt::Display) {

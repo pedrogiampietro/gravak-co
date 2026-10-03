@@ -97,7 +97,7 @@ docker compose up -d
 cargo build -p auth --features server -p game
 ```
 
-Sem `DATABASE_URL` no `.env`, os servidores usam `postgres://gravak:gravak@localhost:5432/gravak`, o do `docker-compose.yml`. Os testes criam um banco novo por teste nesse mesmo Postgres (ou em `TEST_DATABASE_URL`). Para trazer os dados do antigo `data/coemu.db` (SQLite), rode `cargo run -p sqlite-to-postgres` (acrescente `--overwrite` se o Postgres já tiver personagens).
+Sem `DATABASE_URL` no `.env`, os servidores usam `postgres://gravak:gravak@localhost:5432/gravak`, o do `docker-compose.yml`. Os testes criam um banco novo por teste nesse mesmo Postgres (ou em `TEST_DATABASE_URL`).
 
 Os terminais do auth e do game mostram uma linha por evento — hora, nível, categoria (`login`, `trade`, `pk`, `net`, `db`, `status`...) e campos — e gravam as mesmas linhas em `server/logs/<auth|game>.log.<data>`. `LOG_VERBOSITY` (0 a 4) escolhe o nível e `RUST_LOG` o refina por módulo.
 

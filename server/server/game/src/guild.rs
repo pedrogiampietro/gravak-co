@@ -91,7 +91,7 @@ struct GuildBook {
     relations: HashMap<(u32, u32), String>,
 }
 
-/// Server-authoritative guild rules backed by SQLite. The in-memory book keeps
+/// Server-authoritative guild rules backed by the database. The in-memory book keeps
 /// the online membership/index fast while load/persist methods keep guild
 /// membership durable across reconnects and restarts.
 #[derive(Debug, Default)]

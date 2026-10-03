@@ -38,7 +38,7 @@ We are using [Postgres](https://www.postgresql.org/) for storing all of server d
 docker compose up -d
 ```
 
-The game server applies the migrations when it starts. Without a `DATABASE_URL`, the servers use `postgres://gravak:gravak@localhost:5432/gravak`, the database of `docker-compose.yml`. To bring over an old SQLite `data/coemu.db`, run `cargo run -p sqlite-to-postgres`.
+The game server applies the migrations when it starts. Without a `DATABASE_URL`, the servers use `postgres://gravak:gravak@localhost:5432/gravak`, the database of `docker-compose.yml`.
 
 Good, let's build the servers!
 

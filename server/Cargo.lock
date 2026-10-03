@@ -83,16 +83,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34ac096ce696dc2fcabef30516bb13c0a68a11d30131d3df6f04711467681b04"
 
 [[package]]
-name = "apply_sql"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dotenvy",
- "sqlx",
- "tokio",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1681,22 +1671,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "import_monsters"
-version = "0.1.0"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
-name = "import_npcs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "csv",
- "serde",
-]
-
-[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1814,7 +1788,6 @@ version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
 dependencies = [
- "cc",
  "pkg-config",
  "vcpkg",
 ]
@@ -2864,16 +2837,6 @@ name = "sptr"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b9b39299b249ad65f3b7e96443bad61c02ca5cd3589f46cb6d610a0fd6c0d6a"
-
-[[package]]
-name = "sqlite-to-postgres"
-version = "0.1.0"
-dependencies = [
- "dotenvy",
- "sqlx",
- "tokio",
- "tq-db",
-]
 
 [[package]]
 name = "sqlx"

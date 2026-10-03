@@ -15,7 +15,7 @@ members = [
   # Utils
   "macros/*",
   # Cli Tools
-  "tools/*", "apply_sql", "import_monsters", "import_npcs",
+  "tools/*",
 ]
 
 [workspace.dependencies]

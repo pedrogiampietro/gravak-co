@@ -12,10 +12,6 @@ logs/
 *.err
 *.errout
 
-# Local server database
-data/coemu.db
-**/data/coemu.db
-
 # Local map fixtures and junctions; game assets stay outside this repository
 server/data/GameMaps.invalid-download/
 server/data/GameMaps/map/

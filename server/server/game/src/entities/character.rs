@@ -537,7 +537,7 @@ impl Character {
         self.entity.id()
     }
 
-    /// Returns the SQLite character identifier used by persistence tables.
+    /// Returns the database character identifier used by persistence tables.
     /// The protocol/entity ID is offset by `CHARACTER_ID_MIN`.
     #[inline]
     pub fn database_id(&self) -> i32 {
@@ -2995,7 +2995,7 @@ impl Character {
     /// Atomically exchanges inventory rows and silver between two characters.
     /// The caller must have already completed the two-step trade handshake;
     /// this method revalidates ownership, free slots and balances inside one
-    /// SQLite transaction so stale clients cannot duplicate an item or silver.
+    /// database transaction so stale clients cannot duplicate an item or silver.
     pub async fn complete_trade(
         &self,
         pool: &sqlx::PgPool,
@@ -4547,7 +4547,7 @@ impl Character {
     }
 
     /// Spend available base-attribute points with one atomic database update.
-    /// The runtime mirror is only changed after SQLite confirms the update.
+    /// The runtime mirror is only changed after the database confirms the update.
     pub async fn allocate_attribute(
         &self,
         pool: &sqlx::PgPool,
@@ -5722,7 +5722,7 @@ mod tests {
         // Credit-side overflow is rejected atomically as well.
         let near_max = u64::from(u32::MAX) - 5;
         sqlx::query("UPDATE characters SET silver = $1 WHERE character_id = $2")
-            .bind(i64::try_from(near_max).expect("u32 max fits sqlite integer"))
+            .bind(i64::try_from(near_max).expect("u32 max fits a BIGINT"))
             .bind(i64::from(database_character_id))
             .execute(&pool)
             .await?;
