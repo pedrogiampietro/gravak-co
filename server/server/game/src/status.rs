@@ -9,6 +9,14 @@ const EVERY: Duration = Duration::from_secs(300);
 
 /// Starts writing the status line; it runs until the server stops.
 pub fn start(state: &'static State, started: Instant) {
+    // VIP badges come off when the VIP runs out.
+    tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            ticks.tick().await;
+            crate::packets::expire_vip(state).await;
+        }
+    });
     tokio::spawn(async move {
         let mut ticks = tokio::time::interval(EVERY);
         ticks.tick().await;

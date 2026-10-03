@@ -577,6 +577,8 @@ pub enum QuickPanel {
     System,
     Settings,
     Store,
+    /// The VIP Rights window.
+    Vip,
 }
 
 pub use crate::original_panels::SettingsAction as SettingsPanelAction;
@@ -674,6 +676,7 @@ impl QuickPanel {
             Self::Team => "TEAM",
             Self::System => "SYSTEM",
             Self::Store => "STORE",
+            Self::Vip => "VIP",
             Self::Settings => "SETTINGS",
         }
     }
@@ -1002,6 +1005,7 @@ pub fn quick_panel_image(
                 pending_friend_name,
                 selected_target_name,
                 trade,
+                vip_until: store.map_or(0, |store| store.state.vip_until),
                 options: hud_config,
             },
         );
@@ -1631,6 +1635,8 @@ pub fn quick_panel_image(
             }
         }
         QuickPanel::Store => crate::store_panel::draw(&mut image, assets, store),
+        // Drawn over its original art by `original_panels`.
+        QuickPanel::Vip => {}
         QuickPanel::System => {
             labels::text(
                 &mut image,

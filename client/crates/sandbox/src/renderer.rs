@@ -67,6 +67,9 @@ pub struct SkillEffectInstance {
 pub const MONSTER_BORN_SECONDS: f32 = 6.04;
 const MONSTER_FADE_IN_SECONDS: f32 = 1.2;
 
+/// The server's VIP status flag (a Gravak runtime bit).
+pub const VIP_FLAG: u64 = 1 << 46;
+
 /// Upper bound kept by the client; each effect ends with its own animation.
 pub const SKILL_EFFECT_MAX_SECONDS: f32 = 4.0;
 
@@ -1743,6 +1746,27 @@ impl Renderer {
             .map(|(_, here)| *here)
     }
 
+    /// The VIP title centred over a name whose top is at `name_top`.
+    fn push_vip_tag(&mut self, name_top: [f32; 2], viewport: [f32; 2], draws: &mut Vec<Draw>) -> Result<()> {
+        const KEY: &str = "@vip-tag";
+        if !self.textures.contains_key(KEY) {
+            self.upload(KEY, crate::ornate::vip_tag(1.0)?);
+        }
+        if let Some(tag) = self.textures.get(KEY) {
+            draws.push(Draw {
+                texture: KEY.to_owned(),
+                vertices: quad(
+                    [(name_top[0] - tag.size[0] * 0.5).round(), (name_top[1] - tag.size[1] + 6.0).round()],
+                    tag.size,
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+        Ok(())
+    }
+
     /// Whether `position` is on the Store icon.
     pub fn store_icon_at(&self, position: [f32; 2]) -> bool {
         self.store_icon_rect.is_some_and(|[left, top, width, height]| {
@@ -2569,6 +2593,9 @@ impl Renderer {
                         sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
+                if !actor.npc && !monster && actor.status_flags & VIP_FLAG != 0 {
+                    self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
+                }
             }
         }
         let remote_world_phase_finished = Instant::now();
@@ -2749,6 +2776,9 @@ impl Renderer {
                 depth_test: false,
                 sort_depth: WORLD_OVERLAY_SORT,
             });
+        }
+        if status_flags & VIP_FLAG != 0 {
+            self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
         }
         if minimap_visible && self.minimap_map != Some(map.id) {
             self.minimap_map = Some(map.id);
@@ -3441,7 +3471,7 @@ impl Renderer {
             if panel == crate::shop::QuickPanel::Quest {
                 bounty.hash(&mut hasher);
             }
-            if panel == crate::shop::QuickPanel::Store {
+            if matches!(panel, crate::shop::QuickPanel::Store | crate::shop::QuickPanel::Vip) {
                 store.hash(&mut hasher);
                 // VIP time left reads in minutes.
                 (std::time::SystemTime::now()

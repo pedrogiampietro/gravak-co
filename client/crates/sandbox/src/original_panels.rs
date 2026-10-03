@@ -74,8 +74,85 @@ fn frame(panel: QuickPanel) -> Option<Frame> {
             anchor: Anchor::Center,
             close: &[[372, 20, 16, 16], [290, 230, 64, 24]],
         },
+        // The original VIP information art (`VipInfoBG.dds`).
+        QuickPanel::Vip => Frame {
+            art: "data/main/VipInfoBG.dds",
+            size: [330, 200],
+            anchor: Anchor::Center,
+            close: &[[304, 8, 16, 16]],
+        },
         _ => return None,
     })
+}
+
+/// The Renew/Get VIP button on the VIP window's bottom band.
+const VIP_RENEW: [i32; 4] = [186, 167, 124, 22];
+
+/// Whether the cursor is on the VIP window's Renew/Get VIP button.
+pub fn vip_renew_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    local(QuickPanel::Vip, viewport, cursor).is_some_and(|point| inside(VIP_RENEW, point))
+}
+
+/// The VIP benefits, as the window lists them.
+pub const VIP_PERKS: [&str; 4] = [
+    "+10% monster experience",
+    "Auto-loot silver and rares",
+    "Free Conductress rides",
+    "VIP title over your name",
+];
+
+/// The VIP window's contents over its art.
+fn draw_vip(image: &mut RgbaImage, assets: &mut Assets, vip_until: u64) -> Result<()> {
+    crate::original_ui::overlay_asset(image, assets, "data/main/CloseBtnS.dds", 304, 8)?;
+    // The title in the portrait box.
+    let mut tag = crate::ornate::vip_tag(1.2)?;
+    let active = vip_until
+        > std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+    if !active {
+        // Without VIP the title is shown in faded grey.
+        for pixel in tag.pixels_mut() {
+            let grey = (u16::from(pixel.0[0]) + u16::from(pixel.0[1]) + u16::from(pixel.0[2])) / 3;
+            pixel.0 = [grey as u8, grey as u8, grey as u8, (u16::from(pixel.0[3]) * 3 / 5) as u8];
+        }
+    }
+    let box_centre = [71_i64, 71_i64];
+    imageops::overlay(
+        image,
+        &tag,
+        box_centre[0] - i64::from(tag.width()) / 2,
+        box_centre[1] - i64::from(tag.height()) / 2,
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let left = crate::store_panel::vip_left(vip_until, now);
+    label_centered(image, "VIP Rights", 16.0, 227, 20, LABEL_GOLD);
+    match &left {
+        Some(left) => label_centered(image, &format!("Active - {left} left"), 13.0, 227, 42, [140, 230, 140, 255]),
+        None => label_centered(image, "Not active", 13.0, 227, 42, GREY),
+    }
+    for (index, perk) in VIP_PERKS.iter().enumerate() {
+        let y = 68 + index as i32 * 21;
+        // A small gold diamond as the bullet.
+        for dy in -3_i32..=3 {
+            for dx in -(3 - dy.abs())..=(3 - dy.abs()) {
+                image.put_pixel((142 + dx) as u32, (y + 7 + dy) as u32, Rgba([236, 194, 86, 255]));
+            }
+        }
+        let colour = if left.is_some() { WHITE } else { GREY };
+        text(image, perk, 152, y, colour, 160);
+    }
+    let [x, y, width, height] = VIP_RENEW;
+    crate::components::draw_button(
+        image,
+        &*crate::labels::font()?,
+        crate::ui::UiRect::new(x, y, width, height),
+        if left.is_some() { "Renew VIP" } else { "Get VIP" },
+        crate::components::WidgetState::Normal,
+    );
+    Ok(())
 }
 
 /// Whether `panel` uses an original dialog (the rest keep the generic frame).
@@ -1010,6 +1087,8 @@ pub struct PanelData<'a> {
     pub trade: &'a crate::network::TradeView,
     /// The player's options, for the Options window.
     pub options: crate::hud::HudConfig,
+    /// When the account's VIP ends (seconds since 1970; 0 without VIP).
+    pub vip_until: u64,
 }
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -1098,6 +1177,7 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
     let mut image = RgbaImage::new(frame.size[0], frame.size[1]);
     crate::original_ui::overlay_asset(&mut image, assets, frame.art, 0, 0)?;
     match panel {
+        QuickPanel::Vip => draw_vip(&mut image, assets, data.vip_until)?,
         QuickPanel::Friends => {
             paint(
                 &mut image,
@@ -1472,10 +1552,30 @@ mod tests {
                 selected_target_name: Some("Sheko"),
                 trade: &trade,
                 options: crate::hud::HudConfig::default(),
+                vip_until: 0,
             };
             image(&mut assets, panel, &data)?.save(output.join(format!("{panel:?}.png")))?;
         }
         Ok(())
     }
 
+}
+
+#[cfg(test)]
+mod vip_preview {
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox vip_window_preview`
+    #[test]
+    fn vip_window_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        for (name, until) in [("active", now + 6 * 86_400 + 3 * 3_600), ("inactive", 0)] {
+            let mut image = image::RgbaImage::new(330, 200);
+            crate::original_ui::overlay_asset(&mut image, &mut assets, "data/main/VipInfoBG.dds", 0, 0).expect("art");
+            super::draw_vip(&mut image, &mut assets, until).expect("vip");
+            image.save(format!("{dir}/vip-window-{name}.png")).expect("png");
+        }
+    }
 }

@@ -77,7 +77,36 @@ fn account_of(character: &crate::entities::Character) -> u32 {
 pub async fn load_vip(state: &State, character: &crate::entities::Character) -> Result<(), Error> {
     let until = crate::store::vip_until(state.pool(), account_of(character)).await?;
     state.vip().set(character.id(), until);
+    show_vip(character, state.vip().is_vip(character.id())).await
+}
+
+/// Sets the VIP badge flag and shows it to the character and those around.
+pub async fn show_vip(character: &crate::entities::Character, vip: bool) -> Result<(), Error> {
+    use crate::entities::Flags;
+    let flags = character.entity().flags();
+    if flags.contains(Flags::VIP) == vip {
+        return Ok(());
+    }
+    character
+        .entity()
+        .set_flags(if vip { flags | Flags::VIP } else { flags & !Flags::VIP });
+    let player = super::MsgPlayer::from(character);
+    character.owner().send(player.clone()).await?;
+    if let Ok(screen) = character.try_screen() {
+        screen.send_message(player).await?;
+    }
     Ok(())
+}
+
+/// Takes the badge off the characters whose VIP ran out.
+pub async fn expire_vip(state: &State) {
+    for entity in state.entities() {
+        if let Some(character) = entity.as_character() {
+            if character.entity().flags().contains(crate::entities::Flags::VIP) && !state.vip().is_vip(character.id()) {
+                let _ = show_vip(character, false).await;
+            }
+        }
+    }
 }
 
 /// Sends the catalog and the buyer's state.
@@ -113,6 +142,7 @@ impl PacketProcess for MsgStore {
                     }
                     if let Some(until) = purchase.vip_until {
                         state.vip().set(character.id(), until);
+                        show_vip(character, true).await?;
                     }
                     actor.send(MsgUserInfo::from(character)).await?;
                     format!("You bought {} for {} CPs.", purchase.product.name, purchase.product.price_cps)

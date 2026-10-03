@@ -53,6 +53,8 @@ impl StoreView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreAction {
     Category(u32),
+    /// Opens the VIP Rights window.
+    VipRights,
     Select(u32),
     Buy(u32),
 }
@@ -64,6 +66,9 @@ const LIST_TOP: i32 = 72;
 const DETAIL_LEFT: i32 = 330;
 const DETAIL_WIDTH: i32 = 170;
 const BUY: UiRect = UiRect::new(DETAIL_LEFT + 20, 340, DETAIL_WIDTH - 40, 26);
+
+/// Under the categories: the VIP Rights window.
+const VIP_RIGHTS: UiRect = UiRect::new(20, LIST_TOP + 3 * 30 + 12, 110, 26);
 
 fn category_tab(index: usize) -> UiRect {
     UiRect::new(20, LIST_TOP + index as i32 * 30, 110, 26)
@@ -190,6 +195,7 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&StoreView>
     for (index, name) in CATEGORIES.iter().enumerate() {
         draw_tab(image, &ui, category_tab(index), name, index as u32 == view.category, false);
     }
+    draw_button(image, &ui, VIP_RIGHTS, "VIP Rights", WidgetState::Normal);
 
     let shown = view.shown().map(|product| product.product_id);
     for (row, product) in view.in_category().into_iter().enumerate().take(5) {
@@ -258,6 +264,9 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&StoreView>
 pub fn action_at(view: &StoreView, cursor: [f32; 2]) -> Option<StoreAction> {
     if let Some(index) = (0..CATEGORIES.len()).find(|index| category_tab(*index).contains_local(cursor)) {
         return Some(StoreAction::Category(index as u32));
+    }
+    if VIP_RIGHTS.contains_local(cursor) {
+        return Some(StoreAction::VipRights);
     }
     let products = view.in_category();
     if let Some(row) = (0..products.len().min(5)).find(|row| product_row(*row).contains_local(cursor)) {
@@ -365,6 +374,9 @@ mod preview {
         }
         button_image(&mut assets, false).expect("button").save(format!("{dir}/store-button.png")).expect("png");
         button_image(&mut assets, true).expect("button").save(format!("{dir}/store-button-hover.png")).expect("png");
+        for scale in [1.0, 2.0] {
+            crate::ornate::vip_tag(scale).expect("tag").save(format!("{dir}/vip-tag-{scale}.png")).expect("png");
+        }
         crate::shop::PromptDialog::new([1024.0, 768.0], "Confirm purchase", "Heaven's Blessing (30 days)".to_owned(), "for 2000 CPs (8870 CPs left)")
             .with_buttons(["Buy", "Cancel"])
             .image(&mut assets, Some(true))

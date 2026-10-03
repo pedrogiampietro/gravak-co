@@ -213,3 +213,76 @@ pub fn button(
     }
     Ok(image)
 }
+
+/// The VIP title shown over a VIP's name, at `scale` (1 over the name,
+/// larger in the VIP window): "VIP" in gold Cinzel with a dark outline,
+/// leaf wings on both sides, a diamond above, a warm glow and sparks.
+pub fn vip_tag(scale: f32) -> crate::assets::Result<RgbaImage> {
+    let (width, height) = ((78.0 * scale).round() as u32, (26.0 * scale).round() as u32);
+    let (w, h) = (width as f32, height as f32);
+    let mut image = RgbaImage::new(width, height);
+    let centre = [w / 2.0, h * 0.56];
+    let gold = |_: f32, y: f32| {
+        paint::gradient(&[(0.0, hex(0xfff4c8)), (0.5, hex(0xf2c14e)), (1.0, hex(0xa86f14))], (y - h * 0.2) / (h * 0.7))
+    };
+    // A warm glow behind it all, strongest in the middle.
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let dx = (x as f32 + 0.5 - centre[0]) / (w * 0.42);
+            let dy = (y as f32 + 0.5 - centre[1]) / (h * 0.55);
+            let fade = (1.0 - (dx * dx + dy * dy).sqrt()).max(0.0);
+            paint::blend(&mut image, x, y, hex(0xffbf3a), fade * fade * 0.45);
+        }
+    }
+    // Leaf wings, three a side, sweeping outward.
+    for side in [-1.0_f32, 1.0] {
+        for (index, (reach, rise, size)) in [(0.20_f32, -0.10_f32, 1.0_f32), (0.30, 0.02, 0.85), (0.39, 0.14, 0.7)].into_iter().enumerate() {
+            let base = [centre[0] + side * w * (0.17 + index as f32 * 0.02), centre[1] + h * 0.05];
+            let tip = [centre[0] + side * w * reach * 1.25, centre[1] + h * rise];
+            let thickness = h * 0.11 * size;
+            let leaf = [
+                base,
+                [(base[0] + tip[0]) / 2.0, (base[1] + tip[1]) / 2.0 - thickness],
+                tip,
+                [(base[0] + tip[0]) / 2.0, (base[1] + tip[1]) / 2.0 + thickness * 0.6],
+            ];
+            polygon(&mut image, &leaf.map(|[x, y]| [x + 0.6 * scale, y + 0.9 * scale]), |_, _| hex(0x2a1602), 0.7);
+            polygon(&mut image, &leaf, gold, 1.0);
+        }
+    }
+    // A diamond above the word.
+    let top = [centre[0], h * 0.13];
+    let diamond = [
+        [top[0], top[1] - h * 0.12],
+        [top[0] + w * 0.035, top[1]],
+        [top[0], top[1] + h * 0.12],
+        [top[0] - w * 0.035, top[1]],
+    ];
+    polygon(&mut image, &diamond, |_, _| hex(0xfff0b8), 1.0);
+    // The word: a dark outline all round, then the gold, thickened.
+    let font = crate::labels::decorative_font()?;
+    let (size, spacing) = (15.0 * scale, 1.0 * scale);
+    let label_width = paint::text_width(&font, "VIP", size, spacing);
+    let origin = [(centre[0] - label_width / 2.0).round(), (centre[1] - size * 0.62).round()];
+    let mask = paint::text_mask(&font, "VIP", size, spacing, origin, [width, height]);
+    let outline = (1.0 * scale).max(1.0).round() as i32;
+    for dy in -outline..=outline {
+        for dx in -outline..=outline {
+            if dx != 0 || dy != 0 {
+                paint::paint_mask(&mut image, &mask, [dx, dy + 1], |_, _| hex(0x2a1602), 0.75);
+            }
+        }
+    }
+    for (shift, alpha) in [(1, 0.5), (0, 1.0)] {
+        paint::paint_mask(&mut image, &mask, [shift, 0], |_, y| gold(0.0, y), alpha);
+    }
+    // Sparks.
+    for [fx, fy, strength] in [[0.12_f32, 0.30, 1.0], [0.88, 0.25, 0.8], [0.70, 0.86, 0.6], [0.30, 0.90, 0.5]] {
+        let (x, y) = ((w * fx) as i32, (h * fy) as i32);
+        paint::blend(&mut image, x, y, hex(0xffffff), strength);
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            paint::blend(&mut image, x + dx, y + dy, hex(0xffe9a0), strength * 0.45);
+        }
+    }
+    Ok(image)
+}

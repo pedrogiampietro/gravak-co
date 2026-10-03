@@ -1512,6 +1512,18 @@ impl App {
                 self.held = false;
                 return true;
             }
+            if self.quick_panel == Some(shop::QuickPanel::Vip)
+                && crate::original_panels::vip_renew_at(viewport, self.cursor)
+            {
+                self.quick_panel = None;
+                self.toggle_store();
+                if let Some(view) = &mut self.store {
+                    view.category = 0;
+                    view.selected = None;
+                }
+                self.held = false;
+                return true;
+            }
             if self.quick_panel == Some(shop::QuickPanel::Store)
                 && let Some(view) = &self.store
             {
@@ -2249,6 +2261,7 @@ impl App {
                 view.selected = None;
             }
             store_panel::StoreAction::Select(product_id) => view.selected = Some(product_id),
+            store_panel::StoreAction::VipRights => self.quick_panel = Some(shop::QuickPanel::Vip),
             // The purchase waits for the confirmation prompt.
             store_panel::StoreAction::Buy(product_id) => self.store_confirm = Some(product_id),
         }
@@ -2859,7 +2872,14 @@ impl App {
             }
             NetworkEvent::StoreState(state) => {
                 self.cps = state.cps.try_into().unwrap_or(u32::MAX);
-                self.store.get_or_insert_with(Default::default).state = state;
+                let view = self.store.get_or_insert_with(Default::default);
+                // A VIP just bought: show what it gives.
+                let bought_vip = view.state.vip_until != 0 && state.vip_until > view.state.vip_until
+                    || view.state.vip_until == 0 && state.vip_until > 0 && !view.products.is_empty();
+                view.state = state;
+                if bought_vip && self.quick_panel == Some(shop::QuickPanel::Store) {
+                    self.quick_panel = Some(shop::QuickPanel::Vip);
+                }
             }
             NetworkEvent::Bounty(board) => {
                 let view = self.bounty.get_or_insert_with(Default::default);
