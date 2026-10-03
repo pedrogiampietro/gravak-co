@@ -25,6 +25,9 @@ pub const MSG_NOBILITY: u16 = 2064;
 pub const MSG_BOUNTY: u16 = 9100;
 /// Gravak's bounty tasks: the whole Task Board.
 pub const MSG_BOUNTY_STATE: u16 = 9101;
+/// Gravak's Store: one product of the catalog, and the buyer's CPs and VIP.
+pub const MSG_STORE_PRODUCT: u16 = 9111;
+pub const MSG_STORE_STATE: u16 = 9112;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
@@ -210,6 +213,57 @@ impl BountyPacket {
     pub fn new(action: u32, param: u32) -> Self {
         Self { action, param, extra: 0 }
     }
+}
+
+/// A Store request: the catalog (0) or buying product `param` (1).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 9110)]
+pub struct StorePacket {
+    pub action: u32,
+    pub param: u32,
+}
+
+impl StorePacket {
+    pub const OPEN: u32 = 0;
+    pub const BUY: u32 = 1;
+
+    pub fn new(action: u32, param: u32) -> Self {
+        Self { action, param }
+    }
+}
+
+/// One product of the Store, `index` of `total` (index 0 starts a catalog).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9111)]
+pub struct StoreProduct {
+    pub index: u32,
+    pub total: u32,
+    pub product_id: u32,
+    /// 0 VIP, 1 Consumables, 2 Upgrades.
+    pub category: u32,
+    /// The item sold, or 0 for days of VIP.
+    pub item_type: u32,
+    pub amount: u32,
+    pub vip_days: u32,
+    pub price_cps: u32,
+    /// Left today; `u32::MAX` without a daily stock.
+    pub stock_left: u32,
+    pub name: String,
+    pub description: String,
+}
+
+impl StoreProduct {
+    pub fn limited(&self) -> bool {
+        self.stock_left != u32::MAX
+    }
+}
+
+/// The buyer's CPs and when their VIP ends (seconds since 1970, 0: none).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9112)]
+pub struct StoreState {
+    pub cps: u64,
+    pub vip_until: u64,
 }
 
 /// One bounty on offer, or the one under way (`monster_type` 0: none).
@@ -1404,6 +1458,8 @@ pub enum GameEvent {
     NobilityRanking(NobilityRankingInfo),
     Bounty(BountyPacket),
     BountyState(BountyState),
+    StoreProduct(StoreProduct),
+    StoreState(StoreState),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
@@ -1506,6 +1562,12 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_BOUNTY_STATE => Ok(GameEvent::BountyState(
             BountyState::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STORE_PRODUCT => Ok(GameEvent::StoreProduct(
+            StoreProduct::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STORE_STATE => Ok(GameEvent::StoreState(
+            StoreState::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,

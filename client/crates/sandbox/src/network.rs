@@ -226,6 +226,10 @@ pub enum NetworkEvent {
     NobilityRanking(NobilityEntry),
     /// The bounty Task Board.
     Bounty(gravak_protocol::BountyState),
+    /// One product of the Store catalog.
+    StoreProduct(gravak_protocol::StoreProduct),
+    /// The buyer's CPs and VIP.
+    StoreState(gravak_protocol::StoreState),
     /// Kills counted toward the bounty under way.
     BountyProgress {
         done: u32,
@@ -407,6 +411,11 @@ pub struct RemoteActor {
 }
 
 pub(crate) enum NetworkCommand {
+    /// A Store request.
+    Store {
+        action: u32,
+        param: u32,
+    },
     /// A bounty Task Board action.
     Bounty {
         action: u32,
@@ -678,6 +687,8 @@ impl NetworkHandle {
                 | NetworkEvent::NobilityRanking(_)
                 | NetworkEvent::Bounty(_)
                 | NetworkEvent::BountyProgress { .. }
+                | NetworkEvent::StoreProduct(_)
+                | NetworkEvent::StoreState(_)
                 | NetworkEvent::ExperienceGain { .. }
                 | NetworkEvent::InventoryItem(_)
                 | NetworkEvent::InventoryItemRemoved(_)
@@ -742,6 +753,11 @@ impl NetworkHandle {
             character_id,
             member_id,
         });
+    }
+
+    /// A Store request (`StorePacket` constants).
+    pub fn send_store(&self, action: u32, param: u32) {
+        let _ = self.commands.send(NetworkCommand::Store { action, param });
     }
 
     /// A bounty Task Board action (`gravak_protocol::BountyPacket` constants).
@@ -1408,6 +1424,12 @@ pub(crate) async fn play(
                         title_id: info.title_id,
                     });
                 }
+                Some(GameEvent::StoreProduct(product)) => {
+                    let _ = events.send(NetworkEvent::StoreProduct(product));
+                }
+                Some(GameEvent::StoreState(store)) => {
+                    let _ = events.send(NetworkEvent::StoreState(store));
+                }
                 Some(GameEvent::BountyState(board)) => {
                     let _ = events.send(NetworkEvent::Bounty(board));
                 }
@@ -1838,6 +1860,12 @@ pub(crate) async fn play(
                 }) => {
                     session
                         .send(&ActionPacket::query_team_member(character_id, member_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Store { action, param }) => {
+                    session
+                        .send(&gravak_protocol::StorePacket::new(action, param))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

@@ -31,6 +31,7 @@ mod original_ui_layout;
 mod renderer;
 mod settings;
 mod shop;
+mod store_panel;
 mod showcase;
 mod ui;
 mod ui_theme;
@@ -412,6 +413,8 @@ struct App {
     player_shop_price_focused: bool,
     /// The bounty Task Board, as the server last sent it.
     bounty: Option<bounty_board::BountyView>,
+    /// The Store, as the server last sent it.
+    store: Option<store_panel::StoreView>,
     ground_loot: Vec<(u32, [f32; 2], u32, f32)>,
     dialog: Option<DialogState>,
     shop: Option<shop::ShopState>,
@@ -832,6 +835,15 @@ impl ApplicationHandler for App {
                 if self
                     .renderer
                     .as_ref()
+                    .is_some_and(|renderer| renderer.store_icon_at(self.cursor))
+                {
+                    self.toggle_store();
+                    self.held = false;
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
                     .is_some_and(|renderer| renderer.bounty_tracker_at(self.cursor))
                 {
                     self.toggle_bounty_board();
@@ -925,6 +937,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyX) => self.toggle_sit(),
                     PhysicalKey::Code(KeyCode::KeyM) => self.request_mining(),
                     PhysicalKey::Code(KeyCode::KeyB) => self.toggle_bounty_board(),
+                    PhysicalKey::Code(KeyCode::KeyP) => self.toggle_store(),
                     _ => {}
                 }
             }
@@ -1118,6 +1131,7 @@ impl ApplicationHandler for App {
                         &self.player_shop_price,
                         self.player_shop_price_focused,
                         self.bounty.as_ref(),
+                        self.store.as_ref(),
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -1493,6 +1507,17 @@ impl App {
                 self.player_shop_price_focused = false;
                 self.held = false;
                 return true;
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Store)
+                && let Some(view) = &self.store
+            {
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Store);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                if let Some(action) = store_panel::action_at(view, local) {
+                    self.handle_store_action(action);
+                    self.held = false;
+                    return true;
+                }
             }
             if self.quick_panel == Some(shop::QuickPanel::Quest)
                 && let Some(board) = &self.bounty
@@ -2176,6 +2201,37 @@ impl App {
     }
 
     /// B opens and closes the bounty Task Board, fresh from the server.
+    /// P (or the Store icon) opens and closes the Store, fresh from the
+    /// server.
+    fn toggle_store(&mut self) {
+        if self.quick_panel == Some(shop::QuickPanel::Store) {
+            self.quick_panel = None;
+            return;
+        }
+        self.quick_panel = Some(shop::QuickPanel::Store);
+        if let Some(network) = &self.network {
+            network.send_store(gravak_protocol::StorePacket::OPEN, 0);
+        }
+    }
+
+    fn handle_store_action(&mut self, action: store_panel::StoreAction) {
+        let Some(view) = &mut self.store else {
+            return;
+        };
+        match action {
+            store_panel::StoreAction::Category(category) => {
+                view.category = category;
+                view.selected = None;
+            }
+            store_panel::StoreAction::Select(product_id) => view.selected = Some(product_id),
+            store_panel::StoreAction::Buy(product_id) => {
+                if let Some(network) = &self.network {
+                    network.send_store(gravak_protocol::StorePacket::BUY, product_id);
+                }
+            }
+        }
+    }
+
     fn toggle_bounty_board(&mut self) {
         if self.quick_panel == Some(shop::QuickPanel::Quest) {
             self.quick_panel = None;
@@ -2776,6 +2832,13 @@ impl App {
     fn handle_network_event(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::Status(status) => self.network_status = status,
+            NetworkEvent::StoreProduct(product) => {
+                self.store.get_or_insert_with(Default::default).receive(product);
+            }
+            NetworkEvent::StoreState(state) => {
+                self.cps = state.cps.try_into().unwrap_or(u32::MAX);
+                self.store.get_or_insert_with(Default::default).state = state;
+            }
             NetworkEvent::Bounty(board) => {
                 let view = self.bounty.get_or_insert_with(Default::default);
                 // A new list of the chosen difficulty: the tab is its own again.
@@ -7073,6 +7136,7 @@ fn run() -> Result<()> {
         player_shop_price: "1000".into(),
         player_shop_price_focused: false,
         bounty: None,
+        store: None,
         ground_loot: Vec::new(),
         dialog: None,
         shop: benchmark_shop,

@@ -316,6 +316,7 @@ enum UiTextureJob {
         player_shop_price_focused: bool,
         hud_config: crate::hud::HudConfig,
         bounty: Option<crate::bounty_board::BountyView>,
+        store: Option<crate::store_panel::StoreView>,
     },
     ShopBase {
         path: String,
@@ -583,6 +584,7 @@ impl UiTextureJob {
                 player_shop_price_focused,
                 hud_config,
                 bounty,
+                store,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -610,6 +612,7 @@ impl UiTextureJob {
                 player_shop_price_focused,
                 hud_config,
                 bounty.as_ref(),
+                store.as_ref(),
             ),
         };
         image.map_err(|error| error.to_string())
@@ -691,6 +694,8 @@ pub struct Renderer {
     quick_panel_signature: Option<u64>,
     /// Where the bounty line under the minimap was drawn, for clicks.
     bounty_tracker_rect: Option<[f32; 4]>,
+    /// Where the Store icon was drawn, for clicks.
+    store_icon_rect: Option<[f32; 4]>,
     /// Where the revive buttons were drawn (and whether each revives
     /// here), for clicks.
     revive_rects: Vec<([f32; 4], bool)>,
@@ -893,6 +898,7 @@ impl Renderer {
             transient_used: HashMap::new(),
             quick_panel_signature: None,
             bounty_tracker_rect: None,
+            store_icon_rect: None,
             revive_rects: Vec::new(),
             level_up_layers: None,
             effects: HashMap::new(),
@@ -1737,6 +1743,13 @@ impl Renderer {
             .map(|(_, here)| *here)
     }
 
+    /// Whether `position` is on the Store icon.
+    pub fn store_icon_at(&self, position: [f32; 2]) -> bool {
+        self.store_icon_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
     /// Whether `position` is on the bounty line under the minimap.
     pub fn bounty_tracker_at(&self, position: [f32; 2]) -> bool {
         self.bounty_tracker_rect.is_some_and(|[left, top, width, height]| {
@@ -1832,6 +1845,7 @@ impl Renderer {
         player_shop_price: &str,
         player_shop_price_focused: bool,
         bounty: Option<&crate::bounty_board::BountyView>,
+        store: Option<&crate::store_panel::StoreView>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -3009,6 +3023,41 @@ impl Renderer {
             }
         }
         self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
+        // The Store icon, under the bounty one.
+        let store_hovered = self.store_icon_at(cursor);
+        let store_key = if store_hovered { "@store-icon-hover" } else { "@store-icon" };
+        if !self.textures.contains_key(store_key) {
+            self.upload(store_key, crate::store_panel::icon_image(assets, store_hovered)?);
+        }
+        let store_size = self.textures.get(store_key).map(|texture| texture.size);
+        if let (Some(size), Some([_, top, _, height])) = (store_size, self.bounty_tracker_rect) {
+            let position = [viewport[0] - size[0] - 8.0, top + height + 6.0];
+            self.store_icon_rect = Some([position[0], position[1], size[0], size[1]]);
+            draws.push(Draw {
+                texture: store_key.to_owned(),
+                vertices: quad(position, size, viewport),
+                depth_test: false,
+                sort_depth: f32::INFINITY,
+            });
+            if store_hovered {
+                let tip_key = "@store-tip";
+                if !self.textures.contains_key(tip_key) {
+                    self.upload(tip_key, crate::labels::tooltip_image("Store (P)")?);
+                }
+                if let Some(tip) = self.textures.get(tip_key) {
+                    draws.push(Draw {
+                        texture: tip_key.to_owned(),
+                        vertices: quad(
+                            [position[0] - tip.size[0] - 6.0, position[1] + (size[1] - tip.size[1]) * 0.5],
+                            tip.size,
+                            viewport,
+                        ),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
+            }
+        }
         // Each status message is its own texture; keep only the latest.
         let current_feedback = self
             .feedback_signature
@@ -3397,6 +3446,15 @@ impl Renderer {
             if panel == crate::shop::QuickPanel::Quest {
                 bounty.hash(&mut hasher);
             }
+            if panel == crate::shop::QuickPanel::Store {
+                store.hash(&mut hasher);
+                // VIP time left reads in minutes.
+                (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs())
+                    / 60)
+                    .hash(&mut hasher);
+            }
             friends.hash(&mut hasher);
             ignores.hash(&mut hasher);
             pending_friend_name.hash(&mut hasher);
@@ -3437,6 +3495,7 @@ impl Renderer {
                         player_shop_price_focused,
                         hud_config,
                         bounty: bounty.cloned(),
+                        store: store.cloned(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);

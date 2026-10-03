@@ -576,6 +576,7 @@ pub enum QuickPanel {
     Team,
     System,
     Settings,
+    Store,
 }
 
 pub use crate::original_panels::SettingsAction as SettingsPanelAction;
@@ -672,6 +673,7 @@ impl QuickPanel {
             Self::Market => "MARKET",
             Self::Team => "TEAM",
             Self::System => "SYSTEM",
+            Self::Store => "STORE",
             Self::Settings => "SETTINGS",
         }
     }
@@ -977,6 +979,7 @@ pub fn quick_panel_image(
     player_shop_price_focused: bool,
     hud_config: crate::hud::HudConfig,
     bounty: Option<&crate::bounty_board::BountyView>,
+    store: Option<&crate::store_panel::StoreView>,
 ) -> Result<RgbaImage> {
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(
@@ -1627,6 +1630,7 @@ pub fn quick_panel_image(
                 );
             }
         }
+        QuickPanel::Store => crate::store_panel::draw(&mut image, assets, store),
         QuickPanel::System => {
             labels::text(
                 &mut image,
