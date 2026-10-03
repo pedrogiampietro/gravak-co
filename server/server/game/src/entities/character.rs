@@ -4385,6 +4385,16 @@ impl Character {
         self.cps.load(Ordering::Relaxed)
     }
 
+    /// The account the character belongs to.
+    pub fn account_id(&self) -> u32 {
+        u32::try_from(self.inner.account_id).unwrap_or_default()
+    }
+
+    /// Mirrors CPs the database already holds (after an atomic update).
+    pub fn set_cps(&self, cps: u64) {
+        self.cps.store(cps, Ordering::Relaxed);
+    }
+
     /// Adds Conquer Points and saves them.
     pub async fn grant_cps(&self, pool: &sqlx::PgPool, amount: u64) -> Result<u64, Error> {
         let total = self.cps.fetch_add(amount, Ordering::Relaxed).saturating_add(amount);

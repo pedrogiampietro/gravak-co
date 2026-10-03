@@ -133,6 +133,7 @@ impl PacketProcess for MsgConnect {
                 }
                 if let Some(me) = actor.entity().as_character() {
                     super::send_board(state, me).await?;
+                    super::load_vip(state, me).await?;
                 }
                 actor.send(MsgData::now()).await?;
             },

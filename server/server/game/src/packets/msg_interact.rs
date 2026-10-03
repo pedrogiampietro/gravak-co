@@ -124,6 +124,7 @@ impl MsgInteract {
         if experience == 0 {
             return Ok(());
         }
+        let experience = crate::store::with_vip_bonus(experience, state.vip().is_vip(character.id()));
         let leveled = character.grant_experience(experience);
         actor.send(MsgUserInfo::from(character)).await?;
         if let Some(level) = leveled {
@@ -1051,6 +1052,7 @@ pub(crate) async fn reward_monster_defeat(
             continue;
         };
         let share = base_share + u64::from((index as u64) < remainder);
+        let share = crate::store::with_vip_bonus(share, state.vip().is_vip(recipient.id()));
         let leveled = recipient.grant_experience(share.max(1));
         if let Some(level) = leveled {
             crate::leveling::after_level_up(state, recipient, level).await?;
@@ -1167,6 +1169,28 @@ pub(crate) async fn reward_monster_defeat(
                 .into_iter()
                 .map(|item_id| (item_id, 0)),
         );
+    }
+    // VIP: silver, Meteors and DragonBalls go straight into the killer's bag.
+    if state.vip().is_vip(character.id()) {
+        let mut kept = Vec::with_capacity(drops.len());
+        for (item_id, silver) in drops {
+            if silver > 0 {
+                character.grant_silver(state.pool(), silver).await?;
+                character.owner().send(MsgUserInfo::from(character)).await?;
+            } else if matches!(item_id, crate::drops::METEOR | crate::drops::DRAGONBALL) {
+                match character.add_ground_item(state.pool(), item_id, 100, 100).await? {
+                    Some(item) => {
+                        crate::audit::item("vip_auto_pickup", character.id(), item.uid, item.item_type, format_args!(""));
+                        character.owner().send(super::MsgItemInfo::inventory_item(item)).await?;
+                    },
+                    // A full bag: it falls to the ground as usual.
+                    None => kept.push((item_id, silver)),
+                }
+            } else {
+                kept.push((item_id, silver));
+            }
+        }
+        drops = kept;
     }
     for (index, item_id) in drops.into_iter().enumerate() {
         let (offset_x, offset_y) = drop_offset(index);

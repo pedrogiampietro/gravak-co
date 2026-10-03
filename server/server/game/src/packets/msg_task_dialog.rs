@@ -1016,6 +1016,8 @@ async fn city_teleport(
         return Ok(());
     };
 
+    // VIPs ride the Conductresses for free.
+    let fee = if fee == crate::teleports::CONDUCTRESS_FEE && state.vip().is_vip(character.id()) { 0 } else { fee };
     if fee > 0 {
         if character.spend_silver(state.pool(), fee).await?.is_none() {
             // The reference scripts answer in the dialog itself.

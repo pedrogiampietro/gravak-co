@@ -56,6 +56,7 @@ pub struct State {
     guild_manager: GuildManager,
     friend_requests: FriendRequests,
     talismans: crate::bounty::TalismanBook,
+    vip: crate::store::VipBook,
     pool: PgPool,
 }
 
@@ -130,6 +131,7 @@ impl State {
             guild_manager,
             friend_requests: Default::default(),
             talismans: Default::default(),
+            vip: Default::default(),
             pool,
         };
         Ok(state)
@@ -150,6 +152,11 @@ impl State {
 
     pub fn skill_catalog(&self) -> &SkillCatalog {
         &self.skill_catalog
+    }
+
+    /// The VIP of the characters online.
+    pub fn vip(&self) -> &crate::store::VipBook {
+        &self.vip
     }
 
     /// The bounty talismans of the characters online with a task.
