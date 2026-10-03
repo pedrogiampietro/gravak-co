@@ -2283,6 +2283,18 @@ impl App {
                 view.selected = None;
             }
             store_panel::StoreAction::Select(product_id) => view.selected = Some(product_id),
+            store_panel::StoreAction::Teleport(city) => {
+                if let Some(network) = &self.network {
+                    network.send_store(gravak_protocol::StorePacket::TELEPORT, city);
+                }
+            }
+            store_panel::StoreAction::ToggleLoot(bit) => {
+                // Shown at once; the server's answer confirms it.
+                view.state.loot_filter ^= bit;
+                if let Some(network) = &self.network {
+                    network.send_store(gravak_protocol::StorePacket::LOOT_FILTER, view.state.loot_filter);
+                }
+            }
             store_panel::StoreAction::VipRights => self.quick_panel = Some(shop::QuickPanel::Vip),
             // The purchase waits for the confirmation prompt.
             store_panel::StoreAction::Buy(product_id) => self.store_confirm = Some(product_id),

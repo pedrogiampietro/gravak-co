@@ -1173,15 +1173,21 @@ pub(crate) async fn reward_monster_defeat(
                 .map(|item_id| (item_id, 0)),
         );
     }
-    // VIP: silver, Meteors and DragonBalls go straight into the killer's bag.
+    // VIP: the drops their loot filter picks go straight into the bag.
     if state.vip().is_vip(character.id()) {
+        let filter = state.vip().loot_filter(character.id());
         let mut kept = Vec::with_capacity(drops.len());
         for (item_id, silver) in drops {
-            if silver > 0 {
+            if !crate::store::loot::picks(filter, item_id, silver) {
+                kept.push((item_id, silver));
+            } else if silver > 0 {
                 character.grant_silver(state.pool(), silver).await?;
                 character.owner().send(MsgUserInfo::from(character)).await?;
-            } else if matches!(item_id, crate::drops::METEOR | crate::drops::DRAGONBALL) {
-                match character.add_ground_item(state.pool(), item_id, 100, 100).await? {
+            } else {
+                let template = state.shop_catalog().template(item_id);
+                let (durability, max_durability) =
+                    template.map_or((0, 0), |template| (template.durability, template.max_durability));
+                match character.add_ground_item(state.pool(), item_id, durability, max_durability).await? {
                     Some(item) => {
                         crate::audit::item("vip_auto_pickup", character.id(), item.uid, item.item_type, format_args!(""));
                         character.owner().send(super::MsgItemInfo::inventory_item(item)).await?;
@@ -1189,8 +1195,6 @@ pub(crate) async fn reward_monster_defeat(
                     // A full bag: it falls to the ground as usual.
                     None => kept.push((item_id, silver)),
                 }
-            } else {
-                kept.push((item_id, silver));
             }
         }
         drops = kept;

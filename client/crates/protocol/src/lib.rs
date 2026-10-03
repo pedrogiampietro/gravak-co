@@ -235,6 +235,10 @@ pub struct StorePacket {
 impl StorePacket {
     pub const OPEN: u32 = 0;
     pub const BUY: u32 = 1;
+    /// VIP: teleport to city `param`.
+    pub const TELEPORT: u32 = 2;
+    /// VIP: the loot filter becomes `param`.
+    pub const LOOT_FILTER: u32 = 3;
 
     pub fn new(action: u32, param: u32) -> Self {
         Self { action, param }
@@ -273,6 +277,10 @@ impl StoreProduct {
 pub struct StoreState {
     pub cps: u64,
     pub vip_until: u64,
+    /// Which drops go straight to a VIP's bag (a bit per kind).
+    pub loot_filter: u32,
+    /// When the next VIP teleport is allowed (seconds since 1970).
+    pub teleport_ready_at: u64,
 }
 
 /// One of the buyer's latest purchases, `index` of `total`, newest first;

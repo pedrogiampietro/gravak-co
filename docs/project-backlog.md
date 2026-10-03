@@ -15,7 +15,8 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
        points) e confirmação antes de gastar token ao abandonar.
 4. [x] Store: histórico de compras e novos itens (poções de 3x/5x de exp,
        garments na aba Cosmetics no lugar do Cosmetic Token, que não existe no 5065).
-5. [ ] VIP: teleporte para qualquer cidade (1 min de espera) e filtro de loot.
+5. [x] VIP: teleporte para qualquer cidade (1 min de espera) e filtro de loot
+       (aba VIP Services da Store; o filtro escolhe o que vai direto para a bolsa).
 6. [ ] Botões ornamentados (`ornate.rs`) no resto da UI: Bounty, Revive,
        confirmações e janelas.
 7. [ ] Comando de GM `$monster` para criar monstros (reorganizar como o mapa

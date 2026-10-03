@@ -246,13 +246,114 @@ pub async fn vip_until(pool: &sqlx::PgPool, account_id: u32) -> Result<u64, Erro
     Ok(until.and_then(|until| u64::try_from(until).ok()).unwrap_or_default())
 }
 
-/// The VIP of the characters online, by entity id: when it ends.
+/// The VIP loot filter: the kinds of drops that go straight to the bag.
+pub mod loot {
+    pub const SILVER: u32 = 1;
+    pub const RARES: u32 = 2;
+    pub const GEMS: u32 = 4;
+    pub const POTIONS: u32 = 8;
+    pub const UNIQUE_GEAR: u32 = 16;
+    pub const ALL_GEAR: u32 = 32;
+    pub const ALL: u32 = 63;
+    /// Silver, Meteors and DragonBalls.
+    pub const DEFAULT: u32 = SILVER | RARES;
+
+    fn is_gear(item_id: u32) -> bool {
+        (110_000..700_000).contains(&item_id) || (900_000..901_000).contains(&item_id)
+    }
+
+    /// Whether `filter` sends a drop (an item, or `silver` > 0) to the bag.
+    pub fn picks(filter: u32, item_id: u32, silver: u32) -> bool {
+        if silver > 0 {
+            return filter & SILVER != 0;
+        }
+        if matches!(item_id, crate::drops::METEOR | crate::drops::DRAGONBALL) {
+            return filter & RARES != 0;
+        }
+        if (700_000..701_000).contains(&item_id) {
+            return filter & GEMS != 0;
+        }
+        if (1_000_000..1_003_000).contains(&item_id) {
+            return filter & POTIONS != 0;
+        }
+        if is_gear(item_id) {
+            return filter & ALL_GEAR != 0 || filter & UNIQUE_GEAR != 0 && item_id % 10 >= 7;
+        }
+        false
+    }
+}
+
+/// A VIP teleport destination: a city and where in it.
+pub struct City {
+    pub name: &'static str,
+    pub map_id: u32,
+    pub position: (u16, u16),
+}
+
+/// Where a VIP can teleport, as the city scrolls.
+pub const CITIES: [City; 6] = [
+    City { name: "Twin City", map_id: 1002, position: (430, 380) },
+    City { name: "Phoenix Castle", map_id: 1011, position: (193, 266) },
+    City { name: "Ape Mountain", map_id: 1020, position: (566, 565) },
+    City { name: "Desert City", map_id: 1000, position: (496, 650) },
+    City { name: "Bird Island", map_id: 1015, position: (717, 571) },
+    City { name: "Market", map_id: 1036, position: (211, 196) },
+];
+
+/// Seconds between two VIP teleports.
+pub const TELEPORT_COOLDOWN: u64 = 60;
+
+/// A character's loot filter.
+pub async fn loot_filter(pool: &sqlx::PgPool, character_id: i32) -> Result<u32, Error> {
+    let filter: Option<i64> = sqlx::query_scalar("SELECT loot_filter FROM characters WHERE character_id = $1")
+        .bind(i64::from(character_id))
+        .fetch_optional(pool)
+        .await?;
+    Ok(filter.and_then(|filter| u32::try_from(filter).ok()).unwrap_or(loot::DEFAULT) & loot::ALL)
+}
+
+pub async fn save_loot_filter(pool: &sqlx::PgPool, character_id: i32, filter: u32) -> Result<(), Error> {
+    sqlx::query("UPDATE characters SET loot_filter = $2 WHERE character_id = $1")
+        .bind(i64::from(character_id))
+        .bind(i64::from(filter & loot::ALL))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// The VIP of the characters online, by entity id: when it ends, their loot
+/// filter, and when they may teleport again.
 #[derive(Debug, Default)]
 pub struct VipBook {
     until: Mutex<HashMap<u32, u64>>,
+    filters: Mutex<HashMap<u32, u32>>,
+    teleport_ready: Mutex<HashMap<u32, u64>>,
 }
 
 impl VipBook {
+    pub fn loot_filter(&self, character_id: u32) -> u32 {
+        self.filters.lock().get(&character_id).copied().unwrap_or(loot::DEFAULT)
+    }
+
+    pub fn set_loot_filter(&self, character_id: u32, filter: u32) {
+        self.filters.lock().insert(character_id, filter & loot::ALL);
+    }
+
+    /// When the character may teleport again (seconds since 1970).
+    pub fn teleport_ready_at(&self, character_id: u32) -> u64 {
+        self.teleport_ready.lock().get(&character_id).copied().unwrap_or_default()
+    }
+
+    /// Starts the cooldown; false while it is still running.
+    pub fn take_teleport(&self, character_id: u32, now: u64) -> bool {
+        let mut ready = self.teleport_ready.lock();
+        if ready.get(&character_id).is_some_and(|at| *at > now) {
+            return false;
+        }
+        ready.insert(character_id, now + TELEPORT_COOLDOWN);
+        true
+    }
+
     pub fn set(&self, character_id: u32, until: u64) {
         let mut book = self.until.lock();
         if until > now_secs() {
@@ -264,6 +365,8 @@ impl VipBook {
 
     pub fn remove(&self, character_id: u32) {
         self.until.lock().remove(&character_id);
+        self.filters.lock().remove(&character_id);
+        self.teleport_ready.lock().remove(&character_id);
     }
 
     /// Whether the character is VIP now.
@@ -284,6 +387,32 @@ pub fn with_vip_bonus(experience: u64, vip: bool) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_loot_filter_sorts_drops() {
+        use super::loot::*;
+        assert!(picks(DEFAULT, 0, 120) && picks(DEFAULT, crate::drops::METEOR, 0));
+        assert!(!picks(DEFAULT, 700_001, 0) && picks(GEMS, 700_001, 0));
+        assert!(!picks(DEFAULT, 1_000_000, 0) && picks(POTIONS, 1_002_050, 0));
+        // A Unique blade (quality 7) and a Normal one (3).
+        assert!(picks(UNIQUE_GEAR, 410_017, 0) && !picks(UNIQUE_GEAR, 410_013, 0));
+        assert!(picks(ALL_GEAR, 410_013, 0) && picks(ALL_GEAR, 900_005, 0));
+        assert!(!picks(ALL, 723_700, 0), "nothing else");
+        assert!(!picks(0, 0, 120));
+    }
+
+    #[test]
+    fn teleports_wait_a_minute() {
+        let book = VipBook::default();
+        assert!(book.take_teleport(7, 1_000));
+        assert!(!book.take_teleport(7, 1_059));
+        assert_eq!(book.teleport_ready_at(7), 1_060);
+        assert!(book.take_teleport(7, 1_060));
+        book.set_loot_filter(7, 0xff);
+        assert_eq!(book.loot_filter(7), super::loot::ALL);
+        book.remove(7);
+        assert_eq!((book.loot_filter(7), book.teleport_ready_at(7)), (super::loot::DEFAULT, 0));
+    }
 
     #[test]
     fn vip_adds_a_tenth() {
@@ -340,6 +469,10 @@ mod tests {
         let past = history(&pool, character.database_id()).await?;
         let names: Vec<_> = past.iter().map(|purchase| (purchase.name.as_str(), purchase.price_cps)).collect();
         assert_eq!(names, [("7 Days of VIP", 500), ("Meteor", 13)], "newest first, refusals left out");
+
+        assert_eq!(loot_filter(&pool, character.database_id()).await?, loot::DEFAULT);
+        save_loot_filter(&pool, character.database_id(), loot::GEMS | loot::SILVER).await?;
+        assert_eq!(loot_filter(&pool, character.database_id()).await?, loot::GEMS | loot::SILVER);
         Ok(())
     }
 

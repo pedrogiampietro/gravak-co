@@ -13,6 +13,22 @@ use image::RgbaImage;
 pub const CATEGORIES: [&str; 5] = ["VIP", "Experience", "Upgrades", "Blessings", "Cosmetics"];
 /// The tab under the categories that shows the latest purchases.
 pub const HISTORY: u32 = CATEGORIES.len() as u32;
+/// The tab after it: the VIP's city teleports and loot filter.
+pub const SERVICES: u32 = HISTORY + 1;
+/// The tabs after the categories.
+const EXTRA_TABS: [&str; 2] = ["History", "VIP Services"];
+
+/// The VIP teleport destinations, in the server's order.
+pub const CITIES: [&str; 6] = ["Twin City", "Phoenix Castle", "Ape Mountain", "Desert City", "Bird Island", "Market"];
+/// The loot filter's kinds: their bit and name (as the server).
+pub const LOOT_KINDS: [(u32, &str); 6] = [
+    (1, "Silver"),
+    (2, "Meteors and DragonBalls"),
+    (4, "Gems"),
+    (8, "Potions"),
+    (16, "Unique, Elite and Super equipment"),
+    (32, "Any equipment"),
+];
 
 /// The catalog as the server sent it, and what is chosen on this screen.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -71,6 +87,10 @@ pub enum StoreAction {
     VipRights,
     Select(u32),
     Buy(u32),
+    /// VIP: teleport to a city of [`CITIES`].
+    Teleport(u32),
+    /// VIP: turns a loot filter bit on or off.
+    ToggleLoot(u32),
 }
 
 const LIST_LEFT: i32 = 140;
@@ -82,7 +102,16 @@ const DETAIL_WIDTH: i32 = 170;
 const BUY: UiRect = UiRect::new(DETAIL_LEFT + 20, 340, DETAIL_WIDTH - 40, 26);
 
 /// Under the categories and History: the VIP Rights window.
-const VIP_RIGHTS: UiRect = UiRect::new(20, LIST_TOP + (CATEGORIES.len() as i32 + 1) * 30 + 12, 110, 26);
+const VIP_RIGHTS: UiRect = UiRect::new(20, LIST_TOP + (CATEGORIES.len() + EXTRA_TABS.len()) as i32 * 30 + 12, 110, 26);
+
+fn city_button(index: usize) -> UiRect {
+    UiRect::new(LIST_LEFT + (index % 3) as i32 * 122, LIST_TOP + 26 + (index / 3) as i32 * 32, 114, 26)
+}
+
+/// A loot filter row: its box and label, clickable as one.
+fn loot_row(index: usize) -> UiRect {
+    UiRect::new(LIST_LEFT, LIST_TOP + 144 + index as i32 * 24, 300, 20)
+}
 /// A row of the purchase history.
 const HISTORY_ROW: i32 = 27;
 
@@ -125,7 +154,7 @@ pub fn ago(then: u64, now: u64) -> String {
     }
 }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
@@ -219,13 +248,17 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&StoreView>
     let vip_x = 500 - width_of(&ui, &vip, 14.0) as i32;
     say(image, &ui, &vip, vip_colour, vip_x, 46, 14.0);
 
-    for (index, name) in CATEGORIES.iter().chain(["History"].iter()).enumerate() {
+    for (index, name) in CATEGORIES.iter().chain(EXTRA_TABS.iter()).enumerate() {
         draw_tab(image, &ui, category_tab(index), name, index as u32 == view.category, false);
     }
     draw_button(image, &ui, VIP_RIGHTS, "VIP Rights", WidgetState::Normal);
 
     if view.category == HISTORY {
         draw_history(image, &ui, view);
+        return;
+    }
+    if view.category == SERVICES {
+        draw_services(image, &ui, view);
         return;
     }
 
@@ -312,9 +345,68 @@ fn draw_history(image: &mut RgbaImage, ui: &Font, view: &StoreView) {
     }
 }
 
+fn is_vip(view: &StoreView) -> bool {
+    view.state.vip_until > now_secs()
+}
+
+/// Seconds until the next VIP teleport; 0 when ready.
+pub fn teleport_wait(view: &StoreView, now: u64) -> u64 {
+    view.state.teleport_ready_at.saturating_sub(now)
+}
+
+/// A check box, ticked or not.
+fn draw_check(image: &mut RgbaImage, x: i32, y: i32, ticked: bool, enabled: bool) {
+    let border = if enabled { [214, 176, 92, 255] } else { [100, 100, 100, 255] };
+    crate::components::fill(image, UiRect::new(x, y, 16, 16), [10, 22, 30, 255]);
+    crate::components::outline(image, UiRect::new(x, y, 16, 16), border);
+    if ticked {
+        let colour = if enabled { [255, 214, 96, 255] } else { [140, 140, 140, 255] };
+        for offset in 0..2 {
+            crate::components::line(image, [x + 3, y + 8 + offset], [x + 6, y + 11 + offset], colour);
+            crate::components::line(image, [x + 6, y + 11 + offset], [x + 12, y + 4 + offset], colour);
+        }
+    }
+}
+
+/// The VIP services: a teleport to any city, and what drops go to the bag.
+fn draw_services(image: &mut RgbaImage, ui: &Font, view: &StoreView) {
+    let vip = is_vip(view);
+    let wait = teleport_wait(view, now_secs());
+    say(image, ui, "City teleport", ui_theme::TEXT_GOLD, LIST_LEFT, LIST_TOP, 14.0);
+    for (index, city) in CITIES.iter().enumerate() {
+        let state = if vip && wait == 0 { WidgetState::Normal } else { WidgetState::Disabled };
+        draw_button(image, ui, city_button(index), city, state);
+    }
+    let note = if !vip {
+        "Become VIP to use these services.".to_owned()
+    } else if wait > 0 {
+        format!("Next teleport in {wait}s.")
+    } else {
+        "Ready: one teleport a minute.".to_owned()
+    };
+    say(image, ui, &note, ui_theme::TEXT_MUTED, LIST_LEFT, LIST_TOP + 96, 12.0);
+
+    say(image, ui, "Loot filter: straight to your bag", ui_theme::TEXT_GOLD, LIST_LEFT, LIST_TOP + 120, 14.0);
+    for (index, (bit, name)) in LOOT_KINDS.iter().enumerate() {
+        let row = loot_row(index);
+        draw_check(image, row.x, row.y + 2, view.state.loot_filter & bit != 0, vip);
+        let colour = if vip { ui_theme::TEXT } else { ui_theme::TEXT_MUTED };
+        say(image, ui, name, colour, row.x + 26, row.y + 3, 13.0);
+    }
+    say(
+        image,
+        ui,
+        "The rest falls to the ground. A full bag drops it too.",
+        ui_theme::TEXT_MUTED,
+        LIST_LEFT,
+        LIST_TOP + 144 + 6 * 24 + 2,
+        11.0,
+    );
+}
+
 /// The action under `cursor`, in the panel's own coordinates.
 pub fn action_at(view: &StoreView, cursor: [f32; 2]) -> Option<StoreAction> {
-    if let Some(index) = (0..=CATEGORIES.len()).find(|index| category_tab(*index).contains_local(cursor)) {
+    if let Some(index) = (0..CATEGORIES.len() + EXTRA_TABS.len()).find(|index| category_tab(*index).contains_local(cursor)) {
         return Some(StoreAction::Category(index as u32));
     }
     if VIP_RIGHTS.contains_local(cursor) {
@@ -322,6 +414,19 @@ pub fn action_at(view: &StoreView, cursor: [f32; 2]) -> Option<StoreAction> {
     }
     if view.category == HISTORY {
         return None;
+    }
+    if view.category == SERVICES {
+        if !is_vip(view) {
+            return None;
+        }
+        if teleport_wait(view, now_secs()) == 0
+            && let Some(index) = (0..CITIES.len()).find(|index| city_button(*index).contains_local(cursor))
+        {
+            return Some(StoreAction::Teleport(index as u32));
+        }
+        return (0..LOOT_KINDS.len())
+            .find(|index| loot_row(*index).contains_local(cursor))
+            .map(|index| StoreAction::ToggleLoot(LOOT_KINDS[index].0));
     }
     let products = view.in_category();
     if let Some(row) = (0..products.len().min(5)).find(|row| product_row(*row).contains_local(cursor)) {
@@ -396,6 +501,18 @@ mod tests {
     }
 
     #[test]
+    fn vip_services_need_vip() {
+        let mut view = StoreView { category: SERVICES, ..Default::default() };
+        assert_eq!(action_at(&view, centre(city_button(1))), None, "not VIP");
+        view.state.vip_until = now_secs() + 3_600;
+        assert_eq!(action_at(&view, centre(city_button(1))), Some(StoreAction::Teleport(1)));
+        assert_eq!(action_at(&view, centre(loot_row(2))), Some(StoreAction::ToggleLoot(4)));
+        view.state.teleport_ready_at = now_secs() + 30;
+        assert_eq!(action_at(&view, centre(city_button(1))), None, "cooling down");
+        assert_eq!(action_at(&view, centre(category_tab(6))), Some(StoreAction::Category(SERVICES)));
+    }
+
+    #[test]
     fn vip_time_reads_shortly() {
         assert_eq!(vip_left(0, 100), None);
         assert_eq!(vip_left(100 + 6 * 86_400 + 3 * 3_600, 100).as_deref(), Some("6d 3h"));
@@ -444,6 +561,7 @@ mod preview {
             });
         }
         view.state.cps = 1_250;
+        view.state.loot_filter = 3;
         view.state.vip_until = now_secs() + 6 * 86_400 + 3 * 3_600;
         for (index, (name, price)) in [("Meteor", 13), ("7 Days of VIP", 500), ("Exp Pill (3x)", 180)].into_iter().enumerate() {
             view.receive_purchase(gravak_protocol::StorePurchase {
@@ -454,7 +572,7 @@ mod preview {
                 name: name.into(),
             });
         }
-        for (name, category, selected) in [("vip", 0, None), ("experience", 1, Some(16)), ("upgrades", 2, Some(22)), ("cosmetics", 4, None), ("history", HISTORY, None)] {
+        for (name, category, selected) in [("vip", 0, None), ("experience", 1, Some(16)), ("upgrades", 2, Some(22)), ("cosmetics", 4, None), ("history", HISTORY, None), ("services", SERVICES, None)] {
             view.category = category;
             view.selected = selected;
             let mut content = RgbaImage::new(520, 420);

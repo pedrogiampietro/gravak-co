@@ -3479,6 +3479,13 @@ impl Renderer {
                     .map_or(0, |elapsed| elapsed.as_secs())
                     / 60)
                     .hash(&mut hasher);
+                // The teleport countdown reads in seconds.
+                if let Some(view) = store
+                    && view.category == crate::store_panel::SERVICES
+                    && crate::store_panel::teleport_wait(view, crate::store_panel::now_secs()) > 0
+                {
+                    crate::store_panel::now_secs().hash(&mut hasher);
+                }
             }
             friends.hash(&mut hasher);
             ignores.hash(&mut hasher);

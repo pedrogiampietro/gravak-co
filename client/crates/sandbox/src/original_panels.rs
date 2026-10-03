@@ -94,9 +94,10 @@ pub fn vip_renew_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
 }
 
 /// The VIP benefits, as the window lists them.
-pub const VIP_PERKS: [&str; 4] = [
+pub const VIP_PERKS: [&str; 5] = [
     "+10% monster experience",
-    "Auto-loot silver and rares",
+    "Loot filter to your bag",
+    "Teleport to any city",
     "Free Conductress rides",
     "VIP title over your name",
 ];
@@ -134,7 +135,7 @@ fn draw_vip(image: &mut RgbaImage, assets: &mut Assets, vip_until: u64) -> Resul
         None => label_centered(image, "Not active", 13.0, 227, 42, GREY),
     }
     for (index, perk) in VIP_PERKS.iter().enumerate() {
-        let y = 68 + index as i32 * 21;
+        let y = 64 + index as i32 * 19;
         // A small gold diamond as the bullet.
         for dy in -3_i32..=3 {
             for dx in -(3 - dy.abs())..=(3 - dy.abs()) {
