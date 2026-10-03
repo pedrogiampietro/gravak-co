@@ -14,7 +14,7 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 3. [x] Bounty: listas de criaturas preferidas e evitadas (pagas com bounty
        points) e confirmação antes de gastar token ao abandonar.
 4. [x] Store: histórico de compras e novos itens (poções de 3x/5x de exp,
-       Cosmetic Token).
+       garments na aba Cosmetics no lugar do Cosmetic Token, que não existe no 5065).
 5. [ ] VIP: teleporte para qualquer cidade (1 min de espera) e filtro de loot.
 6. [ ] Botões ornamentados (`ornate.rs`) no resto da UI: Bounty, Revive,
        confirmações e janelas.
