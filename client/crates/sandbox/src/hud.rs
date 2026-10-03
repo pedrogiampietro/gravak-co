@@ -352,17 +352,17 @@ pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Resu
         }
         put(cx + sx, cy + sy, gold);
     }
-    let font = crate::main_hud::client_font()?;
-    let mut size = 20.0;
-    while size > 12.0 && crate::main_hud::text_width(font, label, size) > w - 20 {
-        size -= 1.0;
+    // Cinzel, the decorative font of the titles, with a one-pixel shadow.
+    let font = crate::labels::decorative_font()?;
+    let text_width = |size: f32| label.chars().map(|c| font.metrics(c, size).advance_width).sum::<f32>();
+    let mut size = 17.0;
+    while size > 11.0 && text_width(size) > (w - 20) as f32 {
+        size -= 0.5;
     }
-    let text_width = crate::main_hud::text_width(font, label, size);
-    let x = ((w - text_width) / 2).max(4);
-    crate::main_hud::glow_text(&mut image, font, label, size, [x, (h - 22) / 2], [10, 26, 34]);
-    let mut text = RgbaImage::new(width, height);
-    crate::labels::text_sized(&mut text, font, &[(label, [140, 206, 210])], [x as f32, ((h - 22) / 2) as f32], size);
-    image::imageops::overlay(&mut image, &text, 0, 0);
+    let x = ((w as f32 - text_width(size)) / 2.0).max(4.0).round();
+    let y = ((h as f32 - size) / 2.0 - 1.0).round();
+    crate::labels::text_sized(&mut image, &font, &[(label, [12, 22, 28])], [x + 1.0, y + 1.0], size);
+    crate::labels::text_sized(&mut image, &font, &[(label, [150, 214, 216])], [x, y], size);
     Ok(image)
 }
 
