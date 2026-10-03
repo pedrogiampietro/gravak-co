@@ -1,55 +1,78 @@
-# Gravak — backlog do projeto
+# Gravak — lista de desenvolvimento
 
-Este é o checklist vivo das próximas entregas. Ao concluir uma tarefa, marque
-`[x]`, registre o teste realizado e, quando fizer sentido, adicione uma captura
-ou um comando de reprodução.
+Checklist vivo das próximas entregas, em ordem de prioridade. Ao concluir uma
+tarefa, marque `[x]` e diga como foi testada. `docs/server-backlog.md` guarda o
+histórico de paridade com o Redux; `docs/feature-roadmap.md` e
+`docs/development-checklist.md`, o histórico detalhado.
 
-## Próxima etapa — validação manual
+## P0 — segurança e dados (antes de abrir o servidor para outras pessoas)
 
-- [ ] Testar o pulo em pontes, árvores, obstáculos e terrenos elevados.
-- [ ] Validar rarity, upgrade, animações e resultado do upgrade em sessão real.
-- [ ] Testar inserção e remoção de gems sem perder itens do inventário.
-- [ ] Revisar tooltip do inventário, rarity modal e sockets para manter os mesmos bônus e valores.
-- [ ] Validar arcs, barras, alinhamento e escala do HUD em 1024, 1366 e 1704px.
-- [ ] Persistir as configurações do HUD entre sessões; atualmente elas ficam apenas em memória.
+- [ ] **Login sem senha pelo game server**: o pacote `MsgTransfer` (4001) gera
+      um token de login para qualquer `account_id` a quem conectar na porta do
+      game. Exigir a chave `TRANSFER_SECRET` do auth server (ou, sem chave, só
+      conexões locais).
+- [ ] **Comandos `$` liberados para todos**: teleporte, itens de teste, prata,
+      `$gw start`... Criar o nível de GM na conta e recusar os comandos para
+      quem não é GM.
+- [ ] Contas de exemplo com senha `123456` (`shekohex`, `test1`) vêm das
+      migrations: não criá-las fora do ambiente de desenvolvimento.
+- [ ] Backup do Postgres: `db-backup` diário automático no `run-server.bat`,
+      com rotação, e `db-restore` para voltar um backup.
+- [x] Corrida no armazém da guild: dois membros sacando o mesmo item, ou
+      guardando no mesmo slot, ao mesmo tempo. Testado com 20 rodadas
+      simultâneas contra o Postgres.
+- [ ] Revisar os demais recursos que dois jogadores tocam ao mesmo tempo
+      (casamento, amizade bilateral, criação de guild) com o mesmo tipo de teste.
+- [ ] `run-server.bat stop` mata os servidores sem salvar (até 30 s de
+      progresso perdidos): parar o game de forma que ele salve todos.
 
-## UI/UX
+## P1 — operação
 
-- [x] Criar componentes compartilhados para janela, cabeçalho, abas, cards, slots, tooltips, barras, modais, toasts e listas (`client/crates/sandbox/src/components.rs`).
-- [x] Refatorar Shop, Warehouse, Trade e Guild usando os componentes compartilhados.
-- [x] Padronizar estados normal, hover, pressed, disabled, selected, loading e error (`WidgetState`).
-- [ ] Melhorar feedback visual de inventário, gems, sockets, rarity, upgrade e operações rejeitadas.
-- [ ] Finalizar action bar e HUD com cooldowns, buffs, alvo, dano, chat e recursos sem sobreposição.
-- [ ] Revisar textos, alinhamentos, clipping, hit zones e abertura/fechamento de todos os painéis.
-- [ ] Fazer smoke visual completo com screenshots de regressão por resolução.
+- [ ] Linha de status com a saúde do banco (latência, conexões em uso).
+- [ ] Contagem de personagens salvos no desligamento, no log.
+- [ ] Tentativas de hack (portal fora da tela, NPC fora da tela) viram `warn`
+      com a conta, em vez de `debug` silencioso.
+- [ ] Limite de tentativas de login por IP no auth server.
 
-## Gameplay e progressão
+## P2 — gameplay e conteúdo
 
-- [ ] Completar árvore de spells, skills adicionais e fórmulas específicas por classe.
-- [ ] Adicionar os demais efeitos, buffs, debuffs, elementos de gems e tipos de refinaria.
-- [ ] Completar reborn, promoção e progressão específica por classe.
-- [ ] Expandir quests com cadeias, requisitos, objetivos, custos e recompensas.
-- [ ] Melhorar IA com aggro, patrulha, regras especiais e drops especiais.
-- [ ] Adicionar bosses, eventos de mapa, arena, guild war, pets e companions.
+- [ ] Quests: cadeias, requisitos, objetivos além de matar monstros, recompensas
+      (hoje só existe `Pheasant Hunt`).
+- [ ] Banca (player shop): nome visível, persistência e volta após reconnect.
+- [ ] Trade: voltar à troca após reconnect; rejeições com mensagem clara.
+- [ ] Guild: ranking, cargos avançados, depósito/saque de prata da guild.
+- [ ] GuildBeast (Redux 3120) num evento de guilda.
+- [ ] Skills: árvore de spells, demais efeitos, buffs/debuffs e fórmulas por
+      classe; demais elementos de gems e tipos de refinaria.
+- [ ] Reborn: promoção e progressão por classe.
+- [ ] IA: patrulha, regras especiais e drops especiais.
+- [ ] Chat por região (`msg_talk`: hoje envia para toda a região do mapa).
+- [ ] `$teleport ... all` (teleportar todos), pendente no comando.
 
-## Sistemas sociais e operações
+## P3 — cliente e interface
 
-- [ ] Melhorar feedback visual de Friends, Team, Trade e Guild.
-- [ ] Completar regras avançadas de loot de grupo e reconnect durante trade.
-- [ ] Adicionar nome visual, persistência e reconnect para player shops.
-- [ ] Completar cargos avançados de guild, ranking e guerra de guilds.
-- [ ] Finalizar smoke tests gráficos dos sistemas sociais.
-- [ ] Completar auditoria econômica de stress e testes de concorrência para itens e silver.
+- [ ] Feedback visual de inventário, gems, sockets, rarity, upgrade e operações
+      rejeitadas.
+- [ ] Action bar e HUD sem sobreposição (cooldowns, buffs, alvo, dano, chat).
+- [ ] Revisar textos, alinhamentos, clipping e hit zones de todos os painéis.
+- [ ] Smoke visual com screenshots de regressão por resolução.
+- [ ] Cache de vértices estáticos e medição do agrupamento de draws com mapa
+      completo.
 
-## Qualidade técnica
+## Validação manual (no jogo)
 
-- [ ] Completar fixtures e validações dos pacotes 5065 prioritários.
-- [ ] Finalizar cache de vértices estáticos e fases de renderização com invalidação própria.
-- [ ] Medir o ganho de agrupamento de draws em uma sessão com mapa completo.
-- [ ] Manter o workspace livre de logs, saídas de benchmark e previews temporários.
+- [ ] Pulo em pontes, árvores, obstáculos e terrenos elevados.
+- [ ] Rarity, upgrade, animações e resultado do upgrade em sessão real.
+- [ ] Inserir e remover gems sem perder itens.
+- [ ] Tooltip do inventário, rarity e sockets com os mesmos bônus e valores.
+- [ ] HUD em 1024, 1366 e 1704 px.
+- [ ] Login, trade, guild e PK depois da troca para Postgres.
 
-## Referências
+## Feito recentemente
 
-- `docs/feature-roadmap.md` — visão ampla e comparação com as referências.
-- `docs/development-checklist.md` — status detalhado do servidor e dos sistemas.
-- `docs/client-ui-performance-checklist.md` — performance, UI e validação visual.
+- [x] Terminal do auth e do game: linhas por categoria com cores, quadro de
+      início, status a cada 5 min e logs diários em `server/logs/`.
+- [x] Banco migrado de SQLite para Postgres (Docker), com testes num banco novo
+      por teste; dados do `coemu.db` copiados.
+- [x] Restos do SQLite removidos (importadores, dumps SQL, ferramenta de cópia);
+      logs de auditoria movidos para `server/logs/`.

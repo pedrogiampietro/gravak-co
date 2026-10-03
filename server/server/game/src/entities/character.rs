@@ -3899,10 +3899,13 @@ impl Character {
         let Some((uid, item_type, old_position, durability, max_durability)) = row else {
             return Ok(None);
         };
-        sqlx::query(
+        // Another member may fill the slot between the check above and
+        // here; then nothing is stored and the item stays in the bag.
+        let stored = sqlx::query(
             "INSERT INTO guild_warehouse_items
                 (item_uid, guild_id, item_type, position, durability, max_durability)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (guild_id, position) DO NOTHING",
         )
         .bind(uid)
         .bind(i64::from(guild_id))
@@ -3912,6 +3915,9 @@ impl Character {
         .bind(max_durability)
         .execute(&mut *transaction)
         .await?;
+        if stored.rows_affected() != 1 {
+            return Ok(None);
+        }
         transaction.commit().await?;
         let removed = InventoryItem {
             uid: u32::try_from(uid).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
@@ -4043,11 +4049,16 @@ impl Character {
         else {
             return Ok(None);
         };
-        sqlx::query("DELETE FROM guild_warehouse_items WHERE guild_id = $1 AND item_uid = $2")
+        // Members share the warehouse: when two take the same item at once,
+        // only the one whose delete removes the row gets it.
+        let taken = sqlx::query("DELETE FROM guild_warehouse_items WHERE guild_id = $1 AND item_uid = $2")
             .bind(i64::from(guild_id))
             .bind(uid)
             .execute(&mut *transaction)
             .await?;
+        if taken.rows_affected() != 1 {
+            return Ok(None);
+        }
         sqlx::query(
             "INSERT INTO inventory_items
                 (item_uid, character_id, item_type, position, durability, max_durability)
@@ -5692,6 +5703,110 @@ mod tests {
             .fetch_one(&pool)
             .await?;
         assert_eq!(remaining, 0);
+        Ok(())
+    }
+
+    /// Another character on `pool`, of account `account`.
+    async fn another_character(pool: &sqlx::PgPool, account: u32, name: &str) -> Result<(Character, u32), Error> {
+        sqlx::query("INSERT INTO accounts (account_id, username, password) VALUES ($1, $2, '') ON CONFLICT DO NOTHING")
+            .bind(i64::from(account))
+            .bind(name)
+            .execute(pool)
+            .await?;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let actor = Actor::<crate::ActorState>::new(tx);
+        actor.set_id(account as usize);
+        crate::packets::MsgRegister::build_character_with(
+            name.to_owned(),
+            crate::packets::BodyType::MuscularMale,
+            crate::packets::BaseClass::Trojan,
+            account,
+            1,
+        )?
+        .save(pool)
+        .await?;
+        let inner = tq_db::character::Character::from_account(pool, account)
+            .await?
+            .expect("the other character should exist");
+        let id = u32::try_from(inner.character_id).expect("character ID should be positive");
+        Ok((Character::new(actor.handle(), inner), id))
+    }
+
+    #[tokio::test]
+    async fn guild_members_racing_for_one_item_get_it_once() -> Result<(), Error> {
+        let (pool, first, first_id) = test_character().await?;
+        let (second, _) = another_character(&pool, 2, "item-test-2").await?;
+        sqlx::query("INSERT INTO guilds (guild_id, name, leader_id) VALUES (1, 'Knights', $1)")
+            .bind(i64::from(first_id))
+            .execute(&pool)
+            .await?;
+        for round in 0..20_u32 {
+            let uid = 900 + round;
+            sqlx::query(
+                "INSERT INTO guild_warehouse_items (item_uid, guild_id, item_type, position, durability, max_durability)
+                 VALUES ($1, 1, 410003, 0, 100, 100)",
+            )
+            .bind(i64::from(uid))
+            .execute(&pool)
+            .await?;
+            let slot = u8::try_from(round % 40).expect("slot");
+            let (left, right) = tokio::join!(
+                first.withdraw_guild_warehouse_item(&pool, 1, uid, slot),
+                second.withdraw_guild_warehouse_item(&pool, 1, uid, slot),
+            );
+            let winners = usize::from(left?.is_some()) + usize::from(right?.is_some());
+            assert_eq!(winners, 1, "round {round}: exactly one member gets the item");
+            let copies: i64 = sqlx::query_scalar(
+                "SELECT (SELECT COUNT(*) FROM inventory_items WHERE item_uid = $1)
+                      + (SELECT COUNT(*) FROM guild_warehouse_items WHERE item_uid = $1)",
+            )
+            .bind(i64::from(uid))
+            .fetch_one(&pool)
+            .await?;
+            assert_eq!(copies, 1, "round {round}: the item exists once");
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1")
+                .bind(i64::from(uid))
+                .execute(&pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn guild_members_storing_into_one_slot_keep_the_other_item() -> Result<(), Error> {
+        let (pool, first, first_id) = test_character().await?;
+        let (second, second_id) = another_character(&pool, 2, "item-test-2").await?;
+        sqlx::query("INSERT INTO guilds (guild_id, name, leader_id) VALUES (1, 'Knights', $1)")
+            .bind(i64::from(first_id))
+            .execute(&pool)
+            .await?;
+        for round in 0..20_u32 {
+            let (left_uid, right_uid) = (1000 + round * 2, 1001 + round * 2);
+            insert_inventory_item(&pool, first_id, left_uid, 410003, 1).await?;
+            insert_inventory_item(&pool, second_id, right_uid, 410003, 1).await?;
+            first.load_inventory(&pool).await?;
+            second.load_inventory(&pool).await?;
+            let (left, right) = tokio::join!(
+                first.store_guild_warehouse_item(&pool, 1, left_uid, 5),
+                second.store_guild_warehouse_item(&pool, 1, right_uid, 5),
+            );
+            let stored = usize::from(left?.is_some()) + usize::from(right?.is_some());
+            assert_eq!(stored, 1, "round {round}: one item takes the slot");
+            let in_bags: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inventory_items WHERE item_uid IN ($1, $2)")
+                .bind(i64::from(left_uid))
+                .bind(i64::from(right_uid))
+                .fetch_one(&pool)
+                .await?;
+            assert_eq!(in_bags, 1, "round {round}: the other item stays in its bag");
+            sqlx::query("DELETE FROM guild_warehouse_items WHERE guild_id = 1")
+                .execute(&pool)
+                .await?;
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid IN ($1, $2)")
+                .bind(i64::from(left_uid))
+                .bind(i64::from(right_uid))
+                .execute(&pool)
+                .await?;
+        }
         Ok(())
     }
 
