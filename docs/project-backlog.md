@@ -41,9 +41,13 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
         "1－bomb4" do Snow corrigidos; status effects lidos do
         statuseffect.ini (Reflect, GodBelieve, Luck*, veneno...). Falta o Pedro
         olhar no jogo e apontar o que ainda estiver diferente das imagens.
-11. [ ] Stamina enchendo (sentado e parado) e o efeito especial quando enche.
+11. [x] Stamina enchendo (sentado e parado) e o efeito especial quando enche.
         Referência: personagem com raios azul-claros em volta dos pés e um
         brilho branco (a confirmar se é esse o efeito da stamina cheia).
+        Stamina já enche (3/s, 11/s sentado com X) e só gasta em FastBlade,
+        ScentSword, Hercules (20-30) e XP skills (100). O "especial" do
+        original é o CircleUp do círculo de XP cheio (Conquer.exe), agora
+        desenhado enquanto o XP está pronto.
 12. [ ] Effects de itens: os encantos de arma (club, wand, Snow etc.).
         Referências: lâminas de gelo azul-claro subindo do chão perto do
         personagem (Snow); ícones de arma (arco, cetro e outro).

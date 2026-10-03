@@ -175,6 +175,11 @@ fn tables(assets: &mut Assets) -> &'static EffectTables {
     })
 }
 
+/// Status effects the original client plays from its own code rather than
+/// `statuseffect.ini`: the XP circle (`XpStart`, 0x10) is `CircleUp`
+/// (`Hero.cpp`, beside `XpBlock`).
+const CLIENT_STATUS_EFFECTS: [(u64, &str); 1] = [(0x10, "CircleUp")];
+
 /// `ini/statuseffect.ini`: a status bit in hex and up to two effect names
 /// (`NULL` for none).
 pub fn parse_status_effects(text: &str) -> Vec<(u64, String)> {
@@ -202,6 +207,7 @@ pub fn status_effects(assets: &mut Assets) -> &'static [(u64, String)] {
     let tables = tables(assets);
     let status = parse_status_effects(&text)
         .into_iter()
+        .chain(CLIENT_STATUS_EFFECTS.iter().map(|(bit, name)| (*bit, (*name).to_owned())))
         .filter(|(_, name)| tables.effects.contains_key(&name.to_ascii_lowercase()))
         .collect();
     STATUS.get_or_init(|| status)
