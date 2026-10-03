@@ -552,6 +552,30 @@ const METEOR_TEAR: u32 = 1_088_002;
 const ACCEPT_PROPOSAL: u8 = 10;
 const REFUSE_PROPOSAL: u8 = 11;
 
+/// Records the marriage of two characters, `(database id, name)` each. A
+/// marriage row means married (divorce deletes it), so it fails, leaving
+/// both unchanged, when either already has one: another proposal may have
+/// been accepted at the same moment.
+pub(crate) async fn marry(pool: &sqlx::PgPool, one: (i64, &str), other: (i64, &str)) -> Result<bool, Error> {
+    let mut transaction = pool.begin().await?;
+    for ((me, _), (spouse_id, spouse_name)) in [(one, other), (other, one)] {
+        let inserted = sqlx::query(
+            "INSERT INTO marriages (character_id, spouse_id, spouse_name) VALUES ($1, $2, $3)
+             ON CONFLICT (character_id) DO NOTHING",
+        )
+        .bind(me)
+        .bind(spouse_id)
+        .bind(spouse_name)
+        .execute(&mut *transaction)
+        .await?;
+        if inserted.rows_affected() != 1 {
+            return Ok(false);
+        }
+    }
+    transaction.commit().await?;
+    Ok(true)
+}
+
 fn proposals() -> &'static parking_lot::Mutex<std::collections::HashMap<u32, (u32, String)>> {
     static PROPOSALS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<u32, (u32, String)>>> =
         std::sync::OnceLock::new();
@@ -658,19 +682,9 @@ async fn love_stone(state: &State, actor: &Actor<ActorState>, character: &Charac
                     .await?;
                 return Ok(());
             }
-            let mut transaction = state.pool().begin().await?;
-            for (me, spouse_id, spouse_name) in [
-                (character.database_id(), proposer.database_id(), proposer_name.clone()),
-                (proposer.database_id(), character.database_id(), character.entity().name().to_owned()),
-            ] {
-                sqlx::query("INSERT INTO marriages (character_id, spouse_id, spouse_name) VALUES ($1, $2, $3) ON CONFLICT (character_id) DO UPDATE SET spouse_id = excluded.spouse_id, spouse_name = excluded.spouse_name")
-                    .bind(me)
-                    .bind(spouse_id)
-                    .bind(spouse_name)
-                    .execute(&mut *transaction)
-                    .await?;
+            if !marry(state.pool(), (i64::from(character.database_id()), character.entity().name()), (i64::from(proposer.database_id()), &proposer_name)).await? {
+                return say(actor, NPC, "One of you is already married.", "Oh...").await;
             }
-            transaction.commit().await?;
             character.set_spouse(proposer_name.clone());
             proposer.set_spouse(character.entity().name());
             actor.send(MsgUserInfo::from(character)).await?;
@@ -1479,6 +1493,27 @@ async fn wuxing_oven(state: &State, actor: &Actor<ActorState>, character: &Chara
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn one_character_cannot_marry_twice_at_the_same_moment() -> Result<(), crate::Error> {
+        let pool = tq_db::testing::pool().await;
+        for round in 0..20_i64 {
+            let (a, b, c) = (3 * round + 1, 3 * round + 2, 3 * round + 3);
+            let (left, right) = tokio::join!(
+                super::marry(&pool, (a, "a"), (b, "b")),
+                super::marry(&pool, (b, "b"), (c, "c")),
+            );
+            assert_eq!(usize::from(left?) + usize::from(right?), 1, "round {round}: one marriage wins");
+            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM marriages WHERE character_id IN ($1, $2, $3)")
+                .bind(a)
+                .bind(b)
+                .bind(c)
+                .fetch_one(&pool)
+                .await?;
+            assert_eq!(rows, 2, "round {round}: exactly one couple is recorded");
+        }
+        Ok(())
+    }
 
     #[test]
     fn composing_follows_the_minor_items() {

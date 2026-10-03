@@ -51,6 +51,20 @@ impl Account {
 
     // === Methods ===
 
+    /// The development accounts of the migrations that still have their
+    /// published password (`123456`).
+    pub async fn with_published_password(pool: &sqlx::PgPool) -> Result<Vec<String>, crate::Error> {
+        let accounts: Vec<(String, String)> =
+            sqlx::query_as("SELECT username, password FROM accounts WHERE username IN ('shekohex', 'test1') ORDER BY username")
+                .fetch_all(pool)
+                .await?;
+        Ok(accounts
+            .into_iter()
+            .filter(|(_, hash)| bcrypt::verify("123456", hash).unwrap_or(false))
+            .map(|(username, _)| username)
+            .collect())
+    }
+
     /// Creates a new account in the database.
     pub async fn create(mut self, pool: &sqlx::PgPool) -> Result<Self, crate::Error> {
         let password = bcrypt::hash(&self.password, bcrypt::DEFAULT_COST)?;

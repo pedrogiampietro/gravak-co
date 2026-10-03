@@ -49,6 +49,9 @@ async fn main() -> Result<(), Error> {
     )?;
     tracing::debug!(target: "auth", "Opening the database");
     let state = State::init().await?;
+    let published = tq_db::account::Account::with_published_password(state.pool())
+        .await
+        .unwrap_or_default();
     let packets = auth::Packets {
         msg_connect,
         msg_account,
@@ -68,17 +71,24 @@ async fn main() -> Result<(), Error> {
     let runtime: &'static _ = unsafe { &*static_runtime };
 
     let auth_port = env::var("AUTH_PORT")?;
-    tq_logging::banner(
-        "GRAVAK  ·  AUTH SERVER",
-        concat!("v", env!("CARGO_PKG_VERSION")),
-        &[
-            ("Listening", format!("0.0.0.0:{auth_port}")),
-            ("Database", tq_db::database_label()),
-            ("Log level", log_level_name(log_verbosity).to_owned()),
-            ("Log files", "logs/auth.log.<date>".to_owned()),
-            ("Started in", format!("{:.2} s", started.elapsed().as_secs_f32())),
-        ],
-    );
+    let mut rows = vec![
+        ("Listening", format!("0.0.0.0:{auth_port}")),
+        ("Database", tq_db::database_label()),
+        ("Log level", log_level_name(log_verbosity).to_owned()),
+        ("Log files", "logs/auth.log.<date>".to_owned()),
+    ];
+    if !published.is_empty() {
+        rows.push(("Test accounts", format!("{} (password 123456)", published.join(", "))));
+    }
+    rows.push(("Started in", format!("{:.2} s", started.elapsed().as_secs_f32())));
+    tq_logging::banner("GRAVAK  ·  AUTH SERVER", concat!("v", env!("CARGO_PKG_VERSION")), &rows);
+    if !published.is_empty() {
+        tracing::warn!(
+            target: "auth",
+            accounts = %published.join(", "),
+            "Development accounts still have the password 123456; change or delete them before others play"
+        );
+    }
     tracing::info!(target: "auth", port = %auth_port, "Ready for logins");
     AuthServer::run(format!("0.0.0.0:{}", auth_port), runtime).await?;
     unsafe {

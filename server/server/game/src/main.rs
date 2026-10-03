@@ -153,6 +153,14 @@ async fn main() -> Result<(), Error> {
             ("Database", tq_db::database_label()),
             ("Log level", log_level_name(log_verbosity).to_owned()),
             ("Log files", "logs/game.log.<date>".to_owned()),
+            (
+                "Login tokens",
+                if env::var("TRANSFER_SECRET").is_ok_and(|key| !key.trim().is_empty()) {
+                    "auth server with TRANSFER_SECRET".to_owned()
+                } else {
+                    "this machine only (no TRANSFER_SECRET)".to_owned()
+                },
+            ),
             ("Started in", format!("{:.2} s", started.elapsed().as_secs_f32())),
         ],
     );

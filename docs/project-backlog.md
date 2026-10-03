@@ -17,15 +17,20 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
       GM); os demais só usam `dc`, `which`, `quest-status`, `nobility-*`,
       `title-*` e `add-stat`. Os comandos também não vão mais para o chat de
       quem está perto. Teste: `only_game_masters_run_game_master_commands`.
-- [ ] Contas de exemplo com senha `123456` (`shekohex`, `test1`) vêm das
-      migrations: não criá-las fora do ambiente de desenvolvimento.
-- [ ] Backup do Postgres: `db-backup` diário automático no `run-server.bat`,
-      com rotação, e `db-restore` para voltar um backup.
+- [x] Contas de exemplo com senha `123456` (`shekohex`, `test1`) vêm das
+      migrations, que não podem mudar depois de aplicadas: o auth mostra no
+      quadro de início e avisa no log enquanto elas tiverem essa senha.
+- [x] Backup do Postgres: `server/scripts/db-backup.ps1` (diário e automático
+      no `run-server.bat`, 14 mantidos) e `db-restore.ps1` (salva o estado
+      atual antes). Testado: backup, restore e contagem igual depois.
 - [x] Corrida no armazém da guild: dois membros sacando o mesmo item, ou
       guardando no mesmo slot, ao mesmo tempo. Testado com 20 rodadas
       simultâneas contra o Postgres.
-- [ ] Revisar os demais recursos que dois jogadores tocam ao mesmo tempo
-      (casamento, amizade bilateral, criação de guild) com o mesmo tipo de teste.
+- [x] Revisar os demais recursos que dois jogadores tocam ao mesmo tempo:
+      casamento corrigido (dois aceites simultâneos casavam a mesma pessoa
+      duas vezes; teste com 20 rodadas). Amizade já era idempotente (`ON
+      CONFLICT DO NOTHING` dos dois lados); trade e banca já conferiam cada
+      remoção; a criação de guild passa pelo `GuildManager` em memória.
 - [ ] `run-server.bat stop` mata os servidores sem salvar (até 30 s de
       progresso perdidos): parar o game de forma que ele salve todos.
 

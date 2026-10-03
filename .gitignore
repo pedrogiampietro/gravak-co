@@ -12,6 +12,9 @@ logs/
 *.err
 *.errout
 
+# Database backups (server\scripts\db-backup.ps1)
+server/backups/
+
 # Local map fixtures and junctions; game assets stay outside this repository
 server/data/GameMaps.invalid-download/
 server/data/GameMaps/map/

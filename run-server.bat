@@ -76,6 +76,10 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+rem One backup a day into server\backups (the newest 14 are kept).
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SERVER_DIR%\scripts\db-backup.ps1" -Daily || (
+    echo [AVISO] O backup do banco falhou; os servidores sobem mesmo assim.
+)
 
 rem -- Start servers -----------------------------------------------
 rem A server left over from an earlier run holds its port, and the new one
@@ -121,8 +125,8 @@ if defined FAILED (
 
 echo.
 echo   +-----------------------------------------+
-echo   |  Auth Server  -  porta 9958  (login)    |
-echo   |  Game Server  -  porta 5816  (jogo)     |
+echo   ^|  Auth Server  -  porta 9958  (login)    ^|
+echo   ^|  Game Server  -  porta 5816  (jogo)     ^|
 echo   +-----------------------------------------+
 echo.
 echo   Ambos os servidores foram iniciados em janelas
