@@ -1,7 +1,8 @@
-//! Painting for the login screens: the night-teal backdrop with drifting
-//! embers, the gold "Gravak" title, ornate gold-framed panels, buttons,
-//! text fields and the profession emblems. Everything is drawn by the
-//! client; nothing comes from the game's art.
+//! Painting for the login screens: views of the game world drifting behind
+//! them (see `login_scenes`), drifting embers, the gold "Gravak" title,
+//! gold-framed panels on frosted glass, buttons, text fields and the
+//! profession emblems. Before the first view is ready a night-teal backdrop
+//! stands in.
 
 use image::{Pixel, Rgba, RgbaImage};
 use std::{cell::RefCell, collections::HashMap};
@@ -671,6 +672,10 @@ pub fn ornament_rule(image: &mut RgbaImage, centre_x: i32, y: i32, width: i32) {
 
 /// An ornate panel: dark glass body, double gold frame with corner pieces
 /// and, when `title` is set, a title band.
+/// The frame bands of the window art (left, right, top, bottom), kept
+/// opaque around the translucent middle.
+const PANEL_BORDERS: [u32; 4] = [16, 17, 36, 38];
+
 pub fn panel(image: &mut RgbaImage, rect: [i32; 4], title: Option<&str>) {
     let [x, y, w, h] = rect;
     // Drop shadow.
@@ -682,7 +687,16 @@ pub fn panel(image: &mut RgbaImage, rect: [i32; 4], title: Option<&str>) {
             [0, 0, 0, (alpha * 255.0) as u8],
         );
     }
-    if let Some(frame) = framed(w.max(1) as u32, h.max(1) as u32) {
+    if let Some(mut frame) = framed(w.max(1) as u32, h.max(1) as u32) {
+        // The world shows, blurred, through the panel's middle.
+        frost(image, rect);
+        let [left, right, top, bottom] = PANEL_BORDERS;
+        let (fw, fh) = frame.dimensions();
+        for (px, py, pixel) in frame.enumerate_pixels_mut() {
+            if px >= left && py >= top && px + right < fw && py + bottom < fh {
+                pixel.0[3] = pixel.0[3].min(196);
+            }
+        }
         image::imageops::overlay(image, &frame, i64::from(x), i64::from(y));
         if let Some(title) = title {
             // The title band of the friend dialog's art.
@@ -844,7 +858,7 @@ const CLASS_TINTS: [[f32; 3]; 4] = [
     [72.0, 92.0, 170.0],
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColumnState {
     Idle,
     Hovered,
@@ -859,8 +873,8 @@ pub struct ClassColumn<'a> {
     pub description: &'a str,
     pub skills: &'a str,
     pub stats: [u8; 4],
-    /// The game's illustration, when the installation has one.
-    pub portrait: Option<&'a RgbaImage>,
+    /// The profession's hero, rendered from the game's 3D model.
+    pub hero: Option<&'a RgbaImage>,
 }
 
 /// Overlays `source` with its alpha scaled by `alpha`.
@@ -928,51 +942,60 @@ pub fn class_column(
         }
     }
     let art_height = h * 56 / 100;
-    match column.portrait {
-        Some(portrait) => {
-            // Cover the upper part, cropped to the column's width.
-            let scale = (w as f32 / portrait.width() as f32)
-                .max(art_height as f32 / portrait.height() as f32);
-            let scaled = image::imageops::resize(
-                portrait,
-                (portrait.width() as f32 * scale).ceil() as u32,
-                (portrait.height() as f32 * scale).ceil() as u32,
-                image::imageops::FilterType::Triangle,
-            );
-            let crop_x = (scaled.width() as i32 - w) / 2;
-            for py in 0..art_height.min(scaled.height() as i32) {
-                for px in 0..w {
-                    let pixel = scaled.get_pixel((px + crop_x).max(0) as u32, py as u32).0;
-                    blend(image, x + px, y + py, pixel);
+    // Light falling from above.
+    for ray in 0..3 {
+        let offset = (time * 0.15 + ray as f32 * 2.1).sin() * w as f32 * 0.12;
+        let centre = x as f32 + w as f32 * (0.3 + ray as f32 * 0.2) + offset;
+        for py in 0..art_height {
+            let spread = 10.0 + py as f32 * 0.25;
+            let fade = (1.0 - py as f32 / art_height as f32) * 0.16;
+            for px in (centre - spread) as i32..(centre + spread) as i32 {
+                if px >= x && px < x + w {
+                    let d = (px as f32 - centre).abs() / spread;
+                    let colour = [
+                        (tint[0] * 0.5 + 128.0) as u8,
+                        (tint[1] * 0.5 + 118.0) as u8,
+                        (tint[2] * 0.5 + 100.0) as u8,
+                        255,
+                    ];
+                    blend(image, px, y + py, with_alpha(colour, fade * (1.0 - d)));
                 }
             }
         }
-        None => {
-            // Light falling from above, and the emblem lit in it.
-            for ray in 0..3 {
-                let offset = (time * 0.15 + ray as f32 * 2.1).sin() * w as f32 * 0.12;
-                let centre = x as f32 + w as f32 * (0.3 + ray as f32 * 0.2) + offset;
-                for py in 0..art_height {
-                    let spread = 10.0 + py as f32 * 0.25;
-                    let fade = (1.0 - py as f32 / art_height as f32) * 0.16;
-                    for px in (centre - spread) as i32..(centre + spread) as i32 {
-                        if px >= x && px < x + w {
-                            let d = (px as f32 - centre).abs() / spread;
-                            let colour = [
-                                (tint[0] * 0.5 + 128.0) as u8,
-                                (tint[1] * 0.5 + 118.0) as u8,
-                                (tint[2] * 0.5 + 100.0) as u8,
-                                255,
-                            ];
-                            blend(image, px, y + py, with_alpha(colour, fade * (1.0 - d)));
-                        }
+    }
+    let cx = x + w / 2;
+    match column.hero {
+        Some(hero) => {
+            // The hero in the light: a glow behind, a shadow at the feet.
+            let top = y + art_height - hero.height() as i32 + 10;
+            radial_glow(
+                image,
+                cx,
+                top + hero.height() as i32 / 2,
+                (w as f32 * 0.42) as i32,
+                [
+                    tint[0] as u8 / 2 + 128,
+                    tint[1] as u8 / 2 + 110,
+                    tint[2] as u8 / 2 + 80,
+                    if state == ColumnState::Selected { 90 } else { 40 },
+                ],
+            );
+            let feet = top + (hero.height() as f32 * 0.93) as i32;
+            for dy in -6..=6 {
+                for dx in -46..=46 {
+                    let d = ((dx as f32 / 46.0).powi(2) + (dy as f32 / 6.0).powi(2)).sqrt();
+                    if d < 1.0 {
+                        blend(image, cx + dx, feet + dy, [0, 0, 0, ((1.0 - d) * 150.0) as u8]);
                     }
                 }
             }
+            let alpha = if state == ColumnState::Selected { 1.0 } else { 0.55 };
+            overlay_faded(image, hero, cx - hero.width() as i32 / 2, top, alpha);
+        }
+        None => {
             let size = ((w as f32 * 0.62) as u32)
                 .min(art_height.max(68) as u32 - 20)
                 .max(48);
-            let cx = x + w / 2;
             let cy = y + art_height / 2 + 6;
             radial_glow(
                 image,
@@ -1020,8 +1043,8 @@ pub fn class_column(
     let medal = 54;
     let medal_y = y + art_height - medal / 2;
     let lit = state != ColumnState::Idle;
-    // With an illustration the emblem becomes a medallion on its edge.
-    if column.portrait.is_some() {
+    // With the hero shown the emblem becomes a medallion at its feet.
+    if column.hero.is_some() {
         overlay_faded(
             image,
             &emblem(column.class, medal as u32, lit),
@@ -1115,5 +1138,256 @@ pub fn class_column(
         );
         diamond(image, x + w / 2, y, 5, GOLD_BRIGHT);
         diamond(image, x + w / 2, y + h - 1, 5, GOLD_BRIGHT);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The world behind the screens
+
+/// How long each view stays, and how long two views cross-fade.
+const SCENE_SECONDS: f32 = 16.0;
+const SCENE_FADE: f32 = 2.5;
+/// The first view fades in over the painted backdrop.
+const SCENE_FADE_IN: f32 = 1.5;
+
+struct SceneState {
+    views: Vec<RgbaImage>,
+    /// When the first view arrived, on the screens' clock.
+    since: Option<f32>,
+}
+
+thread_local! {
+    static SCENES: RefCell<SceneState> = const { RefCell::new(SceneState { views: Vec::new(), since: None }) };
+    /// Per window size: the darkening (vignette, cinematic bands) and the
+    /// warm light behind the title, laid over every view.
+    static SHADES: RefCell<HashMap<[u32; 2], Vec<[f32; 4]>>> = RefCell::new(HashMap::new());
+}
+
+/// Hands over one more world view (see `login_scenes`).
+pub fn add_scene(view: RgbaImage, time: f32) {
+    SCENES.with(|scenes| {
+        let mut scenes = scenes.borrow_mut();
+        scenes.since.get_or_insert(time);
+        scenes.views.push(view);
+    });
+}
+
+/// Multiplier and warm light for each pixel of a `size` window.
+fn shade(size: [u32; 2]) -> Vec<[f32; 4]> {
+    let [width, height] = size;
+    let (w, h) = (width as f32, height as f32);
+    let mut shade = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let (fx, fy) = (x as f32 / w, y as f32 / h);
+            let vignette = 1.0 - ((fx - 0.5).powi(2) + (fy - 0.5).powi(2)).sqrt().sub_floor(0.3) * 1.5;
+            // Darker bands at the top and the bottom, like a film frame.
+            let bands = 1.0 - (0.12 - fy).max(0.0) * 4.0 - (fy - 0.82).max(0.0) * 3.2;
+            // The middle, where the panels sit, is held a little darker.
+            let centre = 1.0 - (1.0 - (((fx - 0.5) / 0.3).powi(2) + ((fy - 0.5) / 0.32).powi(2)).sqrt()).max(0.0) * 0.25;
+            let multiplier = (vignette * bands * centre).clamp(0.0, 1.0);
+            // A warm light behind the title.
+            let glow = (1.0 - (((fx - 0.5) / 0.38).powi(2) + ((fy - 0.18) / 0.22).powi(2)).sqrt()).max(0.0).powi(2);
+            shade.push([multiplier, glow * 70.0, glow * 48.0, glow * 16.0]);
+        }
+    }
+    shade
+}
+
+trait SubFloor {
+    fn sub_floor(self, floor: f32) -> f32;
+}
+
+impl SubFloor for f32 {
+    /// `self - floor`, never below zero.
+    fn sub_floor(self, floor: f32) -> f32 {
+        (self - floor).max(0.0)
+    }
+}
+
+/// Paints the current world view over `image` (the backdrop): the camera
+/// drifts slowly across it and the views cross-fade in turn. Nothing is
+/// drawn until the first view has been composed.
+pub fn scene(image: &mut RgbaImage, time: f32) {
+    SCENES.with(|scenes| {
+        let scenes = scenes.borrow();
+        let Some(since) = scenes.since else { return };
+        let count = scenes.views.len();
+        if count == 0 {
+            return;
+        }
+        let elapsed = (time - since).max(0.0);
+        let index = (elapsed / SCENE_SECONDS) as usize % count;
+        let progress = (elapsed % SCENE_SECONDS) / SCENE_SECONDS;
+        // The next view fades in over the last seconds of this one.
+        let fade_start = 1.0 - SCENE_FADE / SCENE_SECONDS;
+        let next = (count > 1 && progress > fade_start)
+            .then(|| ((progress - fade_start) / (1.0 - fade_start), (index + 1) % count));
+        let appear = (elapsed / SCENE_FADE_IN).min(1.0);
+        let size = [image.width(), image.height()];
+        let offset = |view: usize, progress: f32| -> [i64; 2] {
+            let room = [
+                (crate::login_scenes::SCENE_SIZE[0] as i64 - size[0] as i64).max(0) as f32,
+                (crate::login_scenes::SCENE_SIZE[1] as i64 - size[1] as i64).max(0) as f32,
+            ];
+            // Each view drifts along its own diagonal, eased at both ends.
+            let eased = progress * progress * (3.0 - 2.0 * progress);
+            let (from, to) = match view % 4 {
+                0 => ([0.2, 0.3], [0.8, 0.6]),
+                1 => ([0.8, 0.2], [0.25, 0.7]),
+                2 => ([0.3, 0.7], [0.7, 0.25]),
+                _ => ([0.7, 0.65], [0.2, 0.3]),
+            };
+            [0, 1].map(|axis| (room[axis] * (from[axis] + (to[axis] - from[axis]) * eased)) as i64)
+        };
+        let main_offset = offset(index, progress);
+        let next_offset = next.map(|(_, view)| offset(view, 0.0));
+        SHADES.with(|shades| {
+            let mut shades = shades.borrow_mut();
+            if shades.len() > 4 {
+                shades.clear();
+            }
+            let shade = shades.entry(size).or_insert_with(|| shade(size));
+            let view = &scenes.views[index];
+            let next_view = next.map(|(t, view)| (t, &scenes.views[view]));
+            let target = image.as_mut();
+            for y in 0..size[1] as i64 {
+                for x in 0..size[0] as i64 {
+                    let sample = |view: &RgbaImage, at: [i64; 2]| -> [f32; 3] {
+                        let (sx, sy) = (at[0] + x, at[1] + y);
+                        if sx < 0 || sy < 0 || sx >= i64::from(view.width()) || sy >= i64::from(view.height()) {
+                            return [6.0, 14.0, 20.0];
+                        }
+                        let at = ((sy as usize) * view.width() as usize + sx as usize) * 4;
+                        let raw = view.as_raw();
+                        [f32::from(raw[at]), f32::from(raw[at + 1]), f32::from(raw[at + 2])]
+                    };
+                    let mut colour = sample(view, main_offset);
+                    if let (Some((mix_t, other_view)), Some(at)) = (next_view, next_offset) {
+                        let other = sample(other_view, at);
+                        colour = [0, 1, 2].map(|c| colour[c] * (1.0 - mix_t) + other[c] * mix_t);
+                    }
+                    let pixel = (y as usize) * size[0] as usize + x as usize;
+                    let [multiplier, warm_r, warm_g, warm_b] = shade[pixel];
+                    let lit = [
+                        colour[0] * multiplier + warm_r,
+                        colour[1] * multiplier + warm_g,
+                        colour[2] * multiplier + warm_b,
+                    ];
+                    let out = &mut target[pixel * 4..pixel * 4 + 3];
+                    for c in 0..3 {
+                        out[c] = if appear >= 1.0 {
+                            lit[c].min(255.0) as u8
+                        } else {
+                            (f32::from(out[c]) * (1.0 - appear) + lit[c] * appear).min(255.0) as u8
+                        };
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// Frosted glass: the world behind `rect` blurred and darkened, so a panel
+/// laid over it with some transparency reads clearly.
+pub fn frost(image: &mut RgbaImage, rect: [i32; 4]) {
+    let [x, y, w, h] = rect;
+    let x0 = x.max(0) as u32;
+    let y0 = y.max(0) as u32;
+    let x1 = ((x + w).max(0) as u32).min(image.width());
+    let y1 = ((y + h).max(0) as u32).min(image.height());
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let (width, height) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    // Blurred at half resolution: as soft to the eye, a quarter of the work.
+    let (half_w, half_h) = (width.div_ceil(2), height.div_ceil(2));
+    let raw = image.as_raw();
+    let stride = image.width() as usize;
+    let mut pixels = vec![[0.0f32; 3]; half_w * half_h];
+    for hy in 0..half_h {
+        for hx in 0..half_w {
+            let mut sum = [0.0f32; 3];
+            let mut count = 0.0;
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let (px, py) = (hx * 2 + dx, hy * 2 + dy);
+                if px < width && py < height {
+                    let at = ((y0 as usize + py) * stride + x0 as usize + px) * 4;
+                    for c in 0..3 {
+                        sum[c] += f32::from(raw[at + c]);
+                    }
+                    count += 1.0;
+                }
+            }
+            pixels[hy * half_w + hx] = sum.map(|total| total / count);
+        }
+    }
+    // Two passes of a box blur, rows then columns, each a running sum.
+    let radius = 4usize;
+    let mut prefix = vec![[0.0f32; 3]; half_w.max(half_h) + 1];
+    let mut line = vec![[0.0f32; 3]; half_w.max(half_h)];
+    let mut box_blur = |line: &mut [[f32; 3]]| {
+        let len = line.len();
+        for index in 0..len {
+            for c in 0..3 {
+                prefix[index + 1][c] = prefix[index][c] + line[index][c];
+            }
+        }
+        for (index, value) in line.iter_mut().enumerate() {
+            let from = index.saturating_sub(radius);
+            let to = (index + radius + 1).min(len);
+            *value = [0, 1, 2].map(|c| (prefix[to][c] - prefix[from][c]) / (to - from) as f32);
+        }
+    };
+    for _ in 0..2 {
+        for row in 0..half_h {
+            box_blur(&mut pixels[row * half_w..(row + 1) * half_w]);
+        }
+        for column in 0..half_w {
+            for row in 0..half_h {
+                line[row] = pixels[row * half_w + column];
+            }
+            box_blur(&mut line[..half_h]);
+            for row in 0..half_h {
+                pixels[row * half_w + column] = line[row];
+            }
+        }
+    }
+    for row in 0..height {
+        for column in 0..width {
+            let [r, g, b] = pixels[(row / 2) * half_w + column / 2];
+            image.put_pixel(
+                x0 + column as u32,
+                y0 + row as u32,
+                Rgba([(r * 0.62) as u8, (g * 0.66) as u8, (b * 0.72) as u8, 255]),
+            );
+        }
+    }
+}
+
+/// A band of light that sweeps across the title every few seconds.
+pub fn title_shine(image: &mut RgbaImage, text: &str, size: f32, centre_x: i32, y: i32, time: f32) {
+    let Some(rendered) = TITLES.with(|cache| cache.borrow().get(&(text.to_owned(), size as u32)).cloned()) else {
+        return;
+    };
+    let period = 6.0;
+    let phase = (time % period) / period;
+    if phase > 0.35 {
+        return;
+    }
+    let left = centre_x - rendered.width() as i32 / 2;
+    let sweep = -0.3 + phase / 0.35 * 1.6;
+    let (w, h) = (rendered.width() as f32, rendered.height() as f32);
+    for (px, py, pixel) in rendered.enumerate_pixels() {
+        let alpha = f32::from(pixel.0[3]) / 255.0;
+        // Only the letters' gold face, not their glow.
+        if alpha < 0.9 || pixel.0[0] < 150 {
+            continue;
+        }
+        let band = (px as f32 / w + py as f32 / h * 0.35) - sweep;
+        let strength = (1.0 - (band / 0.06).abs()).max(0.0);
+        if strength > 0.0 {
+            blend(image, left + px as i32, y + py as i32, [255, 252, 232, (strength * 170.0) as u8]);
+        }
     }
 }

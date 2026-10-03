@@ -220,3 +220,64 @@ pub fn load_hud_icon_paths() -> Vec<(String, String)> {
         .filter(|(key, path)| !key.is_empty() && !path.is_empty())
         .collect()
 }
+
+/// `gravak.ini` beside the executable, shipped by the installer: where the
+/// game data is and which server to log in to. With it the client opens on
+/// the login screens without any command-line arguments.
+///
+/// ```ini
+/// [Client]
+/// Assets=game
+/// Auth=127.0.0.1:9958
+/// Realm=CoEmu
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientConfig {
+    /// The game data folder, relative paths taken from the executable's.
+    pub assets: Option<PathBuf>,
+    pub auth: Option<String>,
+    pub realm: Option<String>,
+}
+
+pub fn load_client_config() -> Option<ClientConfig> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let text = std::fs::read_to_string(dir.join("gravak.ini")).ok()?;
+    Some(parse_client_config(&text, &dir))
+}
+
+fn parse_client_config(text: &str, dir: &std::path::Path) -> ClientConfig {
+    let mut config = ClientConfig::default();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match key.trim().to_ascii_lowercase().as_str() {
+            "assets" => config.assets = Some(dir.join(value)),
+            "auth" => config.auth = Some(value.to_owned()),
+            "realm" => config.realm = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    config
+}
+
+#[cfg(test)]
+mod client_config_tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_installers_ini() {
+        let dir = std::path::Path::new("C:/Games/Gravak");
+        let config = parse_client_config("[Client]\nAssets=game\nAuth = 10.0.0.2:9958\nRealm=CoEmu\n; note\n", dir);
+        assert_eq!(config.assets, Some(dir.join("game")));
+        assert_eq!(config.auth.as_deref(), Some("10.0.0.2:9958"));
+        assert_eq!(config.realm.as_deref(), Some("CoEmu"));
+        // An absolute path stays as written.
+        let config = parse_client_config("Assets=R:/5065", dir);
+        assert_eq!(config.assets, Some(std::path::PathBuf::from("R:/5065")));
+    }
+}

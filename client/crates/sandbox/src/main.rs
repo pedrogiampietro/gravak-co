@@ -13,9 +13,12 @@ mod labels;
 mod launcher;
 mod launcher_art;
 mod login;
+mod login_scenes;
 mod logo;
 mod main_hud;
 mod magic;
+#[cfg(test)]
+mod marketing;
 mod map;
 mod minimap;
 mod motion_math;
@@ -28,6 +31,7 @@ mod original_ui_layout;
 mod renderer;
 mod settings;
 mod shop;
+mod showcase;
 mod ui;
 mod ui_theme;
 mod validation;
@@ -454,7 +458,8 @@ impl ApplicationHandler for App {
             let window = Arc::new(
                 event_loop.create_window(
                     Window::default_attributes()
-                        .with_title("gravak-co — offline Twin City sandbox")
+                        .with_title("Gravak")
+                        .with_window_icon(window_icon())
                         .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768)),
                 )?,
             );
@@ -6488,6 +6493,13 @@ fn is_war_structure(kind: u16) -> bool {
 }
 
 /// A large life shown on the u16 health bar: thousandths of the maximum.
+/// The "G" emblem for the title bar and the taskbar.
+pub fn window_icon() -> Option<winit::window::Icon> {
+    let image = image::load_from_memory(include_bytes!("ui_assets/gravak-icon.png")).ok()?.to_rgba8();
+    let (width, height) = image.dimensions();
+    winit::window::Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
 fn scaled_life(life: u32, maximum: u32) -> u16 {
     if life == 0 {
         return 0;
@@ -6514,6 +6526,14 @@ fn run() -> Result<()> {
     let mut password = "123456".to_owned();
     let mut realm = "CoEmu".to_owned();
     let mut character_name = None;
+    // The installed client: `gravak.ini` beside it names the game data and
+    // the server, and it goes straight to the login screens.
+    if let Some(config) = settings::load_client_config() {
+        root = config.assets;
+        auth_address = config.auth.unwrap_or(auth_address);
+        realm = config.realm.unwrap_or(realm);
+        online = true;
+    }
     while let Some(arg) = args.next() {
         match arg.to_str().ok_or("Invalid argument encoding")? {
             "--assets" => {
@@ -6607,9 +6627,14 @@ fn run() -> Result<()> {
             _ => return Err("Unknown argument; use --help".into()),
         }
     }
+    // Without --assets or gravak.ini, a `game` folder beside the executable.
+    let root = root.or_else(|| {
+        let game = std::env::current_exe().ok()?.parent()?.join("game");
+        game.is_dir().then_some(game)
+    });
     // Opened before the login screens, which use the game's window art.
     let mut assets = Assets::open(
-        &root.ok_or("You must supply your own 5065 installation: --assets <directory>")?,
+        &root.ok_or("Game data not found: install Gravak again, or pass --assets <directory>")?,
     )?;
     let mut network = None;
     let mut server_ready = None;
