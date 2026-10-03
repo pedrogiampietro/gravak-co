@@ -2050,9 +2050,9 @@ impl App {
             return Some(
                 shop::PromptDialog::new(
                     [size.width as f32, size.height as f32],
-                    "Store",
-                    format!("{} - {} CPs ({left} left)", product.name, product.price_cps),
-                    "Buy this item?",
+                    "Confirm purchase",
+                    product.name.clone(),
+                    format!("for {} CPs ({left} CPs left)", product.price_cps),
                 )
                 .with_buttons(["Buy", "Cancel"]),
             );

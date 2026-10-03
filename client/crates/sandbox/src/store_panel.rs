@@ -365,7 +365,7 @@ mod preview {
         }
         button_image(&mut assets, false).expect("button").save(format!("{dir}/store-button.png")).expect("png");
         button_image(&mut assets, true).expect("button").save(format!("{dir}/store-button-hover.png")).expect("png");
-        crate::shop::PromptDialog::new([1024.0, 768.0], "Store", "Meteor - 13 CPs (1237 left)".to_owned(), "Buy this item?")
+        crate::shop::PromptDialog::new([1024.0, 768.0], "Confirm purchase", "Heaven's Blessing (30 days)".to_owned(), "for 2000 CPs (8870 CPs left)")
             .with_buttons(["Buy", "Cancel"])
             .image(&mut assets, Some(true))
             .expect("prompt")

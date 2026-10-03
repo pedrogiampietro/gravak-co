@@ -956,6 +956,18 @@ pub fn label_centered(image: &mut RgbaImage, value: &str, size: f32, center_x: i
     }
 }
 
+/// Like `label_centered`, but shrinks the text until it fits `max_width`.
+pub fn label_fitted(image: &mut RgbaImage, value: &str, size: f32, center_x: i32, y: i32, colour: [u8; 4], max_width: i32) {
+    if let Ok(font) = crate::main_hud::label_font() {
+        let mut size = size;
+        while size > 9.0 && crate::main_hud::text_width(font, value, size) > max_width {
+            size -= 0.5;
+        }
+        let width = crate::main_hud::text_width(font, value, size);
+        crate::main_hud::crisp_text(image, font, value, size, [center_x - width / 2, y], colour);
+    }
+}
+
 /// The trade dialog's width; the partner card sits to its right.
 pub const TRADE_WIDTH: f32 = 335.0;
 pub const TRADE_PARTNER_INNER: u32 = 214;

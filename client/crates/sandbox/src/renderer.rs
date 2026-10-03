@@ -4036,7 +4036,7 @@ impl Renderer {
         }
         if let Some(prompt) = prompt {
             let hovered = prompt.button_at(cursor);
-            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, prompt.text, prompt.buttons));
+            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, &prompt.text, prompt.buttons));
             if !self.textures.contains_key(&key) {
                 self.upload(&key, prompt.image(assets, hovered)?);
             }
