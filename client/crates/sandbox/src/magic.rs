@@ -13,6 +13,11 @@ const KIND: usize = 212;
 const INTONE_EFFECT: usize = 468;
 const TARGET_EFFECT: usize = 1120;
 const TARGET_SOUND: usize = 1184;
+/// A trail of effects along the cast, `ini/tme/<name>` (FastBlade's
+/// `windblade4.tme`, ScentSword's `swordrain4.tme`).
+const TRAIL: usize = 1444;
+/// Size of one TME step: the effect name, then four numbers.
+const TRAIL_STEP: usize = 144;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagicType {
@@ -26,6 +31,65 @@ pub struct MagicType {
     /// Effect played on the target (for example "Thunder").
     pub target_effect: Option<String>,
     pub sound: Option<String>,
+    /// The `.tme` trail drawn along the cast, if any.
+    pub trail: Option<String>,
+}
+
+/// One effect of a trail: played `delay_ms` after the cast, `along` units
+/// toward the target and `across` to its side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailStep {
+    pub effect: String,
+    pub delay_ms: u32,
+    pub along: i32,
+    pub across: i32,
+}
+
+/// Parses a `.tme` file: a step count, then per step a 128-byte effect name
+/// and four numbers (delay, a second delay, along, across).
+pub fn parse_trail(bytes: &[u8]) -> Vec<TrailStep> {
+    let number = |offset: usize| {
+        bytes
+            .get(offset..offset + 4)
+            .map(|value| i32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+    };
+    let count = number(0).unwrap_or(0).clamp(0, 256) as usize;
+    (0..count)
+        .filter_map(|index| {
+            let start = 4 + index * TRAIL_STEP;
+            let name = bytes.get(start..start + 128)?;
+            let end = name.iter().position(|byte| *byte == 0).unwrap_or(name.len());
+            let effect = String::from_utf8_lossy(&name[..end]).trim().to_owned();
+            let delay = number(start + 128)?.max(0) + number(start + 132)?.max(0);
+            (!effect.is_empty()).then(|| TrailStep {
+                effect,
+                delay_ms: delay as u32,
+                along: number(start + 136).unwrap_or(0),
+                across: number(start + 140).unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// The steps of the trail `name` (`ini/tme/`), cached.
+pub fn trail(assets: &mut Assets, name: &str) -> &'static [TrailStep] {
+    static TRAILS: OnceLock<std::sync::Mutex<HashMap<String, &'static [TrailStep]>>> = OnceLock::new();
+    let trails = TRAILS.get_or_init(Default::default);
+    let key = name.to_ascii_lowercase();
+    if let Some(steps) = trails.lock().ok().and_then(|trails| trails.get(&key).copied()) {
+        return steps;
+    }
+    let stem = key.trim_end_matches(".tme");
+    let steps = [format!("ini/tme/{stem}.TME"), format!("ini/tme/{stem}.tme"), format!("ini/tme/{name}")]
+        .iter()
+        .find_map(|path| assets.read(path).ok())
+        .map(|bytes| parse_trail(&bytes))
+        .unwrap_or_default();
+    let steps: &'static [TrailStep] = Box::leak(steps.into_boxed_slice());
+    if let Ok(mut trails) = trails.lock() {
+        trails.insert(key, steps);
+    }
+    steps
 }
 
 fn field(record: &[u8], offset: usize) -> Option<String> {
@@ -66,6 +130,7 @@ pub fn parse_magic_types(bytes: &[u8]) -> Vec<MagicType> {
                 intone_effect: field(record, INTONE_EFFECT),
                 target_effect: field(record, TARGET_EFFECT),
                 sound: field(record, TARGET_SOUND),
+                trail: field(record, TRAIL).filter(|name| name.to_ascii_lowercase().ends_with(".tme")),
             })
         })
         .collect()
@@ -263,6 +328,38 @@ mod tests {
         assert_eq!(types[0].intone_effect.as_deref(), Some("Intone-1"));
         assert_eq!(types[0].target_effect, None);
         assert_eq!(types[0].sound.as_deref(), Some("bomb4"), "the name after the full-width hyphen");
+    }
+
+    #[test]
+    fn reads_a_trail() {
+        let mut bytes = 2_i32.to_le_bytes().to_vec();
+        for (name, delay, along, across) in [("swordgas-m", 50, 60, 25), ("swordgas-b", 100, 120, 15)] {
+            let mut step = vec![0_u8; TRAIL_STEP];
+            step[..name.len()].copy_from_slice(name.as_bytes());
+            step[128..132].copy_from_slice(&(delay as i32).to_le_bytes());
+            step[136..140].copy_from_slice(&(along as i32).to_le_bytes());
+            step[140..144].copy_from_slice(&(across as i32).to_le_bytes());
+            bytes.extend(step);
+        }
+        let steps = parse_trail(&bytes);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            TrailStep { effect: "swordgas-b".to_owned(), delay_ms: 100, along: 120, across: 15 }
+        );
+    }
+
+    #[test]
+    #[ignore = "Requires a local 5065 installation"]
+    fn the_blades_have_their_trails() {
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let fast_blade = magic_type(&mut assets, 1_045, 0).expect("FastBlade");
+        let name = fast_blade.trail.clone().expect("FastBlade has a trail");
+        let steps = trail(&mut assets, &name);
+        assert_eq!(steps.len(), 6, "{name}");
+        assert!(steps.iter().all(|step| effect(&mut assets, &step.effect).is_some()), "{steps:?}");
+        let scent_sword = magic_type(&mut assets, 1_046, 0).expect("ScentSword");
+        assert!(!trail(&mut assets, scent_sword.trail.as_deref().expect("trail")).is_empty());
     }
 
     #[test]

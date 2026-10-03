@@ -347,6 +347,10 @@ pub enum NetworkEvent {
         target_id: u32,
         skill_id: u16,
         damage: u32,
+        /// The cell the cast was aimed at.
+        target_cell: (u16, u16),
+        /// The first event of a cast, which draws its trail.
+        first: bool,
     },
     Skill {
         skill_id: u16,
@@ -1736,12 +1740,17 @@ pub(crate) async fn play(
                     });
                 }
                 Some(GameEvent::SkillEffect(effect)) => {
-                    for (target_id, damage) in effect.targets {
+                    let target_cell = ((effect.data & 0xffff) as u16, (effect.data >> 16) as u16);
+                    // A cast that hit nothing still shows on its caster.
+                    let targets = if effect.targets.is_empty() { vec![(0, 0)] } else { effect.targets };
+                    for (index, (target_id, damage)) in targets.into_iter().enumerate() {
                         let _ = events.send(NetworkEvent::SkillEffect {
                             attacker_id: effect.attacker_id,
                             target_id,
                             skill_id: effect.skill_id,
                             damage,
+                            target_cell,
+                            first: index == 0,
                         });
                     }
                 }

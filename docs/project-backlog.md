@@ -59,9 +59,12 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 13. [x] Contador na tela para Cyclone, Superman, Speed e outros buffs.
         Feito com o 16: barra de ícones (skill/item do original) com o tempo
         restante; o servidor manda o fim de cada status (pacote 9120).
-14. [ ] Blade (Fast Blade / Scent Sword) com o effect certo. Referência:
+14. [x] Blade (Fast Blade / Scent Sword) com o effect certo. Referência:
         rastros verdes longos atravessando a tela, vários acertos de
         50.000+.
+        Feito: o MagicType guarda um rastro .tme (FastBlade windblade4.tme,
+        ScentSword swordrain4.tme); o cliente desenha os effects dele um
+        após o outro na direção do golpe, para toda skill que tiver um.
 15. [ ] Ao matar uma criatura, a alma/luz que sai dela e voa até o
         personagem. Referência: figura azul translúcida (a alma) subindo
         perto dos personagens numa caverna.

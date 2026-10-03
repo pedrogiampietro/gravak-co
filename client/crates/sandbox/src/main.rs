@@ -3885,6 +3885,8 @@ impl App {
                 target_id,
                 skill_id,
                 damage,
+                target_cell,
+                first,
             } => {
                 let now = self.started.elapsed().as_secs_f32();
                 let level = self
@@ -3900,6 +3902,8 @@ impl App {
                     started: now,
                     // The renderer stops each effect when its animation ends.
                     expires: now + renderer::SKILL_EFFECT_MAX_SECONDS,
+                    target_cell,
+                    trail: first,
                 });
                 if damage > 0 {
                     self.combat_numbers.push((target_id, damage, now + 1.0));

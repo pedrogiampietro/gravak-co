@@ -60,6 +60,10 @@ pub struct SkillEffectInstance {
     pub level: u16,
     pub started: f32,
     pub expires: f32,
+    /// The cell the cast was aimed at, for its trail.
+    pub target_cell: (u16, u16),
+    /// Whether this one draws the cast's trail (the first of its targets).
+    pub trail: bool,
 }
 
 /// The original `born` effect (`3DEffect.ini`) over a respawning monster:
@@ -2668,9 +2672,47 @@ impl Renderer {
                     .unwrap_or(player.position)
             };
             let elapsed = time - effect.started;
+            // The trail (FastBlade's green sword gas): its effects one after
+            // another along the line from the caster toward the aimed cell.
+            if let Some(trail) = magic.trail.as_deref().filter(|_| effect.trail) {
+                let caster = position_of(effect.attacker_id);
+                let from = map.project(caster);
+                let aimed = if effect.target_cell != (0, 0) {
+                    map.project([f32::from(effect.target_cell.0), f32::from(effect.target_cell.1)])
+                } else {
+                    map.project(position_of(effect.target_id))
+                };
+                let (dx, dy) = (aimed[0] - from[0], aimed[1] - from[1]);
+                let length = (dx * dx + dy * dy).sqrt();
+                if length > 1.0 {
+                    let (ux, uy) = (dx / length, dy / length);
+                    for step in crate::magic::trail(assets, trail) {
+                        let step_elapsed = elapsed - step.delay_ms as f32 / 1_000.0;
+                        if step_elapsed < 0.0 {
+                            continue;
+                        }
+                        let (along, across) = (step.along as f32, step.across as f32);
+                        let origin = [
+                            from[0] + ux * along - uy * across - camera[0],
+                            from[1] + uy * along + ux * across - camera[1],
+                        ];
+                        if world_point_visible(origin, viewport, 256.0) {
+                            self.push_effect(
+                                assets,
+                                &step.effect,
+                                origin,
+                                step_elapsed,
+                                caster[0] + caster[1] + 0.06,
+                                viewport,
+                                &mut draws,
+                            );
+                        }
+                    }
+                }
+            }
             for (name, actor) in [
                 (magic.intone_effect.as_deref(), effect.attacker_id),
-                (magic.target_effect.as_deref(), effect.target_id),
+                (magic.target_effect.as_deref().filter(|_| effect.target_id != 0), effect.target_id),
             ] {
                 let Some(name) = name else {
                     continue;
