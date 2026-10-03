@@ -74,6 +74,20 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 - [x] `$tele <mapa> <x> <y> --all`: o GM leva todos os jogadores online junto
       (antes era um TODO, e a opção nem aceitava a forma `--all`).
 
+## Bounty Tasks (como no Tibia)
+
+- [x] Servidor: quadro com 3 monstros por dificuldade (Beginner, Adept, Expert,
+      Master por faixa de nível), tarefas Normal/Silver/Gold, reroll tokens (10
+      no máximo, 1 grátis por dia), bounty points e talismã com dano, roubo de
+      vida, loot extra e abate em dobro. Conta para o time inteiro.
+- [x] Cliente: Task Board no painel QUESTS (botão do HUD ou tecla **B**),
+      contador sob o minimapa e nome dourado com losango nos monstros da tarefa.
+- [x] Testado no servidor real com o probe `--bounty` (quadro, escolha,
+      abandono) e um abate que concluiu a tarefa.
+- [ ] Listas de criaturas preferidas e evitadas (pagas com bounty points).
+- [ ] Confirmação antes de gastar um token ao abandonar.
+- [ ] Validação visual no jogo (Pedro).
+
 ## P3 — cliente e interface
 
 - [ ] Feedback visual de inventário, gems, sockets, rarity, upgrade e operações

@@ -117,6 +117,12 @@ impl Minimap {
         }))
     }
 
+    /// The bottom edge of the corner map, for what sits under it.
+    pub fn bottom(&self, viewport: [f32; 2]) -> f32 {
+        let [_, top, _, height] = self.frame(viewport);
+        if self.expanded { 0.0 } else { top + height }
+    }
+
     /// The box the map is drawn in; its buttons sit on its top right.
     fn frame(&self, viewport: [f32; 2]) -> [f32; 4] {
         if self.expanded {

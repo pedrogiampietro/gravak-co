@@ -267,20 +267,31 @@ pub fn player_plate(
 }
 
 /// Compact monster nameplate: the name followed by a small health bar.
-pub fn monster_image(name: &str, health: u16, maximum_health: u16) -> Result<RgbaImage> {
+/// A monster's name over its life bar; the monsters of the bounty under way
+/// have a gold name behind a gold diamond.
+pub fn monster_image(name: &str, health: u16, maximum_health: u16, bounty: bool) -> Result<RgbaImage> {
     let font = font()?;
-    let text_width = width(&font, name).ceil() as u32 + 8;
+    let marker = if bounty { 12 } else { 0 };
+    let text_width = width(&font, name).ceil() as u32 + 8 + marker;
     let image_width = text_width.max(36);
     let mut image = RgbaImage::new(image_width, 28);
-    text(
-        &mut image,
-        &font,
-        &[(name, [255, 255, 255])],
-        [
-            ((image_width as f32 - width(&font, name)) * 0.5).max(2.0),
-            1.0,
-        ],
-    );
+    let name_x = ((image_width as f32 - width(&font, name) + marker as f32) * 0.5).max(2.0 + marker as f32);
+    let colour = if bounty { [255, 202, 64] } else { [255, 255, 255] };
+    text(&mut image, &font, &[(name, colour)], [name_x, 1.0]);
+    if bounty {
+        // A small diamond before the name.
+        let (cx, cy) = (name_x as i32 - 8, 8_i32);
+        for dy in -4_i32..=4 {
+            for dx in -(4 - dy.abs())..=(4 - dy.abs()) {
+                let (x, y) = (cx + dx, cy + dy);
+                if x >= 0 && (x as u32) < image_width {
+                    let edge = dx.abs() + dy.abs() == 4;
+                    let shade = if edge { [120, 82, 20, 255] } else { [255, 214, 96, 255] };
+                    image.put_pixel(x as u32, y as u32, Rgba(shade));
+                }
+            }
+        }
+    }
     let bar_width = image_width.saturating_sub(8).max(24);
     for y in 18..24 {
         for x in 4..4 + bar_width {

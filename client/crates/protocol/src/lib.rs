@@ -21,6 +21,10 @@ pub const MSG_REGISTER: u16 = 1001;
 pub const MSG_WALK: u16 = 1005;
 pub const MSG_USER_INFO: u16 = 1006;
 pub const MSG_NOBILITY: u16 = 2064;
+/// Gravak's bounty tasks: board actions and the kill counter.
+pub const MSG_BOUNTY: u16 = 9100;
+/// Gravak's bounty tasks: the whole Task Board.
+pub const MSG_BOUNTY_STATE: u16 = 9101;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
@@ -184,6 +188,82 @@ pub struct InteractionPacket {
     pub action: u32,
     pub value: u32,
     pub reserved: [u8; 12],
+}
+
+/// Bounty board action (client) or kill counter (server, action 10).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 9100)]
+pub struct BountyPacket {
+    pub action: u32,
+    pub param: u32,
+    pub extra: u32,
+}
+
+impl BountyPacket {
+    pub const OPEN: u32 = 0;
+    pub const REROLL: u32 = 1;
+    pub const PICK: u32 = 2;
+    pub const CLAIM_DAILY: u32 = 3;
+    pub const UPGRADE: u32 = 4;
+    pub const PROGRESS: u32 = 10;
+
+    pub fn new(action: u32, param: u32) -> Self {
+        Self { action, param, extra: 0 }
+    }
+}
+
+/// One bounty on offer, or the one under way (`monster_type` 0: none).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash)]
+pub struct BountyTask {
+    pub monster_type: u32,
+    pub kills: u32,
+    pub kills_done: u32,
+    /// 0 Normal, 1 Silver, 2 Gold.
+    pub grade: u32,
+    pub points: u32,
+    pub experience: u64,
+    pub monster_name: String,
+}
+
+/// The Task Board of bounty tasks.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9101)]
+pub struct BountyState {
+    pub points: u32,
+    pub tokens: u32,
+    pub daily_available: u32,
+    /// 0 Beginner, 1 Adept, 2 Expert, 3 Master.
+    pub difficulty: u32,
+    pub completed: u32,
+    pub damage_level: u32,
+    pub leech_level: u32,
+    pub loot_level: u32,
+    pub double_kill_level: u32,
+    pub offer_count: u32,
+    pub offer0: BountyTask,
+    pub offer1: BountyTask,
+    pub offer2: BountyTask,
+    pub task: BountyTask,
+}
+
+impl BountyState {
+    /// The bounties on offer.
+    pub fn offers(&self) -> Vec<&BountyTask> {
+        [&self.offer0, &self.offer1, &self.offer2]
+            .into_iter()
+            .take(self.offer_count as usize)
+            .collect()
+    }
+
+    /// The bounty under way.
+    pub fn active(&self) -> Option<&BountyTask> {
+        (self.task.monster_type != 0).then_some(&self.task)
+    }
+
+    /// Talisman levels: damage, life leech, loot, double kills.
+    pub fn talisman(&self) -> [u32; 4] {
+        [self.damage_level, self.leech_level, self.loot_level, self.double_kill_level]
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
@@ -1321,6 +1401,8 @@ pub enum GameEvent {
     UserInfo(UserInfo),
     Nobility(NobilityInfo),
     NobilityRanking(NobilityRankingInfo),
+    Bounty(BountyPacket),
+    BountyState(BountyState),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
@@ -1417,6 +1499,12 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_NOBILITY_RANKING => Ok(GameEvent::NobilityRanking(
             NobilityRankingInfo::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_BOUNTY => Ok(GameEvent::Bounty(
+            BountyPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_BOUNTY_STATE => Ok(GameEvent::BountyState(
+            BountyState::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,

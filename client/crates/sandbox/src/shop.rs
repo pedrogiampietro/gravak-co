@@ -664,7 +664,7 @@ impl QuickPanel {
     fn title(self) -> &'static str {
         match self {
             Self::Skills => "SKILLS",
-            Self::Quest => "QUESTS",
+            Self::Quest => "BOUNTY TASKS",
             Self::Guild => "GUILD",
             Self::Friends => "FRIENDS",
             Self::Trade => "TRADE",
@@ -976,6 +976,7 @@ pub fn quick_panel_image(
     player_shop_price: &str,
     player_shop_price_focused: bool,
     hud_config: crate::hud::HudConfig,
+    bounty: Option<&gravak_protocol::BountyState>,
 ) -> Result<RgbaImage> {
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(
@@ -1059,20 +1060,7 @@ pub fn quick_panel_image(
                 );
             }
         }
-        QuickPanel::Quest => {
-            labels::text(
-                &mut image,
-                &font,
-                &[("No active quests", [220, 210, 175])],
-                [24.0, 64.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[("Quest progress will appear here.", [150, 150, 150])],
-                [24.0, 94.0],
-            );
-        }
+        QuickPanel::Quest => crate::bounty_board::draw(&mut image, &font, bounty),
         QuickPanel::Guild => {
             crate::components::draw_card(
                 &mut image,

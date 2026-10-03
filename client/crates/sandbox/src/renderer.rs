@@ -209,6 +209,8 @@ enum UiTextureJob {
         path: String,
         name: String,
         monster: bool,
+        /// A monster of the bounty under way.
+        bounty: bool,
         health: u16,
         maximum_health: u16,
         name_colour: [u8; 3],
@@ -308,6 +310,7 @@ enum UiTextureJob {
         player_shop_price: String,
         player_shop_price_focused: bool,
         hud_config: crate::hud::HudConfig,
+        bounty: Option<gravak_protocol::BountyState>,
     },
     ShopBase {
         path: String,
@@ -393,13 +396,14 @@ impl UiTextureJob {
             Self::ActorLabel {
                 name,
                 monster,
+                bounty,
                 health,
                 maximum_health,
                 name_colour,
                 ..
             } => {
                 if monster {
-                    crate::labels::monster_image(&name, health, maximum_health)
+                    crate::labels::monster_image(&name, health, maximum_health, bounty)
                 } else {
                     crate::labels::actor_image(&name, name_colour)
                 }
@@ -573,6 +577,7 @@ impl UiTextureJob {
                 player_shop_price,
                 player_shop_price_focused,
                 hud_config,
+                bounty,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -599,6 +604,7 @@ impl UiTextureJob {
                 &player_shop_price,
                 player_shop_price_focused,
                 hud_config,
+                bounty.as_ref(),
             ),
         };
         image.map_err(|error| error.to_string())
@@ -1794,6 +1800,7 @@ impl Renderer {
         player_shop_open: bool,
         player_shop_price: &str,
         player_shop_price_focused: bool,
+        bounty: Option<&gravak_protocol::BountyState>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -2422,8 +2429,12 @@ impl Renderer {
                 let name_colour = crate::labels::name_colour(actor.status_flags);
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
+                let bounty_target = monster
+                    && bounty
+                        .and_then(|board| board.active())
+                        .is_some_and(|task| task.monster_name == actor.name);
                 let label_key = if monster {
-                    format!("@monster-label-{}-{}", actor.id, actor.health)
+                    format!("@monster-label-{}-{}-{bounty_target}", actor.id, actor.health)
                 } else {
                     format!("@actor-label-{}-{:?}", actor.id, name_colour)
                 };
@@ -2434,6 +2445,7 @@ impl Renderer {
                             path: label_key.clone(),
                             name: actor.name.clone(),
                             monster,
+                            bounty: bounty_target,
                             health: actor.health,
                             maximum_health: actor.maximum_health,
                             name_colour,
@@ -2821,6 +2833,24 @@ impl Renderer {
                 });
             }
         }
+        // The bounty under way, counted under the minimap.
+        let tracker = bounty.and_then(crate::bounty_board::tracker_line);
+        let tracker_key = tracker.as_ref().map(|line| format!("@bounty-tracker-{line}"));
+        if let (Some(line), Some(key)) = (&tracker, &tracker_key) {
+            if !self.textures.contains_key(key) {
+                self.upload(key, crate::bounty_board::tracker_image(line)?);
+            }
+            let top = self.minimap.as_ref().map_or(180.0, |minimap| minimap.bottom(viewport)) + 8.0;
+            if let Some(texture) = self.textures.get(key) {
+                draws.push(Draw {
+                    texture: key.clone(),
+                    vertices: quad([viewport[0] - texture.size[0] - 8.0, top], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
         // Each status message is its own texture; keep only the latest.
         let current_feedback = self
             .feedback_signature
@@ -3206,6 +3236,9 @@ impl Renderer {
             player_shop_price.hash(&mut hasher);
             player_shop_price_focused.hash(&mut hasher);
             hud_config.hash(&mut hasher);
+            if panel == crate::shop::QuickPanel::Quest {
+                bounty.hash(&mut hasher);
+            }
             friends.hash(&mut hasher);
             ignores.hash(&mut hasher);
             pending_friend_name.hash(&mut hasher);
@@ -3245,6 +3278,7 @@ impl Renderer {
                         player_shop_price: player_shop_price.to_owned(),
                         player_shop_price_focused,
                         hud_config,
+                        bounty: bounty.cloned(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);

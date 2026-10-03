@@ -224,6 +224,13 @@ pub enum NetworkEvent {
         title_id: u32,
     },
     NobilityRanking(NobilityEntry),
+    /// The bounty Task Board.
+    Bounty(gravak_protocol::BountyState),
+    /// Kills counted toward the bounty under way.
+    BountyProgress {
+        done: u32,
+        required: u32,
+    },
     ExperienceGain {
         experience: u64,
     },
@@ -400,6 +407,11 @@ pub struct RemoteActor {
 }
 
 pub(crate) enum NetworkCommand {
+    /// A bounty Task Board action.
+    Bounty {
+        action: u32,
+        param: u32,
+    },
     Walk {
         character_id: u32,
         direction: u8,
@@ -663,6 +675,8 @@ impl NetworkHandle {
                 | NetworkEvent::Attributes { .. }
                 | NetworkEvent::Nobility { .. }
                 | NetworkEvent::NobilityRanking(_)
+                | NetworkEvent::Bounty(_)
+                | NetworkEvent::BountyProgress { .. }
                 | NetworkEvent::ExperienceGain { .. }
                 | NetworkEvent::InventoryItem(_)
                 | NetworkEvent::InventoryItemRemoved(_)
@@ -727,6 +741,11 @@ impl NetworkHandle {
             character_id,
             member_id,
         });
+    }
+
+    /// A bounty Task Board action (`gravak_protocol::BountyPacket` constants).
+    pub fn send_bounty(&self, action: u32, param: u32) {
+        let _ = self.commands.send(NetworkCommand::Bounty { action, param });
     }
 
     pub fn send_team(&self, action: u32, target_id: u32) {
@@ -1380,6 +1399,15 @@ pub(crate) async fn play(
                         title_id: info.title_id,
                     });
                 }
+                Some(GameEvent::BountyState(board)) => {
+                    let _ = events.send(NetworkEvent::Bounty(board));
+                }
+                Some(GameEvent::Bounty(packet)) if packet.action == gravak_protocol::BountyPacket::PROGRESS => {
+                    let _ = events.send(NetworkEvent::BountyProgress {
+                        done: packet.param,
+                        required: packet.extra,
+                    });
+                }
                 Some(GameEvent::NobilityRanking(info)) if info.action == 1 => {
                     let _ = events.send(NetworkEvent::NobilityRanking(NobilityEntry {
                         position: info.position,
@@ -1801,6 +1829,12 @@ pub(crate) async fn play(
                 }) => {
                     session
                         .send(&ActionPacket::query_team_member(character_id, member_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Bounty { action, param }) => {
+                    session
+                        .send(&gravak_protocol::BountyPacket::new(action, param))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

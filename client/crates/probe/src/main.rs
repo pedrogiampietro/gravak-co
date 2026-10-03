@@ -182,6 +182,13 @@ async fn main() {
         }
         return;
     }
+    if args.iter().any(|argument| argument == "--bounty") {
+        if let Err(error) = run_bounty_smoke(&mut session).await {
+            eprintln!("Bounty smoke failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|argument| argument == "--nobility") {
         if let Err(error) =
             run_nobility_smoke(&mut session, character_id, &loaded_character_name).await
@@ -692,6 +699,76 @@ async fn connect_existing_session(
             }
         }
     }
+}
+
+/// The next bounty board, skipping other packets.
+async fn next_bounty_board(
+    session: &mut GameSession,
+) -> Result<gravak_protocol::BountyState, gravak_protocol::ProtocolError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = timeout_at(deadline, session.next_event())
+            .await
+            .map_err(|_| gravak_protocol::ProtocolError::MalformedResponse("bounty board timed out"))??;
+        match event {
+            Some(GameEvent::BountyState(board)) => return Ok(board),
+            Some(GameEvent::Talk(talk)) => println!("Bounty talk: {}", talk.message),
+            Some(_) => {}
+            None => {
+                return Err(gravak_protocol::ProtocolError::MalformedResponse(
+                    "game server closed during the bounty smoke",
+                ));
+            }
+        }
+    }
+}
+
+/// Opens the Task Board, takes the first bounty, checks it is under way and
+/// abandons it again (one reroll token).
+async fn run_bounty_smoke(session: &mut GameSession) -> Result<(), gravak_protocol::ProtocolError> {
+    use gravak_protocol::BountyPacket;
+    let malformed = gravak_protocol::ProtocolError::MalformedResponse;
+    session.send(&BountyPacket::new(BountyPacket::OPEN, 0)).await?;
+    let board = next_bounty_board(session).await?;
+    println!(
+        "Bounty board OK: points={}, tokens={}, difficulty={}, offers={:?}, active={:?}",
+        board.points,
+        board.tokens,
+        board.difficulty,
+        board.offers().iter().map(|offer| (&offer.monster_name, offer.kills, offer.grade)).collect::<Vec<_>>(),
+        board.active().map(|task| (&task.monster_name, task.kills_done, task.kills)),
+    );
+    if board.active().is_some() {
+        println!("A bounty is already under way; leaving it alone.");
+        return Ok(());
+    }
+    let Some(offer) = board.offers().first().map(|offer| (*offer).clone()) else {
+        return Err(malformed("the board has no offers"));
+    };
+    session.send(&BountyPacket::new(BountyPacket::PICK, 0)).await?;
+    // Boards sent before the pick (at login) may still be on their way.
+    let mut board = next_bounty_board(session).await?;
+    while board.active().is_none() {
+        board = next_bounty_board(session).await?;
+    }
+    let task = board.active().ok_or(malformed("the picked bounty is not under way"))?;
+    if task.monster_type != offer.monster_type {
+        return Err(malformed("the bounty under way is not the one picked"));
+    }
+    println!("Bounty pick OK: hunting {} 0/{}", task.monster_name, task.kills);
+    if board.tokens == 0 {
+        return Ok(());
+    }
+    session.send(&BountyPacket::new(BountyPacket::REROLL, board.difficulty)).await?;
+    let mut after = next_bounty_board(session).await?;
+    while after.active().is_some() {
+        after = next_bounty_board(session).await?;
+    }
+    if after.active().is_some() || after.tokens + 1 != board.tokens || after.offers().is_empty() {
+        return Err(malformed("abandoning did not spend a token for a new list"));
+    }
+    println!("Bounty abandon OK: tokens {} -> {}, {} new offers", board.tokens, after.tokens, after.offers().len());
+    Ok(())
 }
 
 async fn run_nobility_smoke(

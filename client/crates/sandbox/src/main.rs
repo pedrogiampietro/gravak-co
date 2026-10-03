@@ -4,6 +4,7 @@ mod action_bar;
 mod cursors;
 mod assets;
 mod audio;
+mod bounty_board;
 mod character;
 mod components;
 mod debug_log;
@@ -404,6 +405,8 @@ struct App {
     player_shop_open: bool,
     player_shop_price: String,
     player_shop_price_focused: bool,
+    /// The bounty Task Board, as the server last sent it.
+    bounty: Option<gravak_protocol::BountyState>,
     ground_loot: Vec<(u32, [f32; 2], u32, f32)>,
     dialog: Option<DialogState>,
     shop: Option<shop::ShopState>,
@@ -890,6 +893,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyC) => self.send_network_action(120),
                     PhysicalKey::Code(KeyCode::KeyX) => self.toggle_sit(),
                     PhysicalKey::Code(KeyCode::KeyM) => self.request_mining(),
+                    PhysicalKey::Code(KeyCode::KeyB) => self.toggle_bounty_board(),
                     _ => {}
                 }
             }
@@ -1073,6 +1077,7 @@ impl ApplicationHandler for App {
                         self.player_shop_open,
                         &self.player_shop_price,
                         self.player_shop_price_focused,
+                        self.bounty.as_ref(),
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -1442,6 +1447,17 @@ impl App {
                 self.player_shop_price_focused = false;
                 self.held = false;
                 return true;
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Quest)
+                && let Some(board) = &self.bounty
+            {
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Quest);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                if let Some(action) = bounty_board::action_at(board, local) {
+                    self.handle_bounty_action(action);
+                    self.held = false;
+                    return true;
+                }
             }
             if self.quick_panel == Some(shop::QuickPanel::Team) {
                 if let Some(action) = shop::team_panel_action_at(
@@ -2113,6 +2129,37 @@ impl App {
         self.chat_text.clear();
     }
 
+    /// B opens and closes the bounty Task Board, fresh from the server.
+    fn toggle_bounty_board(&mut self) {
+        if self.quick_panel == Some(shop::QuickPanel::Quest) {
+            self.quick_panel = None;
+            return;
+        }
+        self.quick_panel = Some(shop::QuickPanel::Quest);
+        if let Some(network) = &self.network {
+            network.send_bounty(gravak_protocol::BountyPacket::OPEN, 0);
+        }
+    }
+
+    fn handle_bounty_action(&mut self, action: bounty_board::BountyAction) {
+        use gravak_protocol::BountyPacket;
+        let Some(network) = &self.network else {
+            self.network_status = "bounty indisponível: servidor offline".into();
+            return;
+        };
+        let (packet, param) = match action {
+            bounty_board::BountyAction::ClaimDaily => (BountyPacket::CLAIM_DAILY, 0),
+            bounty_board::BountyAction::Reroll(difficulty) => (BountyPacket::REROLL, difficulty),
+            bounty_board::BountyAction::Pick(slot) => (BountyPacket::PICK, slot),
+            bounty_board::BountyAction::Abandon => (
+                BountyPacket::REROLL,
+                self.bounty.as_ref().map_or(0, |board| board.difficulty),
+            ),
+            bounty_board::BountyAction::Upgrade(bonus) => (BountyPacket::UPGRADE, bonus),
+        };
+        network.send_bounty(packet, param);
+    }
+
     fn send_team_action(&mut self, action: u32, target_id: u32) {
         let Some(network) = &self.network else {
             self.network_status = "team indisponível: servidor offline".into();
@@ -2676,6 +2723,13 @@ impl App {
     fn handle_network_event(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::Status(status) => self.network_status = status,
+            NetworkEvent::Bounty(board) => self.bounty = Some(board),
+            NetworkEvent::BountyProgress { done, required } => {
+                if let Some(board) = &mut self.bounty {
+                    board.task.kills_done = done;
+                    board.task.kills = required;
+                }
+            }
             NetworkEvent::Guild { action, data, name } => {
                 let description = name.clone().unwrap_or_else(|| "sem nome".to_owned());
                 if action == 2 && data != 0 && self.character.guild.is_empty() {
@@ -6887,6 +6941,7 @@ fn run() -> Result<()> {
         player_shop_open: false,
         player_shop_price: "1000".into(),
         player_shop_price_focused: false,
+        bounty: None,
         ground_loot: Vec::new(),
         dialog: None,
         shop: benchmark_shop,
