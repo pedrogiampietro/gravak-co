@@ -14,11 +14,28 @@ const BONUSES: [&str; 4] = ["Damage", "Life leech", "Extra loot", "Double kills"
 const MAX_TOKENS: u32 = 10;
 const MAX_TALISMAN_LEVEL: u32 = 40;
 
+/// The board as the server sent it, and the difficulty tab chosen here:
+/// browsing the tabs is free, and a reroll brings a list of the chosen one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct BountyView {
+    pub board: BountyState,
+    /// The tab chosen on this screen; the board's own difficulty until then.
+    pub selected: Option<u32>,
+}
+
+impl BountyView {
+    pub fn selected(&self) -> u32 {
+        self.selected.unwrap_or(self.board.difficulty)
+    }
+}
+
 /// What a click on the board asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BountyAction {
     ClaimDaily,
-    /// A new list of this difficulty (or of the same one), for a token.
+    /// Shows a difficulty's tab; nothing is spent.
+    Select(u32),
+    /// A new list of this difficulty, for a token.
     Reroll(u32),
     Pick(u32),
     /// Drops the bounty under way, for a token.
@@ -28,23 +45,27 @@ pub enum BountyAction {
 
 const DAILY: UiRect = UiRect::new(372, 50, 128, 22);
 const REROLL: UiRect = UiRect::new(404, 84, 96, 22);
-const ABANDON: UiRect = UiRect::new(352, 230, 136, 24);
+const ABANDON: UiRect = UiRect::new(352, 222, 136, 24);
+
+/// Where the talisman rows start, and their spacing.
+const TALISMAN_TOP: i32 = 286;
+const TALISMAN_ROW: i32 = 23;
 
 fn difficulty_tab(index: usize) -> UiRect {
     UiRect::new(20 + index as i32 * 96, 84, 92, 22)
 }
 
 fn offer_card(slot: usize) -> UiRect {
-    UiRect::new(20 + slot as i32 * 162, 116, 156, 150)
+    UiRect::new(20 + slot as i32 * 162, 116, 156, 140)
 }
 
 fn hunt_button(slot: usize) -> UiRect {
     let card = offer_card(slot);
-    UiRect::new(card.x + 28, card.y + 116, 100, 24)
+    UiRect::new(card.x + 28, card.y + 108, 100, 24)
 }
 
 fn upgrade_button(bonus: usize) -> UiRect {
-    UiRect::new(372, 300 + bonus as i32 * 26, 128, 22)
+    UiRect::new(372, TALISMAN_TOP + bonus as i32 * TALISMAN_ROW, 128, 20)
 }
 
 /// The talisman bonus at `level`, in hundredths of a percent (as the server).
@@ -99,12 +120,13 @@ fn button(image: &mut RgbaImage, font: &Font, rect: UiRect, label: &str, enabled
 }
 
 /// Draws the board onto the quick panel's contents.
-pub fn draw(image: &mut RgbaImage, font: &Font, board: Option<&BountyState>) {
-    let Some(board) = board else {
+pub fn draw(image: &mut RgbaImage, font: &Font, view: Option<&BountyView>) {
+    let Some(view) = view else {
         say(image, font, "Bounty Tasks", ui_theme::TEXT_GOLD, 24, 56);
         say(image, font, "Waiting for the server...", ui_theme::TEXT_MUTED, 24, 84);
         return;
     };
+    let board = &view.board;
     let header = format!(
         "Bounty points: {}    Tokens: {}/{MAX_TOKENS}    Done: {}",
         board.points, board.tokens, board.completed
@@ -112,14 +134,24 @@ pub fn draw(image: &mut RgbaImage, font: &Font, board: Option<&BountyState>) {
     say(image, font, &header, ui_theme::TEXT_GOLD, 22, 54);
     button(image, font, DAILY, "Daily token", board.daily_available != 0);
 
-    let difficulty = board.difficulty as usize;
+    let selected = view.selected() as usize;
     for (index, name) in DIFFICULTIES.iter().enumerate() {
-        draw_tab(image, font, difficulty_tab(index), name, index == difficulty, false);
+        draw_tab(image, font, difficulty_tab(index), name, index == selected, false);
     }
     button(image, font, REROLL, "Reroll (1)", board.tokens > 0);
+    let note = if board.tokens == 0 {
+        "No reroll tokens: take the daily one, or finish a bounty.".to_owned()
+    } else if selected != board.difficulty as usize {
+        format!("Reroll for a {} list (1 token).", DIFFICULTIES[selected])
+    } else {
+        String::new()
+    };
+    if !note.is_empty() {
+        labels::text_sized(image, font, &[(note.as_str(), ui_theme::TEXT_MUTED)], [22.0, 69.0], 11.0);
+    }
 
     if let Some(task) = board.active() {
-        draw_card(image, UiRect::new(20, 116, 480, 150), WidgetState::Selected);
+        draw_card(image, UiRect::new(20, 116, 480, 140), WidgetState::Selected);
         let (grade_name, grade_colour) = grade(task);
         say(image, font, &format!("Hunting: {}", task.monster_name), ui_theme::TEXT_GOLD, 36, 126);
         say(image, font, grade_name, grade_colour, 400, 126);
@@ -138,7 +170,7 @@ pub fn draw(image: &mut RgbaImage, font: &Font, board: Option<&BountyState>) {
             &format!("{} / {} defeated", task.kills_done, task.kills),
             ui_theme::TEXT,
             36,
-            180,
+            178,
         );
         say(
             image,
@@ -150,7 +182,7 @@ pub fn draw(image: &mut RgbaImage, font: &Font, board: Option<&BountyState>) {
             ),
             ui_theme::TEXT_MUTED,
             36,
-            204,
+            200,
         );
         button(image, font, ABANDON, "Abandon (1 token)", board.tokens > 0);
     } else {
@@ -179,17 +211,17 @@ pub fn draw(image: &mut RgbaImage, font: &Font, board: Option<&BountyState>) {
         }
     }
 
-    say(image, font, "Talisman - against your bounty's monster", ui_theme::TEXT_GOLD, 22, 278);
+    say(image, font, "Talisman - against your bounty's monster", ui_theme::TEXT_GOLD, 22, 264);
     for (index, (name, level)) in BONUSES.iter().zip(board.talisman()).enumerate() {
-        let y = 300 + index as i32 * 26;
+        let y = TALISMAN_TOP + index as i32 * TALISMAN_ROW;
         let value = percent(bonus_basis_points(index, level));
         let line = match index {
             2 => format!("{name}: {value} chance"),
             3 => format!("{name}: {value} chance"),
             _ => format!("{name}: +{value}"),
         };
-        say(image, font, &line, ui_theme::TEXT, 24, y + 3);
-        say(image, font, &format!("Lv {level}"), ui_theme::TEXT_MUTED, 300, y + 3);
+        say(image, font, &line, ui_theme::TEXT, 24, y + 2);
+        say(image, font, &format!("Lv {level}"), ui_theme::TEXT_MUTED, 300, y + 2);
         if level >= MAX_TALISMAN_LEVEL {
             button(image, font, upgrade_button(index), "Max level", false);
         } else {
@@ -200,17 +232,16 @@ pub fn draw(image: &mut RgbaImage, font: &Font, board: Option<&BountyState>) {
 }
 
 /// The action under `cursor`, in the panel's own coordinates.
-pub fn action_at(board: &BountyState, cursor: [f32; 2]) -> Option<BountyAction> {
+pub fn action_at(view: &BountyView, cursor: [f32; 2]) -> Option<BountyAction> {
+    let board = &view.board;
     if DAILY.contains_local(cursor) && board.daily_available != 0 {
         return Some(BountyAction::ClaimDaily);
     }
-    if board.tokens > 0 {
-        if REROLL.contains_local(cursor) {
-            return Some(BountyAction::Reroll(board.difficulty));
-        }
-        if let Some(index) = (0..4).find(|index| difficulty_tab(*index).contains_local(cursor)) {
-            return Some(BountyAction::Reroll(index as u32));
-        }
+    if let Some(index) = (0..4).find(|index| difficulty_tab(*index).contains_local(cursor)) {
+        return Some(BountyAction::Select(index as u32));
+    }
+    if REROLL.contains_local(cursor) && board.tokens > 0 {
+        return Some(BountyAction::Reroll(view.selected()));
     }
     if board.active().is_some() {
         if ABANDON.contains_local(cursor) && board.tokens > 0 {
@@ -240,18 +271,21 @@ pub fn tracker_image(line: &str) -> crate::assets::Result<RgbaImage> {
     Ok(image)
 }
 
-/// The kill counter beside the minimap: `Robin 37/150`.
+/// The line under the minimap, which opens the board when clicked: the kill
+/// counter during a bounty (`Bounty: Robin 37/150`), else its name and key.
 pub fn tracker_line(board: &BountyState) -> Option<String> {
-    let task = board.active()?;
-    Some(format!("Bounty: {} {}/{}", task.monster_name, task.kills_done, task.kills))
+    Some(match board.active() {
+        Some(task) => format!("Bounty: {} {}/{}", task.monster_name, task.kills_done, task.kills),
+        None => "Bounty Tasks (B)".to_owned(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn board() -> BountyState {
-        BountyState {
+    fn board() -> BountyView {
+        BountyView { selected: None, board: BountyState {
             points: 20,
             tokens: 2,
             daily_available: 1,
@@ -260,7 +294,7 @@ mod tests {
             offer1: BountyTask { monster_type: 2, monster_name: "Turtledove".into(), ..Default::default() },
             offer2: BountyTask { monster_type: 3, monster_name: "Robin".into(), ..Default::default() },
             ..Default::default()
-        }
+        } }
     }
 
     fn centre(rect: UiRect) -> [f32; 2] {
@@ -271,22 +305,27 @@ mod tests {
     fn clicks_find_their_actions() {
         let board = board();
         assert_eq!(action_at(&board, centre(DAILY)), Some(BountyAction::ClaimDaily));
-        assert_eq!(action_at(&board, centre(difficulty_tab(3))), Some(BountyAction::Reroll(3)));
+        assert_eq!(action_at(&board, centre(difficulty_tab(3))), Some(BountyAction::Select(3)));
+        assert_eq!(action_at(&board, centre(REROLL)), Some(BountyAction::Reroll(0)));
+        let mut chosen = board.clone();
+        chosen.selected = Some(2);
+        assert_eq!(action_at(&chosen, centre(REROLL)), Some(BountyAction::Reroll(2)), "the chosen tab");
         assert_eq!(action_at(&board, centre(hunt_button(2))), Some(BountyAction::Pick(2)));
         assert_eq!(action_at(&board, centre(upgrade_button(1))), Some(BountyAction::Upgrade(1)));
         assert_eq!(action_at(&board, [5.0, 5.0]), None);
 
         let mut poor = board.clone();
-        poor.tokens = 0;
-        poor.points = 4;
+        poor.board.tokens = 0;
+        poor.board.points = 4;
         assert_eq!(action_at(&poor, centre(REROLL)), None, "no tokens, no reroll");
+        assert_eq!(action_at(&poor, centre(difficulty_tab(1))), Some(BountyAction::Select(1)), "tabs stay free");
         assert_eq!(action_at(&poor, centre(upgrade_button(0))), None, "not enough points");
 
         let mut hunting = board;
-        hunting.task = BountyTask { monster_type: 3, kills: 150, kills_done: 37, monster_name: "Robin".into(), ..Default::default() };
+        hunting.board.task = BountyTask { monster_type: 3, kills: 150, kills_done: 37, monster_name: "Robin".into(), ..Default::default() };
         assert_eq!(action_at(&hunting, centre(ABANDON)), Some(BountyAction::Abandon));
         assert_eq!(action_at(&hunting, centre(hunt_button(0))), None, "no offers while hunting");
-        assert_eq!(tracker_line(&hunting).as_deref(), Some("Bounty: Robin 37/150"));
+        assert_eq!(tracker_line(&hunting.board).as_deref(), Some("Bounty: Robin 37/150"));
     }
 
     #[test]
@@ -326,8 +365,13 @@ mod preview {
         hunting.offer_count = 0;
         hunting.task = BountyTask { monster_type: 3, kills: 158, kills_done: 61, grade: 1, points: 5, experience: 61_620, monster_name: "Robin".into() };
         for (name, board) in [("offers", offers), ("hunting", hunting)] {
-            let mut image = image::RgbaImage::from_pixel(520, 420, image::Rgba([12, 26, 36, 255]));
-            super::draw(&mut image, &font, Some(&board));
+            let mut content = image::RgbaImage::new(520, 420);
+            let view = super::BountyView { selected: Some(3), board: board.clone() };
+            super::draw(&mut content, &font, Some(&view));
+            // In the game's own frame, like the quick panel.
+            let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+            let mut image = crate::original_panels::framed_window(&mut assets, 520, 420).expect("frame");
+            image::imageops::overlay(&mut image, &content, 0, 0);
             image.save(format!("{dir}/bounty-{name}.png")).expect("png");
             if let Some(line) = super::tracker_line(&board) {
                 super::tracker_image(&line).expect("tracker").save(format!("{dir}/bounty-tracker.png")).expect("png");

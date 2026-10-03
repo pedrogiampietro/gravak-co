@@ -406,7 +406,7 @@ struct App {
     player_shop_price: String,
     player_shop_price_focused: bool,
     /// The bounty Task Board, as the server last sent it.
-    bounty: Option<gravak_protocol::BountyState>,
+    bounty: Option<bounty_board::BountyView>,
     ground_loot: Vec<(u32, [f32; 2], u32, f32)>,
     dialog: Option<DialogState>,
     shop: Option<shop::ShopState>,
@@ -807,6 +807,15 @@ impl ApplicationHandler for App {
                     _ => return,
                 }
                 if state == ElementState::Released {
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.bounty_tracker_at(self.cursor))
+                {
+                    self.toggle_bounty_board();
+                    self.held = false;
                     return;
                 }
                 if self.renderer.as_mut().is_some_and(|renderer| {
@@ -2148,12 +2157,18 @@ impl App {
             return;
         };
         let (packet, param) = match action {
+            bounty_board::BountyAction::Select(difficulty) => {
+                if let Some(view) = &mut self.bounty {
+                    view.selected = Some(difficulty);
+                }
+                return;
+            }
             bounty_board::BountyAction::ClaimDaily => (BountyPacket::CLAIM_DAILY, 0),
             bounty_board::BountyAction::Reroll(difficulty) => (BountyPacket::REROLL, difficulty),
             bounty_board::BountyAction::Pick(slot) => (BountyPacket::PICK, slot),
             bounty_board::BountyAction::Abandon => (
                 BountyPacket::REROLL,
-                self.bounty.as_ref().map_or(0, |board| board.difficulty),
+                self.bounty.as_ref().map_or(0, bounty_board::BountyView::selected),
             ),
             bounty_board::BountyAction::Upgrade(bonus) => (BountyPacket::UPGRADE, bonus),
         };
@@ -2723,11 +2738,18 @@ impl App {
     fn handle_network_event(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::Status(status) => self.network_status = status,
-            NetworkEvent::Bounty(board) => self.bounty = Some(board),
+            NetworkEvent::Bounty(board) => {
+                let view = self.bounty.get_or_insert_with(Default::default);
+                // A new list of the chosen difficulty: the tab is its own again.
+                if view.selected == Some(board.difficulty) {
+                    view.selected = None;
+                }
+                view.board = board;
+            }
             NetworkEvent::BountyProgress { done, required } => {
-                if let Some(board) = &mut self.bounty {
-                    board.task.kills_done = done;
-                    board.task.kills = required;
+                if let Some(view) = &mut self.bounty {
+                    view.board.task.kills_done = done;
+                    view.board.task.kills = required;
                 }
             }
             NetworkEvent::Guild { action, data, name } => {

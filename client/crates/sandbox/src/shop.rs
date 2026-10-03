@@ -976,7 +976,7 @@ pub fn quick_panel_image(
     player_shop_price: &str,
     player_shop_price_focused: bool,
     hud_config: crate::hud::HudConfig,
-    bounty: Option<&gravak_protocol::BountyState>,
+    bounty: Option<&crate::bounty_board::BountyView>,
 ) -> Result<RgbaImage> {
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(

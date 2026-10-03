@@ -310,7 +310,7 @@ enum UiTextureJob {
         player_shop_price: String,
         player_shop_price_focused: bool,
         hud_config: crate::hud::HudConfig,
-        bounty: Option<gravak_protocol::BountyState>,
+        bounty: Option<crate::bounty_board::BountyView>,
     },
     ShopBase {
         path: String,
@@ -684,6 +684,8 @@ pub struct Renderer {
     frame_number: u64,
     transient_used: HashMap<String, u64>,
     quick_panel_signature: Option<u64>,
+    /// Where the bounty line under the minimap was drawn, for clicks.
+    bounty_tracker_rect: Option<[f32; 4]>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
     effects: HashMap<String, Option<std::rc::Rc<LoadedEffect>>>,
@@ -882,6 +884,7 @@ impl Renderer {
             frame_number: 0,
             transient_used: HashMap::new(),
             quick_panel_signature: None,
+            bounty_tracker_rect: None,
             level_up_layers: None,
             effects: HashMap::new(),
             last_hud_key: None,
@@ -1715,6 +1718,13 @@ impl Renderer {
             p[1] - self.config.height as f32 * 0.5,
         ]
     }
+    /// Whether `position` is on the bounty line under the minimap.
+    pub fn bounty_tracker_at(&self, position: [f32; 2]) -> bool {
+        self.bounty_tracker_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
     pub fn minimap_pointer(&mut self, position: [f32; 2]) -> bool {
         let viewport = [self.config.width as f32, self.config.height as f32];
         self.minimap
@@ -1800,7 +1810,7 @@ impl Renderer {
         player_shop_open: bool,
         player_shop_price: &str,
         player_shop_price_focused: bool,
-        bounty: Option<&gravak_protocol::BountyState>,
+        bounty: Option<&crate::bounty_board::BountyView>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -2431,7 +2441,7 @@ impl Renderer {
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
                 let bounty_target = monster
                     && bounty
-                        .and_then(|board| board.active())
+                        .and_then(|view| view.board.active())
                         .is_some_and(|task| task.monster_name == actor.name);
                 let label_key = if monster {
                     format!("@monster-label-{}-{}-{bounty_target}", actor.id, actor.health)
@@ -2834,7 +2844,7 @@ impl Renderer {
             }
         }
         // The bounty under way, counted under the minimap.
-        let tracker = bounty.and_then(crate::bounty_board::tracker_line);
+        let tracker = bounty.and_then(|view| crate::bounty_board::tracker_line(&view.board));
         let tracker_key = tracker.as_ref().map(|line| format!("@bounty-tracker-{line}"));
         if let (Some(line), Some(key)) = (&tracker, &tracker_key) {
             if !self.textures.contains_key(key) {
@@ -2842,9 +2852,11 @@ impl Renderer {
             }
             let top = self.minimap.as_ref().map_or(180.0, |minimap| minimap.bottom(viewport)) + 8.0;
             if let Some(texture) = self.textures.get(key) {
+                let left = viewport[0] - texture.size[0] - 8.0;
+                self.bounty_tracker_rect = Some([left, top, texture.size[0], texture.size[1]]);
                 draws.push(Draw {
                     texture: key.clone(),
-                    vertices: quad([viewport[0] - texture.size[0] - 8.0, top], texture.size, viewport),
+                    vertices: quad([left, top], texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
