@@ -42,6 +42,7 @@ impl TQServer for GameServer {
                 state.trade_manager().remove_member(me.id())
             {
                 let peer_id = if owner_id == me.id() { target_id } else { owner_id };
+                game::packets::left_mid_trade(state, me, peer_id).await?;
                 if let Some(peer_entity) = state.entity(peer_id) {
                     if let Some(peer_owner) = peer_entity.owner() {
                         peer_owner

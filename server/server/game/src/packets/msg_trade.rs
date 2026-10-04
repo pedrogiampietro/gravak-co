@@ -53,6 +53,58 @@ fn target_entity(
     Ok(target)
 }
 
+/// Trades cut short by a disconnect, by the database id of who left: the
+/// partner's name and when, so a return soon after can be told.
+fn cut_short() -> &'static parking_lot::Mutex<std::collections::HashMap<i32, (String, std::time::Instant)>> {
+    static CUT: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<i32, (String, std::time::Instant)>>> =
+        std::sync::OnceLock::new();
+    CUT.get_or_init(Default::default)
+}
+
+/// How long a returning player hears about the trade they left.
+const CUT_SHORT_MEMORY: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A character's name, or their id when they are gone.
+fn name_of(state: &State, character_id: u32) -> String {
+    character_entity(state, character_id)
+        .map(|entity| entity.basic().name().to_owned())
+        .unwrap_or_else(|| character_id.to_string())
+}
+
+/// The partner of a player who left mid-trade hears of it; the one who left
+/// hears on returning (`returned`).
+pub async fn left_mid_trade(state: &State, leaver: &crate::entities::Character, peer_id: u32) -> Result<(), Error> {
+    let peer_name = name_of(state, peer_id);
+    cut_short()
+        .lock()
+        .insert(leaver.database_id(), (peer_name, std::time::Instant::now()));
+    send_notice(
+        state,
+        peer_id,
+        format!(
+            "{} left the game. The trade was cancelled and nothing changed hands.",
+            leaver.entity().name()
+        ),
+    )
+    .await
+}
+
+/// A player back soon after leaving a trade hears that it was cancelled.
+pub async fn returned_from_trade(character: &crate::entities::Character) -> Result<(), Error> {
+    let left = cut_short().lock().remove(&character.database_id());
+    if let Some((peer, _)) = left.filter(|(_, when)| when.elapsed() < CUT_SHORT_MEMORY) {
+        character
+            .owner()
+            .send(MsgTalk::from_system(
+                character.id(),
+                TalkChannel::Talk,
+                format!("Your trade with {peer} was cancelled when you left; nothing changed hands. Ask them again to trade."),
+            ))
+            .await?;
+    }
+    Ok(())
+}
+
 async fn send_notice(state: &State, character_id: u32, message: impl Into<String>) -> Result<(), Error> {
     if let Some(entity) = character_entity(state, character_id) {
         entity
@@ -267,8 +319,8 @@ async fn send_change(state: &State, change: TradeChange) -> Result<(), Error> {
     match change {
         TradeChange::Request { from_id, to_id } => {
             send_trade(state, to_id, MsgTrade::new(from_id, trade::REQUEST, 0)).await?;
-            send_notice(state, from_id, "Trade request sent.").await?;
-            send_notice(state, to_id, format!("Character {from_id} wants to trade with you.")).await?;
+            send_notice(state, from_id, format!("Trade request sent to {}.", name_of(state, to_id))).await?;
+            send_notice(state, to_id, format!("{} wants to trade with you.", name_of(state, from_id))).await?;
         },
         TradeChange::Open(session) => {
             send_trade(

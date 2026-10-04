@@ -90,7 +90,7 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
 4. [x] Lucky time e a skill Bless (segunda reencarnação): LuckDiffuse,
        LuckAbsorb, golpe duplo e sorte no upgrade.
 5. [x] Broadcast (2050): anúncio pago para o servidor inteiro (/bc no chat, nível 50, 5 CPs, um por minuto).
-6. [ ] Trade: voltar à troca após reconnect; recusas com mensagem clara.
+6. [x] Trade: quem cai no meio da troca é avisado ao voltar (2 min) e o parceiro na hora; pedidos com o nome do personagem.
 7. [ ] Guild: ranking e cargos (vice-líder, gerentes).
 8. [ ] Bosses (Albetros): Dragon, SnowBanshee, SwordMaster, ThrillingSpook,
        com golpes especiais e drops próprios; GuildBeast num evento de guilda.

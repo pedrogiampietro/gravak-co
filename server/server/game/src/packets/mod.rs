@@ -78,7 +78,7 @@ mod msg_guild_warehouse;
 pub use msg_guild_warehouse::MsgGuildWarehouse;
 
 mod msg_trade;
-pub use msg_trade::{expire_trades, MsgTrade};
+pub use msg_trade::{expire_trades, left_mid_trade, returned_from_trade, MsgTrade};
 
 mod msg_warehouse;
 pub use msg_warehouse::MsgWarehouse;
