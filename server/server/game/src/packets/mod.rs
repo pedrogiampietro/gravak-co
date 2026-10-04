@@ -1,3 +1,5 @@
+mod msg_broadcast;
+pub use msg_broadcast::MsgBroadcast;
 mod msg_name;
 pub use msg_name::MsgName;
 mod msg_connect;

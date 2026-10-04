@@ -2303,6 +2303,12 @@ impl App {
             && let (Some(network), Some(character_id)) = (&self.network, self.network_character_id)
         {
             if let Some(rest) = message
+                .strip_prefix("/bc ")
+                .or_else(|| message.strip_prefix("/broadcast "))
+            {
+                // 5 CPs, level 50; the server answers in the chat.
+                network.send_broadcast(rest.trim());
+            } else if let Some(rest) = message
                 .strip_prefix("/w ")
                 .or_else(|| message.strip_prefix("/whisper "))
             {

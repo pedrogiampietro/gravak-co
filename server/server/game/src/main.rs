@@ -90,6 +90,7 @@ pub enum Handler {
     MsgTrade,
     MsgBounty,
     MsgStore,
+    MsgBroadcast,
 }
 
 #[tokio::main]
@@ -122,6 +123,7 @@ async fn main() -> Result<(), Error> {
             game::systems::temporary_effects::tick(ai_state).await;
             game::systems::status_effects::tick(ai_state).await;
             game::vitals::tick(ai_state).await;
+            game::broadcast::tick(ai_state).await;
             game::guild_war::tick(ai_state).await;
             game::mining::tick(ai_state).await;
             game::pets::tick(ai_state).await;

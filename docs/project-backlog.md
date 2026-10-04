@@ -89,7 +89,7 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
 3. [x] Weapon skills que faltaram: Earthquake, Boom e FreezingArrow (golpe + atordoar; FreezingArrow ensinada pelo Archer God).
 4. [x] Lucky time e a skill Bless (segunda reencarnação): LuckDiffuse,
        LuckAbsorb, golpe duplo e sorte no upgrade.
-5. [ ] Broadcast (2050): anúncio pago para o servidor inteiro.
+5. [x] Broadcast (2050): anúncio pago para o servidor inteiro (/bc no chat, nível 50, 5 CPs, um por minuto).
 6. [ ] Trade: voltar à troca após reconnect; recusas com mensagem clara.
 7. [ ] Guild: ranking e cargos (vice-líder, gerentes).
 8. [ ] Bosses (Albetros): Dragon, SnowBanshee, SwordMaster, ThrillingSpook,

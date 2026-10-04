@@ -228,6 +228,27 @@ impl BountyPacket {
     }
 }
 
+/// A paid broadcast to the whole server (`MsgBroadcast`, 2050).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2050)]
+pub struct BroadcastPacket {
+    pub subtype: u32,
+    pub unknown: u32,
+    pub strings: tq_serde::StringList,
+}
+
+impl BroadcastPacket {
+    pub const SEND: u32 = 3;
+
+    pub fn send(message: &str) -> Self {
+        Self {
+            subtype: Self::SEND,
+            unknown: 0,
+            strings: vec![message.to_owned()].into(),
+        }
+    }
+}
+
 /// A Store request: the catalog (0) or buying product `param` (1).
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
 #[packet(id = 9110)]

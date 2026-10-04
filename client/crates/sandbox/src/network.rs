@@ -424,6 +424,7 @@ pub struct RemoteActor {
 
 pub(crate) enum NetworkCommand {
     /// A Store request.
+    Broadcast { message: String },
     Store {
         action: u32,
         param: u32,
@@ -1098,6 +1099,11 @@ impl NetworkHandle {
     pub fn send_booth_name(&self, character_id: u32, sender_name: &str, name: &str) {
         let packet = TalkPacket::booth(character_id, sender_name, name);
         let _ = self.commands.send(NetworkCommand::Talk { packet });
+    }
+
+    /// Pays for a broadcast to the whole server.
+    pub fn send_broadcast(&self, message: &str) {
+        let _ = self.commands.send(NetworkCommand::Broadcast { message: message.to_owned() });
     }
 
     pub fn send_whisper(
@@ -1902,6 +1908,12 @@ pub(crate) async fn play(
                 }) => {
                     session
                         .send(&ActionPacket::query_team_member(character_id, member_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Broadcast { message }) => {
+                    session
+                        .send(&gravak_protocol::BroadcastPacket::send(&message))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

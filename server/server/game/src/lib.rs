@@ -17,6 +17,7 @@ pub mod market_npcs;
 pub mod mining;
 pub mod nobility;
 pub mod status;
+pub mod broadcast;
 pub mod lucky;
 pub mod special_items;
 pub mod store;
