@@ -245,6 +245,7 @@ pub fn opening(npc_id: u32, character: &Character) -> Option<(String, Options, u
             options(&[
                 (1, "Create a guild"),
                 (3, "Inquire about my guild."),
+                (30, "Guild ranking"),
                 (21, "Manage my guild"),
                 (255, "Just passing by."),
             ]),
@@ -842,6 +843,20 @@ async fn guild_director(
             Ok(())
         },
         GUILD_NAME_INPUT => create_guild(state, actor, character, typed).await,
+        30 => {
+            let ranking = crate::guild::ranking(state.pool(), 10).await?;
+            let text = if ranking.is_empty() {
+                "No guild has been founded yet.".to_owned()
+            } else {
+                ranking
+                    .iter()
+                    .enumerate()
+                    .map(|(place, (name, fund, members))| format!("{}. {name} - {fund} silver, {members} members", place + 1))
+                    .collect::<Vec<_>>()
+                    .join("   ")
+            };
+            say(actor, NPC, text, "Thanks.").await
+        },
         3 => {
             let Some(guild) = guild else {
                 return say(actor, NPC, "You are not in a guild.", "I see.").await;

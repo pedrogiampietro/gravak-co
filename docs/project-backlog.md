@@ -91,7 +91,7 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
        LuckAbsorb, golpe duplo e sorte no upgrade.
 5. [x] Broadcast (2050): anúncio pago para o servidor inteiro (/bc no chat, nível 50, 5 CPs, um por minuto).
 6. [x] Trade: quem cai no meio da troca é avisado ao voltar (2 min) e o parceiro na hora; pedidos com o nome do personagem.
-7. [ ] Guild: ranking e cargos (vice-líder, gerentes).
+7. [x] Guild: ranking (top 10 por fundo no GuildDirector) e poderes do vice-líder (convidar e expulsar membros).
 8. [ ] Bosses (Albetros): Dragon, SnowBanshee, SwordMaster, ThrillingSpook,
        com golpes especiais e drops próprios; GuildBeast num evento de guilda.
 9. [ ] Eventos (Albetros): TDM, Capture the Flag, Freeze War, Infection e

@@ -13,6 +13,30 @@ pub struct GuildInfo {
     pub members: Vec<u32>,
 }
 
+/// Guild ranks: the leader, deputies (who may invite and expel members) and
+/// members.
+pub const LEADER_ROLE: u32 = 1000;
+pub const DEPUTY_ROLE: u32 = 990;
+pub const MEMBER_ROLE: u32 = 200;
+
+/// The guilds with the biggest funds: name, fund and members.
+pub async fn ranking(pool: &PgPool, limit: i64) -> Result<Vec<(String, u64, u32)>, sqlx::Error> {
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT g.name, g.silver, COUNT(m.character_id)
+         FROM guilds g LEFT JOIN guild_members m ON m.guild_id = g.guild_id
+         GROUP BY g.guild_id, g.name, g.silver
+         ORDER BY g.silver DESC, COUNT(m.character_id) DESC, g.name
+         LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, silver, members)| (name, silver.max(0) as u64, u32::try_from(members).unwrap_or(0)))
+        .collect())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuildError {
     AlreadyInGuild,
@@ -260,11 +284,13 @@ impl GuildManager {
         Ok(GuildChange::Created { guild: info })
     }
 
+    /// The leader or a deputy invites someone.
     pub fn invite(&self, leader_id: u32, target_id: u32) -> Result<GuildChange, GuildError> {
         let mut book = self.book.lock();
         let guild_id = book.membership.get(&leader_id).copied().ok_or(GuildError::NotInGuild)?;
         let guild = book.guilds.get(&guild_id).ok_or(GuildError::NotInGuild)?;
-        if guild.leader_id != leader_id {
+        let deputy = book.roles.get(&leader_id) == Some(&DEPUTY_ROLE);
+        if guild.leader_id != leader_id && !deputy {
             return Err(GuildError::NotLeader);
         }
         if guild.members.len() >= MAX_GUILD_MEMBERS {
@@ -342,12 +368,15 @@ impl GuildManager {
         })
     }
 
+    /// The leader expels anyone; a deputy, only plain members.
     pub fn kick(&self, leader_id: u32, target_id: u32) -> Result<GuildChange, GuildError> {
         let mut book = self.book.lock();
         let guild_id = book.membership.get(&leader_id).copied().ok_or(GuildError::NotInGuild)?;
+        let deputy = book.roles.get(&leader_id) == Some(&DEPUTY_ROLE);
+        let target_ranked = matches!(book.roles.get(&target_id), Some(&LEADER_ROLE) | Some(&DEPUTY_ROLE));
         let info = {
             let guild = book.guilds.get_mut(&guild_id).ok_or(GuildError::NotInGuild)?;
-            if guild.leader_id != leader_id {
+            if guild.leader_id != leader_id && !(deputy && !target_ranked) {
                 return Err(GuildError::NotLeader);
             }
             if target_id == leader_id {
@@ -560,6 +589,24 @@ mod tests {
         assert_eq!(manager.role_for(20), Some(1000));
         assert!(manager.same_guild(20, 20));
         assert!(!manager.same_guild(20, 30));
+    }
+
+    #[test]
+    fn deputies_invite_and_expel_members_but_not_each_other() {
+        let manager = GuildManager::default();
+        manager.create(10, "Knights").unwrap();
+        for member in [20, 30, 40] {
+            manager.invite(10, member).unwrap();
+            manager.accept_invite(member).unwrap();
+        }
+        assert_eq!(manager.invite(20, 50), Err(GuildError::NotLeader), "a member cannot invite");
+        manager.set_role(10, 20, DEPUTY_ROLE).unwrap();
+        manager.set_role(10, 30, DEPUTY_ROLE).unwrap();
+        assert!(matches!(manager.invite(20, 50), Ok(GuildChange::Invite { .. })));
+        assert_eq!(manager.kick(20, 30), Err(GuildError::NotLeader), "not another deputy");
+        assert_eq!(manager.kick(20, 10), Err(GuildError::NotLeader), "not the leader");
+        assert!(manager.kick(20, 40).is_ok(), "a member, yes");
+        assert!(manager.kick(10, 30).is_ok(), "the leader expels a deputy");
     }
 
     #[test]
