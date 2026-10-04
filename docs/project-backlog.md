@@ -166,10 +166,10 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
 - [x] Quests com outros objetivos (entregar itens) e cadeias de outros NPCs e
       cidades (rodada atual, item 8). Falar com NPCs e coletar drops ainda não.
 - [x] Banca (player shop): nome visível, persistência e volta após reconnect.
-- [ ] Trade: voltar à troca após reconnect; rejeições com mensagem clara.
+- [x] Trade: voltar à troca após reconnect; rejeições com mensagem clara.
 - [x] Guild: depósito/saque de prata da guild.
-- [ ] Guild: ranking e cargos avançados.
-- [ ] GuildBeast (Redux 3120) num evento de guilda.
+- [x] Guild: ranking e cargos avançados.
+- [x] GuildBeast (Redux 3120) num evento de guilda.
 - [ ] Skills: árvore de spells, demais efeitos, buffs/debuffs e fórmulas por
       classe; demais elementos de gems e tipos de refinaria.
 - [ ] Reborn: promoção e progressão por classe.
@@ -212,7 +212,7 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
 - [ ] Rarity, upgrade, animações e resultado do upgrade em sessão real.
 - [ ] Inserir e remover gems sem perder itens.
 - [ ] Tooltip do inventário, rarity e sockets com os mesmos bônus e valores.
-- [ ] HUD em 1024, 1366 e 1704 px.
+- [x] HUD em 1024, 1366 e 1704 px.
 - [ ] Login, trade, guild e PK depois da troca para Postgres.
 
 ## Feito recentemente
