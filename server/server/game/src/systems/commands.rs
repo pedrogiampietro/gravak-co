@@ -220,6 +220,14 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
             Ok(())
         },
+        SubCommands::Boss(info) => {
+            let line = match crate::bosses::appear(state, info.id).await? {
+                Some(name) => format!("{name} appeared."),
+                None => format!("No boss {} (or no room for it). Bosses: 8300-8318 and 3120.", info.id),
+            };
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
+            Ok(())
+        },
         SubCommands::MonsterClear(_) => {
             let map = state.try_map(me.entity().map_id())?;
             let summoned: Vec<u32> = map
@@ -1291,6 +1299,7 @@ enum SubCommands {
     BountyPoints(BountyPointsCmd),
     Monster(MonsterCmd),
     MonsterClear(MonsterClearCmd),
+    Boss(BossCmd),
 }
 
 impl SubCommands {
@@ -1358,6 +1367,15 @@ struct MonsterCmd {
     /// how many (default 1, at most 20)
     #[argh(positional)]
     amount: Option<u32>,
+}
+
+/// Bring a world boss out now: $boss <monster type> (8300-8318, 3120).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "boss")]
+struct BossCmd {
+    /// the boss's monster type
+    #[argh(positional)]
+    id: u32,
 }
 
 /// Remove the monsters created with $monster from this map.

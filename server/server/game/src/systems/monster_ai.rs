@@ -197,6 +197,18 @@ pub async fn tick(state: &State) {
                     .is_none_or(|due| *due <= now);
                 if can_attack {
                     attack(state, monster_ref, character).await;
+                    // A boss's blow strikes everyone close to it.
+                    if crate::bosses::is_boss(monster.id()) {
+                        for other in &characters {
+                            let Some(other) = other.as_character() else {
+                                continue;
+                            };
+                            let near = distance_between(mloc, other.entity().location()) <= crate::bosses::AREA_BLOW;
+                            if other.id() != character.id() && near && !other.entity().is_dead() {
+                                attack(state, monster_ref, other).await;
+                            }
+                        }
+                    }
                     let delay = monster_ref.monster_type().attack_speed.max(350) as u64;
                     next_attack
                         .lock()
