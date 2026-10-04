@@ -50,6 +50,7 @@ impl PacketProcess for MsgConnect {
                 );
                 let me = Character::new(actor.handle(), character);
                 me.load_skills(state.pool(), state.skill_catalog()).await?;
+                crate::lucky::grant_bless(state, &me).await?;
                 me.load_weapon_proficiencies(state.pool()).await?;
                 me.load_spouse(state.pool()).await?;
                 crate::offline_tg::logged_in(me.id());

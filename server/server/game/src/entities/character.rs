@@ -57,6 +57,10 @@ pub struct Character {
     booth_name: Mutex<Option<String>>,
     /// The status timers last sent to the client.
     timers_sent: Mutex<Vec<(u64, u64)>>,
+    /// Lucky time left, in seconds (`lucky.rs`).
+    lucky_time: AtomicU32,
+    /// Where the character started praying (map, x, y).
+    prayer_origin: Mutex<Option<(u32, u16, u16)>>,
     /// The blue flashing name after killing someone.
     flashing_until: Mutex<Option<std::time::Instant>>,
     /// When the next PK point wears off.
@@ -457,6 +461,7 @@ impl Character {
             attributes.spirit = spirit;
         }
         let experience_multiplier = u8::try_from(inner.experience_multiplier.clamp(2, 10)).unwrap_or(2);
+        let lucky_time = u32::try_from(inner.lucky_time.clamp(0, i64::from(crate::lucky::MAX_LUCKY_TIME))).unwrap_or(0);
         let now = SystemTime::now();
         let double_experience_active = persisted_double_experience_until.is_some_and(|expires_at| expires_at > now);
         let heaven_blessing_active = persisted_heaven_blessing_until.is_some_and(|expires_at| expires_at > now);
@@ -491,6 +496,8 @@ impl Character {
             protected_until: Mutex::new(None),
             booth_name: Mutex::new(None),
             timers_sent: Mutex::new(Vec::new()),
+            lucky_time: AtomicU32::new(lucky_time),
+            prayer_origin: Mutex::new(None),
             flashing_until: Mutex::new(None),
             next_pk_decay: Mutex::new((kill_points > 0).then(|| std::time::Instant::now() + crate::death::PK_DECAY)),
             stamina: std::sync::atomic::AtomicU8::new(crate::vitals::MAX_STAMINA),
@@ -810,6 +817,48 @@ impl Character {
         }
         *sent = timers.to_vec();
         true
+    }
+
+    /// Lucky time left, in seconds.
+    pub fn lucky_time(&self) -> u32 {
+        self.lucky_time.load(Ordering::Relaxed)
+    }
+
+    pub fn add_lucky_time(&self, seconds: u32) {
+        let _ = self.lucky_time.try_update(Ordering::Relaxed, Ordering::Relaxed, |time| {
+            Some(time.saturating_add(seconds).min(crate::lucky::MAX_LUCKY_TIME))
+        });
+    }
+
+    /// One second of lucky time wears off.
+    pub fn wear_lucky_time(&self) {
+        let _ = self
+            .lucky_time
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |time| Some(time.saturating_sub(1)));
+    }
+
+    /// Starts praying here: casting Bless (`diffuse`) or absorbing beside
+    /// someone who does.
+    pub fn start_praying(&self, diffuse: bool) {
+        let location = self.entity.location();
+        *self.prayer_origin.lock() = Some((self.entity.map_id(), location.x, location.y));
+        let flags = self.entity.flags() & !(crate::entities::Flags::CASTING_PRAY | crate::entities::Flags::PRAYING);
+        let flag = if diffuse { crate::entities::Flags::CASTING_PRAY } else { crate::entities::Flags::PRAYING };
+        self.entity.set_flags(flags | flag);
+    }
+
+    pub fn stop_praying(&self) {
+        *self.prayer_origin.lock() = None;
+        self.entity
+            .set_flags(self.entity.flags() & !(crate::entities::Flags::CASTING_PRAY | crate::entities::Flags::PRAYING));
+    }
+
+    /// Whether the character left the spot where they started praying.
+    pub fn prayer_moved(&self) -> bool {
+        let location = self.entity.location();
+        self.prayer_origin
+            .lock()
+            .is_some_and(|origin| origin != (self.entity.map_id(), location.x, location.y))
     }
 
     /// The name over the character's open booth.
@@ -2081,7 +2130,8 @@ impl Character {
             .bind(i64::from(item_uid))
             .execute(&mut *transaction)
             .await?;
-        let upgraded = next_roll() % 100 < u32::from(chance);
+        let chance = crate::lucky::lucky_chance(u32::from(chance), self.lucky_time() > 0);
+        let upgraded = next_roll() % 100 < chance;
         if upgraded {
             sqlx::query(
                 "UPDATE item_upgrades SET plus = plus + 1
@@ -2159,7 +2209,10 @@ impl Character {
         pool: &sqlx::PgPool,
         item_uid: u32,
     ) -> Result<(QualityUpgradeOutcome, Option<InventoryItem>), Error> {
-        self.upgrade_quality_with_dragonball_roll(pool, item_uid, next_roll() % 100)
+        // Luck shrinks the roll the chance is compared against.
+        let roll = next_roll() % 100;
+        let roll = if self.lucky_time() > 0 { roll * 9 / 10 } else { roll };
+        self.upgrade_quality_with_dragonball_roll(pool, item_uid, roll)
             .await
     }
 
@@ -3579,7 +3632,8 @@ impl Character {
             transaction.rollback().await?;
             return Ok((RarityUpgradeOutcome::MissingDragonBall, Vec::new()));
         }
-        let upgraded = next_roll() % 100 < u32::from(chance);
+        let chance = crate::lucky::lucky_chance(u32::from(chance), self.lucky_time() > 0);
+        let upgraded = next_roll() % 100 < chance;
         if upgraded {
             let rarity_roll = u8::try_from((next_roll() % 255) + 1).unwrap_or(1);
             sqlx::query(
@@ -5579,6 +5633,7 @@ impl Character {
             double_experience_until: self.double_experience_until_unix(),
             heaven_blessing_until: self.heaven_blessing_until_unix(),
             experience_multiplier: i64::from(self.experience_multiplier.load(Ordering::Relaxed)),
+            lucky_time: i64::from(self.lucky_time()),
         };
         e.update(state.pool()).await?;
         Ok(())
@@ -6182,6 +6237,26 @@ mod tests {
         assert_eq!(character.transfer_guild_fund(&pool, guild_id, 40_000, false).await?, None, "not enough in the fund");
         assert_eq!(character.transfer_guild_fund(&pool, guild_id, 10_000, false).await?, Some((30_000, 20_000)));
         assert_eq!(crate::guild::GuildManager::fund(&pool, guild_id).await?, 20_000);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn praying_stores_lucky_time_until_the_character_moves() -> Result<(), Error> {
+        let (_pool, character, _database_character_id) = test_character().await?;
+        character.start_praying(true);
+        assert!(character.entity().flags().contains(crate::entities::Flags::CASTING_PRAY));
+        assert!(!character.prayer_moved());
+        character.add_lucky_time(3);
+        character.add_lucky_time(crate::lucky::MAX_LUCKY_TIME);
+        assert_eq!(character.lucky_time(), crate::lucky::MAX_LUCKY_TIME, "capped at two hours");
+        let mut location = character.entity().location();
+        location.x += 1;
+        character.entity().set_location(location);
+        assert!(character.prayer_moved());
+        character.stop_praying();
+        assert!(!character.entity().flags().intersects(crate::entities::Flags::CASTING_PRAY | crate::entities::Flags::PRAYING));
+        character.wear_lucky_time();
+        assert_eq!(character.lucky_time(), crate::lucky::MAX_LUCKY_TIME - 1);
         Ok(())
     }
 

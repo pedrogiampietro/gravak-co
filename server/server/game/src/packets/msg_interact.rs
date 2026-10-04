@@ -370,6 +370,14 @@ impl MsgInteract {
             );
             return Ok(());
         }
+        if skill.id == crate::lucky::BLESS {
+            if let Some(line) = crate::lucky::bless(state, character).await? {
+                actor
+                    .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, line))
+                    .await?;
+            }
+            return Ok(());
+        }
         if skill.xp && !character.xp_ready() {
             actor
                 .send(MsgTalk::from_system(
@@ -889,6 +897,7 @@ impl MsgInteract {
                     u32::from(health_before.current),
                 );
             }
+            crate::lucky::empower(Some(character), target.as_character(), &mut outcome, u32::from(health_before.current));
             let health_after = target_entity.apply_damage(outcome.damage);
             if let Some(victim) = target.as_character() {
                 crate::death::check_crime(state, character, victim).await?;
@@ -1420,6 +1429,7 @@ impl PacketProcess for MsgInteract {
         if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
             crate::bounty::empower(&talisman, monster_name_of(monster), &mut outcome, life_before);
         }
+        crate::lucky::empower(Some(character), target.as_character(), &mut outcome, life_before);
         target_entity.apply_damage(outcome.damage);
         if let Some(monster) = target.as_monster() {
             crate::systems::monster_ai::provoke(monster.id(), character.id());

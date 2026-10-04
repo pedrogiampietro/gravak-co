@@ -355,12 +355,14 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs() as u32)
         .unwrap_or_default();
-    let outcome = resolve_physical_hit(
+    let life_before = u32::from(character.entity().hp().current());
+    let mut outcome = resolve_physical_hit(
         monster.combat_stats(),
         character.combat_stats_with_catalog(Some(state.shop_catalog())),
-        u32::from(character.entity().hp().current()),
+        life_before,
         next_roll(),
     );
+    crate::lucky::empower(None, Some(character), &mut outcome, life_before);
     character.entity().apply_damage(outcome.damage);
     // MsgInteract is an effect packet; the local HUD receives its actual life
     // through MsgUserInfo. Without this update the server lost HP internally,

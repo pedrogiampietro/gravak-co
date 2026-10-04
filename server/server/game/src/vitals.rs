@@ -38,6 +38,7 @@ pub fn stamina_gain(action: u16) -> u8 {
 }
 
 pub async fn tick(state: &State) {
+    crate::lucky::tick(state).await;
     for entity in state.entities() {
         let GameEntity::Character(character) = entity.as_ref() else {
             continue;
@@ -51,6 +52,9 @@ pub async fn tick(state: &State) {
         }
         // The HUD counts statuses down; it hears when they change.
         let mut timers = character.status_timers();
+        if character.lucky_time() > 0 {
+            timers.push((crate::lucky::LUCKY_TIMER_BIT, crate::store::now_secs() + u64::from(character.lucky_time())));
+        }
         let vip_until = state.vip().until(character.id());
         if vip_until > crate::store::now_secs() {
             timers.push((crate::entities::Flags::VIP.bits(), vip_until));

@@ -118,7 +118,7 @@ enum StatusIcon {
 }
 
 /// The icon of each timed status flag.
-const STATUS_ICONS: [(u64, StatusIcon); 13] = [
+const STATUS_ICONS: [(u64, StatusIcon); 14] = [
     (1 << 18, StatusIcon::Skill(1_025)), // Superman
     (1 << 23, StatusIcon::Skill(1_110)), // Cyclone
     (1 << 9, StatusIcon::Skill(1_095)),  // Stigma
@@ -132,6 +132,7 @@ const STATUS_ICONS: [(u64, StatusIcon); 13] = [
     (1 << 48, StatusIcon::Item(723_017)), // Double experience
     (1 << 49, StatusIcon::Item(1_200_000)), // Heaven's Blessing
     (1 << 46, StatusIcon::Vip),
+    (1 << 50, StatusIcon::Skill(9_876)), // Lucky time (Bless)
 ];
 
 /// Time left as the bar shows it: `3d`, `5h`, `2:05`, `45s`.

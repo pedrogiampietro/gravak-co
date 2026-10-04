@@ -714,3 +714,13 @@ Power=100
 Status=Stunned
 StatusDurationMs=3000
 RequiredLevel=30
+
+# Bless (second rebirth): pray for lucky time (`lucky.rs`).
+[Skill]
+ID=9876
+Name=Bless
+Mana=0
+Range=0.0
+CooldownMs=1000
+Power=0
+RequiredLevel=1

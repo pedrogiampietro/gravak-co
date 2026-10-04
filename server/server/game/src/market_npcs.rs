@@ -937,6 +937,7 @@ async fn rebirth(state: &State, actor: &Actor<ActorState>, character: &Character
         }
     }
     character.refresh_equipment_resources(catalog);
+    crate::lucky::grant_bless(state, character).await?;
     character.save(state).await?;
     for skill_id in &forget {
         actor
