@@ -74,23 +74,30 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
         HUD. Referência: fileira de ícones pequenos (verde, escuro, roxo,
         verde) no canto da tela.
 
-## Próxima rodada (proposta)
+## Rodada de paridade (Redux + Albetros, em ordem)
 
-1. [ ] Weapon skills que faltaram: Earthquake, Boom e FreezingArrow (dano fixo
-       + atordoar/congelar).
-2. [ ] Reborn: primeira e segunda reencarnação (quest, promoção de classe,
-       bônus de atributos), ExemptionToken na Store.
-3. [ ] Lucky time e a skill Bless da segunda reencarnação (LuckDiffuse /
-       LuckAbsorb, golpe duplo, sorte no upgrade).
-4. [ ] Trade: voltar à troca após reconnect; recusas com mensagem clara.
-5. [ ] Guild: ranking e cargos avançados (vice-líder, gerentes).
-6. [ ] Bosses: IA com patrulha, golpes especiais e drops próprios; GuildBeast
-       num evento de guilda.
-7. [ ] HUD: action bar, buffs, alvo, dano e chat sem sobreposição em 1024,
-       1366 e 1704 px; feedback visual de operações recusadas.
-8. [ ] Desempenho: cache de vértices estáticos do mapa e menos draws.
-9. [ ] Validação no jogo (Pedro): pulo, gems, upgrade, tooltips, trade, guild
-       e PK no Postgres.
+Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
+`ReduxConquerProject` e do `Albetros1.1` com o Gravak.
+
+1. [ ] Itens do Redux que faltam: pergaminhos de cidade (1060020-24), HairDye,
+       Fireworks, NinjaAmulet, BlackTulip e as poções 721331/721333.
+2. [ ] NPCs do Redux que faltam: Guild Conductresses das cidades, Warden do
+       mapa da guild, Milly, Minner, Joe, Welcomer e o Market Controller 4450.
+3. [ ] Weapon skills que faltaram: Earthquake, Boom e FreezingArrow.
+4. [ ] Lucky time e a skill Bless (segunda reencarnação): LuckDiffuse,
+       LuckAbsorb, golpe duplo e sorte no upgrade.
+5. [ ] Broadcast (2050): anúncio pago para o servidor inteiro.
+6. [ ] Trade: voltar à troca após reconnect; recusas com mensagem clara.
+7. [ ] Guild: ranking e cargos (vice-líder, gerentes).
+8. [ ] Bosses (Albetros): Dragon, SnowBanshee, SwordMaster, ThrillingSpook,
+       com golpes especiais e drops próprios; GuildBeast num evento de guilda.
+9. [ ] Eventos (Albetros): TDM, Capture the Flag, Freeze War, Infection e
+       Skill Tournament.
+10. [ ] HUD: action bar, buffs, alvo, dano e chat sem sobreposição em 1024,
+        1366 e 1704 px; feedback de operações recusadas.
+11. [ ] Desempenho: cache de vértices estáticos do mapa e menos draws.
+12. [ ] Validação no jogo (Pedro): pulo, gems, upgrade, tooltips, trade, guild
+        e PK no Postgres.
 
 ## P0 — segurança e dados (antes de abrir o servidor para outras pessoas)
 
