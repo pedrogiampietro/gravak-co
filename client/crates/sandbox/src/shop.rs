@@ -1853,6 +1853,104 @@ impl WeaponFilter {
     }
 }
 
+/// The Skills tab's three pages (`QuerySkillBtnZ/M/J`): weapon and physical
+/// skills, magic, and XP skills.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SkillFilter {
+    #[default]
+    Skill,
+    Magic,
+    Xp,
+}
+
+impl SkillFilter {
+    pub const ALL: [SkillFilter; 3] = [Self::Skill, Self::Magic, Self::Xp];
+
+    /// Same places as the Weapon tab's page buttons.
+    fn rect(self) -> UiRect {
+        let x = match self {
+            Self::Skill => 4,
+            Self::Magic => 70,
+            Self::Xp => 136,
+        };
+        UiRect::new(StatusLayout::PAPER_X + x, StatusLayout::PAPER_Y + 297, 64, 21)
+    }
+
+    /// The page a skill belongs on.
+    pub fn of(assets: &mut Assets, skill_id: u32) -> Self {
+        if crate::main_hud::is_xp_skill(assets, skill_id) {
+            return Self::Xp;
+        }
+        let physical = crate::magic::magic_type(assets, skill_id, 0)
+            .is_some_and(|magic| magic.kind.to_ascii_lowercase().contains("physical"));
+        if physical { Self::Skill } else { Self::Magic }
+    }
+}
+
+/// What the Skills tab shows: its page, how far it is scrolled, the skill
+/// picked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SkillPage {
+    pub filter: SkillFilter,
+    pub scroll: u8,
+    pub selected: Option<u32>,
+}
+
+/// The skills of a page, in id order.
+pub fn skill_rows(assets: &mut Assets, known_skills: &[(u32, u16, u32)], filter: SkillFilter) -> Vec<(u32, u16, u32)> {
+    let mut rows: Vec<(u32, u16, u32)> = known_skills
+        .iter()
+        .copied()
+        .filter(|(skill_id, _, _)| SkillFilter::of(assets, *skill_id) == filter)
+        .collect();
+    rows.sort_unstable_by_key(|(skill_id, _, _)| *skill_id);
+    rows
+}
+
+/// Experience a skill at the server's `level` needs for the next (the
+/// client's MagicType, whose levels start at 0); 0 at the top.
+pub fn skill_level_experience(assets: &mut Assets, skill_id: u32, level: u16) -> u32 {
+    crate::magic::magic_type(assets, skill_id, level.saturating_sub(1)).map_or(0, |magic| magic.need_exp)
+}
+
+/// A row of the skill list ([134-1522..1526]).
+fn skill_row_rect(row: usize) -> UiRect {
+    UiRect::new(
+        StatusLayout::PAPER_X + 15,
+        StatusLayout::PAPER_Y + 67 + row as i32 * 38,
+        162,
+        37,
+    )
+}
+
+pub fn status_skill_filter_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<SkillFilter> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    SkillFilter::ALL.into_iter().find(|filter| filter.rect().contains_local(local))
+}
+
+/// The row of the skill list under the cursor.
+pub fn status_skill_row_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<usize> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    (0..STATUS_LIST_ROWS).find(|row| skill_row_rect(*row).contains_local(local))
+}
+
+/// The list's up (`Some(true)`) or down arrow under the cursor.
+pub fn status_list_scroll_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    let up = UiRect::new(StatusLayout::PAPER_X + 183, StatusLayout::PAPER_Y + 230, 24, 30);
+    let down = UiRect::new(StatusLayout::PAPER_X + 183, StatusLayout::PAPER_Y + 264, 24, 30);
+    if up.contains_local(local) {
+        Some(true)
+    } else if down.contains_local(local) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 pub fn status_weapon_filter_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<WeaponFilter> {
     let [left, top] = status_position(viewport);
     let local = [cursor[0] - left, cursor[1] - top];
@@ -2475,7 +2573,7 @@ pub fn status_dynamic_image(
     equipment: &[crate::network::OwnedItem],
     weapon_skills: &[(u32, u32, u32)],
     weapon_filter: WeaponFilter,
-    selected_skill: Option<u32>,
+    skill_page: SkillPage,
 ) -> Result<RgbaImage> {
     let (width, height) = status_surface_size(active_tab);
     let mut image = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
@@ -2599,37 +2697,56 @@ pub fn status_dynamic_image(
             }
         }
         StatusTab::Skills => {
-            let selected = known_skills
+            let rows = skill_rows(assets, known_skills, skill_page.filter);
+            let selected = rows
                 .iter()
-                .find(|(id, _, _)| Some(*id) == selected_skill)
-                .or(known_skills.first())
+                .find(|(id, _, _)| Some(*id) == skill_page.selected)
+                .or(rows.first())
                 .copied();
+            let percent = |assets: &mut Assets, skill_id: u32, level: u16, experience: u32| {
+                let need = skill_level_experience(assets, skill_id, level);
+                (need > 0).then(|| (u64::from(experience) * 100 / u64::from(need)).min(99) as u32)
+            };
             if let Some((skill_id, level, experience)) = selected {
-                let kind = crate::magic::magic_type(assets, skill_id, level)
+                let kind = crate::magic::magic_type(assets, skill_id, level.saturating_sub(1))
                     .map(|magic| magic.kind.clone())
                     .filter(|kind| !kind.is_empty())
-                    .unwrap_or_else(|| format!("Level {level}  Exp {experience}"));
+                    .unwrap_or_default();
                 let name = crate::magic::skill_name(assets, skill_id);
-                for (index, line) in [name, kind].iter().enumerate() {
-                    let y = paper[1] + 8 + index as i32 * 18;
-                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 12, y], WHITE, Some(180));
+                let need = skill_level_experience(assets, skill_id, level);
+                let progress = if need == 0 {
+                    "EXP: Max".to_owned()
+                } else {
+                    format!("EXP: {experience}/{need} ({}%)", percent(assets, skill_id, level, experience).unwrap_or(0))
+                };
+                let lines = [format!("{name}: Level {level}"), kind, progress];
+                // Inside the description box, as on the Weapon tab.
+                for (index, line) in lines.iter().enumerate() {
+                    let y = paper[1] + 6 + index as i32 * 17;
+                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 24, y], WHITE, Some(180));
                 }
             }
-            // [134-1522..1526]/[134-1165] icons and the level boxes beside.
-            for (row, &(skill_id, skill_level, _)) in
-                known_skills.iter().take(STATUS_LIST_ROWS).enumerate()
-            {
+            // [134-1522..1526]/[134-1165] icons, the level stars and the
+            // progress beside them.
+            let shown = rows.iter().skip(usize::from(skill_page.scroll)).take(STATUS_LIST_ROWS);
+            for (row, &(skill_id, skill_level, experience)) in shown.enumerate() {
                 let y = paper[1] + 67 + row as i32 * 38;
+                if Some(skill_id) == selected.map(|(id, _, _)| id) {
+                    let rect = skill_row_rect(row);
+                    crate::ui_theme::outline(&mut image, rect, [255, 214, 102, 255]);
+                }
                 if let Some(icon) = crate::main_hud::skill_icon(assets, skill_id) {
                     draw_list_icon(&mut image, &icon, [paper[0] + 17, y]);
                 }
-                draw_level_stars(
-                    &mut image,
-                    assets,
-                    u32::from(skill_level),
-                    [paper[0] + 82, y + 18],
-                );
+                draw_level_stars(&mut image, assets, u32::from(skill_level), [paper[0] + 82, y + 11]);
+                let line = match percent(assets, skill_id, skill_level, experience) {
+                    Some(percent) => format!("Lv {skill_level}   {percent}%"),
+                    None => format!("Lv {skill_level}   Max"),
+                };
+                crate::main_hud::text(&mut image, font, &line, 11.0, [paper[0] + 82, y + 20], WHITE, Some(90));
             }
+            // The page being shown, marked over its button.
+            crate::ui_theme::outline(&mut image, skill_page.filter.rect(), [255, 214, 102, 255]);
         }
         _ => {}
     }
@@ -7892,7 +8009,7 @@ mod icon_tests {
                 &equipment,
                 &[(410, 1, 110), (420, 12, 3_500), (480, 3, 90)],
                 super::WeaponFilter::OneHand,
-                Some(1_000),
+                super::SkillPage { filter: super::SkillFilter::Magic, scroll: 0, selected: Some(1_000) },
             )?;
             image::imageops::overlay(&mut image, &values, 0, 0);
             if tab == StatusTab::Equipment {

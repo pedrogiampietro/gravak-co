@@ -252,7 +252,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                 .send(MsgTalk::from_system(
                     me.id(),
                     TalkChannel::System,
-                    "The XP circle fills: learn an XP skill (Superman 1025, Cyclone 1110, FastBlade needs stamina) to use it.",
+                    "The XP circle fills: in a second the XP skills light up in the skill bar. Pick Cyclone (1110) or Superman (1025, level 40) there and right-click within 20 seconds.",
                 ))
                 .await?;
             Ok(())

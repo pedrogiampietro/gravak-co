@@ -40,6 +40,13 @@ pub struct SkillAction {
 /// Client-side interaction metadata for the skills currently exposed by the
 /// server catalog. Damage, mana and effects remain server-authoritative; this
 /// only supplies the input contract and local cooldown presentation.
+/// Skills aimed at a spot rather than locked on a target: FastBlade and
+/// ScentSword strike along a line, Scatter in a fan, toward the clicked
+/// cell, once per click (what is not in the way is not hit).
+pub fn is_aimed_skill(skill_id: u32) -> bool {
+    matches!(skill_id, 1_045 | 1_046 | 8_001)
+}
+
 pub fn skill_action(skill_id: u32) -> Option<SkillAction> {
     Some(match skill_id {
         1_000 => SkillAction {

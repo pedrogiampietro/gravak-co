@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 const RECORD_SIZE: usize = 1584;
 const NAME: usize = 8;
 const KIND: usize = 212;
+/// Experience to the next level (`NeedExp`; 0 at the top).
+const NEED_EXP: usize = 80;
 const INTONE_EFFECT: usize = 468;
 const TARGET_EFFECT: usize = 1120;
 const TARGET_SOUND: usize = 1184;
@@ -31,6 +33,8 @@ pub struct MagicType {
     /// Effect played on the target (for example "Thunder").
     pub target_effect: Option<String>,
     pub sound: Option<String>,
+    /// Experience to the next level; 0 at the top.
+    pub need_exp: u32,
     /// The `.tme` trail drawn along the cast, if any.
     pub trail: Option<String>,
 }
@@ -130,6 +134,10 @@ pub fn parse_magic_types(bytes: &[u8]) -> Vec<MagicType> {
                 intone_effect: field(record, INTONE_EFFECT),
                 target_effect: field(record, TARGET_EFFECT),
                 sound: field(record, TARGET_SOUND),
+                need_exp: record
+                    .get(NEED_EXP..NEED_EXP + 4)
+                    .map(|value| u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+                    .unwrap_or(0),
                 trail: field(record, TRAIL).filter(|name| name.to_ascii_lowercase().ends_with(".tme")),
             })
         })

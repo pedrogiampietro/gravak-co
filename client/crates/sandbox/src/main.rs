@@ -308,6 +308,8 @@ struct App {
     status_open: bool,
     status_tab: shop::StatusTab,
     weapon_filter: shop::WeaponFilter,
+    /// The Character window's Skills tab: page, scroll and pick.
+    skill_page: shop::SkillPage,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -1759,6 +1761,32 @@ impl App {
                 }
                 self.held = false;
                 return true;
+            }
+            if self.status_tab == shop::StatusTab::Skills {
+                if let Some(filter) = shop::status_skill_filter_at(viewport, self.cursor) {
+                    self.skill_page = shop::SkillPage { filter, scroll: 0, selected: None };
+                    self.held = false;
+                    return true;
+                }
+                let known = self.status_skill_list();
+                let rows = shop::skill_rows(&mut self.assets, &known, self.skill_page.filter);
+                if let Some(up) = shop::status_list_scroll_at(viewport, self.cursor) {
+                    let most = rows.len().saturating_sub(6) as u8;
+                    self.skill_page.scroll = if up {
+                        self.skill_page.scroll.saturating_sub(1)
+                    } else {
+                        (self.skill_page.scroll + 1).min(most)
+                    };
+                    self.held = false;
+                    return true;
+                }
+                if let Some(row) = shop::status_skill_row_at(viewport, self.cursor) {
+                    if let Some((skill_id, _, _)) = rows.get(usize::from(self.skill_page.scroll) + row) {
+                        self.skill_page.selected = Some(*skill_id);
+                    }
+                    self.held = false;
+                    return true;
+                }
             }
             if self.status_tab == shop::StatusTab::Weapon
                 && let Some(filter) = shop::status_weapon_filter_at(viewport, self.cursor)
@@ -4570,6 +4598,7 @@ impl App {
                 .map(|(&weapon_type, &(level, experience))| (weapon_type, level, experience))
                 .collect(),
             weapon_filter: self.weapon_filter,
+            skill_page: self.skill_page,
             stamina: self.stamina,
             max_stamina: if self.status_flags & network::HEAVEN_BLESSING_FLAG != 0 {
                 150
@@ -4606,7 +4635,9 @@ impl App {
         }) {
             return false;
         }
-        if skill.requires_target {
+        if action_bar::is_aimed_skill(skill.id) {
+            self.cast_aimed_skill(skill);
+        } else if skill.requires_target {
             // Ctrl aims the skill at a player under the cursor too.
             let player = self
                 .modifiers
@@ -4634,6 +4665,48 @@ impl App {
             self.cast_skill(skill);
         }
         true
+    }
+
+    /// The learned skills as the Character window lists them.
+    fn status_skill_list(&self) -> Vec<(u32, u16, u32)> {
+        let mut skills: Vec<(u32, u16, u32)> = self
+            .known_skills
+            .iter()
+            .map(|(&id, &(level, experience))| (id, level, experience))
+            .collect();
+        skills.sort_unstable();
+        skills
+    }
+
+    /// A line or fan skill toward the cell under the cursor, once.
+    fn cast_aimed_skill(&mut self, skill: action_bar::SkillAction) {
+        let (Some(network), Some(character_id), Some(renderer)) =
+            (&self.network, self.network_character_id, &self.renderer)
+        else {
+            return;
+        };
+        if !self.known_skills.contains_key(&skill.id) {
+            self.network_status = format!("{} ainda não foi aprendida", skill.name);
+            return;
+        }
+        let now = self.started.elapsed().as_secs_f32();
+        if self.skill_cooldown_until.get(&skill.id).is_some_and(|until| now < *until) {
+            return;
+        }
+        let camera = renderer.camera(&self.map, &self.player);
+        let cell = self
+            .map
+            .unproject([self.cursor[0] + camera[0], self.cursor[1] + camera[1]])
+            .map(|value| value.round().max(0.0) as i32);
+        if cell == self.player.cell() {
+            return;
+        }
+        network.send_magic_attack(character_id, 0, cell[0] as u16, cell[1] as u16, skill.id);
+        self.skill_cooldown_until.insert(skill.id, now + skill.cooldown_seconds);
+        self.pending_attack = None;
+        self.pending_skill_attack = None;
+        self.face_towards(cell);
+        self.network_status = format!("online: {} toward ({}, {})", skill.name, cell[0], cell[1]);
     }
 
     /// A heal or revive aimed at another player.
@@ -5523,8 +5596,9 @@ impl App {
     }
 
     fn queue_use_item(&mut self, item: network::OwnedItem) -> bool {
-        if !shop::is_consumable(item.item_type) {
-            self.network_status = "Este item ainda não pode ser usado".into();
+        let worn = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
+        if worn && !shop::is_consumable(item.item_type) {
+            self.network_status = "Equipamentos se vestem, não se usam".into();
             return true;
         }
         let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
@@ -5758,12 +5832,14 @@ impl App {
                 "context requested: inventory uid={} type={} position={} cursor=({:.1},{:.1})",
                 item.uid, item.item_type, item.position, self.cursor[0], self.cursor[1]
             ));
+            // What is not worn is used; the server decides what using it
+            // does (scrolls, dyes, books, potions...) and says when nothing.
             let actions = if shop::is_consumable(item.item_type) {
                 vec![shop::ItemContextAction::Use]
             } else if shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some() {
                 self.available_item_actions(item, false)
             } else {
-                Vec::new()
+                vec![shop::ItemContextAction::Use]
             };
             if !actions.is_empty() {
                 self.item_context = Some(shop::ItemContext {
@@ -6080,7 +6156,9 @@ impl App {
                 item.uid, item.item_type, item.position
             ));
             self.last_inventory_click = None;
-            return if shop::is_consumable(item.item_type) {
+            // Equipment is worn; anything else is used.
+            let worn = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
+            return if shop::is_consumable(item.item_type) || !worn {
                 self.queue_use_item(item)
             } else {
                 self.queue_equip_item(item)
@@ -7276,6 +7354,7 @@ fn run() -> Result<()> {
             shop::StatusTab::Attributes
         },
         weapon_filter: shop::WeaponFilter::OneHand,
+        skill_page: shop::SkillPage::default(),
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,

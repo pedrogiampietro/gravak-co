@@ -101,6 +101,39 @@ pub struct SkillDefinition {
     pub chance: u8,
 }
 
+/// Skill experience per level, from the client's MagicType (`NeedExp`):
+/// MagicType levels start at 0, the server's at 1.
+fn level_table() -> &'static HashMap<(u32, u16), u32> {
+    static TABLE: std::sync::OnceLock<HashMap<(u32, u16), u32>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        include_str!("../data/skill_levels.dat")
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace().map(str::parse::<u32>);
+                let (Some(Ok(id)), Some(Ok(level)), Some(Ok(need))) = (fields.next(), fields.next(), fields.next())
+                else {
+                    return None;
+                };
+                Some(((id, u16::try_from(level).ok()?), need))
+            })
+            .collect()
+    })
+}
+
+/// Experience a skill at the server's `level` needs to reach the next:
+/// `Some(0)` at its top level, `None` for a skill the original lacks.
+pub fn experience_to_level(skill_id: u32, level: u16) -> Option<u32> {
+    let table = level_table();
+    let magic_level = level.saturating_sub(1);
+    match table.get(&(skill_id, magic_level)) {
+        Some(need) => Some(*need),
+        // Past the last level the original lists: the top.
+        None if table.keys().any(|(id, _)| *id == skill_id) => Some(0),
+        None => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SkillCatalog {
     skills: HashMap<u32, SkillDefinition>,
@@ -173,7 +206,7 @@ impl SkillCatalog {
             .min_by_key(|skill| (skill.required_level, skill.id))
     }
 
-    fn parse(contents: &str) -> Result<Self, String> {
+    pub(crate) fn parse(contents: &str) -> Result<Self, String> {
         let mut catalog = Self { skills: HashMap::new() };
         let mut current: Option<SkillDefinition> = None;
         let mut seen_keys = HashSet::new();
@@ -719,6 +752,16 @@ mod tests {
         assert!(super::in_sector((10, 10), (20, 10), (14, 12), 8));
         assert!(!super::in_sector((10, 10), (20, 10), (6, 10), 8));
         assert!(!super::in_sector((10, 10), (20, 10), (19, 10), 8));
+    }
+
+    #[test]
+    fn skill_levels_follow_the_original_table() {
+        assert_eq!(super::experience_to_level(1_045, 1), Some(100_000), "FastBlade's first level");
+        assert_eq!(super::experience_to_level(1_045, 2), Some(300_000));
+        assert_eq!(super::experience_to_level(1_045, 5), Some(0), "FastBlade tops at the original's level 4");
+        assert_eq!(super::experience_to_level(1_045, 9), Some(0));
+        assert_eq!(super::experience_to_level(5_010, 1), Some(20_243));
+        assert_eq!(super::experience_to_level(4_242_424, 1), None);
     }
 
     #[test]

@@ -280,7 +280,7 @@ enum UiTextureJob {
         equipment: Vec<crate::network::OwnedItem>,
         weapon_skills: Vec<(u32, u32, u32)>,
         weapon_filter: crate::shop::WeaponFilter,
-        selected_skill: Option<u32>,
+        skill_page: crate::shop::SkillPage,
     },
     StatusOverlay {
         path: String,
@@ -504,7 +504,7 @@ impl UiTextureJob {
                 equipment,
                 weapon_skills,
                 weapon_filter,
-                selected_skill,
+                skill_page,
                 ..
             } => crate::shop::status_dynamic_image(
                 assets,
@@ -519,7 +519,7 @@ impl UiTextureJob {
                 &equipment,
                 &weapon_skills,
                 weapon_filter,
-                selected_skill,
+                skill_page,
             ),
             Self::StatusOverlay {
                 equipment,
@@ -1055,6 +1055,29 @@ impl Renderer {
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         let scale = 0.75;
+        // A flat effect (a status flag) is moved by its own animation far
+        // from its origin: centre it on its slot by the box it fills.
+        let centre = flat.map(|_| {
+            let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for layer in &effect.layers {
+                for (mesh_index, mesh) in layer.document.meshes.iter().enumerate() {
+                    let Some(motion) = layer.document.motions.get(mesh_index).or_else(|| layer.document.motions.first())
+                    else {
+                        continue;
+                    };
+                    for vertex in &mesh.vertices {
+                        let p = mesh.transformed_vertex_position(vertex, motion, Matrix4::IDENTITY, 0.0);
+                        let point = [p.x, p.y * sin + p.z * cos];
+                        for axis in 0..2 {
+                            low[axis] = low[axis].min(point[axis]);
+                            high[axis] = high[axis].max(point[axis]);
+                        }
+                    }
+                }
+            }
+            let span = (high[0] - low[0]).max(high[1] - low[1]).max(1.0);
+            ([(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0], span)
+        });
         for layer in &effect.layers {
             if !self.textures.contains_key(&layer.texture) {
                 continue;
@@ -1082,12 +1105,16 @@ impl Renderer {
                             Matrix4::IDENTITY,
                             frame,
                         );
-                        let (screen, depth) = match flat {
-                            Some(size) => {
-                                let unit = size / 25.0;
-                                ([origin[0] + p.x * unit, origin[1] - p.y * unit], 0.5)
+                        let (screen, depth) = match (flat, centre) {
+                            (Some(size), Some((middle, span))) => {
+                                let unit = size / span;
+                                let screen_y = p.y * sin + p.z * cos;
+                                (
+                                    [origin[0] + (p.x - middle[0]) * unit, origin[1] + (screen_y - middle[1]) * unit],
+                                    0.5,
+                                )
                             },
-                            None => {
+                            _ => {
                                 let screen_y = (p.y * sin + p.z * cos) * scale;
                                 let depth = (p.y * cos - p.z * sin) * scale;
                                 ([origin[0] + p.x * scale, origin[1] + screen_y], (0.5 + depth * 0.0005).clamp(0.001, 0.999))
@@ -3326,6 +3353,7 @@ impl Renderer {
             skill_hud.weapon_skills.hash(&mut hasher);
             skill_hud.weapon_filter.hash(&mut hasher);
             skill_hud.active_skill.hash(&mut hasher);
+            skill_hud.skill_page.hash(&mut hasher);
             mana.hash(&mut hasher);
             maximum_mana.hash(&mut hasher);
             let close_hovered = crate::shop::status_close_at(viewport, cursor);
@@ -3370,7 +3398,7 @@ impl Renderer {
                         equipment: status_equipment.clone(),
                         weapon_skills: skill_hud.weapon_skills.clone(),
                         weapon_filter,
-                        selected_skill: skill_hud.active_skill,
+                        skill_page: skill_hud.skill_page,
                     },
                 );
                 self.status_signature = Some(signature);

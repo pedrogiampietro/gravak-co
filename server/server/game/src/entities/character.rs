@@ -1450,8 +1450,14 @@ impl Character {
         let mut next = current;
         next.experience = next.experience.saturating_add(u64::from(amount));
         next.proficiency = next.proficiency.saturating_add(amount);
-        let threshold = u32::from(next.level).saturating_mul(100).max(100);
-        if next.proficiency >= threshold && next.level < u16::MAX {
+        // The original's experience per level (MagicType `NeedExp`); skills
+        // it lacks keep the old hundred per level.
+        let threshold = crate::skills::experience_to_level(skill_id, next.level)
+            .unwrap_or_else(|| u32::from(next.level).saturating_mul(100).max(100));
+        if threshold == 0 {
+            // The top level: experience no longer fills.
+            next.proficiency = 0;
+        } else if next.proficiency >= threshold && next.level < u16::MAX {
             next.proficiency -= threshold;
             next.level = next.level.saturating_add(1);
         }
@@ -6257,6 +6263,21 @@ mod tests {
         assert_eq!(character.transfer_guild_fund(&pool, guild_id, 40_000, false).await?, None, "not enough in the fund");
         assert_eq!(character.transfer_guild_fund(&pool, guild_id, 10_000, false).await?, Some((30_000, 20_000)));
         assert_eq!(crate::guild::GuildManager::fund(&pool, guild_id).await?, 20_000);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_full_xp_circle_lights_for_an_xp_skill() -> Result<(), Error> {
+        let (pool, character, _database_character_id) = test_character().await?;
+        let catalog = crate::skills::SkillCatalog::parse(include_str!("../../data/skills.dat")).expect("skills");
+        character.learn_skill(&pool, 1_110, 1).await?;
+        assert!(character.has_xp_skill(&catalog), "Cyclone is an XP skill");
+        character.fill_xp();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let change = character.regenerate(character.has_xp_skill(&catalog));
+        assert!(change.flags, "the circle lights and the client hears of it");
+        assert!(character.xp_ready());
+        assert!(character.entity().flags().contains(crate::entities::Flags::XP_CIRCLE));
         Ok(())
     }
 

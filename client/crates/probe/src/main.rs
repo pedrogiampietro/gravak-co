@@ -3469,7 +3469,27 @@ async fn run_cyclone_smoke(
             "$test-mana",
         ))
         .await?;
-    sleep(Duration::from_millis(100)).await;
+    // Cyclone is an XP skill: fill the circle and wait for it to light.
+    session
+        .send(&TalkPacket::public(character_id, character_name, "$xp"))
+        .await?;
+    let xp_flag = 1_i64 << 4;
+    let lit_deadline = Instant::now() + Duration::from_secs(4);
+    let mut lit = false;
+    while let Ok(event_result) = timeout_at(lit_deadline, session.next_event()).await {
+        let Some(event) = event_result? else { break };
+        match event {
+            GameEvent::Player(player)
+                if player.character_id == character_id as i32 && (player.status_flags & xp_flag) != 0 =>
+            {
+                lit = true;
+                break;
+            }
+            GameEvent::Talk(talk) => println!("Cyclone XP talk: {}", talk.message),
+            _ => {}
+        }
+    }
+    println!("Cyclone XP circle lit: {lit}");
     session
         .send(&InteractionPacket::magic_attack(
             character_id,

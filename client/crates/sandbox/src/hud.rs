@@ -100,6 +100,8 @@ pub struct SkillHud {
     pub hovered: Option<u32>,
     /// Timed statuses: their flag and the seconds left.
     pub timers: Vec<(u64, u32)>,
+    /// The Character window's Skills tab: page, scroll and pick.
+    pub skill_page: crate::shop::SkillPage,
 }
 
 /// Seconds since 1970 on this machine.

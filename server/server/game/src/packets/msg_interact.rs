@@ -973,7 +973,10 @@ impl MsgInteract {
             owner.send(effect.clone()).await?;
         }
         self.degrade_used_weapons(state, actor, character).await?;
-        if let Some(progress) = character.practice_skill(state.pool(), skill.id, 1).await? {
+        // Attack skills learn as much as the hit earned (Redux
+        // `AddSkillExperience(expGain)`), at least one.
+        let practice = u32::try_from(hit_experience).unwrap_or(u32::MAX).max(1);
+        if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
             actor.send(super::MsgSkill::from(progress)).await?;
         }
         for target_id in defeated {
