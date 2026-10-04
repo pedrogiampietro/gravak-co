@@ -74,6 +74,24 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
         HUD. Referência: fileira de ícones pequenos (verde, escuro, roxo,
         verde) no canto da tela.
 
+## Próxima rodada (proposta)
+
+1. [ ] Weapon skills que faltaram: Earthquake, Boom e FreezingArrow (dano fixo
+       + atordoar/congelar).
+2. [ ] Reborn: primeira e segunda reencarnação (quest, promoção de classe,
+       bônus de atributos), ExemptionToken na Store.
+3. [ ] Lucky time e a skill Bless da segunda reencarnação (LuckDiffuse /
+       LuckAbsorb, golpe duplo, sorte no upgrade).
+4. [ ] Trade: voltar à troca após reconnect; recusas com mensagem clara.
+5. [ ] Guild: ranking e cargos avançados (vice-líder, gerentes).
+6. [ ] Bosses: IA com patrulha, golpes especiais e drops próprios; GuildBeast
+       num evento de guilda.
+7. [ ] HUD: action bar, buffs, alvo, dano e chat sem sobreposição em 1024,
+       1366 e 1704 px; feedback visual de operações recusadas.
+8. [ ] Desempenho: cache de vértices estáticos do mapa e menos draws.
+9. [ ] Validação no jogo (Pedro): pulo, gems, upgrade, tooltips, trade, guild
+       e PK no Postgres.
+
 ## P0 — segurança e dados (antes de abrir o servidor para outras pessoas)
 
 - [x] **Login sem senha pelo game server**: o pacote `MsgTransfer` (4001) dava
@@ -125,11 +143,12 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
       WarGhost), com prata, experiência e Meteor/DragonBall; a recompensa em
       item espera espaço na bolsa em vez de se perder. Testado no servidor real
       com o probe `--quest`.
-- [ ] Quests com outros objetivos (coletar itens, falar com NPCs, entregar) e
-      cadeias de outros NPCs e cidades.
-- [ ] Banca (player shop): nome visível, persistência e volta após reconnect.
+- [x] Quests com outros objetivos (entregar itens) e cadeias de outros NPCs e
+      cidades (rodada atual, item 8). Falar com NPCs e coletar drops ainda não.
+- [x] Banca (player shop): nome visível, persistência e volta após reconnect.
 - [ ] Trade: voltar à troca após reconnect; rejeições com mensagem clara.
-- [ ] Guild: ranking, cargos avançados, depósito/saque de prata da guild.
+- [x] Guild: depósito/saque de prata da guild.
+- [ ] Guild: ranking e cargos avançados.
 - [ ] GuildBeast (Redux 3120) num evento de guilda.
 - [ ] Skills: árvore de spells, demais efeitos, buffs/debuffs e fórmulas por
       classe; demais elementos de gems e tipos de refinaria.
@@ -153,8 +172,8 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
       contador sob o minimapa e nome dourado com losango nos monstros da tarefa.
 - [x] Testado no servidor real com o probe `--bounty` (quadro, escolha,
       abandono) e um abate que concluiu a tarefa.
-- [ ] Listas de criaturas preferidas e evitadas (pagas com bounty points).
-- [ ] Confirmação antes de gastar um token ao abandonar.
+- [x] Listas de criaturas preferidas e evitadas (pagas com bounty points).
+- [x] Confirmação antes de gastar um token ao abandonar.
 - [ ] Validação visual no jogo (Pedro).
 
 ## P3 — cliente e interface
