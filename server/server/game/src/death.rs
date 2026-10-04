@@ -175,6 +175,12 @@ pub async fn kill_character(
     );
 
     let map_id = victim.entity().map_id();
+    if map_id == crate::events::EVENT_MAP {
+        // Events keep their own score; nothing drops.
+        crate::events::on_kill(state, victim, killer).await?;
+        victim.save(state).await?;
+        return Ok(());
+    }
     if map_id == ARENA_MAP {
         victim.save(state).await?;
         return Ok(());
@@ -298,6 +304,10 @@ pub async fn revive(state: &State, character: &Character, here: bool) -> Result<
     if here && character.heaven_blessing_active() {
         revive_here(character).await?;
         return Ok(true);
+    }
+    if map_id == crate::events::EVENT_MAP {
+        // The event stands its players up itself.
+        return Ok(false);
     }
     if map_id == ARENA_MAP {
         // Arena fighters get up where they fell.

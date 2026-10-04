@@ -235,7 +235,7 @@ async fn vip_teleport(
         let left = state.vip().teleport_ready_at(character.id()).saturating_sub(now);
         return Ok(Some(format!("You can teleport again in {left}s.")));
     }
-    character.teleport(state, city.map_id, city.position).await?;
+    crate::world::relocate(state, character, city.map_id, city.position).await?;
     tracing::info!(target: "world", character = %character.entity().name(), city = city.name, "VIP teleport");
     Ok(None)
 }

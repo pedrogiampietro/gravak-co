@@ -97,8 +97,12 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
        golpe em área e drop de DB, Meteors e equipamento Elite/Super;
        GuildBeast no mapa da guild paga 1M ao fundo da guild de quem o mata.
        `$boss <id>` para testar. (Os bosses do Albetros eram só esboços.)
-9. [ ] Eventos (Albetros): TDM, Capture the Flag, Freeze War, Infection e
-       Skill Tournament.
+9. [x] Eventos (Albetros): Team Deathmatch, Capture the Flag, Freeze War,
+       Infection e Last Man Standing (no lugar do Skill Tournament, que no
+       Albetros era só um esboço) na arena de eventos (mapa 7002). Inscrição
+       de 1 min com `$join`, times equilibrados por nível, meia ExpBall aos
+       vencedores; `$event <tdm|freeze|infection|ctf|lms>` e um automático a
+       cada 3 h.
 10. [ ] HUD: action bar, buffs, alvo, dano e chat sem sobreposição em 1024,
         1366 e 1704 px; feedback de operações recusadas.
 11. [ ] Desempenho: cache de vértices estáticos do mapa e menos draws.

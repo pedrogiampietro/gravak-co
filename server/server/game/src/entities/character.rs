@@ -5559,14 +5559,16 @@ impl Character {
     pub async fn teleport(&self, state: &crate::State, map_id: u32, (x, y): (u16, u16)) -> Result<(), Error> {
         let mut location = self.entity.location();
         let xy = u32::constract(y, x);
+        let new_map = state.try_map(map_id)?;
+        // The client loads the map's file: a copy (an event arena) names the
+        // map it copies.
         let msg = MsgAction::new(
             self.entity.id(),
-            map_id,
+            new_map.map_id(),
             xy,
             location.direction as u16,
             ActionType::Teleport,
         );
-        let new_map = state.try_map(map_id)?;
         new_map.load().await?;
         let tile = new_map.tile(x, y).ok_or(Error::TileNotFound(x, y))?;
         // remove from old map
@@ -5600,7 +5602,15 @@ impl Character {
 
     #[tracing::instrument(skip(self, state), fields(me = self.entity.id()))]
     pub async fn save(&self, state: &crate::State) -> Result<(), Error> {
-        let location = self.entity.location();
+        let mut location = self.entity.location();
+        // Nobody wakes up on the event arena: a return lands in Twin City.
+        let map_id = if self.entity.map_id() == crate::events::EVENT_MAP {
+            location.x = 430;
+            location.y = 380;
+            1_002
+        } else {
+            self.entity.map_id()
+        };
         let e = tq_db::character::Character {
             character_id: self.inner.character_id,
             account_id: self.inner.account_id,
@@ -5616,7 +5626,7 @@ impl Character {
             rebirths: self.rebirths() as _,
             level: self.entity.level() as _,
             experience: self.experience() as _,
-            map_id: self.entity.map_id() as _,
+            map_id: map_id as _,
             x: location.x as _,
             y: location.y as _,
             virtue: self.virtue() as _,

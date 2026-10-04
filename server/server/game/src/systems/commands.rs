@@ -228,6 +228,24 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
             Ok(())
         },
+        SubCommands::Event(info) => {
+            let line = match crate::events::Mode::parse(&info.mode) {
+                Some(mode) => crate::events::open(state, mode).await,
+                None => "Events: tdm, freeze, infection, ctf, lms.".to_owned(),
+            };
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
+            Ok(())
+        },
+        SubCommands::Join(_) => {
+            let line = crate::events::join(me);
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::TopLeft, line)).await?;
+            Ok(())
+        },
+        SubCommands::Leave(_) => {
+            let line = crate::events::leave(me);
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::TopLeft, line)).await?;
+            Ok(())
+        },
         SubCommands::MonsterClear(_) => {
             let map = state.try_map(me.entity().map_id())?;
             let summoned: Vec<u32> = map
@@ -1300,6 +1318,9 @@ enum SubCommands {
     Monster(MonsterCmd),
     MonsterClear(MonsterClearCmd),
     Boss(BossCmd),
+    Event(EventCmd),
+    Join(JoinCmd),
+    Leave(LeaveCmd),
 }
 
 impl SubCommands {
@@ -1317,6 +1338,8 @@ impl SubCommands {
                 | Self::TitleStatus(_)
                 | Self::TitleEquip(_)
                 | Self::AddAttribute(_)
+                | Self::Join(_)
+                | Self::Leave(_)
         )
     }
 }
@@ -1377,6 +1400,25 @@ struct BossCmd {
     #[argh(positional)]
     id: u32,
 }
+
+/// Open an event for signups: $event <tdm|freeze|infection|ctf|lms>.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "event")]
+struct EventCmd {
+    /// tdm, freeze, infection, ctf or lms
+    #[argh(positional)]
+    mode: String,
+}
+
+/// Take part in the event open for signups.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "join")]
+struct JoinCmd {}
+
+/// Leave the event signups.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "leave")]
+struct LeaveCmd {}
 
 /// Remove the monsters created with $monster from this map.
 #[derive(Debug, Clone, PartialEq, FromArgs)]

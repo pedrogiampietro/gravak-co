@@ -702,7 +702,12 @@ impl MsgInteract {
         );
         let target_character = primary.as_character();
         let pvp_allowed = match target_character {
-            Some(target) => character.can_attack_character(target) && !team_mode_spares(state, character, target),
+            Some(target) => {
+                (character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
+                    && !team_mode_spares(state, character, target)
+                    && !crate::events::allies(character.id(), target.id())
+                    && !target.revive_protected()
+            },
             None => true,
         };
         let valid_target = primary_entity.map_id() == character.entity().map_id()
@@ -1345,7 +1350,12 @@ impl PacketProcess for MsgInteract {
                 .is_some_and(|target| target.id() == character.id())
             || target
                 .as_character()
-                .is_some_and(|target| !character.can_attack_character(target) || team_mode_spares(state, character, target))
+                .is_some_and(|target| {
+                    !(character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
+                        || team_mode_spares(state, character, target)
+                        || crate::events::allies(character.id(), target.id())
+                        || target.revive_protected()
+                })
         {
             tracing::debug!(target_id = self.target_id, "Rejected invalid player attack target");
             return Ok(());

@@ -72,7 +72,7 @@ pub async fn use_item(state: &State, actor: &Actor<ActorState>, character: &Char
         if !consume(state, actor, character, item).await? {
             return Ok(true);
         }
-        character.teleport(state, *map_id, *position).await?;
+        crate::world::relocate(state, character, *map_id, *position).await?;
         return Ok(true);
     }
     if let Some((_, colour)) = HAIR_DYES.iter().find(|(dye, _)| *dye == item.item_type) {

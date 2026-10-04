@@ -19,6 +19,7 @@ pub mod nobility;
 pub mod status;
 pub mod bosses;
 pub mod broadcast;
+pub mod events;
 pub mod lucky;
 pub mod special_items;
 pub mod store;

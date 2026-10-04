@@ -126,6 +126,7 @@ async fn main() -> Result<(), Error> {
             game::vitals::tick(ai_state).await;
             game::broadcast::tick(ai_state).await;
             game::bosses::tick(ai_state).await;
+            game::events::tick(ai_state).await;
             game::guild_war::tick(ai_state).await;
             game::mining::tick(ai_state).await;
             game::pets::tick(ai_state).await;
