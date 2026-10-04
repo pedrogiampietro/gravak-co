@@ -736,6 +736,9 @@ mod tests {
         assert!(snow.physical && snow.radius > 0.0 && snow.mana_cost == 0);
         assert_eq!(catalog.weapon_skill(421).map(|skill| skill.id), Some(5_030), "both blades set off Phoenix");
         assert!(catalog.weapon_skill(410).is_none(), "blades of 410 have none");
+        let quake = catalog.weapon_skill(450).expect("Earthquake for axes");
+        assert_eq!((quake.id, quake.status.is_some(), quake.power_percent), (7_010, true, 100));
+        assert_eq!(catalog.weapon_skill(500).map(|skill| skill.id), Some(5_000), "bows freeze");
     }
 
     #[test]

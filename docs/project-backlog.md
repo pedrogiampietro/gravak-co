@@ -86,7 +86,7 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
        (815-818), o Warden da prisão da guerra (140) e o Mark.Controller já
        existiam; as Guild Conductresses das cidades e o Welcomer são NPCs
        próprios do Redux, que não existem no banco do 5065.
-3. [ ] Weapon skills que faltaram: Earthquake, Boom e FreezingArrow.
+3. [x] Weapon skills que faltaram: Earthquake, Boom e FreezingArrow (golpe + atordoar; FreezingArrow ensinada pelo Archer God).
 4. [ ] Lucky time e a skill Bless (segunda reencarnação): LuckDiffuse,
        LuckAbsorb, golpe duplo e sorte no upgrade.
 5. [ ] Broadcast (2050): anúncio pago para o servidor inteiro.
