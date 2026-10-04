@@ -71,7 +71,7 @@ async fn summon_monsters(
         let mut origin = here;
         origin.x = (i32::from(here.x) + dx * ring).max(0) as u16;
         origin.y = (i32::from(here.y) + dy * ring).max(0) as u16;
-        let Some(spot) = map.nearest_walkable_position(origin, 4) else {
+        let Some(spot) = map.landing_position(origin, 4) else {
             continue;
         };
         let spawn = tq_db::monster::MonsterSpawn {
@@ -244,6 +244,52 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
         SubCommands::Leave(_) => {
             let line = crate::events::leave(me);
             actor.send(MsgTalk::from_system(me.id(), TalkChannel::TopLeft, line)).await?;
+            Ok(())
+        },
+        SubCommands::Xp(_) => {
+            me.fill_xp();
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    "The XP circle fills: learn an XP skill (Superman 1025, Cyclone 1110, FastBlade needs stamina) to use it.",
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Stamina(info) => {
+            me.set_stamina(info.amount.unwrap_or(0));
+            actor
+                .send(crate::packets::MsgUserAttrib::new(
+                    me.id(),
+                    crate::packets::UserAttribute::Stamina,
+                    u64::from(me.stamina()),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Lucky(info) => {
+            me.add_lucky_time(info.seconds.unwrap_or(600));
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Lucky time: {} seconds.", me.lucky_time()),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Rebirths(info) => {
+            me.set_rebirths(info.count);
+            me.save(state).await?;
+            if crate::lucky::grant_bless(state, me).await? {
+                if let Some(progress) = me.skills().into_iter().find(|skill| skill.skill_id == crate::lucky::BLESS) {
+                    actor.send(MsgSkill::from(progress)).await?;
+                }
+            }
+            actor
+                .send(MsgTalk::from_system(me.id(), TalkChannel::System, format!("Rebirths: {}.", me.rebirths())))
+                .await?;
             Ok(())
         },
         SubCommands::MonsterClear(_) => {
@@ -1321,6 +1367,10 @@ enum SubCommands {
     Event(EventCmd),
     Join(JoinCmd),
     Leave(LeaveCmd),
+    Xp(XpCmd),
+    Stamina(StaminaCmd),
+    Lucky(LuckyCmd),
+    Rebirths(RebirthsCmd),
 }
 
 impl SubCommands {
@@ -1408,6 +1458,38 @@ struct EventCmd {
     /// tdm, freeze, infection, ctf or lms
     #[argh(positional)]
     mode: String,
+}
+
+/// Fill the XP circle, for testing XP skills.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "xp")]
+struct XpCmd {}
+
+/// Set stamina, for testing (default 0, to watch it refill).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "stamina")]
+struct StaminaCmd {
+    /// stamina (0-150)
+    #[argh(positional)]
+    amount: Option<u8>,
+}
+
+/// Add lucky time, for testing (default 600 seconds).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "lucky")]
+struct LuckyCmd {
+    /// seconds
+    #[argh(positional)]
+    seconds: Option<u32>,
+}
+
+/// Set the number of rebirths (two learn Bless), for testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "rebirths")]
+struct RebirthsCmd {
+    /// rebirths (0-2)
+    #[argh(positional)]
+    count: u8,
 }
 
 /// Take part in the event open for signups.

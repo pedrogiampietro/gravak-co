@@ -5107,6 +5107,16 @@ impl Character {
     }
 
     /// A kill feeds the XP circle (Redux `owner.Xp++`).
+    /// Testing: stamina set outright.
+    pub fn set_stamina(&self, stamina: u8) {
+        self.stamina.store(stamina, Ordering::Relaxed);
+    }
+
+    /// Testing: the number of rebirths set outright.
+    pub fn set_rebirths(&self, rebirths: u8) {
+        self.rebirths.store(rebirths.min(2), Ordering::Relaxed);
+    }
+
     pub fn add_xp_point(&self) {
         if self.xp_ready_until.lock().is_none() {
             let _ = self

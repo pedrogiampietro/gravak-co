@@ -115,6 +115,9 @@ enum StatusIcon {
     Skill(u32),
     Item(u32),
     Vip,
+    /// One of the original's animated status flags (`3DEffect.ini`), drawn
+    /// by the renderer over the HUD.
+    Flag(&'static str),
 }
 
 /// The icon of each timed status flag.
@@ -129,10 +132,10 @@ const STATUS_ICONS: [(u64, StatusIcon); 14] = [
     (1 << 47, StatusIcon::Skill(9_000)), // Intensify
     (1 << 1, StatusIcon::Skill(5_002)),  // Poisoned
     (1 << 5, StatusIcon::Skill(1_002)),  // Stunned
-    (1 << 48, StatusIcon::Item(723_017)), // Double experience
-    (1 << 49, StatusIcon::Item(1_200_000)), // Heaven's Blessing
+    (1 << 48, StatusIcon::Flag("DblExpFlag")), // Double experience
+    (1 << 49, StatusIcon::Flag("BlessFlag")),  // Heaven's Blessing
     (1 << 46, StatusIcon::Vip),
-    (1 << 50, StatusIcon::Skill(9_876)), // Lucky time (Bless)
+    (1 << 50, StatusIcon::Flag("Lucky")),      // Lucky time (Bless)
 ];
 
 /// Time left as the bar shows it: `3d`, `5h`, `2:05`, `45s`.
@@ -145,13 +148,48 @@ pub fn short_time(seconds: u32) -> String {
     }
 }
 
+/// The timed statuses with an icon, in the bar's order.
+fn sorted_timers(skills: &SkillHud) -> Vec<(u64, u32)> {
+    let mut timed: Vec<(u64, u32)> = skills
+        .timers
+        .iter()
+        .copied()
+        .filter(|(flag, _)| STATUS_ICONS.iter().any(|(bit, _)| bit == flag))
+        .collect();
+    timed.sort_by_key(|(flag, _)| STATUS_ICONS.iter().position(|(bit, _)| bit == flag).unwrap_or(usize::MAX));
+    timed
+}
+
+/// The original's animated flag for a status, if it has one.
+fn flag_effect(flag: u64) -> Option<&'static str> {
+    STATUS_ICONS.iter().find_map(|(bit, icon)| match icon {
+        StatusIcon::Flag(effect) if *bit == flag => Some(*effect),
+        _ => None,
+    })
+}
+
+/// Where the renderer draws the animated status flags: their effect and
+/// the centre of their slot, in window pixels.
+pub fn status_flag_slots(skills: &SkillHud) -> Vec<(&'static str, [f32; 2])> {
+    let top = 6 + skills.info.len().max(2) as i32 * 15;
+    sorted_timers(skills)
+        .iter()
+        .enumerate()
+        .filter_map(|(column, (flag, _))| {
+            let effect = flag_effect(*flag)?;
+            Some((effect, [(4 + column as i32 * 34 + 15) as f32, (top + 13) as f32]))
+        })
+        .collect()
+}
+
 /// A status's icon, `size` pixels square.
 fn status_icon(assets: &mut Assets, flag: u64, size: u32) -> Option<RgbaImage> {
     let icon = STATUS_ICONS.iter().find(|(bit, _)| *bit == flag).map(|(_, icon)| *icon)?;
     let image = match icon {
         StatusIcon::Skill(skill) => crate::main_hud::skill_icon(assets, skill)?,
         StatusIcon::Item(item) => crate::shop::item_icon_image(assets, item).ok()?,
-        StatusIcon::Vip => crate::ornate::vip_tag(0.8).ok()?,
+        StatusIcon::Vip => crate::ornate::vip_tag(1.0).ok()?,
+        StatusIcon::Flag(_) => return None,
     };
     let (width, height) = image.dimensions();
     let scale = size as f32 / width.max(height).max(1) as f32;
@@ -1034,21 +1072,23 @@ pub fn image(
     let mut badges_top = 6 + skills.info.len().max(2) as i32 * 15;
     // Timed statuses as icons with the time left under each; their text
     // badges give way.
-    let mut timed = skills.timers.clone();
-    timed.sort_by_key(|(flag, _)| STATUS_ICONS.iter().position(|(bit, _)| bit == flag).unwrap_or(usize::MAX));
+    let timed = sorted_timers(skills);
     let mut column = 0;
     for (flag, seconds) in &timed {
-        let Some(icon) = status_icon(assets, *flag, 26) else {
-            continue;
-        };
         let x = 4 + column * 34;
-        let (icon_width, icon_height) = icon.dimensions();
-        image::imageops::overlay(
-            &mut img,
-            &icon,
-            i64::from(x + (30 - icon_width as i32) / 2),
-            i64::from(badges_top + (26 - icon_height as i32) / 2),
-        );
+        // The animated flags are left for the renderer to draw here.
+        if flag_effect(*flag).is_none() {
+            let Some(icon) = status_icon(assets, *flag, 30) else {
+                continue;
+            };
+            let (icon_width, icon_height) = icon.dimensions();
+            image::imageops::overlay(
+                &mut img,
+                &icon,
+                i64::from(x + (30 - icon_width as i32) / 2),
+                i64::from(badges_top + (26 - icon_height as i32) / 2),
+            );
+        }
         let label = short_time(*seconds);
         let width = crate::main_hud::text_width(font, &label, 11.0);
         main_hud::text(

@@ -154,7 +154,7 @@ pub async fn spawn_monster(
     let map = state.try_map(map_id)?;
     map.load().await?;
     let origin = primitives::Location::new(x, y, 0);
-    let Some(spot) = map.nearest_walkable_position(origin, 6) else {
+    let Some(spot) = map.landing_position(origin, 6) else {
         return Ok(None);
     };
     let spawn = tq_db::monster::MonsterSpawn {

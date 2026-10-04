@@ -964,6 +964,46 @@ impl Renderer {
         viewport: [f32; 2],
         draws: &mut Vec<Draw>,
     ) -> bool {
+        self.push_effect_shaped(assets, name, origin, elapsed, sort_depth, viewport, draws, None)
+    }
+
+    /// A flat 2D effect (the original's status flags, 25 units square)
+    /// drawn `size` pixels wide over the interface, looping.
+    pub(crate) fn push_ui_effect(
+        &mut self,
+        assets: &mut Assets,
+        name: &str,
+        centre: [f32; 2],
+        time: f32,
+        size: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        let length = self
+            .effects
+            .get(name)
+            .cloned()
+            .flatten()
+            .map(|effect| effect.frames * effect.frame_interval / 1000.0)
+            .filter(|length| *length > 0.0)
+            .unwrap_or(1.0);
+        self.push_effect_shaped(assets, name, centre, time % length, f32::INFINITY, viewport, draws, Some(size));
+    }
+
+    /// `flat`: draw the effect face on, `flat` pixels for its 25 units,
+    /// instead of seen from the world camera.
+    #[allow(clippy::too_many_arguments)]
+    fn push_effect_shaped(
+        &mut self,
+        assets: &mut Assets,
+        name: &str,
+        origin: [f32; 2],
+        elapsed: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+        flat: Option<f32>,
+    ) -> bool {
         if !self.effects.contains_key(name) {
             let loaded = crate::magic::effect(assets, name).and_then(|definition| {
                 let layers = definition
@@ -1042,14 +1082,19 @@ impl Renderer {
                             Matrix4::IDENTITY,
                             frame,
                         );
-                        let screen_y = (p.y * sin + p.z * cos) * scale;
-                        let depth = (p.y * cos - p.z * sin) * scale;
+                        let (screen, depth) = match flat {
+                            Some(size) => {
+                                let unit = size / 25.0;
+                                ([origin[0] + p.x * unit, origin[1] - p.y * unit], 0.5)
+                            },
+                            None => {
+                                let screen_y = (p.y * sin + p.z * cos) * scale;
+                                let depth = (p.y * cos - p.z * sin) * scale;
+                                ([origin[0] + p.x * scale, origin[1] + screen_y], (0.5 + depth * 0.0005).clamp(0.001, 0.999))
+                            },
+                        };
                         Vertex {
-                            position: clip(
-                                [origin[0] + p.x * scale, origin[1] + screen_y],
-                                (0.5 + depth * 0.0005).clamp(0.001, 0.999),
-                                viewport,
-                            ),
+                            position: clip(screen, depth, viewport),
                             uv: [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
                             alpha,
                         }
@@ -3068,6 +3113,13 @@ impl Renderer {
                 depth_test: false,
                 sort_depth: f32::INFINITY,
             });
+        }
+        // The original's animated status flags (double EXP, Heaven's
+        // Blessing, lucky time) in their slots of the status bar.
+        let hud_origin = crate::hud::position(viewport);
+        for (effect, centre) in crate::hud::status_flag_slots(skill_hud) {
+            let centre = [hud_origin[0] + centre[0], hud_origin[1] + centre[1]];
+            self.push_ui_effect(assets, effect, centre, time, 30.0, viewport, &mut draws);
         }
         if show_feedback(network_status) {
             use std::hash::{Hash, Hasher};

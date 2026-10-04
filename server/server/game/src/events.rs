@@ -239,6 +239,15 @@ pub fn leave(character: &Character) -> String {
     }
 }
 
+/// The nearest cell of the arena someone can stand on.
+fn standable(state: &State, (x, y): (u16, u16)) -> (u16, u16) {
+    state
+        .try_map(EVENT_MAP)
+        .ok()
+        .and_then(|map| map.landing_position(primitives::Location::new(x, y, 0), 8))
+        .map_or((x, y), |spot| (spot.x, spot.y))
+}
+
 fn base(team: usize) -> (u16, u16) {
     BASES[team.min(1)]
 }
@@ -324,7 +333,7 @@ async fn start(state: &State) -> Result<(), Error> {
         } else {
             base(*team)
         };
-        crate::world::relocate(state, character, EVENT_MAP, (x, y)).await?;
+        crate::world::relocate(state, character, EVENT_MAP, standable(state, (x, y))).await?;
         let side = match mode {
             Mode::LastManStanding => "Everyone for themselves!".to_owned(),
             Mode::Infection if *team == 1 => "You are INFECTED: spread it!".to_owned(),
@@ -550,7 +559,7 @@ async fn run(state: &State) -> Result<(), Error> {
         if let Some(entity) = character_of(state, id) {
             if let Some(character) = entity.as_character() {
                 if character.entity().is_dead() {
-                    crate::world::relocate(state, character, EVENT_MAP, (x, y)).await?;
+                    crate::world::relocate(state, character, EVENT_MAP, standable(state, (x, y))).await?;
                     crate::death::revive_here(character).await?;
                 }
                 let frozen = current().lock().as_ref().is_some_and(|event| event.frozen.contains_key(&id));
