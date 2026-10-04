@@ -4566,25 +4566,39 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // State changes only when it differs from the draw before.
+            let mut current_clip: Option<bool> = None;
+            let mut current_pipeline: Option<bool> = None;
+            let mut current_texture: Option<&str> = None;
             for (draw, (start, end)) in draws.iter().zip(&ranges) {
                 let Some(texture) = self.textures.get(&draw.texture) else {
                     continue;
                 };
-                if draw.depth_test && draw.sort_depth == f32::INFINITY {
-                    let [x, y, width, height] = crate::shop::status_character_clip([
-                        self.config.width as f32,
-                        self.config.height as f32,
-                    ]);
-                    pass.set_scissor_rect(x, y, width, height);
-                } else {
-                    pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+                let clip = clipped_to_character(draw);
+                if current_clip != Some(clip) {
+                    if clip {
+                        let [x, y, width, height] = crate::shop::status_character_clip([
+                            self.config.width as f32,
+                            self.config.height as f32,
+                        ]);
+                        pass.set_scissor_rect(x, y, width, height);
+                    } else {
+                        pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+                    }
+                    current_clip = Some(clip);
                 }
-                pass.set_pipeline(if draw.depth_test {
-                    &self.actor
-                } else {
-                    &self.sprites
-                });
-                pass.set_bind_group(0, &texture.bind, &[]);
+                if current_pipeline != Some(draw.depth_test) {
+                    pass.set_pipeline(if draw.depth_test {
+                        &self.actor
+                    } else {
+                        &self.sprites
+                    });
+                    current_pipeline = Some(draw.depth_test);
+                }
+                if current_texture != Some(draw.texture.as_str()) {
+                    pass.set_bind_group(0, &texture.bind, &[]);
+                    current_texture = Some(draw.texture.as_str());
+                }
                 let start = (*start * std::mem::size_of::<Vertex>()) as u64;
                 let end = (*end * std::mem::size_of::<Vertex>()) as u64;
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(start..end));
@@ -4662,13 +4676,22 @@ impl Renderer {
     }
 }
 
+/// Whether a draw is clipped to the status window's character view (the
+/// paper doll), which the encoder sets as a scissor.
+fn clipped_to_character(draw: &Draw) -> bool {
+    draw.depth_test && draw.sort_depth == f32::INFINITY
+}
+
+/// Merges neighbours of the sorted list that the GPU can draw in one call:
+/// same texture, same pipeline and same clipping. Their order is kept, so
+/// what overlaps what does not change; the depths only decided that order.
 fn coalesce_adjacent_draws(draws: Vec<Draw>) -> Vec<Draw> {
     let mut merged: Vec<Draw> = Vec::with_capacity(draws.len());
     for draw in draws {
         if let Some(previous) = merged.last_mut()
             && previous.texture == draw.texture
             && previous.depth_test == draw.depth_test
-            && previous.sort_depth == draw.sort_depth
+            && clipped_to_character(previous) == clipped_to_character(&draw)
         {
             previous.vertices.extend(draw.vertices);
         } else {
@@ -4931,6 +4954,31 @@ mod tests {
     use super::{
         Draw, coalesce_adjacent_draws, quad, should_hide_dead_monster, world_point_visible,
     };
+
+    #[test]
+    fn neighbours_of_one_texture_draw_in_one_call() {
+        let draw = |texture: &str, depth_test: bool, sort_depth: f32| Draw {
+            texture: texture.to_owned(),
+            vertices: quad([0.0, 0.0], [8.0, 8.0], [100.0, 100.0]),
+            depth_test,
+            sort_depth,
+        };
+        let merged = coalesce_adjacent_draws(vec![
+            draw("tiles", false, 1.0),
+            draw("tiles", false, 1.5),
+            draw("tiles", false, 2.0),
+            draw("hero", true, 2.5),
+            draw("tiles", false, 3.0),
+            // The paper doll keeps its own call: it is clipped.
+            draw("hero", true, f32::INFINITY),
+            draw("hero", true, f32::INFINITY),
+        ]);
+        let shape: Vec<(&str, usize)> = merged
+            .iter()
+            .map(|draw| (draw.texture.as_str(), draw.vertices.len() / 6))
+            .collect();
+        assert_eq!(shape, [("tiles", 3), ("hero", 1), ("tiles", 1), ("hero", 2)]);
+    }
 
     #[test]
     fn sprite_quad_keeps_its_winding_and_uvs() {

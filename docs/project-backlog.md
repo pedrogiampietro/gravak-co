@@ -105,7 +105,10 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
        cada 3 h.
 10. [x] HUD: action bar, buffs, alvo, dano e chat sem sobreposição em 1024,
         1366 e 1704 px; feedback de operações recusadas.
-11. [ ] Desempenho: cache de vértices estáticos do mapa e menos draws.
+11. [x] Desempenho: menos draws (vizinhos de mesma textura, pipeline e
+        recorte viram uma chamada, mesmo com profundidades diferentes) e o
+        encoder só troca estado quando ele muda. O cache de vértices
+        estáticos ficou de fora: o quadro já leva ~0,6 ms.
 12. [ ] Validação no jogo (Pedro): pulo, gems, upgrade, tooltips, trade, guild
         e PK no Postgres.
 
