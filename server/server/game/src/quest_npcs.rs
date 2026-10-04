@@ -1,5 +1,6 @@
-//! The Labyrinth and the Moon Box quest, after the reference server scripts
-//! (`Npcs/Lab/*.cs` and `Npcs/Moon Box Quest/*.cs`).
+//! The Labyrinth, the Moon Box quest and Milly's love letter, after the
+//! reference server scripts (`Npcs/Lab/*.cs`, `Npcs/Moon Box Quest/*.cs`,
+//! Milly, Minner and Joe).
 
 use tq_network::Actor;
 
@@ -50,6 +51,18 @@ const DIAMONDS: [(u8, u32, usize, u32, u32); 4] = [
     (9, 721_536, 10, 721_541, 1_000_000),
 ];
 
+/// The love letter: Milly (Phoenix Castle) writes to her sister Minner (Bird
+/// Island), whose lover Joe (Desert City) left; a MeteorTear rewards it.
+pub const MILLY_ID: u32 = 600_000;
+pub const MINNER_ID: u32 = 600_001;
+pub const JOE_ID: u32 = 600_002;
+const LETTER: u32 = 721_000;
+const LOVE_BAG: u32 = 721_001;
+const SAD_METEOR: u32 = 721_002;
+const AMRITA: u32 = 1_000_030;
+const METEOR: u32 = 1_088_001;
+const METEOR_TEAR: u32 = 1_088_002;
+
 const TACTICS: [&str; 7] = ["Peace", "Chaos", "Deserted", "Prosperous", "Disturbed", "Calmed", "Death"];
 
 type Options = Vec<(u8, String)>;
@@ -93,6 +106,42 @@ pub fn opening(npc_id: u32, character: &Character) -> Option<(String, Options, u
             "This is the deepest level of the labyrinth. Do you wish to go back to Twin City?".to_owned(),
             options(&[(1, "Yes, take me back."), (255, "No Thanks.")]),
         )
+    } else if npc_id == MILLY_ID {
+        if character.count_items(LETTER) > 0 {
+            (
+                "My sister is in Bird Island. She fell in love with Joe there. Since Joe left her with no news, she stays there to wait for him.".to_owned(),
+                options(&[(255, "I see.")]),
+            )
+        } else {
+            (
+                "I cannot get near you now. You have got me going crazy. Wherever you go, whatever you do, I will be right here waiting for you.".to_owned(),
+                options(&[(1, "Why are you so sad?"), (255, "I got to go.")]),
+            )
+        }
+    } else if npc_id == MINNER_ID {
+        if character.count_items(SAD_METEOR) > 0 {
+            (
+                "I cannot help crying. Where did you get this sad meteor? What happened?".to_owned(),
+                options(&[(6, "It is from Joe."), (255, "Sorry, I cannot tell you.")]),
+            )
+        } else {
+            (
+                "Should auld acquaintance be forgotten and never brought to mind? Should auld acquaintance be forgotten and auld lang syne?".to_owned(),
+                options(&[(1, "Why are you so sad?"), (255, "Nice song.")]),
+            )
+        }
+    } else if npc_id == JOE_ID {
+        if character.count_items(SAD_METEOR) > 0 {
+            (
+                "Thanks a lot. Please kindly give this meteor to Minner. I hope she can understand me and wish her happy all her life.".to_owned(),
+                options(&[(255, "I hope so.")]),
+            )
+        } else {
+            (
+                "It is so hot. It would be very nice If I have a bottle of wine. Can you give me some wine?".to_owned(),
+                options(&[(1, "I have a bottle of Amrita."), (255, "I do not have either.")]),
+            )
+        }
     } else if npc_id == FORTUNETELLER_ID {
         (
             "I can tell your future. Would you like me to tell you what awaits you?".to_owned(),
@@ -187,6 +236,202 @@ async fn take(state: &State, actor: &Actor<ActorState>, character: &Character, i
     Ok(true)
 }
 
+/// Milly asks you to take her letter to her sister.
+async fn milly(state: &State, actor: &Actor<ActorState>, character: &Character, option: u8) -> Result<(), Error> {
+    const NPC: u32 = MILLY_ID;
+    match option {
+        1 => send(
+            actor,
+            NPC,
+            "My sister taught me that song, Her lover, Joe, is a brave and kind man. All said they make a good couple, but he left her.",
+            options(&[(2, "What a pity."), (255, "Another old love story.")]),
+        )
+        .await,
+        2 => send(
+            actor,
+            NPC,
+            "My sister believes that Joe still loves her. She stays in Bird Island waiting for him. Can you take my letter to her?",
+            options(&[(3, "OK. I shall visit her."), (255, "Just passing by.")]),
+        )
+        .await,
+        3 if character.count_items(LETTER) == 0 => {
+            if character.inventory_items().len() >= 40 {
+                return say(actor, NPC, "Your inventory is full, please leave a slot to take this letter.", "Ok.").await;
+            }
+            give(state, actor, character, LETTER).await
+        },
+        _ => Ok(()),
+    }
+}
+
+/// Minner takes her sister's letter, sends you to Joe with their love token,
+/// and gives a MeteorTear for his engraved meteor.
+async fn minner(state: &State, actor: &Actor<ActorState>, character: &Character, option: u8) -> Result<(), Error> {
+    const NPC: u32 = MINNER_ID;
+    let has_letter = character.count_items(LETTER) > 0;
+    match option {
+        1 if has_letter => send(
+            actor,
+            NPC,
+            "Thanks. I am so pleased to hear from my sister. I have not seen her for a long time. It is very thoughtful of her. Sigh!",
+            options(&[(2, "Why are you so sad?"), (255, "I had better leave now.")]),
+        )
+        .await,
+        1 => say(
+            actor,
+            NPC,
+            "I miss you like crazy every time of every day. I love you deeply all my life. Why are you so cruel to break my heart.",
+            "I got to go.",
+        )
+        .await,
+        2 => send(
+            actor,
+            NPC,
+            "My lover has left me without any reason. I tried to find him but got no news since he left. Can you help me to find him?",
+            options(&[(4, "OK. I shall help you."), (3, "Sorry, I am too busy.")]),
+        )
+        .await,
+        3 => {
+            take(state, actor, character, LETTER, 1).await?;
+            say(actor, NPC, "Thank you for the letter. Good bye.", "See you.").await
+        },
+        4 => send(
+            actor,
+            NPC,
+            "Thanks. Joe gave me this bag as our love token. Give it to him when you find him and tell him I am always here waiting for him.",
+            options(&[(5, "I shall try my best!")]),
+        )
+        .await,
+        5 if has_letter => {
+            if take(state, actor, character, LETTER, 1).await? {
+                give(state, actor, character, LOVE_BAG).await?;
+            }
+            Ok(())
+        },
+        6 => send(
+            actor,
+            NPC,
+            "Joe! You have seen him? Where is he now? Is everything going on well with him?",
+            options(&[(7, "Do not cry."), (255, "Do not ruin the meteor!")]),
+        )
+        .await,
+        7 => send(
+            actor,
+            NPC,
+            "It is said that true love can move the meteor to cry and turn it to meteor tear. I am so glad that Joe does love me.",
+            options(&[(8, "All will be fine."), (255, "Return my meteor.")]),
+        )
+        .await,
+        8 => send(
+            actor,
+            NPC,
+            "Joe, Can you hear me? I love you. wherever you go, whatever you do, I will be right here waiting for you.",
+            options(&[(9, "Sad love story. Sigh.")]),
+        )
+        .await,
+        9 => send(
+            actor,
+            NPC,
+            "Since Joe enjoys travelling round the world, I only wish he is happy. I shall be very delighted Whenever he thinks of me.",
+            options(&[(10, "How about you then?")]),
+        )
+        .await,
+        10 => send(
+            actor,
+            NPC,
+            "It is said a star in the sky represents a person on the earth. When I miss him, I can look at his star and it will twinkle.",
+            options(&[(11, "I hope Joe will return.")]),
+        )
+        .await,
+        11 => {
+            if take(state, actor, character, SAD_METEOR, 1).await? {
+                give(state, actor, character, METEOR_TEAR).await?;
+                say(
+                    actor,
+                    NPC,
+                    "Thanks for your news. Please take this meteor tear. I hope you are happy all your life.",
+                    "Thanks.",
+                )
+                .await?;
+            }
+            Ok(())
+        },
+        _ => Ok(()),
+    }
+}
+
+/// Joe engraves his love on a Meteor for Minner, for her love token and an
+/// Amrita.
+async fn joe(state: &State, actor: &Actor<ActorState>, character: &Character, option: u8) -> Result<(), Error> {
+    const NPC: u32 = JOE_ID;
+    let ready = [AMRITA, METEOR, LOVE_BAG].iter().all(|item| character.count_items(*item) > 0);
+    match option {
+        1 if ready => send(
+            actor,
+            NPC,
+            "Thank you. You are very kind. I often have no food and water when I travel around. Where did you get this guardian star?",
+            options(&[(2, "It is from Minner."), (7, "I picked it on the road.")]),
+        )
+        .await,
+        1 => say(
+            actor,
+            NPC,
+            "I cannot take your Amrita. There is little water in the vast desert. You may feel thirsty and need it later. And I need a meteor too.",
+            "See you then.",
+        )
+        .await,
+        2 => send(
+            actor,
+            NPC,
+            "So she sent you to look for me. I have left so long. She must be heartbroken.",
+            options(&[(3, "Why did you leave her?")]),
+        )
+        .await,
+        3 => send(
+            actor,
+            NPC,
+            "We love each other deeply. I wish I could stay with her, but my life dream is to travel around. I cannot give her a warm home.",
+            options(&[(4, "You are right."), (255, "I like it very much.")]),
+        )
+        .await,
+        4 => send(
+            actor,
+            NPC,
+            "What a nice meteor you have. I have promised Minner that I shall give her a meteor. Would you please give your meteor to me.",
+            options(&[(5, "Here you are.")]),
+        )
+        .await,
+        5 => send(
+            actor,
+            NPC,
+            "Thanks. I shall engrave my love on this meteor. Please kindly give it to Minner. She will understand why I leave her.",
+            options(&[(6, "I shall give it to her."), (255, "Do not touch my meteor.")]),
+        )
+        .await,
+        6 if ready => {
+            if take(state, actor, character, LOVE_BAG, 1).await? && take(state, actor, character, METEOR, 1).await? {
+                give(state, actor, character, SAD_METEOR).await?;
+            }
+            say(
+                actor,
+                NPC,
+                "Thanks a lot. Please kindly give this meteor to Minner. I hope she can understand me and wish her happy all her life.",
+                "I hope so.",
+            )
+            .await
+        },
+        6 => say(actor, NPC, "You don't have the items I need!", "Sorry.").await,
+        7 => say(
+            actor,
+            NPC,
+            "I must have hurt her a lot. She used to carry this bag wherever she goes. I hope she can forget me and be happy all her life.",
+            "I got to go. Bye.",
+        )
+        .await,
+        _ => Ok(()),
+    }
+}
+
 async fn give(state: &State, actor: &Actor<ActorState>, character: &Character, item_type: u32) -> Result<(), Error> {
     if let Some(item) = character.grant_item(state.pool(), state.shop_catalog(), item_type, false).await? {
         actor.send(MsgItemInfo::inventory_item(item)).await?;
@@ -224,6 +469,12 @@ pub async fn answer(
 ) -> Result<bool, Error> {
     if npc_id == SIMON_ID {
         simon(state, actor, character, option).await?;
+    } else if npc_id == MILLY_ID {
+        milly(state, actor, character, option).await?;
+    } else if npc_id == MINNER_ID {
+        minner(state, actor, character, option).await?;
+    } else if npc_id == JOE_ID {
+        joe(state, actor, character, option).await?;
     } else if let Some(&(_, token, map_id, x, y, name)) = EXPLORERS.iter().find(|explorer| explorer.0 == npc_id) {
         if option == 1 {
             if take(state, actor, character, token, 1).await? {

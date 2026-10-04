@@ -81,8 +81,11 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
 
 1. [x] Itens do Redux que faltam: pergaminhos de cidade (1060020-24), HairDye,
        Fireworks, NinjaAmulet, BlackTulip e as poções 721331/721333.
-2. [ ] NPCs do Redux que faltam: Guild Conductresses das cidades, Warden do
-       mapa da guild, Milly, Minner, Joe, Welcomer e o Market Controller 4450.
+2. [x] NPCs do Redux que faltam: a carta de amor de Milly, Minner e Joe
+       (600000-600002, recompensa MeteorTear). Os condutores do mapa da guild
+       (815-818), o Warden da prisão da guerra (140) e o Mark.Controller já
+       existiam; as Guild Conductresses das cidades e o Welcomer são NPCs
+       próprios do Redux, que não existem no banco do 5065.
 3. [ ] Weapon skills que faltaram: Earthquake, Boom e FreezingArrow.
 4. [ ] Lucky time e a skill Bless (segunda reencarnação): LuckDiffuse,
        LuckAbsorb, golpe duplo e sorte no upgrade.
