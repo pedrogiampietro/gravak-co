@@ -3284,11 +3284,19 @@ impl App {
                 } else {
                     format!("{}: {}", message.sender_name, message.message)
                 };
+                // Notices (top left), announcements (center) and paid
+                // broadcasts also show in the banner at the top, a few
+                // seconds; the rest only in the chat.
+                let banner = match message.channel {
+                    2005 | 2011 => Some(message.message.clone()),
+                    2500 => Some(format!("[Broadcast] {}: {}", message.sender_name, message.message)),
+                    _ => None,
+                };
                 self.chat_history.push_back(message);
                 while self.chat_history.len() > 40 {
                     self.chat_history.pop_front();
                 }
-                self.network_status = format!("online: {display}");
+                self.network_status = banner.unwrap_or_else(|| format!("online: {display}"));
             }
             NetworkEvent::Skill {
                 skill_id,

@@ -103,7 +103,7 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
        de 1 min com `$join`, times equilibrados por nível, meia ExpBall aos
        vencedores; `$event <tdm|freeze|infection|ctf|lms>` e um automático a
        cada 3 h.
-10. [ ] HUD: action bar, buffs, alvo, dano e chat sem sobreposição em 1024,
+10. [x] HUD: action bar, buffs, alvo, dano e chat sem sobreposição em 1024,
         1366 e 1704 px; feedback de operações recusadas.
 11. [ ] Desempenho: cache de vértices estáticos do mapa e menos draws.
 12. [ ] Validação no jogo (Pedro): pulo, gems, upgrade, tooltips, trade, guild

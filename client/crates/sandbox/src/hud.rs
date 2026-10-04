@@ -684,6 +684,7 @@ fn chat_color(channel: u16) -> ([u8; 4], Option<(&'static str, [u8; 4])>) {
             Some(("[World]", [255, 200, 120, 255])),
         ),
         2005 | 2007 | 2011 => ([255, 255, 0, 255], Some(("[System]", [255, 64, 255, 255]))),
+        2500 => ([255, 214, 96, 255], Some(("[Broadcast]", [255, 160, 60, 255]))),
         _ => ([255, 255, 255, 255], None),
     }
 }
@@ -1252,7 +1253,7 @@ mod tests {
                 "Olá, Twin City!",
             ),
             ("hud-1024.png", 1024, 768, 25, 0, Some(HOVER_ORB), ""),
-            ("hud-1904.png", 1904, 915, 100, 100, Some(HOVER_SLOT), ""),
+            ("hud-1704.png", 1704, 960, 100, 100, Some(HOVER_SLOT), ""),
         ] {
             image(
                 &mut assets,
@@ -1288,6 +1289,9 @@ mod tests {
                     active_skill: Some(1_001),
                     kill_count: 7,
                     hovered: Some(1_000),
+                    info: vec!["Twin City (430, 380)".into(), "FPS 144  ping 12 ms".into()],
+                    xp_ready: true,
+                    timers: vec![(1 << 18, 25), (1 << 23, 8), (1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
                     ..SkillHud::default()
                 },
             )?
