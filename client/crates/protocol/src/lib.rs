@@ -32,6 +32,8 @@ pub const MSG_STORE_STATE: u16 = 9112;
 pub const MSG_STORE_PURCHASE: u16 = 9113;
 /// Gravak: when each of the hero's statuses ends.
 pub const MSG_STATUS_TIMERS: u16 = 9120;
+/// Strings tied to an entity: fireworks, an effect played on it...
+pub const MSG_NAME: u16 = 1015;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
@@ -317,6 +319,36 @@ impl StatusTimers {
                 Some((flag.parse().ok()?, end.parse().ok()?))
             })
             .collect()
+    }
+}
+
+/// `MsgName` (1015): an entity, an action and its strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamePacket {
+    pub uid: u32,
+    pub action: u8,
+    pub strings: Vec<String>,
+}
+
+impl NamePacket {
+    /// Fireworks: the string is the firework item's name.
+    pub const FIREWORKS: u8 = 1;
+    /// An effect from `3DEffect.ini` played on the entity.
+    pub const ROLE_EFFECT: u8 = 10;
+
+    pub fn parse(body: &[u8]) -> Option<Self> {
+        let uid = u32::from_le_bytes(body.get(0..4)?.try_into().ok()?);
+        let action = *body.get(4)?;
+        let count = usize::from(*body.get(5).unwrap_or(&0));
+        let mut strings = Vec::with_capacity(count);
+        let mut offset = 6;
+        for _ in 0..count {
+            let length = usize::from(*body.get(offset)?);
+            let text = body.get(offset + 1..offset + 1 + length)?;
+            strings.push(String::from_utf8_lossy(text).into_owned());
+            offset += 1 + length;
+        }
+        Some(Self { uid, action, strings })
     }
 }
 
@@ -1534,6 +1566,7 @@ pub enum GameEvent {
     StoreState(StoreState),
     StorePurchase(StorePurchase),
     StatusTimers(StatusTimers),
+    Name(NamePacket),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
@@ -1649,6 +1682,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_STATUS_TIMERS => Ok(GameEvent::StatusTimers(
             StatusTimers::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_NAME => NamePacket::parse(body)
+            .map(GameEvent::Name)
+            .ok_or(ProtocolError::MalformedResponse("MsgName is truncated")),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
@@ -2016,6 +2052,16 @@ mod tests {
     use serde::Serialize;
     use tq_network::TQCipher;
     use tq_network::{PacketEncode, PacketID};
+
+    #[test]
+    fn name_packets_read_their_strings() {
+        let mut body = 1_000_001_u32.to_le_bytes().to_vec();
+        body.extend([NamePacket::ROLE_EFFECT, 1, 7]);
+        body.extend(b"LevelUp");
+        let name = NamePacket::parse(&body).expect("parses");
+        assert_eq!((name.uid, name.action, name.strings), (1_000_001, 10, vec!["LevelUp".to_owned()]));
+        assert!(NamePacket::parse(&body[..3]).is_none());
+    }
 
     #[test]
     fn account_login_matches_server_wire_shape() {

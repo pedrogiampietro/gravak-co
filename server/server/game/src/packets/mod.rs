@@ -1,3 +1,5 @@
+mod msg_name;
+pub use msg_name::MsgName;
 mod msg_connect;
 pub use msg_connect::MsgConnect;
 

@@ -3002,6 +3002,12 @@ impl App {
             NetworkEvent::StoreProduct(product) => {
                 self.store.get_or_insert_with(Default::default).receive(product);
             }
+            NetworkEvent::RoleEffect { actor_id, effect } => {
+                let now = self.started.elapsed().as_secs_f32();
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.add_role_effect(actor_id, effect, now);
+                }
+            }
             NetworkEvent::StatusTimers(timers) => {
                 let now = hud::unix_now();
                 self.server_clock_offset = timers.now as i64 - now as i64;

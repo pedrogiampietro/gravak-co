@@ -79,7 +79,7 @@ histórico de paridade com o Redux; `docs/feature-roadmap.md` e
 Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
 `ReduxConquerProject` e do `Albetros1.1` com o Gravak.
 
-1. [ ] Itens do Redux que faltam: pergaminhos de cidade (1060020-24), HairDye,
+1. [x] Itens do Redux que faltam: pergaminhos de cidade (1060020-24), HairDye,
        Fireworks, NinjaAmulet, BlackTulip e as poções 721331/721333.
 2. [ ] NPCs do Redux que faltam: Guild Conductresses das cidades, Warden do
        mapa da guild, Milly, Minner, Joe, Welcomer e o Market Controller 4450.

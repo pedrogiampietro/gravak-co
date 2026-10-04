@@ -234,6 +234,8 @@ pub enum NetworkEvent {
     StorePurchase(gravak_protocol::StorePurchase),
     /// When each of the hero's statuses ends.
     StatusTimers(gravak_protocol::StatusTimers),
+    /// A `3DEffect.ini` effect played once on an actor (fireworks...).
+    RoleEffect { actor_id: u32, effect: String },
     /// Kills counted toward the bounty under way.
     BountyProgress {
         done: u32,
@@ -701,6 +703,7 @@ impl NetworkHandle {
                 | NetworkEvent::StoreState(_)
                 | NetworkEvent::StorePurchase(_)
                 | NetworkEvent::StatusTimers(_)
+                | NetworkEvent::RoleEffect { .. }
                 | NetworkEvent::ExperienceGain { .. }
                 | NetworkEvent::InventoryItem(_)
                 | NetworkEvent::InventoryItemRemoved(_)
@@ -1453,6 +1456,17 @@ pub(crate) async fn play(
                 Some(GameEvent::StatusTimers(timers)) => {
                     let _ = events.send(NetworkEvent::StatusTimers(timers));
                 }
+                Some(GameEvent::Name(name)) => {
+                    let text = name.strings.first().cloned().unwrap_or_default();
+                    let effect = match name.action {
+                        gravak_protocol::NamePacket::FIREWORKS => Some(firework_effect(&text).to_owned()),
+                        gravak_protocol::NamePacket::ROLE_EFFECT if !text.is_empty() => Some(text),
+                        _ => None,
+                    };
+                    if let Some(effect) = effect {
+                        let _ = events.send(NetworkEvent::RoleEffect { actor_id: name.uid, effect });
+                    }
+                }
                 Some(GameEvent::BountyState(board)) => {
                     let _ = events.send(NetworkEvent::Bounty(board));
                 }
@@ -2102,6 +2116,15 @@ pub(crate) async fn play(
                 None => return Ok(()),
             },
         }
+    }
+}
+
+/// The effect a firework item sets off (`3DEffect.ini`).
+pub fn firework_effect(item_name: &str) -> &'static str {
+    match item_name {
+        "EndlessLove" => "firework-1love",
+        "MyWish" => "firework-2love",
+        _ => "firework-like",
     }
 }
 

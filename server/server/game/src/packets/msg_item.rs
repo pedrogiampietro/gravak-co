@@ -545,6 +545,9 @@ impl PacketProcess for MsgItem {
                     actor.send(reject("Use rejected: item is not in inventory.")).await?;
                     return Ok(());
                 };
+                if crate::special_items::use_item(state, actor, character, &item).await? {
+                    return Ok(());
+                }
                 if item.item_type == crate::leveling::EXP_BALL {
                     if character.entity().level() >= u16::from(crate::leveling::MAX_LEVEL) {
                         actor.send(reject("You are already at the highest level.")).await?;

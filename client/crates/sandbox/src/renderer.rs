@@ -718,6 +718,8 @@ pub struct Renderer {
     revive_rects: Vec<([f32; 4], bool)>,
     /// Souls of slain monsters on their way to whoever slew them.
     souls: Vec<Soul>,
+    /// Effects played once on an actor: (actor, effect, started).
+    role_effects: Vec<(u32, String, f32)>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
     effects: HashMap<String, Option<std::rc::Rc<LoadedEffect>>>,
@@ -920,6 +922,7 @@ impl Renderer {
             store_icon_rect: None,
             revive_rects: Vec::new(),
             souls: Vec::new(),
+            role_effects: Vec::new(),
             level_up_layers: None,
             effects: HashMap::new(),
             last_hud_key: None,
@@ -1803,6 +1806,11 @@ impl Renderer {
             });
         }
         Ok(())
+    }
+
+    /// Plays `effect` once on `actor_id` (fireworks, effects of events...).
+    pub fn add_role_effect(&mut self, actor_id: u32, effect: String, now: f32) {
+        self.role_effects.push((actor_id, effect, now));
     }
 
     /// A soul leaves the monster slain at `from` for `killer_id`.
@@ -2755,6 +2763,25 @@ impl Renderer {
                     &mut draws,
                 );
             }
+        }
+        // Effects played once on an actor; each ends with its animation.
+        let mut finished = Vec::new();
+        for (index, (actor_id, effect, started)) in self.role_effects.clone().into_iter().enumerate() {
+            let elapsed = time - started;
+            let position = remote_actors
+                .get(&actor_id)
+                .map(|actor| actor.position)
+                .unwrap_or(player.position);
+            let projected = map.project(position);
+            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            let playing = elapsed < 20.0
+                && self.push_effect(assets, &effect, origin, elapsed, position[0] + position[1] + 0.08, viewport, &mut draws);
+            if !playing {
+                finished.push(index);
+            }
+        }
+        for index in finished.into_iter().rev() {
+            self.role_effects.remove(index);
         }
         // Souls of the slain, rising and then flying to their slayer.
         self.souls
