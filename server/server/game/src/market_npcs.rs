@@ -29,6 +29,19 @@ const EXP_BALL: u32 = 723_700;
 const TOUGH_DRILL: u32 = 1_200_005;
 const STAR_DRILL: u32 = 1_200_006;
 const CELESTIAL_STONE: u32 = 721_259;
+/// The second rebirth asks an ExemptionToken (`itemtype.dat` 723701)
+/// where the first asks a CelestialStone.
+const EXEMPTION_TOKEN: u32 = 723_701;
+
+/// What a rebirth asks for: a CelestialStone the first time, an
+/// ExemptionToken the second.
+fn rebirth_item(rebirths: u8) -> (u32, &'static str) {
+    if rebirths == 0 {
+        (CELESTIAL_STONE, "CelestialStone")
+    } else {
+        (EXEMPTION_TOKEN, "ExemptionToken")
+    }
+}
 /// Super Phoenix Gem; the other super gems follow every 10.
 const BASE_GEM: u32 = 700_003;
 /// Chance, in percent, that a ToughDrill opens the second socket.
@@ -158,8 +171,10 @@ fn reborn_level(class: u8) -> u16 {
     }
 }
 
+/// A first or a second rebirth: at the class's top rank and the level it
+/// asks (110 for Water Taoists, 120 for the rest).
 fn can_reborn(class: u8, rebirths: u8, level: u16) -> bool {
-    rebirths == 0 && class % 10 == 5 && profession_type(class) != 0 && level >= reborn_level(class)
+    rebirths < 2 && class % 10 == 5 && profession_type(class) != 0 && level >= reborn_level(class)
 }
 
 /// The free attribute points a first rebirth leaves (Redux table).
@@ -259,12 +274,17 @@ pub fn opening(npc_id: u32, character: &Character) -> Option<(String, Options, u
         ),
         ALEX_ID => {
             let level = character.entity().level();
-            if character.rebirths() > 0 {
+            if character.rebirths() > 1 {
                 (
                     "I have helped you as much as I can. Even heroes have their limits.".to_owned(),
                     options(&[(255, "Thanks")]),
                 )
-            } else if can_reborn(character.current_class(), 0, level) {
+            } else if character.rebirths() == 1 && can_reborn(character.current_class(), 1, level) {
+                (
+                    "You have lived twice already, and still you grow tired of your journeys. Bring me an ExemptionToken and I will grant you a last life anew, and the blessing of luck with it.".to_owned(),
+                    options(&[(1, "I wish to reborn again."), (255, "I'm not tired!")]),
+                )
+            } else if can_reborn(character.current_class(), character.rebirths(), level) {
                 (
                     "Even bold adventurers eventually grow tired of their journeys. I help these heroes by offering them life anew.".to_owned(),
                     options(&[(1, "I wish to reborn."), (255, "I'm not tired!")]),
@@ -700,11 +720,12 @@ async fn alex(state: &State, actor: &Actor<ActorState>, character: &Character, o
             )
             .await
         },
-        2 if character.count_items(CELESTIAL_STONE) == 0 => {
+        2 if character.count_items(rebirth_item(character.rebirths()).0) == 0 => {
+            let (_, name) = rebirth_item(character.rebirths());
             say(
                 actor,
                 NPC,
-                "Rebirth requires the unlocking of great power. Please make sure you have a CelestialStone before coming to me.",
+                &format!("Rebirth requires the unlocking of great power. Please make sure you have a {name} before coming to me."),
                 "Sorry.",
             )
             .await
@@ -779,11 +800,12 @@ async fn alex(state: &State, actor: &Actor<ActorState>, character: &Character, o
                 )
                 .await;
             }
-            let Some(stone) = character.consume_items(state.pool(), CELESTIAL_STONE, 1).await? else {
+            let (item, name) = rebirth_item(character.rebirths());
+            let Some(stone) = character.consume_items(state.pool(), item, 1).await? else {
                 return say(
                     actor,
                     NPC,
-                    "Rebirth requires the unlocking of great power. Please make sure you have a CelestialStone before coming to me.",
+                    &format!("Rebirth requires the unlocking of great power. Please make sure you have a {name} before coming to me."),
                     "Sorry.",
                 )
                 .await;
@@ -801,11 +823,12 @@ async fn alex(state: &State, actor: &Actor<ActorState>, character: &Character, o
                 )
                 .await;
             }
-            let Some(stone) = character.consume_items(state.pool(), CELESTIAL_STONE, 1).await? else {
+            let (item, name) = rebirth_item(character.rebirths());
+            let Some(stone) = character.consume_items(state.pool(), item, 1).await? else {
                 return say(
                     actor,
                     NPC,
-                    "Rebirth requires the unlocking of great power. Please make sure you have a CelestialStone before coming to me.",
+                    &format!("Rebirth requires the unlocking of great power. Please make sure you have a {name} before coming to me."),
                     "Sorry.",
                 )
                 .await;
@@ -958,7 +981,8 @@ async fn rebirth(state: &State, actor: &Actor<ActorState>, character: &Character
             format!("{} has been reborned successfully. Congratulations!", character.entity().name()),
         ))
         .await?;
-    crate::audit::economic("first_rebirth", character.id(), ALEX_ID, u32::from(new_class), 1);
+    let which = if character.rebirths() > 1 { "second_rebirth" } else { "first_rebirth" };
+    crate::audit::economic(which, character.id(), ALEX_ID, u32::from(new_class), 1);
     Ok(())
 }
 
@@ -975,6 +999,10 @@ mod tests {
         assert_eq!(reborn_skills(45, 5), (vec![5000], vec![]));
         assert_eq!(reborn_class(3), Some(132));
         assert!(can_reborn(135, 0, 110));
+        assert!(can_reborn(15, 1, 120), "a second rebirth");
+        assert!(!can_reborn(15, 2, 130), "no third");
+        assert_eq!(rebirth_item(0).0, CELESTIAL_STONE);
+        assert_eq!(rebirth_item(1).0, EXEMPTION_TOKEN);
         assert!(!can_reborn(15, 0, 119));
         assert!(!can_reborn(14, 0, 130));
         assert_eq!(reborn_points(120, false), 20);
