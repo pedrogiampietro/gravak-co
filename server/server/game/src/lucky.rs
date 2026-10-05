@@ -80,17 +80,36 @@ pub async fn tick(state: &State) {
     let entities: Vec<std::sync::Arc<GameEntity>> = state.entities();
     let all: Vec<&Character> = entities.iter().filter_map(|entity| entity.as_character()).collect();
     for &me in &all {
+        let before = me.lucky_time();
+        let mode = lucky_second(&all, me).await;
+        if before > 0 || me.lucky_time() > 0 {
+            tracing::info!(
+                target: "status",
+                character = %me.entity().name(),
+                mode,
+                before,
+                after = me.lucky_time(),
+                second = now,
+                "Lucky time"
+            );
+        }
+    }
+}
+
+/// One second of `me`'s lucky time; what it did.
+async fn lucky_second(all: &[&Character], me: &Character) -> &'static str {
+    {
         let flags = me.entity().flags();
         let moved = me.prayer_moved();
         if flags.contains(Flags::CASTING_PRAY) {
             if moved || me.entity().is_dead() {
                 me.stop_praying();
                 show(me).await;
-                continue;
+                return "stopped praying";
             }
             me.add_lucky_time(DIFFUSE_GAIN);
             // Those standing around absorb the luck.
-            for &other in &all {
+            for &other in all {
                 let other_flags = other.entity().flags();
                 if other.id() != me.id()
                     && !other_flags.intersects(Flags::CASTING_PRAY | Flags::PRAYING)
@@ -101,6 +120,7 @@ pub async fn tick(state: &State) {
                     show(other).await;
                 }
             }
+            "praying"
         } else if flags.contains(Flags::PRAYING) {
             let diffuser_near = all
                 .iter()
@@ -108,11 +128,13 @@ pub async fn tick(state: &State) {
             if moved || !diffuser_near || me.entity().is_dead() {
                 me.stop_praying();
                 show(me).await;
-                continue;
+                return "stopped absorbing";
             }
             me.add_lucky_time(ABSORB_GAIN);
+            "absorbing"
         } else {
             me.wear_lucky_time();
+            "wearing off"
         }
     }
 }

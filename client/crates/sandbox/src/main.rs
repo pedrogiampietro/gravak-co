@@ -3048,6 +3048,13 @@ impl App {
                 let now = hud::unix_now();
                 self.server_clock_offset = timers.now as i64 - now as i64;
                 self.status_timers = timers.entries();
+                if let Some((_, end)) = self.status_timers.iter().find(|(bit, _)| *bit == 1 << 50) {
+                    crate::debug_log::write(format_args!(
+                        "lucky timer: server_now={} client_now={now} end={end} left={}",
+                        timers.now,
+                        end.saturating_sub(timers.now)
+                    ));
+                }
             }
             NetworkEvent::StorePurchase(purchase) => {
                 self.store.get_or_insert_with(Default::default).receive_purchase(purchase);

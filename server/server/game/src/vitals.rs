@@ -65,6 +65,15 @@ pub async fn tick(state: &State) {
             timers.push((crate::entities::Flags::VIP.bits(), vip_until));
         }
         if character.timers_changed(&timers) {
+            if let Some((_, end)) = timers.iter().find(|(bit, _)| *bit == crate::lucky::LUCKY_TIMER_BIT) {
+                tracing::info!(
+                    target: "status",
+                    character = %character.entity().name(),
+                    now = crate::store::now_secs(),
+                    end,
+                    "Lucky timer sent"
+                );
+            }
             let packet = crate::packets::MsgStatusTimers::new(crate::store::now_secs(), &timers);
             let _ = character.owner().send(packet).await;
         }
