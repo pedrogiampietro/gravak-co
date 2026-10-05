@@ -18,6 +18,10 @@ set "SERVER_DIR=%~dp0server"
 set "AUTH_EXE=%SERVER_DIR%\target\debug\auth-server.exe"
 set "GAME_EXE=%SERVER_DIR%\target\release\game-server.exe"
 
+rem Built content (gravak-content build / the editor): the server takes its
+rem itemtype.dat over the one named in server\.env.
+if exist "%~dp0content\build\client\ini\itemtype.dat" set "ITEMTYPE_DATA=%~dp0content\build\client\ini\itemtype.dat"
+
 rem -- Build -------------------------------------------------------
 rem Rebuild before every start (not for stop/status) so a git pull takes
 rem effect; cargo only recompiles what changed, and the build script stops

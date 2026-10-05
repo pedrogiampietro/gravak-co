@@ -1,0 +1,13 @@
+[package]
+name = "gravak-content"
+description = "Gravak content pipeline: original 5065 data formats, custom content and the build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sandbox-data.workspace = true
+serde.workspace = true
+image.workspace = true
+toml = { version = "1.1", features = ["preserve_order"] }

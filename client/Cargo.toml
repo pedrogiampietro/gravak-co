@@ -1,7 +1,7 @@
 # Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 [workspace]
 resolver = "3"
-members = ["crates/sandbox-data", "crates/sandbox", "crates/protocol", "crates/probe"]
+members = ["crates/sandbox-data", "crates/sandbox", "crates/protocol", "crates/probe", "crates/content", "crates/editor"]
 default-members = ["crates/sandbox"]
 
 [workspace.package]
@@ -19,6 +19,7 @@ image = { version = "0.25.9", default-features = false, features = ["dds", "tga"
 pollster = "0.4.0"
 bytemuck = { version = "1.24", features = ["derive"] }
 gravak-protocol = { path = "crates/protocol" }
+gravak-content = { path = "crates/content" }
 
 [profile.release]
 strip = "debuginfo"

@@ -4,6 +4,10 @@ title Gravak-CO - Run Client
 
 set "CLIENT_EXE=%~dp0client\target\release\conquer-sandbox.exe"
 
+rem Our items and icons (gravak-content build / the editor) go before the
+rem installation when they have been built.
+if exist "%~dp0content\build\client\.gravak-build" set "GRAVAK_CONTENT=%~dp0content\build\client"
+
 rem Rebuild before every launch so a git pull takes effect; cargo only
 rem recompiles what changed. A running client locks the exe, so skip the
 rem build then and start the existing one.
