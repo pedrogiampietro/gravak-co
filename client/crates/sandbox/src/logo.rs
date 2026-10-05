@@ -1,9 +1,9 @@
 //! The HUD's emblem, bottom right: where the original shows its dragon disc
 //! and "Conquer" (painted across `mainDialog2.dds` and the chat strip's
 //! last piece), Gravak sets a plaque in the style of the rest of its
-//! interface: navy in gold, a gold medallion with a "V" on it, and "v0x" in
-//! the client's decorative face (Cinzel Decorative) over a gold rule.
-//! Nothing of the original art is stored in the repository.
+//! interface: navy in gold, a gold medallion with a "G" on it and steel
+//! spikes round its rim like the Gravak relic's, and "Gravak" in the
+//! client's decorative face (Cinzel Decorative) over a gold rule.
 
 use image::RgbaImage;
 
@@ -15,8 +15,10 @@ const REGION: [u32; 4] = [806, 66, 218, 75];
 const SCALE: usize = 4;
 /// Size of the letters, and where their middle sits in the region: right
 /// of the medallion, on the plaque.
-const LETTER_SIZE: f32 = 34.0;
-const LETTER_CENTRE: [f32; 2] = [134.0, 34.0];
+const LETTER_SIZE: f32 = 26.0;
+const LETTER_CENTRE: [f32; 2] = [138.0, 35.0];
+/// The name on the plaque.
+const NAME: &str = "Gravak";
 /// The plaque, in the region, and its medallion.
 const PLAQUE: [i32; 4] = [2, 5, 212, 66];
 const MEDALLION: ([f32; 2], f32) = ([36.0, 38.0], 24.0);
@@ -29,8 +31,8 @@ const RIM: [u8; 3] = [40, 28, 10];
 const GLOW: [u8; 3] = [255, 196, 100];
 
 /// Draws the emblem over the composed HUD (1024 x 141): a plaque in the
-/// style of the rest of Gravak's interface over the dragon disc, a gold
-/// medallion with a "V" on it, and "v0x" beside it over a gold rule.
+/// style of the rest of Gravak's interface over the dragon disc, the
+/// medallion with its "G", and "Gravak" beside it over a gold rule.
 pub fn draw_emblem(hud: &mut RgbaImage) {
     let [x, y, width, height] = REGION;
     let mut slice = image::imageops::crop_imm(hud, x, y, width, height).to_image();
@@ -40,14 +42,82 @@ pub fn draw_emblem(hud: &mut RgbaImage) {
 
 fn draw_on(slice: &mut RgbaImage) {
     plaque(slice);
-    medallion(slice);
     let Ok(font) = crate::labels::decorative_font() else {
+        medallion_base(slice);
         return;
     };
-    letter_v0x(slice, &font);
+    monogram(slice, &font);
+    letter(slice, &font, NAME, LETTER_SIZE, LETTER_CENTRE);
     // The rule under the letters, a diamond at its middle.
     let centre = LETTER_CENTRE[0] as i32;
-    crate::daily_rewards_panel::rule(slice, centre - 58, centre + 58, 60);
+    crate::daily_rewards_panel::rule(slice, centre - 60, centre + 60, 60);
+}
+
+fn medallion_bounds() -> crate::ui::UiRect {
+    let (centre, r) = MEDALLION;
+    crate::ui::UiRect::new((centre[0] - r) as i32 - 8, (centre[1] - r) as i32 - 8, (2.0 * r) as i32 + 17, (2.0 * r) as i32 + 17)
+}
+
+/// The medallion's gold ring and its deep blue face, lit at its middle.
+fn medallion_base(slice: &mut RgbaImage) {
+    use crate::daily_rewards_panel::{glow_in, paint_in, GOLD, GOLD_DARK, GOLD_LIGHT};
+    use crate::paint;
+    let (centre, r) = MEDALLION;
+    let bounds = crate::ui::UiRect::new((centre[0] - r) as i32 - 3, (centre[1] - r) as i32 - 3, (2.0 * r) as i32 + 7, (2.0 * r) as i32 + 7);
+    let circle = move |x: f32, y: f32, radius: f32| paint::circle(x, y, centre, radius);
+    glow_in(slice, bounds, |x, y| circle(x, y, r), 3.0, paint::hex(0xffc85a), 0.3);
+    paint_in(
+        slice,
+        bounds,
+        1,
+        |x, y| circle(x, y, r),
+        |_, y| paint::gradient(&[(0.0, GOLD_LIGHT), (0.45, GOLD), (1.0, GOLD_DARK)], (y - centre[1] + r) / (2.0 * r)),
+        1.0,
+    );
+    let face = r - 3.4;
+    paint_in(
+        slice,
+        bounds,
+        1,
+        |x, y| circle(x, y, face),
+        |x, y| {
+            let distance = ((x - centre[0]).powi(2) + (y - centre[1] + 3.0).powi(2)).sqrt() / face;
+            paint::mix(paint::hex(0x2a6d92), paint::hex(0x061620), distance.min(1.0))
+        },
+        1.0,
+    );
+    paint_in(slice, bounds, 1, |x, y| circle(x, y, face).abs() - 0.5, |_, _| GOLD_DARK, 1.0);
+}
+
+/// The medallion with a gold "G", steel spikes round its rim as on the
+/// Gravak relic's.
+fn monogram(slice: &mut RgbaImage, font: &fontdue::Font) {
+    use crate::daily_rewards_panel::paint_in;
+    use crate::paint;
+    let (centre, r) = MEDALLION;
+    let bounds = medallion_bounds();
+    let [cx, cy] = centre;
+    medallion_base(slice);
+    // Steel spikes round the ring, as on the relic's rim.
+    for index in 0..6 {
+        let angle = (index as f32 * 60.0 + 30.0).to_radians();
+        let (sin, cos) = angle.sin_cos();
+        let base = r - 1.0;
+        let tip = [cx + sin * (r + 8.0), cy - cos * (r + 8.0)];
+        let left = [cx + (angle - 0.2).sin() * base, cy - (angle - 0.2).cos() * base];
+        let right = [cx + (angle + 0.2).sin() * base, cy - (angle + 0.2).cos() * base];
+        let spike = move |x: f32, y: f32| {
+            // Inside the triangle: on the inner side of its three edges.
+            let edge = |a: [f32; 2], b: [f32; 2]| {
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let length = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+                ((x - a[0]) * dy - (y - a[1]) * dx) / length
+            };
+            edge(left, tip).max(edge(tip, right)).max(edge(right, left))
+        };
+        paint_in(slice, bounds, 0, spike, |x, _| paint::mix(paint::hex(0xd6dee4), paint::hex(0x6c7a84), ((x - cx) / r + 1.0) / 2.0), 1.0);
+    }
+    letter(slice, font, "G", 27.0, [cx + 0.5, cy + 0.5]);
 }
 
 /// A rounded navy plaque in gold over the emblem, lit along its top.
@@ -76,66 +146,21 @@ fn plaque(slice: &mut RgbaImage) {
     );
 }
 
-/// The gold medallion at the plaque's left, a "V" with a diamond crest on
-/// its deep blue face.
-fn medallion(slice: &mut RgbaImage) {
-    use crate::daily_rewards_panel::{glow_in, paint_in, GOLD, GOLD_DARK, GOLD_LIGHT};
-    use crate::paint;
-    let (centre, r) = MEDALLION;
-    let bounds = crate::ui::UiRect::new((centre[0] - r) as i32 - 3, (centre[1] - r) as i32 - 3, (2.0 * r) as i32 + 7, (2.0 * r) as i32 + 7);
-    let circle = move |x: f32, y: f32, radius: f32| paint::circle(x, y, centre, radius);
-    glow_in(slice, bounds, |x, y| circle(x, y, r), 3.0, paint::hex(0xffc85a), 0.3);
-    paint_in(
-        slice,
-        bounds,
-        1,
-        |x, y| circle(x, y, r),
-        |_, y| paint::gradient(&[(0.0, GOLD_LIGHT), (0.45, GOLD), (1.0, GOLD_DARK)], (y - centre[1] + r) / (2.0 * r)),
-        1.0,
-    );
-    let face = r - 3.4;
-    paint_in(
-        slice,
-        bounds,
-        1,
-        |x, y| circle(x, y, face),
-        |x, y| {
-            let distance = ((x - centre[0]).powi(2) + (y - centre[1] + 3.0).powi(2)).sqrt() / face;
-            paint::mix(paint::hex(0x2a6d92), paint::hex(0x061620), distance.min(1.0))
-        },
-        1.0,
-    );
-    paint_in(slice, bounds, 1, |x, y| circle(x, y, face).abs() - 0.5, |_, _| GOLD_DARK, 1.0);
-    // The "V": two strokes meeting at its foot, lit on the left.
-    let foot = [centre[0], centre[1] + 12.0];
-    let left_top = [centre[0] - 11.0, centre[1] - 7.5];
-    let right_top = [centre[0] + 11.0, centre[1] - 7.5];
-    let stroke = move |x: f32, y: f32| {
-        crate::daily_rewards_panel::segment(x, y, left_top, foot).min(crate::daily_rewards_panel::segment(x, y, right_top, foot)) - 3.0
-    };
-    paint_in(slice, bounds, 0, move |x, y| stroke(x, y) - 1.0, |_, _| paint::hex(0x2a1a06), 0.9);
-    paint_in(
-        slice,
-        bounds,
-        0,
-        stroke,
-        move |x, y| {
-            let shade = paint::mix(paint::hex(0xfff2c4), paint::hex(0xc4922c), (y - (centre[1] - 7.5)) / 20.0);
-            if x < centre[0] { shade } else { paint::mix(shade, paint::hex(0x8a5f1c), 0.25) }
-        },
-        1.0,
-    );
-    // The crest: a small diamond over the "V".
-    let crest = [centre[0], centre[1] - 12.0];
-    paint_in(slice, bounds, 0, move |x, y| (x - crest[0]).abs() + (y - crest[1]).abs() * 1.3 - 3.8, |_, _| GOLD_LIGHT, 1.0);
-}
-
 /// Coverage (0..=1) of the lettering in slice pixels, `width` x `height`.
-fn lettering_coverage(font: &fontdue::Font, width: usize, height: usize) -> Vec<f32> {
-    let size = LETTER_SIZE * SCALE as f32;
+fn lettering_coverage(
+    font: &fontdue::Font,
+    text: &str,
+    letter_size: f32,
+    letter_centre: [f32; 2],
+    width: usize,
+    height: usize,
+) -> Vec<f32> {
+    let size = letter_size * SCALE as f32;
     // Each glyph, emboldened by 2 supersampled pixels as a stroke would.
-    let glyphs: Vec<(usize, usize, Vec<f32>)> = [('v', 1.0), ('0', ZERO_WIDTH), ('x', 1.0)]
-        .into_iter()
+    // The "0" is narrowed so it reads as a digit, not the letter O.
+    let glyphs: Vec<(usize, usize, Vec<f32>)> = text
+        .chars()
+        .map(|character| (character, if character == '0' { ZERO_WIDTH } else { 1.0 }))
         .map(|(character, x_scale)| {
             let (metrics, bitmap) = font.rasterize(character, size);
             let pad = 2;
@@ -167,9 +192,9 @@ fn lettering_coverage(font: &fontdue::Font, width: usize, height: usize) -> Vec<
     let tallest = glyphs.iter().map(|(_, h, _)| *h).max().unwrap_or(0);
     let (big_w, big_h) = (width * SCALE, height * SCALE);
     let mut big = vec![0.0_f32; big_w * big_h];
-    let mut left = (LETTER_CENTRE[0] * SCALE as f32 - total as f32 / 2.0).max(0.0) as usize;
+    let mut left = (letter_centre[0] * SCALE as f32 - total as f32 / 2.0).max(0.0) as usize;
     // Bottoms on a common baseline.
-    let baseline = (LETTER_CENTRE[1] * SCALE as f32 + tallest as f32 / 2.0) as usize;
+    let baseline = (letter_centre[1] * SCALE as f32 + tallest as f32 / 2.0) as usize;
     for (w, h, coverage) in &glyphs {
         let top = baseline.saturating_sub(*h);
         for y in 0..*h {
@@ -251,11 +276,11 @@ fn blend(slice: &mut RgbaImage, x: usize, y: usize, colour: [u8; 3], alpha: f32)
     pixel[3] = pixel[3].max((alpha * 255.0) as u8);
 }
 
-/// Sets "v0x" over the wiped emblem: glow, dark rim, navy line, then the
-/// letters in a gold gradient from their top to their bottom.
-fn letter_v0x(slice: &mut RgbaImage, font: &fontdue::Font) {
+/// Sets `text` in gold: glow, dark rim, navy line, then the letters in a
+/// gold gradient from their top to their bottom.
+fn letter(slice: &mut RgbaImage, font: &fontdue::Font, text: &str, size: f32, centre: [f32; 2]) {
     let (width, height) = (slice.width() as usize, slice.height() as usize);
-    let letters = lettering_coverage(font, width, height);
+    let letters = lettering_coverage(font, text, size, centre, width, height);
     let line = max_filter(&letters, width, height, 1);
     let rim = max_filter(&letters, width, height, 2);
     let glow = blur(&rim, width, height, 3);
@@ -277,5 +302,20 @@ fn letter_v0x(slice: &mut RgbaImage, font: &fontdue::Font) {
             blend(slice, x, y, LINE, line[at]);
             blend(slice, x, y, fill, letters[at]);
         }
+    }
+}
+
+#[cfg(test)]
+mod emblem_preview {
+    use super::*;
+
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox logo_emblem_preview`
+    #[test]
+    fn logo_emblem_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let [_, _, width, height] = REGION;
+        let mut slice = RgbaImage::from_pixel(width, height, image::Rgba([14, 34, 46, 255]));
+        draw_on(&mut slice);
+        slice.save(format!("{dir}/logo-emblem.png")).expect("png");
     }
 }
