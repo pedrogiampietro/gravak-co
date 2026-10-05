@@ -118,10 +118,11 @@ No jogo:
 - o cliente e o servidor fecham as células bloqueadas;
 - todo jogador que passar por ali vê o objeto.
 
-Já existe uma: a **Estátua de Gravak** em Twin City (`maps/1002.toml`), no
-centro do tablado da praça (célula 438, 377). O sprite (`objects/gravak-statue.png`)
-é gerado por `objects/src/make-gravak-statue.py` a partir de
-`objects/src/gravak-relic.png`.
+Já existe uma: a **Estátua de Gravak** em Twin City (`maps/1002.toml`), a
+relíquia em pé no centro do tablado da praça (célula 438, 377). O sprite
+(`objects/gravak-statue.png`) é gerado por `objects/src/make-gravak-statue.py`
+a partir de `objects/src/gravak-relic.png`: o fundo sai, a arte é ampliada
+(Scale2x duas vezes) e girada para ficar em pé sobre o cabo.
 
 O formato, para editar à mão:
 
