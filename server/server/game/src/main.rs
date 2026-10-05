@@ -91,6 +91,7 @@ pub enum Handler {
     MsgTrade,
     MsgBounty,
     MsgStore,
+    MsgDailyReward,
     MsgBroadcast,
 }
 

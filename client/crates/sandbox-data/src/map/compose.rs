@@ -26,6 +26,17 @@ pub struct ComposedMap {
     pub extent: [f32; 2],
     /// How many of Gravak's own objects were laid over the map.
     pub gravak_objects: usize,
+    /// Those of them a click does something with (the Reward Shrine).
+    pub gravak_actions: Vec<GravakAction>,
+}
+
+/// A Gravak object with an action, where its image lies on the map.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GravakAction {
+    /// The image's top-left corner, in map pixels.
+    pub origin: [f32; 2],
+    pub image: String,
+    pub action: String,
 }
 
 /// The file the content build writes for a map's Gravak objects.
@@ -104,6 +115,7 @@ impl ComposedMap {
             sprites,
             extent,
             gravak_objects: 0,
+            gravak_actions: Vec::new(),
         };
         if let Ok(objects) = read(&gravak_objects_path(id)) {
             let objects = GravakObjects::parse(&String::from_utf8_lossy(&objects))?;
@@ -118,6 +130,14 @@ impl ComposedMap {
         self.gravak_objects += objects.objects.len();
         for object in &objects.objects {
             let p = self.project([object.x as f32, object.y as f32]);
+            let origin = [p[0] + object.offset[0] as f32, p[1] + object.offset[1] as f32];
+            if let Some(action) = &object.action {
+                self.gravak_actions.push(GravakAction {
+                    origin,
+                    image: object.image.clone(),
+                    action: action.clone(),
+                });
+            }
             self.sprites.push(MapSprite {
                 frames: vec![object.image.clone()],
                 origin: [
@@ -206,6 +226,8 @@ pub struct GravakObject {
     pub y: i32,
     pub offset: [i32; 2],
     pub image: String,
+    /// What a click on it does (`daily_rewards`: the Reward Shrine).
+    pub action: Option<String>,
 }
 
 impl GravakObjects {
@@ -224,11 +246,12 @@ impl GravakObjects {
                     .ok_or_else(|| format!("gravak objects line {}: invalid number", number + 1))
             };
             match fields[0] {
-                "object" if fields.len() == 6 => objects.objects.push(GravakObject {
+                "object" if matches!(fields.len(), 6 | 7) => objects.objects.push(GravakObject {
                     x: int(1)?,
                     y: int(2)?,
                     offset: [int(3)?, int(4)?],
                     image: fields[5].to_owned(),
+                    action: fields.get(6).map(|action| (*action).to_owned()),
                 }),
                 "block" if fields.len() == 3 => objects.blocked.push([int(1)?, int(2)?]),
                 _ => return Err(format!("gravak objects line {}: {line:?}", number + 1)),
@@ -239,13 +262,17 @@ impl GravakObjects {
 
     pub fn write(&self) -> String {
         let mut out = String::from(
-            "# Gravak objects: object <x> <y> <offset x> <offset y> <image> / block <x> <y>\n",
+            "# Gravak objects: object <x> <y> <offset x> <offset y> <image> [action] / block <x> <y>\n",
         );
         for object in &self.objects {
             out.push_str(&format!(
-                "object {} {} {} {} {}\n",
+                "object {} {} {} {} {}",
                 object.x, object.y, object.offset[0], object.offset[1], object.image
             ));
+            if let Some(action) = &object.action {
+                out.push_str(&format!(" {action}"));
+            }
+            out.push('\n');
         }
         for [x, y] in &self.blocked {
             out.push_str(&format!("block {x} {y}\n"));
@@ -369,6 +396,7 @@ mod tests {
                 y: 380,
                 offset: [-64, -120],
                 image: "gravak/objects/statue.png".into(),
+                action: Some("daily_rewards".into()),
             }],
             blocked: vec![[430, 380], [431, 380]],
         };

@@ -1,0 +1,18 @@
+# Daily rewards (the Reward Shrine, after Tibia's): a seven-day cycle.
+# Each line is one choice for its day; a day with several lines lets the
+# player pick one. Claiming on consecutive days walks the cycle; missing a
+# day starts it over.
+#
+# day  item_type  amount   (comment)
+1  1088001  1     # Meteor
+1  721331   3     # Life potions (3000 HP)
+2  723017   1     # Exp Potion
+2  721333   3     # Mana potions (4500 MP)
+3  1088001  2     # Meteor
+3  1060020  3     # Twin City scrolls
+4  723700   1     # ExpBall
+5  1088001  3     # Meteor
+5  723017   2     # Exp Potion
+6  723700   1     # ExpBall
+6  720027   1     # MeteorScroll (ten Meteors)
+7  1088000  1     # DragonBall

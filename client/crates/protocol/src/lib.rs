@@ -32,6 +32,10 @@ pub const MSG_STORE_STATE: u16 = 9112;
 pub const MSG_STORE_PURCHASE: u16 = 9113;
 /// Gravak: when each of the hero's statuses ends.
 pub const MSG_STATUS_TIMERS: u16 = 9120;
+/// Gravak's Reward Shrine: one choice of the seven-day cycle, and where the
+/// hero stands in it.
+pub const MSG_DAILY_REWARD_CHOICE: u16 = 9131;
+pub const MSG_DAILY_REWARD_STATE: u16 = 9132;
 /// Strings tied to an entity: fireworks, an effect played on it...
 pub const MSG_NAME: u16 = 1015;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
@@ -319,6 +323,48 @@ pub struct StorePurchase {
     /// Seconds since 1970.
     pub bought_at: u64,
     pub name: String,
+}
+
+/// A Reward Shrine request: open the Reward Wall (0) or claim today's
+/// choice `param` (1).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 9130)]
+pub struct DailyRewardPacket {
+    pub action: u32,
+    pub param: u32,
+}
+
+impl DailyRewardPacket {
+    pub const OPEN: u32 = 0;
+    pub const CLAIM: u32 = 1;
+
+    pub fn new(action: u32, param: u32) -> Self {
+        Self { action, param }
+    }
+}
+
+/// One choice of the cycle's `day`, `index` of `total` (index 0 starts the
+/// cycle afresh).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9131)]
+pub struct DailyRewardChoice {
+    pub index: u32,
+    pub total: u32,
+    pub day: u32,
+    pub item_type: u32,
+    pub amount: u32,
+}
+
+/// Where the hero stands: days claimed in a row, today's day of the cycle
+/// (1 to 7), whether it was claimed, and when the next day starts
+/// (seconds since 1970).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9132)]
+pub struct DailyRewardState {
+    pub streak: u32,
+    pub day: u32,
+    pub claimed: u32,
+    pub next_day_at: u64,
 }
 
 /// When each of the hero's statuses ends: `timers` is `flag:end,...` (a
@@ -1587,6 +1633,8 @@ pub enum GameEvent {
     BountyState(BountyState),
     StoreProduct(StoreProduct),
     StoreState(StoreState),
+    DailyRewardChoice(DailyRewardChoice),
+    DailyRewardState(DailyRewardState),
     StorePurchase(StorePurchase),
     StatusTimers(StatusTimers),
     Name(NamePacket),
@@ -1701,6 +1749,12 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_STORE_PURCHASE => Ok(GameEvent::StorePurchase(
             StorePurchase::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_DAILY_REWARD_CHOICE => Ok(GameEvent::DailyRewardChoice(
+            DailyRewardChoice::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_DAILY_REWARD_STATE => Ok(GameEvent::DailyRewardState(
+            DailyRewardState::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_STATUS_TIMERS => Ok(GameEvent::StatusTimers(
             StatusTimers::decode(body).map_err(ProtocolError::Decode)?,

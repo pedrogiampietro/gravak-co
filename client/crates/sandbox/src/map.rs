@@ -9,6 +9,8 @@ pub struct Map {
     pub data: DMap,
     pub sprites: Vec<Sprite>,
     pub extent: [f32; 2],
+    /// Gravak objects a click does something with (the Reward Shrine).
+    pub actions: Vec<sandbox_data::map::GravakAction>,
 }
 impl Map {
     /// The map as `sandbox_data::map::ComposedMap` lays it out, Gravak's own
@@ -31,6 +33,7 @@ impl Map {
             data: map.data,
             sprites: map.sprites,
             extent: map.extent,
+            actions: map.gravak_actions,
         })
     }
     pub fn project(&self, p: [f32; 2]) -> [f32; 2] {

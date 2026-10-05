@@ -382,6 +382,24 @@ impl MapEditor {
                 ui.add(egui::DragValue::new(&mut object.offset[1]).prefix("y "));
             });
             ui.end_row();
+            // What a click on it does in the game.
+            ui.label("Ao clicar");
+            let label = |action: &Option<String>| match action.as_deref() {
+                None => "Nada".to_owned(),
+                Some("daily_rewards") => "Recompensas Diárias".to_owned(),
+                Some(other) => other.to_owned(),
+            };
+            egui::ComboBox::from_id_salt("object-action")
+                .selected_text(label(&object.action))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut object.action, None, "Nada");
+                    ui.selectable_value(
+                        &mut object.action,
+                        Some("daily_rewards".to_owned()),
+                        "Recompensas Diárias",
+                    );
+                });
+            ui.end_row();
         });
         ui.label(format!("Bloqueia {} células", object.block.len()));
         ui.horizontal(|ui| {
@@ -698,6 +716,7 @@ impl MapEditor {
                     y: cell[1],
                     offset: [0, 0],
                     block: vec![[0, 0]],
+                    action: None,
                 });
                 self.selected = Some(open.objects.objects.len() - 1);
                 open.dirty = true;

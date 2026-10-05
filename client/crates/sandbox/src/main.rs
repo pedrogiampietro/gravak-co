@@ -34,6 +34,7 @@ mod renderer;
 mod settings;
 mod shop;
 mod store_panel;
+mod daily_rewards_panel;
 mod showcase;
 mod ui;
 mod ui_theme;
@@ -440,6 +441,12 @@ struct App {
     bounty: Option<bounty_board::BountyView>,
     /// The Store, as the server last sent it.
     store: Option<store_panel::StoreView>,
+    /// The Reward Wall; `daily_rewards_asked` opens it when the server
+    /// answers a click on the shrine.
+    daily_rewards: Option<daily_rewards_panel::DailyRewardsView>,
+    daily_rewards_asked: bool,
+    /// The sizes of the Gravak objects' images, for their clicks.
+    gravak_object_sizes: HashMap<String, [f32; 2]>,
     /// A purchase waiting for the player's yes.
     store_confirm: Option<u32>,
     /// A reroll that would abandon the bounty under way, waiting for a yes:
@@ -796,6 +803,11 @@ impl ApplicationHandler for App {
                     if self.begin_item_context_menu() {
                         return;
                     }
+                    if let Some(action) = self.gravak_action_at_cursor()
+                        && self.use_gravak_object(&action)
+                    {
+                        return;
+                    }
                     if self.cast_active_skill_at_cursor() {
                         return;
                     }
@@ -915,6 +927,14 @@ impl ApplicationHandler for App {
                 if self.renderer.as_mut().is_some_and(|renderer| {
                     renderer.minimap_pointer(self.cursor)
                 }) {
+                    self.held = false;
+                    return;
+                }
+                if state == ElementState::Pressed
+                    && self.dead_since.is_none()
+                    && let Some(action) = self.gravak_action_at_cursor()
+                    && self.use_gravak_object(&action)
+                {
                     self.held = false;
                     return;
                 }
@@ -1215,6 +1235,7 @@ impl ApplicationHandler for App {
                         self.player_shop_name_focused,
                         self.bounty.as_ref(),
                         self.store.as_ref(),
+                        self.daily_rewards.as_ref(),
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -1620,6 +1641,17 @@ impl App {
                 let local = [self.cursor[0] - left, self.cursor[1] - top];
                 if let Some(action) = store_panel::action_at(view, local) {
                     self.handle_store_action(action);
+                    self.held = false;
+                    return true;
+                }
+            }
+            if self.quick_panel == Some(shop::QuickPanel::DailyRewards)
+                && let Some(view) = &self.daily_rewards
+            {
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::DailyRewards);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                if let Some(action) = daily_rewards_panel::action_at(view, local) {
+                    self.handle_daily_reward_action(action);
                     self.held = false;
                     return true;
                 }
@@ -2391,6 +2423,58 @@ impl App {
         }
     }
 
+    fn handle_daily_reward_action(&mut self, action: daily_rewards_panel::DailyRewardAction) {
+        match action {
+            daily_rewards_panel::DailyRewardAction::Choose(index) => {
+                if let Some(view) = &mut self.daily_rewards {
+                    view.selected = index;
+                }
+            }
+            daily_rewards_panel::DailyRewardAction::Claim(index) => {
+                if let Some(network) = &self.network {
+                    network.send_daily_reward(gravak_protocol::DailyRewardPacket::CLAIM, index);
+                }
+            }
+        }
+    }
+
+    /// The action of the Gravak object under the cursor (the Reward
+    /// Shrine's `daily_rewards`), by its image's box on screen.
+    fn gravak_action_at_cursor(&mut self) -> Option<String> {
+        let camera = self.renderer.as_ref()?.camera(&self.map, &self.player);
+        let point = [self.cursor[0] + camera[0], self.cursor[1] + camera[1]];
+        let actions = self.map.actions.clone();
+        actions.into_iter().find_map(|object| {
+            let size = match self.gravak_object_sizes.get(&object.image) {
+                Some(size) => *size,
+                None => {
+                    let image = self.assets.image(&object.image).ok()?;
+                    let size = [image.width() as f32, image.height() as f32];
+                    self.gravak_object_sizes.insert(object.image.clone(), size);
+                    size
+                }
+            };
+            let inside = (object.origin[0]..object.origin[0] + size[0]).contains(&point[0])
+                && (object.origin[1]..object.origin[1] + size[1]).contains(&point[1]);
+            inside.then_some(object.action)
+        })
+    }
+
+    /// A click on a Gravak object with an action: the Reward Shrine asks the
+    /// server for the Reward Wall, which opens when it answers.
+    fn use_gravak_object(&mut self, action: &str) -> bool {
+        match action {
+            "daily_rewards" => {
+                if let Some(network) = &self.network {
+                    self.daily_rewards_asked = true;
+                    network.send_daily_reward(gravak_protocol::DailyRewardPacket::OPEN, 0);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_store_action(&mut self, action: store_panel::StoreAction) {
         let Some(view) = &mut self.store else {
             return;
@@ -3056,6 +3140,20 @@ impl App {
             NetworkEvent::Status(status) => self.network_status = status,
             NetworkEvent::StoreProduct(product) => {
                 self.store.get_or_insert_with(Default::default).receive(product);
+            }
+            NetworkEvent::DailyRewardChoice(choice) => {
+                self.daily_rewards.get_or_insert_with(Default::default).receive(choice);
+            }
+            NetworkEvent::DailyRewardState(state) => {
+                let view = self.daily_rewards.get_or_insert_with(Default::default);
+                if state.claimed != 0 || state.day != view.state.as_ref().map_or(0, |known| known.day) {
+                    view.selected = 0;
+                }
+                view.state = Some(state);
+                // The server answered a click on the shrine: the wall opens.
+                if std::mem::take(&mut self.daily_rewards_asked) {
+                    self.quick_panel = Some(shop::QuickPanel::DailyRewards);
+                }
             }
             NetworkEvent::RoleEffect { actor_id, effect } => {
                 let now = self.started.elapsed().as_secs_f32();
@@ -7555,6 +7653,9 @@ fn run() -> Result<()> {
         server_clock_offset: 0,
         bounty: None,
         store: None,
+        daily_rewards: None,
+        daily_rewards_asked: false,
+        gravak_object_sizes: HashMap::new(),
         store_confirm: None,
         bounty_confirm: None,
         ground_loot: Vec::new(),

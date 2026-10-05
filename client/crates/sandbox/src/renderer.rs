@@ -330,6 +330,7 @@ enum UiTextureJob {
         hud_config: crate::hud::HudConfig,
         bounty: Option<crate::bounty_board::BountyView>,
         store: Option<crate::store_panel::StoreView>,
+        daily: Option<crate::daily_rewards_panel::DailyRewardsView>,
     },
     ShopBase {
         path: String,
@@ -600,6 +601,7 @@ impl UiTextureJob {
                 hud_config,
                 bounty,
                 store,
+                daily,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -630,6 +632,7 @@ impl UiTextureJob {
                 hud_config,
                 bounty.as_ref(),
                 store.as_ref(),
+                daily.as_ref(),
             ),
         };
         image.map_err(|error| error.to_string())
@@ -2212,6 +2215,7 @@ impl Renderer {
         player_shop_name_focused: bool,
         bounty: Option<&crate::bounty_board::BountyView>,
         store: Option<&crate::store_panel::StoreView>,
+        daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -3934,6 +3938,11 @@ impl Renderer {
             if panel == crate::shop::QuickPanel::Quest {
                 bounty.hash(&mut hasher);
             }
+            if panel == crate::shop::QuickPanel::DailyRewards {
+                daily.hash(&mut hasher);
+                // The countdown to the next day reads in minutes.
+                (crate::store_panel::now_secs() / 60).hash(&mut hasher);
+            }
             if matches!(panel, crate::shop::QuickPanel::Store | crate::shop::QuickPanel::Vip) {
                 store.hash(&mut hasher);
                 // VIP time left reads in minutes.
@@ -3993,6 +4002,7 @@ impl Renderer {
                         hud_config,
                         bounty: bounty.cloned(),
                         store: store.cloned(),
+                        daily: daily.cloned(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);

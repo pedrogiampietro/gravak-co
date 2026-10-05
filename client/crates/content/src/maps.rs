@@ -8,6 +8,7 @@
 //! y = 380
 //! offset = [0, 0]                   # pixels, from the base at the cell
 //! block = [[0, 0], [1, 0]]          # cells, relative to x/y, closed to walking
+//! action = "daily_rewards"          # optional: what a click on it does
 //! ```
 //!
 //! The image's bottom centre stands on the cell; `offset` moves it. The build
@@ -32,6 +33,10 @@ pub struct MapObject {
     pub offset: [i32; 2],
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub block: Vec<[i32; 2]>,
+    /// What a click on it does in the game (`daily_rewards`: the Reward
+    /// Shrine). One word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 fn is_zero(offset: &[i32; 2]) -> bool {
@@ -173,6 +178,12 @@ pub fn build(content: &Path, output: &Path) -> Result<(usize, usize)> {
                 y: object.y,
                 offset: object.draw_offset([image.width(), image.height()]),
                 image: target_name,
+                action: object
+                    .action
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|action| !action.is_empty() && !action.contains(char::is_whitespace))
+                    .map(str::to_owned),
             });
             built.blocked.extend(object.blocked_cells());
             objects_built += 1;

@@ -10,7 +10,7 @@ mod scene;
 pub use catalog::{GameMapCatalog, GameMapRecord};
 pub use collision::apply_fixed_scene_layers;
 pub use compose::{
-    ComposedMap, GravakObject, GravakObjects, MapSprite, Read, gravak_objects_path, project,
+    ComposedMap, GravakAction, GravakObject, GravakObjects, MapSprite, Read, gravak_objects_path, project,
     unproject,
 };
 pub use dmap::{

@@ -149,5 +149,7 @@ pub use msg_bounty::{add_kills as add_bounty_kills, send_board, MsgBounty, MsgBo
 
 mod msg_status_timers;
 pub use msg_status_timers::MsgStatusTimers;
+mod msg_daily_reward;
+pub use msg_daily_reward::{send_wall, MsgDailyReward, MsgDailyRewardChoice, MsgDailyRewardState};
 mod msg_store;
 pub use msg_store::{expire_vip, load_vip, send_store, show_vip, MsgStore, MsgStoreProduct, MsgStoreState};

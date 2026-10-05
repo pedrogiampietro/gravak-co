@@ -137,7 +137,17 @@ x = 430
 y = 380
 offset = [0, -10]             # opcional, em pixels
 block = [[0, 0], [1, 0]]      # células, relativas a x/y
+action = "daily_rewards"      # opcional: o que um clique nele faz
 ```
+
+### Ações
+
+Um objeto com `action` responde ao clique (esquerdo ou direito) no jogo:
+
+- `daily_rewards`: a **Reward Shrine**. Abre a janela de Recompensas Diárias
+  (a Reward Wall), como no Tibia. O servidor só a abre para quem está a até 4
+  células do objeto. O ciclo de 7 dias, com as opções de cada dia, fica em
+  `server/server/game/data/daily_rewards.dat`.
 
 ### O que um item novo ainda não faz sozinho
 

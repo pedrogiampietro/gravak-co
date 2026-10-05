@@ -234,6 +234,10 @@ pub enum NetworkEvent {
     StoreState(gravak_protocol::StoreState),
     /// One of the buyer's latest purchases.
     StorePurchase(gravak_protocol::StorePurchase),
+    /// One choice of the Reward Shrine's cycle.
+    DailyRewardChoice(gravak_protocol::DailyRewardChoice),
+    /// Where the hero stands in the cycle: the Reward Wall opens on it.
+    DailyRewardState(gravak_protocol::DailyRewardState),
     /// When each of the hero's statuses ends.
     StatusTimers(gravak_protocol::StatusTimers),
     /// A `3DEffect.ini` effect played once on an actor (fireworks...).
@@ -430,6 +434,11 @@ pub(crate) enum NetworkCommand {
     /// A Store request.
     Broadcast { message: String },
     Store {
+        action: u32,
+        param: u32,
+    },
+    /// A Reward Shrine request.
+    DailyReward {
         action: u32,
         param: u32,
     },
@@ -708,6 +717,8 @@ impl NetworkHandle {
                 | NetworkEvent::StoreProduct(_)
                 | NetworkEvent::StoreState(_)
                 | NetworkEvent::StorePurchase(_)
+                | NetworkEvent::DailyRewardChoice(_)
+                | NetworkEvent::DailyRewardState(_)
                 | NetworkEvent::StatusTimers(_)
                 | NetworkEvent::RoleEffect { .. }
                 | NetworkEvent::ExperienceGain { .. }
@@ -779,6 +790,11 @@ impl NetworkHandle {
     /// A Store request (`StorePacket` constants).
     pub fn send_store(&self, action: u32, param: u32) {
         let _ = self.commands.send(NetworkCommand::Store { action, param });
+    }
+
+    /// A Reward Shrine request (`DailyRewardPacket` constants).
+    pub fn send_daily_reward(&self, action: u32, param: u32) {
+        let _ = self.commands.send(NetworkCommand::DailyReward { action, param });
     }
 
     /// A bounty Task Board action (`gravak_protocol::BountyPacket` constants).
@@ -1461,6 +1477,12 @@ pub(crate) async fn play(
                 Some(GameEvent::StoreState(store)) => {
                     let _ = events.send(NetworkEvent::StoreState(store));
                 }
+                Some(GameEvent::DailyRewardChoice(choice)) => {
+                    let _ = events.send(NetworkEvent::DailyRewardChoice(choice));
+                }
+                Some(GameEvent::DailyRewardState(state)) => {
+                    let _ = events.send(NetworkEvent::DailyRewardState(state));
+                }
                 Some(GameEvent::StorePurchase(purchase)) => {
                     let _ = events.send(NetworkEvent::StorePurchase(purchase));
                 }
@@ -1931,6 +1953,12 @@ pub(crate) async fn play(
                 Some(NetworkCommand::Store { action, param }) => {
                     session
                         .send(&gravak_protocol::StorePacket::new(action, param))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::DailyReward { action, param }) => {
+                    session
+                        .send(&gravak_protocol::DailyRewardPacket::new(action, param))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
