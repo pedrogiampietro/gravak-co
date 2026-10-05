@@ -4,14 +4,21 @@ mod action_bar;
 mod cursors;
 mod assets;
 mod audio;
+mod bounty_board;
 mod character;
 mod components;
 mod debug_log;
 mod hud;
 mod labels;
+mod launcher;
+mod launcher_art;
+mod login;
+mod login_scenes;
 mod logo;
 mod main_hud;
 mod magic;
+#[cfg(test)]
+mod marketing;
 mod map;
 mod minimap;
 mod motion_math;
@@ -21,9 +28,13 @@ mod npc_dialog;
 mod original_panels;
 mod original_ui;
 mod original_ui_layout;
+mod ornate;
+mod paint;
 mod renderer;
 mod settings;
 mod shop;
+mod store_panel;
+mod showcase;
 mod ui;
 mod ui_theme;
 mod validation;
@@ -42,6 +53,7 @@ use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
+    platform::run_on_demand::EventLoopExtRunOnDemand,
     window::{CursorIcon, CustomCursor, Window, WindowId},
 };
 const LEVEL_UP_DURATION: f32 = 61.0 / 30.0;
@@ -275,6 +287,8 @@ struct App {
     queued_jump: Option<[i32; 2]>,
     local_action: Option<(Action, f32, f32)>,
     stamina: u8,
+    /// The XP circle's points, 0-100.
+    xp_points: u8,
     /// When the player died; `None` while alive.
     dead_since: Option<f32>,
     /// Sitting (MsgAction 250): stamina comes back faster.
@@ -296,6 +310,8 @@ struct App {
     status_open: bool,
     status_tab: shop::StatusTab,
     weapon_filter: shop::WeaponFilter,
+    /// The Character window's Skills tab: page, scroll and pick.
+    skill_page: shop::SkillPage,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -355,6 +371,11 @@ struct App {
     remote_models: HashMap<u32, character::Character>,
     remote_npcs: HashMap<u32, character::NpcModel>,
     remote_monsters: HashMap<u32, character::NpcModel>,
+    /// The ghost models by look (98, 99), loaded at the first death.
+    ghosts: HashMap<u32, character::NpcModel>,
+    ghosts_requested: bool,
+    /// Players drawn as ghosts, through `remote_monsters`.
+    ghost_actors: HashSet<u32>,
     combat_numbers: Vec<(u32, u32, f32)>,
     skill_effects: Vec<renderer::SkillEffectInstance>,
     known_skills: HashMap<u32, (u16, u32)>,
@@ -362,6 +383,16 @@ struct App {
     weapon_skills: std::collections::BTreeMap<u32, (u32, u32)>,
     /// Monsters killed by this character in the session (the KO counter).
     kill_count: u32,
+    /// Monsters slain in the current Cyclone or Superman, as the server
+    /// counts them.
+    ko_count: u32,
+    /// Everyone's Cyclone or Superman KOs (the deaths they deal carry them).
+    actor_kos: HashMap<u32, u32>,
+    /// Kills of each kind of monster: the counter shows the last kind's.
+    kills_by_kind: HashMap<String, u32>,
+    last_kill_kind: Option<String>,
+    /// When the XP circle lit up (unix ms): 20 seconds to use it.
+    xp_lit_at: Option<u64>,
     skill_bar_open: bool,
     /// Skill chosen in the skill bar; shown on the "Skill" button and cast
     /// with the right mouse button.
@@ -396,6 +427,24 @@ struct App {
     player_shop_open: bool,
     player_shop_price: String,
     player_shop_price_focused: bool,
+    /// The booth name being typed in the player shop window.
+    player_shop_name: String,
+    player_shop_name_focused: bool,
+    /// Open booths around, by their seller's name: the booth's name.
+    booths: HashMap<String, String>,
+    /// The hero's statuses and when each ends, on the server's clock.
+    status_timers: Vec<(u64, u64)>,
+    /// The server's clock minus this one, in seconds.
+    server_clock_offset: i64,
+    /// The bounty Task Board, as the server last sent it.
+    bounty: Option<bounty_board::BountyView>,
+    /// The Store, as the server last sent it.
+    store: Option<store_panel::StoreView>,
+    /// A purchase waiting for the player's yes.
+    store_confirm: Option<u32>,
+    /// A reroll that would abandon the bounty under way, waiting for a yes:
+    /// the difficulty of the new list.
+    bounty_confirm: Option<u32>,
     ground_loot: Vec<(u32, [f32; 2], u32, f32)>,
     dialog: Option<DialogState>,
     shop: Option<shop::ShopState>,
@@ -409,7 +458,15 @@ struct App {
 }
 
 /// The client offers Revive this long after dying (server `REVIVE_DELAY`).
-const REVIVE_DELAY_SECONDS: f32 = 18.0;
+const REVIVE_DELAY_SECONDS: f32 = 20.0;
+/// Model jobs for the ghosts use ids above every actor's.
+const GHOST_ID_BASE: u32 = 0xFFFF_0000;
+
+/// The 5065 ghost a dead body turns into: 98 for the male bodies
+/// (1003/1004), 99 for the female ones (2001/2002).
+fn ghost_look(body: u32) -> u32 {
+    if body % 10_000 / 1_000 == 2 { 99 } else { 98 }
+}
 /// Task id of the local Revive dialog; it never reaches an NPC.
 const REVIVE_TASK_ID: u32 = u32::MAX;
 
@@ -447,7 +504,8 @@ impl ApplicationHandler for App {
             let window = Arc::new(
                 event_loop.create_window(
                     Window::default_attributes()
-                        .with_title("gravak-co — offline Twin City sandbox")
+                        .with_title("Gravak")
+                        .with_window_icon(window_icon())
                         .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768)),
                 )?,
             );
@@ -522,6 +580,30 @@ impl ApplicationHandler for App {
                 self.queued_jump = None;
                 self.chat_focused = false;
                 self.player.stop();
+            }
+            WindowEvent::KeyboardInput { event, .. } if self.player_shop_name_focused => {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => self.player_shop_name_focused = false,
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            self.player_shop_name_focused = false;
+                            self.send_booth_name();
+                        }
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            self.player_shop_name.pop();
+                        }
+                        _ => {
+                            if let Some(text) = event.text.as_ref() {
+                                for ch in text.chars().filter(|ch| !ch.is_control()) {
+                                    if self.player_shop_name.chars().count() < 24 {
+                                        self.player_shop_name.push(ch);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.warehouse_amount_focused || self.player_shop_price_focused =>
@@ -679,6 +761,14 @@ impl ApplicationHandler for App {
                     if !inside_price {
                         self.player_shop_price_focused = false;
                     }
+                    let inside_name = self.window.as_ref().is_some_and(|window| {
+                        let size = window.inner_size();
+                        self.quick_panel == Some(shop::QuickPanel::Market)
+                            && shop::player_shop_name_at([size.width as f32, size.height as f32], self.cursor)
+                    });
+                    if !inside_name {
+                        self.player_shop_name_focused = false;
+                    }
                 }
                 // A release can be consumed by a UI drag below, so clear the
                 // world-movement hold before any early return.
@@ -797,6 +887,31 @@ impl ApplicationHandler for App {
                 if state == ElementState::Released {
                     return;
                 }
+                if self.dead_since.is_some()
+                    && let Some(here) = self.renderer.as_ref().and_then(|renderer| renderer.revive_at(self.cursor))
+                {
+                    self.request_revive(here);
+                    self.held = false;
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.store_icon_at(self.cursor))
+                {
+                    self.toggle_store();
+                    self.held = false;
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.bounty_tracker_at(self.cursor))
+                {
+                    self.toggle_bounty_board();
+                    self.held = false;
+                    return;
+                }
                 if self.renderer.as_mut().is_some_and(|renderer| {
                     renderer.minimap_pointer(self.cursor)
                 }) {
@@ -804,10 +919,12 @@ impl ApplicationHandler for App {
                     return;
                 }
                 self.held = state == ElementState::Pressed;
-                if self.held && self.pickup_ground_loot_at_cursor() {
+                // A ghost only walks: no targets, no loot.
+                let ghost = self.dead_since.is_some();
+                if self.held && !ghost && self.pickup_ground_loot_at_cursor() {
                     return;
                 }
-                if self.held && !self.select_actor_at_cursor() {
+                if self.held && (ghost || !self.select_actor_at_cursor()) {
                     self.move_cursor();
                 }
             }
@@ -881,6 +998,8 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyC) => self.send_network_action(120),
                     PhysicalKey::Code(KeyCode::KeyX) => self.toggle_sit(),
                     PhysicalKey::Code(KeyCode::KeyM) => self.request_mining(),
+                    PhysicalKey::Code(KeyCode::KeyB) => self.toggle_bounty_board(),
+                    PhysicalKey::Code(KeyCode::KeyP) => self.toggle_store(),
                     _ => {}
                 }
             }
@@ -932,22 +1051,24 @@ impl ApplicationHandler for App {
                     self.player.action = Action::Sit;
                     local_action_progress = Some(1.0);
                 }
-                if let Some(died_at) = self.dead_since {
+                // Dead: the body falls, then a ghost walks until revived.
+                if let Some(died_at) = self.dead_since
+                    && !self.fallen()
+                {
                     let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
                     self.player.action = Action::Die;
                     local_action_progress = Some(((elapsed - died_at) / fall).clamp(0.0, 1.0));
-                    if elapsed - died_at >= REVIVE_DELAY_SECONDS && self.dialog.is_none() {
-                        self.dialog = Some(DialogState {
-                            task_id: REVIVE_TASK_ID,
-                            avatar: 0,
-                            lines: vec!["You are dead.".to_owned()],
-                            options: vec![(1, "Revive".to_owned())],
-                            edit: None,
-                            input: String::new(),
-                            input_focused: false,
-                        });
-                    }
                 }
+                // The revive countdown, then the REVIVE button, when the
+                // server allows it.
+                self.player.ghost = self.dead_since.is_some();
+                // Heaven's Blessing (status bit 49) adds "Revive here".
+                let revive = self.dead_since.map(|died_at| {
+                    (
+                        (REVIVE_DELAY_SECONDS - (elapsed - died_at)).ceil().max(0.0) as u32,
+                        self.status_flags & (1 << 49) != 0,
+                    )
+                });
                 let action_animation_progress = self
                     .action_animation_started
                     .map(|started| {
@@ -986,6 +1107,30 @@ impl ApplicationHandler for App {
                 let prompt = self.prompt();
                 let hovered_player = self.hovered_player();
                 let team_pins = self.team_pins();
+                self.sync_ghosts(elapsed);
+                let local_ghost_look = self
+                    .dead_since
+                    .filter(|died_at| elapsed - died_at >= self.character.duration(Action::Die).as_secs_f32())
+                    .map(|_| ghost_look(self.character.body_id));
+                // Booth signs follow their sellers; a seller gone from
+                // sight takes theirs along.
+                let own_name = self.character.name.clone();
+                let actors = &self.remote_actors;
+                self.booths
+                    .retain(|seller, _| *seller == own_name || actors.values().any(|actor| actor.name == *seller));
+                for actor in self.remote_actors.values_mut() {
+                    actor.booth = self.booths.get(&actor.name).cloned();
+                }
+                // KOs show while Cyclone or Superman lasts; a new one
+                // counts afresh.
+                let in_xp = |flags: u64| flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG) != 0;
+                let actors = &self.remote_actors;
+                self.actor_kos
+                    .retain(|id, _| actors.get(id).is_some_and(|actor| in_xp(actor.status_flags)));
+                for actor in self.remote_actors.values_mut() {
+                    actor.ko_count = self.actor_kos.get(&actor.id).copied().unwrap_or(0);
+                }
+                self.character.booth = self.booths.get(&own_name).cloned();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1010,6 +1155,8 @@ impl ApplicationHandler for App {
                         &self.remote_models,
                         &self.remote_npcs,
                         &self.remote_monsters,
+                        local_ghost_look.and_then(|look| self.ghosts.get(&look)),
+                        revive,
                         &self.combat_numbers,
                         &self.skill_effects,
                         &self.ground_loot,
@@ -1064,6 +1211,10 @@ impl ApplicationHandler for App {
                         self.player_shop_open,
                         &self.player_shop_price,
                         self.player_shop_price_focused,
+                        &self.player_shop_name,
+                        self.player_shop_name_focused,
+                        self.bounty.as_ref(),
+                        self.store.as_ref(),
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -1225,6 +1376,12 @@ impl App {
                         Err(error) => eprintln!("NPC {id} model unavailable: {error}"),
                     }
                 }
+                RemoteModelResult::Monster { id, model } if id >= GHOST_ID_BASE => match model {
+                    Ok(model) => {
+                        self.ghosts.insert(id - GHOST_ID_BASE, model);
+                    }
+                    Err(error) => eprintln!("Ghost {} model unavailable: {error}", id - GHOST_ID_BASE),
+                },
                 RemoteModelResult::Monster { id, model } => {
                     self.remote_monsters_loading.remove(&id);
                     match model {
@@ -1418,9 +1575,19 @@ impl App {
                 return true;
             }
             if self.quick_panel == Some(shop::QuickPanel::Market)
+                && shop::player_shop_name_at(viewport, self.cursor)
+            {
+                self.warehouse_amount_focused = false;
+                self.player_shop_price_focused = false;
+                self.player_shop_name_focused = true;
+                self.held = false;
+                return true;
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Market)
                 && shop::player_shop_price_at(viewport, self.cursor)
             {
                 self.warehouse_amount_focused = false;
+                self.player_shop_name_focused = false;
                 self.player_shop_price_focused = true;
                 self.held = false;
                 return true;
@@ -1433,6 +1600,40 @@ impl App {
                 self.player_shop_price_focused = false;
                 self.held = false;
                 return true;
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Vip)
+                && crate::original_panels::vip_renew_at(viewport, self.cursor)
+            {
+                self.quick_panel = None;
+                self.toggle_store();
+                if let Some(view) = &mut self.store {
+                    view.category = 0;
+                    view.selected = None;
+                }
+                self.held = false;
+                return true;
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Store)
+                && let Some(view) = &self.store
+            {
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Store);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                if let Some(action) = store_panel::action_at(view, local) {
+                    self.handle_store_action(action);
+                    self.held = false;
+                    return true;
+                }
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Quest)
+                && let Some(board) = &self.bounty
+            {
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Quest);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                if let Some(action) = bounty_board::action_at(board, local) {
+                    self.handle_bounty_action(action);
+                    self.held = false;
+                    return true;
+                }
             }
             if self.quick_panel == Some(shop::QuickPanel::Team) {
                 if let Some(action) = shop::team_panel_action_at(
@@ -1582,6 +1783,32 @@ impl App {
                 self.held = false;
                 return true;
             }
+            if self.status_tab == shop::StatusTab::Skills {
+                if let Some(filter) = shop::status_skill_filter_at(viewport, self.cursor) {
+                    self.skill_page = shop::SkillPage { filter, scroll: 0, selected: None };
+                    self.held = false;
+                    return true;
+                }
+                let known = self.status_skill_list();
+                let rows = shop::skill_rows(&mut self.assets, &known, self.skill_page.filter);
+                if let Some(up) = shop::status_list_scroll_at(viewport, self.cursor) {
+                    let most = rows.len().saturating_sub(6) as u8;
+                    self.skill_page.scroll = if up {
+                        self.skill_page.scroll.saturating_sub(1)
+                    } else {
+                        (self.skill_page.scroll + 1).min(most)
+                    };
+                    self.held = false;
+                    return true;
+                }
+                if let Some(row) = shop::status_skill_row_at(viewport, self.cursor) {
+                    if let Some((skill_id, _, _)) = rows.get(usize::from(self.skill_page.scroll) + row) {
+                        self.skill_page.selected = Some(*skill_id);
+                    }
+                    self.held = false;
+                    return true;
+                }
+            }
             if self.status_tab == shop::StatusTab::Weapon
                 && let Some(filter) = shop::status_weapon_filter_at(viewport, self.cursor)
             {
@@ -1608,7 +1835,7 @@ impl App {
         if let Some(button) = hud::quick_button_at(viewport, self.cursor) {
             match button {
                 0 => {
-                    self.status_open = !self.status_open;
+                    self.toggle_status();
                     self.inventory_open = false;
                     self.close_quick_panel_unless_trading();
                 }
@@ -1663,7 +1890,7 @@ impl App {
             return true;
         }
         if hud::status_button_at(viewport, self.cursor) {
-            self.status_open = !self.status_open;
+            self.toggle_status();
             self.inventory_open = false;
             self.chat_focused = false;
             self.held = false;
@@ -1942,6 +2169,34 @@ impl App {
     /// The popup for a received team invite, a request to join the hero's
     /// team, or a trade request.
     fn prompt(&self) -> Option<shop::PromptDialog> {
+        if self.bounty_confirm.is_some() {
+            let task = self.bounty.as_ref()?.board.active()?;
+            let size = self.window.as_ref()?.inner_size();
+            return Some(
+                shop::PromptDialog::new(
+                    [size.width as f32, size.height as f32],
+                    "Abandon bounty",
+                    task.monster_name.clone(),
+                    format!("{}/{} kills lost, 1 token spent", task.kills_done, task.kills),
+                )
+                .with_buttons(["Abandon", "Keep"]),
+            );
+        }
+        if let Some(product_id) = self.store_confirm {
+            let view = self.store.as_ref()?;
+            let product = view.products.iter().find(|product| product.product_id == product_id)?;
+            let size = self.window.as_ref()?.inner_size();
+            let left = view.state.cps.saturating_sub(u64::from(product.price_cps));
+            return Some(
+                shop::PromptDialog::new(
+                    [size.width as f32, size.height as f32],
+                    "Confirm purchase",
+                    product.name.clone(),
+                    format!("for {} CPs ({left} CPs left)", product.price_cps),
+                )
+                .with_buttons(["Buy", "Cancel"]),
+            );
+        }
         let (title, id, text) = if let Some(leader) = self.pending_team_invite {
             ("Team", leader, "invites you to the team")
         } else if let Some(requester) = self.pending_team_join_request {
@@ -1963,6 +2218,18 @@ impl App {
     }
 
     fn answer_prompt(&mut self, accept: bool) {
+        if let Some(difficulty) = self.bounty_confirm.take() {
+            if accept && let Some(network) = &self.network {
+                network.send_bounty(gravak_protocol::BountyPacket::REROLL, difficulty);
+            }
+            return;
+        }
+        if let Some(product_id) = self.store_confirm.take() {
+            if accept && let Some(network) = &self.network {
+                network.send_store(gravak_protocol::StorePacket::BUY, product_id);
+            }
+            return;
+        }
         if self.pending_team_invite.is_some() || self.pending_team_join_request.is_some() {
             self.answer_team_prompt(accept);
         } else if self.trade_request_pending() {
@@ -2085,6 +2352,12 @@ impl App {
             && let (Some(network), Some(character_id)) = (&self.network, self.network_character_id)
         {
             if let Some(rest) = message
+                .strip_prefix("/bc ")
+                .or_else(|| message.strip_prefix("/broadcast "))
+            {
+                // 5 CPs, level 50; the server answers in the chat.
+                network.send_broadcast(rest.trim());
+            } else if let Some(rest) = message
                 .strip_prefix("/w ")
                 .or_else(|| message.strip_prefix("/whisper "))
             {
@@ -2104,6 +2377,96 @@ impl App {
         self.chat_text.clear();
     }
 
+    /// B opens and closes the bounty Task Board, fresh from the server.
+    /// P (or the Store icon) opens and closes the Store, fresh from the
+    /// server.
+    fn toggle_store(&mut self) {
+        if self.quick_panel == Some(shop::QuickPanel::Store) {
+            self.quick_panel = None;
+            return;
+        }
+        self.quick_panel = Some(shop::QuickPanel::Store);
+        if let Some(network) = &self.network {
+            network.send_store(gravak_protocol::StorePacket::OPEN, 0);
+        }
+    }
+
+    fn handle_store_action(&mut self, action: store_panel::StoreAction) {
+        let Some(view) = &mut self.store else {
+            return;
+        };
+        match action {
+            store_panel::StoreAction::Category(category) => {
+                view.category = category;
+                view.selected = None;
+            }
+            store_panel::StoreAction::Select(product_id) => view.selected = Some(product_id),
+            store_panel::StoreAction::Teleport(city) => {
+                if let Some(network) = &self.network {
+                    network.send_store(gravak_protocol::StorePacket::TELEPORT, city);
+                }
+            }
+            store_panel::StoreAction::ToggleLoot(bit) => {
+                // Shown at once; the server's answer confirms it.
+                view.state.loot_filter ^= bit;
+                if let Some(network) = &self.network {
+                    network.send_store(gravak_protocol::StorePacket::LOOT_FILTER, view.state.loot_filter);
+                }
+            }
+            store_panel::StoreAction::VipRights => self.quick_panel = Some(shop::QuickPanel::Vip),
+            // The purchase waits for the confirmation prompt.
+            store_panel::StoreAction::Buy(product_id) => self.store_confirm = Some(product_id),
+        }
+    }
+
+    fn toggle_bounty_board(&mut self) {
+        if self.quick_panel == Some(shop::QuickPanel::Quest) {
+            self.quick_panel = None;
+            return;
+        }
+        self.quick_panel = Some(shop::QuickPanel::Quest);
+        if let Some(network) = &self.network {
+            network.send_bounty(gravak_protocol::BountyPacket::OPEN, 0);
+        }
+    }
+
+    fn handle_bounty_action(&mut self, action: bounty_board::BountyAction) {
+        use gravak_protocol::BountyPacket;
+        let Some(network) = &self.network else {
+            self.network_status = "bounty indisponível: servidor offline".into();
+            return;
+        };
+        let (packet, param) = match action {
+            bounty_board::BountyAction::Select(difficulty) => {
+                if let Some(view) = &mut self.bounty {
+                    view.selected = Some(difficulty);
+                }
+                return;
+            }
+            bounty_board::BountyAction::ClaimDaily => (BountyPacket::CLAIM_DAILY, 0),
+            // With a bounty under way, a new list abandons it: ask first.
+            bounty_board::BountyAction::Reroll(difficulty)
+                if self.bounty.as_ref().is_some_and(|view| view.board.active().is_some()) =>
+            {
+                self.bounty_confirm = Some(difficulty);
+                return;
+            }
+            bounty_board::BountyAction::Reroll(difficulty) => (BountyPacket::REROLL, difficulty),
+            bounty_board::BountyAction::Pick(slot) => (BountyPacket::PICK, slot),
+            bounty_board::BountyAction::Abandon => {
+                self.bounty_confirm = Some(self.bounty.as_ref().map_or(0, bounty_board::BountyView::selected));
+                return;
+            }
+            bounty_board::BountyAction::Upgrade(bonus) => (BountyPacket::UPGRADE, bonus),
+            bounty_board::BountyAction::Prefer(monster_type) => (BountyPacket::PREFER, monster_type),
+            bounty_board::BountyAction::Avoid(monster_type) => (BountyPacket::AVOID, monster_type),
+            bounty_board::BountyAction::Unlist { avoided, index } => {
+                (BountyPacket::UNLIST, u32::from(avoided) * 10 + index)
+            }
+        };
+        network.send_bounty(packet, param);
+    }
+
     fn send_team_action(&mut self, action: u32, target_id: u32) {
         let Some(network) = &self.network else {
             self.network_status = "team indisponível: servidor offline".into();
@@ -2119,6 +2482,15 @@ impl App {
             .get(&id)
             .map(|actor| actor.name.clone())
             .unwrap_or_default()
+    }
+
+    /// The Status button opens the Character window on its first tab,
+    /// Attributes, as the original does.
+    fn toggle_status(&mut self) {
+        self.status_open = !self.status_open;
+        if self.status_open {
+            self.status_tab = shop::StatusTab::Attributes;
+        }
     }
 
     fn selected_player_target(&self) -> Option<(u32, String)> {
@@ -2287,7 +2659,19 @@ impl App {
         const INVITE_JOIN: u32 = 2;
         const LEAVE_GUILD: u32 = 3;
         const KICK_MEMBER: u32 = 4;
+        const DONATE_SILVER: u32 = 11;
+        const WITHDRAW_SILVER: u32 = 31;
         match action {
+            shop::GuildPanelAction::Donate(amount) => {
+                if let Some(network) = &self.network {
+                    network.send_guild_action(DONATE_SILVER, amount);
+                }
+            }
+            shop::GuildPanelAction::Withdraw(amount) => {
+                if let Some(network) = &self.network {
+                    network.send_guild_action(WITHDRAW_SILVER, amount);
+                }
+            }
             shop::GuildPanelAction::AcceptInvite => {
                 if self.pending_guild_invite.take().is_some() {
                     self.network
@@ -2534,6 +2918,17 @@ impl App {
         }
     }
 
+    /// Sends the typed booth name; the server keeps it for the next opening.
+    fn send_booth_name(&mut self) {
+        let name = self.player_shop_name.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.send_booth_name(character_id, &self.character.name, &name);
+        }
+    }
+
     fn handle_player_shop_panel_action(&mut self, action: shop::PlayerShopPanelAction) {
         let Some(network) = &self.network else {
             self.network_status = "banca indisponível: servidor offline".into();
@@ -2619,7 +3014,8 @@ impl App {
     }
 
     fn move_cursor(&mut self) {
-        if self.dead_since.is_some() {
+        // A falling body stays down; the ghost it becomes walks.
+        if self.dead_since.is_some() && !self.fallen() {
             return;
         }
         self.follow_target = None;
@@ -2658,6 +3054,59 @@ impl App {
     fn handle_network_event(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::Status(status) => self.network_status = status,
+            NetworkEvent::StoreProduct(product) => {
+                self.store.get_or_insert_with(Default::default).receive(product);
+            }
+            NetworkEvent::RoleEffect { actor_id, effect } => {
+                let now = self.started.elapsed().as_secs_f32();
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.add_role_effect(actor_id, effect, now);
+                }
+            }
+            NetworkEvent::StatusTimers(timers) => {
+                let now = hud::unix_now();
+                self.server_clock_offset = timers.now as i64 - now as i64;
+                self.status_timers = timers.entries();
+                if let Some((_, end)) = self.status_timers.iter().find(|(bit, _)| *bit == 1 << 50) {
+                    crate::debug_log::write(format_args!(
+                        "lucky timer: server_now={} client_now={now} end={end} left={}",
+                        timers.now,
+                        end.saturating_sub(timers.now)
+                    ));
+                }
+            }
+            NetworkEvent::StorePurchase(purchase) => {
+                self.store.get_or_insert_with(Default::default).receive_purchase(purchase);
+            }
+            NetworkEvent::StoreState(state) => {
+                self.cps = state.cps.try_into().unwrap_or(u32::MAX);
+                let view = self.store.get_or_insert_with(Default::default);
+                // A VIP just bought: show what it gives.
+                let bought_vip = view.state.vip_until != 0 && state.vip_until > view.state.vip_until
+                    || view.state.vip_until == 0 && state.vip_until > 0 && !view.products.is_empty();
+                view.state = state;
+                if bought_vip && self.quick_panel == Some(shop::QuickPanel::Store) {
+                    self.quick_panel = Some(shop::QuickPanel::Vip);
+                }
+            }
+            NetworkEvent::Bounty(board) => {
+                let view = self.bounty.get_or_insert_with(Default::default);
+                // A new list of the chosen difficulty: the tab is its own again.
+                if view.selected == Some(board.difficulty) {
+                    view.selected = None;
+                }
+                view.board = board;
+            }
+            NetworkEvent::BountyProgress { done, required } => {
+                if let Some(view) = &mut self.bounty {
+                    view.board.task.kills_done = done;
+                    view.board.task.kills = required;
+                }
+            }
+            // The guild fund (Gravak's action 30): exact in the text.
+            NetworkEvent::Guild { action: 30, data, name } => {
+                self.character.guild_fund = name.and_then(|fund| fund.parse().ok()).unwrap_or(u64::from(data));
+            }
             NetworkEvent::Guild { action, data, name } => {
                 let description = name.clone().unwrap_or_else(|| "sem nome".to_owned());
                 if action == 2 && data != 0 && self.character.guild.is_empty() {
@@ -2678,6 +3127,10 @@ impl App {
                     if action == 14 {
                         self.character.guild = guild_name;
                         self.guild_id = Some(data);
+                        // Ask how much the guild holds.
+                        if let Some(network) = &self.network {
+                            network.send_guild_action(30, 0);
+                        }
                         self.pending_guild_invite = None;
                     }
                 }
@@ -2873,17 +3326,33 @@ impl App {
                 self.network_status =
                     format!("friend {name} ({friend_id}) action {action} {state}");
             }
+            // A booth's name (the Vendor channel); empty when it closes.
+            NetworkEvent::ChatMessage(message) if message.channel == 2104 => {
+                if message.message.is_empty() {
+                    self.booths.remove(&message.sender_name);
+                } else {
+                    self.booths.insert(message.sender_name, message.message);
+                }
+            }
             NetworkEvent::ChatMessage(message) => {
                 let display = if message.channel == 2001 {
                     format!("Whisper from {}: {}", message.sender_name, message.message)
                 } else {
                     format!("{}: {}", message.sender_name, message.message)
                 };
+                // Notices (top left), announcements (center) and paid
+                // broadcasts also show in the banner at the top, a few
+                // seconds; the rest only in the chat.
+                let banner = match message.channel {
+                    2005 | 2011 => Some(message.message.clone()),
+                    2500 => Some(format!("[Broadcast] {}: {}", message.sender_name, message.message)),
+                    _ => None,
+                };
                 self.chat_history.push_back(message);
                 while self.chat_history.len() > 40 {
                     self.chat_history.pop_front();
                 }
-                self.network_status = format!("online: {display}");
+                self.network_status = banner.unwrap_or_else(|| format!("online: {display}"));
             }
             NetworkEvent::Skill {
                 skill_id,
@@ -2896,6 +3365,7 @@ impl App {
                 self.network_status = format!("online: skill {skill_id} level {level}");
             }
             NetworkEvent::Stamina(stamina) => self.stamina = stamina,
+            NetworkEvent::XpPoints(points) => self.xp_points = points,
             NetworkEvent::ActorLife { id, maximum, value } => {
                 let entry = self.structure_lives.entry(id).or_insert((value, value));
                 if maximum {
@@ -3329,12 +3799,14 @@ impl App {
                         actor.position[1] + delta[1] as f32,
                     ];
                     actor.movement_started = now;
+                    // Cyclone moves twice as fast (`Conquer.exe`).
+                    let haste = if actor.status_flags & network::CYCLONE_FLAG != 0 { 2.0 } else { 1.0 };
                     actor.movement_until = now
                         + if movement_type == 1 {
                             1.0 / 6.0
                         } else {
                             1.0 / 3.0
-                        };
+                        } / haste;
                     actor.direction = direction;
                     actor.action = if movement_type == 1 {
                         if actor.step_right { 121 } else { 120 }
@@ -3383,10 +3855,11 @@ impl App {
                             + (actor.movement_to[1] - actor.movement_from[1]) * t;
                     }
                     let target = position.map(|value| value as f32);
+                    let haste = if actor.status_flags & network::CYCLONE_FLAG != 0 { 2.0 } else { 1.0 };
                     let motion = motion_math::jump_motion(
                         actor.position,
                         target,
-                        self.character.duration(Action::Jump),
+                        self.character.duration(Action::Jump).div_f32(haste),
                     );
                     // Face the way the jump goes; the packet's direction is
                     // only a fallback for a jump in place (older servers
@@ -3408,8 +3881,14 @@ impl App {
             NetworkEvent::RemoteAction { id, action } => {
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
                     let now = self.started.elapsed().as_secs_f32();
+                    // The server's respawn (SpawnEffect): the `born` effect
+                    // over a monster that stands, not an action to play.
                     if action == 131 {
-                        actor.respawn_until = now + 0.9;
+                        actor.respawn_until = now + renderer::MONSTER_BORN_SECONDS;
+                        actor.action = 0;
+                        actor.animation_started = now;
+                        actor.animation_until = now;
+                        return;
                     }
                     actor.action = action as u8;
                     actor.animation_started = now;
@@ -3426,11 +3905,36 @@ impl App {
                     if self.network_character_id == Some(target_id) {
                         self.on_own_death();
                     }
+                    // In Cyclone or Superman the death carries the slayer's
+                    // KO count in its high word (`65541 * KOCount`).
+                    if value >= 0x1_0000 {
+                        self.actor_kos.insert(id, value >> 16);
+                    }
                     if self.network_character_id == Some(id) {
                         self.kill_count = self.kill_count.saturating_add(1);
+                        if value >= 0x1_0000 {
+                            self.ko_count = value >> 16;
+                        }
+                        // The counter counts each kind of monster apart.
+                        if let Some(monster) = self
+                            .remote_actors
+                            .get(&target_id)
+                            .filter(|_| (400001..=499999).contains(&target_id))
+                        {
+                            let kind = monster.name.clone();
+                            *self.kills_by_kind.entry(kind.clone()).or_default() += 1;
+                            self.last_kill_kind = Some(kind);
+                        }
                     }
                     let now = self.started.elapsed().as_secs_f32();
                     let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
+                    // A slain monster's soul flies to its slayer.
+                    if (400001..=499999).contains(&target_id)
+                        && let (Some(monster), Some(renderer)) =
+                            (self.remote_actors.get(&target_id), self.renderer.as_mut())
+                    {
+                        renderer.add_soul(monster.position, id, now);
+                    }
                     if let Some(actor) = self.remote_actors.get_mut(&target_id) {
                         actor.health = 0;
                         let player = !actor.npc && !(400001..=499999).contains(&target_id);
@@ -3442,6 +3946,8 @@ impl App {
                             actor.animation_until = now + fall;
                         } else {
                             actor.action = 160;
+                            // A death ends any respawn effect still playing.
+                            actor.respawn_until = 0.0;
                             actor.animation_until = now + 1.2;
                         }
                     }
@@ -3464,8 +3970,9 @@ impl App {
                 self.network_status =
                     format!("online: combat {id} -> {target_id}, hit {value} (action {action})");
                 let now = self.started.elapsed().as_secs_f32();
-                // A physical blow of 0 missed: it shows "Miss".
-                if value > 0 || action == 2 {
+                // A physical blow of 0 missed: it shows "Miss". A death
+                // carries no damage.
+                if action != 14 && (value > 0 || action == 2) {
                     self.combat_numbers.push((target_id, value, now + 1.0));
                 }
                 if self.network_character_id == Some(target_id) {
@@ -3484,6 +3991,8 @@ impl App {
                 target_id,
                 skill_id,
                 damage,
+                target_cell,
+                first,
             } => {
                 let now = self.started.elapsed().as_secs_f32();
                 let level = self
@@ -3499,6 +4008,8 @@ impl App {
                     started: now,
                     // The renderer stops each effect when its animation ends.
                     expires: now + renderer::SKILL_EFFECT_MAX_SECONDS,
+                    target_cell,
+                    trail: first,
                 });
                 if damage > 0 {
                     self.combat_numbers.push((target_id, damage, now + 1.0));
@@ -3633,6 +4144,8 @@ impl App {
                     if let Some(existing) = self.remote_actors.get_mut(&actor.id) {
                         existing.health = 0;
                         existing.action = 160;
+                        // A death ends any respawn effect still playing.
+                        existing.respawn_until = 0.0;
                         existing.animation_until = self.started.elapsed().as_secs_f32() + 1.2;
                     }
                     return;
@@ -3645,9 +4158,20 @@ impl App {
                     "player"
                 };
                 let id = actor.id;
-                let respawn_until = self.started.elapsed().as_secs_f32() + 0.9;
                 if !actor.npc && self.network_character_id == Some(id) {
+                    let lit = actor.status_flags & network::XP_CIRCLE_FLAG != 0;
+                    if lit && self.status_flags & network::XP_CIRCLE_FLAG == 0 {
+                        self.xp_lit_at = Some(hud::unix_now_ms());
+                    } else if !lit {
+                        self.xp_lit_at = None;
+                    }
                     self.status_flags = actor.status_flags;
+                    // Cyclone steps and jumps twice as fast.
+                    self.player.haste = if self.status_flags & network::CYCLONE_FLAG != 0 { 2.0 } else { 1.0 };
+                    // A new Cyclone or Superman counts its KOs afresh.
+                    if self.status_flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG) == 0 {
+                        self.ko_count = 0;
+                    }
                     self.renderer
                         .as_mut()
                         .map(|renderer| renderer.invalidate_hud());
@@ -3782,9 +4306,6 @@ impl App {
                     .get(&id)
                     .map(|old| old.maximum_health.max(actor.health))
                     .unwrap_or(actor.health);
-                if monster {
-                    actor.respawn_until = respawn_until;
-                }
                 self.remote_actors.insert(id, actor);
                 if let Some(actor) = self.remote_actors.get(&id) {
                     self.network_status = format!(
@@ -3838,7 +4359,7 @@ impl App {
             previous_predicted.map(|value| value as f32),
             current_cell.map(|value| value as f32),
         );
-        network.send_walk(character_id, direction, self.player.running);
+        network.send_walk(character_id, direction, self.player.running && !self.player.ghost);
         self.pending_network_steps.push_back(current_cell);
         self.network_status = format!("online: sending walk dir {direction}");
     }
@@ -4099,8 +4620,11 @@ impl App {
                 self.face_towards(target_cell);
                 // Keep the local request cadence aligned with the equipped
                 // weapon while the server remains authoritative.
+                // Cyclone ("+Attack frequency") strikes three times as often,
+                // as the server allows.
+                let cyclone = if self.status_flags & network::CYCLONE_FLAG != 0 { 3.0 } else { 1.0 };
                 self.next_attack_at =
-                    now + shop::attack_cooldown_seconds(&mut self.assets, &self.equipment);
+                    now + shop::attack_cooldown_seconds(&mut self.assets, &self.equipment) / cyclone;
                 self.network_status = format!("online: attacking monster {target_id}");
             }
             return;
@@ -4140,6 +4664,7 @@ impl App {
                 .map(|(&weapon_type, &(level, experience))| (weapon_type, level, experience))
                 .collect(),
             weapon_filter: self.weapon_filter,
+            skill_page: self.skill_page,
             stamina: self.stamina,
             max_stamina: if self.status_flags & network::HEAVEN_BLESSING_FLAG != 0 {
                 150
@@ -4147,13 +4672,46 @@ impl App {
                 100
             },
             xp_ready: self.status_flags & network::XP_CIRCLE_FLAG != 0,
+            xp_points: self.xp_points,
             bar_open: self.skill_bar_open,
             active_skill: self.active_skill,
-            kill_count: self.kill_count,
+            kill_count: self
+                .last_kill_kind
+                .as_ref()
+                .and_then(|kind| self.kills_by_kind.get(kind))
+                .copied()
+                .unwrap_or(0),
+            ko_count: self.ko_count,
+            xp_fire_until: self.xp_fire_until(),
             kill_mode: self.kill_mode,
             info: self.info_lines(),
             hovered: None,
+            timers: {
+                let now = (hud::unix_now() as i64 + self.server_clock_offset).max(0) as u64;
+                self.status_timers
+                    .iter()
+                    .filter(|(_, end)| *end > now)
+                    .map(|(flag, end)| (*flag, u32::try_from(end - now).unwrap_or(u32::MAX)))
+                    .collect()
+            },
         }
+    }
+
+    /// When the fire along the bottom burns out (unix ms): the 20 seconds
+    /// a lit XP circle waits, then Cyclone's or Superman's own time.
+    fn xp_fire_until(&self) -> Option<u64> {
+        let skill = self.status_flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG);
+        if skill != 0 {
+            let end = self
+                .status_timers
+                .iter()
+                .filter(|(flag, _)| flag & skill != 0)
+                .map(|(_, end)| *end)
+                .max()?;
+            // The server's clock in seconds, ours in milliseconds.
+            return Some(((end as i64 - self.server_clock_offset).max(0) as u64) * 1_000);
+        }
+        self.xp_lit_at.map(|lit| lit + 20_000)
     }
 
     /// Right click in the world casts the skill selected in the skill bar,
@@ -4168,7 +4726,9 @@ impl App {
         }) {
             return false;
         }
-        if skill.requires_target {
+        if action_bar::is_aimed_skill(skill.id) {
+            self.cast_aimed_skill(skill);
+        } else if skill.requires_target {
             // Ctrl aims the skill at a player under the cursor too.
             let player = self
                 .modifiers
@@ -4196,6 +4756,48 @@ impl App {
             self.cast_skill(skill);
         }
         true
+    }
+
+    /// The learned skills as the Character window lists them.
+    fn status_skill_list(&self) -> Vec<(u32, u16, u32)> {
+        let mut skills: Vec<(u32, u16, u32)> = self
+            .known_skills
+            .iter()
+            .map(|(&id, &(level, experience))| (id, level, experience))
+            .collect();
+        skills.sort_unstable();
+        skills
+    }
+
+    /// A line or fan skill toward the cell under the cursor, once.
+    fn cast_aimed_skill(&mut self, skill: action_bar::SkillAction) {
+        let (Some(network), Some(character_id), Some(renderer)) =
+            (&self.network, self.network_character_id, &self.renderer)
+        else {
+            return;
+        };
+        if !self.known_skills.contains_key(&skill.id) {
+            self.network_status = format!("{} ainda não foi aprendida", skill.name);
+            return;
+        }
+        let now = self.started.elapsed().as_secs_f32();
+        if self.skill_cooldown_until.get(&skill.id).is_some_and(|until| now < *until) {
+            return;
+        }
+        let camera = renderer.camera(&self.map, &self.player);
+        let cell = self
+            .map
+            .unproject([self.cursor[0] + camera[0], self.cursor[1] + camera[1]])
+            .map(|value| value.round().max(0.0) as i32);
+        if cell == self.player.cell() {
+            return;
+        }
+        network.send_magic_attack(character_id, 0, cell[0] as u16, cell[1] as u16, skill.id);
+        self.skill_cooldown_until.insert(skill.id, now + skill.cooldown_seconds);
+        self.pending_attack = None;
+        self.pending_skill_attack = None;
+        self.face_towards(cell);
+        self.network_status = format!("online: {} toward ({}, {})", skill.name, cell[0], cell[1]);
     }
 
     /// A heal or revive aimed at another player.
@@ -4446,6 +5048,68 @@ impl App {
         }
     }
 
+    /// Dead players turn into ghosts once they have fallen: their id draws
+    /// the ghost model through `remote_monsters` until they get up.
+    fn sync_ghosts(&mut self, time: f32) {
+        // The server's DEAD status flag (1 << 10) marks a dead player even
+        // while their ghost walks; the fall plays first.
+        let dead = |actor: &RemoteActor| {
+            !actor.npc
+                && !(400_001..=499_999).contains(&actor.id)
+                && (actor.status_flags & (1 << 10) != 0 || actor.action == renderer::REMOTE_DEAD)
+                && !(actor.action == renderer::REMOTE_DEAD && time < actor.animation_until)
+        };
+        let anyone_dead = self.dead_since.is_some() || self.remote_actors.values().any(|actor| dead(actor));
+        if anyone_dead && !self.ghosts_requested {
+            self.ghosts_requested = true;
+            if let Some(loader) = &self.remote_model_loader {
+                for look in [98, 99] {
+                    let _ = loader.requests.send(RemoteModelJob::Monster { id: GHOST_ID_BASE + look, mesh: look });
+                }
+            }
+        }
+        let ghosts: Vec<(u32, u32)> = self
+            .remote_actors
+            .values()
+            .filter(|actor| dead(actor))
+            .map(|actor| (actor.id, ghost_look(actor.body)))
+            .collect();
+        for (id, look) in &ghosts {
+            if !self.ghost_actors.contains(id)
+                && let Some(model) = self.ghosts.get(look)
+            {
+                self.remote_monsters.insert(*id, model.clone());
+                self.ghost_actors.insert(*id);
+            }
+        }
+        let risen: Vec<u32> = self
+            .ghost_actors
+            .iter()
+            .copied()
+            .filter(|id| !ghosts.iter().any(|(ghost, _)| ghost == id))
+            .collect();
+        for id in risen {
+            self.ghost_actors.remove(&id);
+            self.remote_monsters.remove(&id);
+        }
+    }
+
+    /// Whether the dead character has finished falling (and is a ghost).
+    fn fallen(&self) -> bool {
+        self.dead_since.is_some_and(|died_at| {
+            self.started.elapsed().as_secs_f32() - died_at >= self.character.duration(Action::Die).as_secs_f32()
+        })
+    }
+
+    /// Asks the server to revive, in town or (`here`, under Heaven's
+    /// Blessing) where the body lies; it refuses before the delay.
+    fn request_revive(&mut self, here: bool) {
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.revive(character_id, here);
+            self.network_status = "online: reviving".into();
+        }
+    }
+
     fn on_own_death(&mut self) {
         if self.dead_since.is_some() {
             return;
@@ -4539,7 +5203,7 @@ impl App {
                     if let (Some(network), Some(character_id)) =
                         (&self.network, self.network_character_id)
                     {
-                        network.revive(character_id);
+                        network.revive(character_id, false);
                         self.network_status = "online: reviving".into();
                     }
                     self.dialog = None;
@@ -5023,8 +5687,9 @@ impl App {
     }
 
     fn queue_use_item(&mut self, item: network::OwnedItem) -> bool {
-        if !shop::is_consumable(item.item_type) {
-            self.network_status = "Este item ainda não pode ser usado".into();
+        let worn = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
+        if worn && !shop::is_consumable(item.item_type) {
+            self.network_status = "Equipamentos se vestem, não se usam".into();
             return true;
         }
         let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
@@ -5258,12 +5923,14 @@ impl App {
                 "context requested: inventory uid={} type={} position={} cursor=({:.1},{:.1})",
                 item.uid, item.item_type, item.position, self.cursor[0], self.cursor[1]
             ));
+            // What is not worn is used; the server decides what using it
+            // does (scrolls, dyes, books, potions...) and says when nothing.
             let actions = if shop::is_consumable(item.item_type) {
                 vec![shop::ItemContextAction::Use]
             } else if shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some() {
                 self.available_item_actions(item, false)
             } else {
-                Vec::new()
+                vec![shop::ItemContextAction::Use]
             };
             if !actions.is_empty() {
                 self.item_context = Some(shop::ItemContext {
@@ -5580,7 +6247,9 @@ impl App {
                 item.uid, item.item_type, item.position
             ));
             self.last_inventory_click = None;
-            return if shop::is_consumable(item.item_type) {
+            // Equipment is worn; anything else is used.
+            let worn = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
+            return if shop::is_consumable(item.item_type) || !worn {
                 self.queue_use_item(item)
             } else {
                 self.queue_equip_item(item)
@@ -6300,6 +6969,13 @@ fn is_war_structure(kind: u16) -> bool {
 }
 
 /// A large life shown on the u16 health bar: thousandths of the maximum.
+/// The "G" emblem for the title bar and the taskbar.
+pub fn window_icon() -> Option<winit::window::Icon> {
+    let image = image::load_from_memory(include_bytes!("ui_assets/gravak-icon.png")).ok()?.to_rgba8();
+    let (width, height) = image.dimensions();
+    winit::window::Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
 fn scaled_life(life: u32, maximum: u32) -> u16 {
     if life == 0 {
         return 0;
@@ -6321,10 +6997,19 @@ fn run() -> Result<()> {
     let mut check = false;
     let mut online = false;
     let mut auth_address = "127.0.0.1:9958".to_owned();
-    let mut username = "test1".to_owned();
+    // Without --username, online mode opens the login screens.
+    let mut username = None;
     let mut password = "123456".to_owned();
-    let mut realm = "CoEmu".to_owned();
+    let mut realm = "Gravak".to_owned();
     let mut character_name = None;
+    // The installed client: `gravak.ini` beside it names the game data and
+    // the server, and it goes straight to the login screens.
+    if let Some(config) = settings::load_client_config() {
+        root = config.assets;
+        auth_address = config.auth.unwrap_or(auth_address);
+        realm = config.realm.unwrap_or(realm);
+        online = true;
+    }
     while let Some(arg) = args.next() {
         match arg.to_str().ok_or("Invalid argument encoding")? {
             "--assets" => {
@@ -6376,12 +7061,13 @@ fn run() -> Result<()> {
                 online = true;
             }
             "--username" => {
-                username = args
-                    .next()
-                    .ok_or("--username requires a value")?
-                    .to_str()
-                    .ok_or("Invalid username")?
-                    .to_owned();
+                username = Some(
+                    args.next()
+                        .ok_or("--username requires a value")?
+                        .to_str()
+                        .ok_or("Invalid username")?
+                        .to_owned(),
+                );
             }
             "--password" => {
                 password = args
@@ -6410,23 +7096,43 @@ fn run() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "You must supply your own Conquer Online 5065 installation.\ngravak-co --assets <installation> [--online|--auth HOST:PORT] [--username USER] [--password PASS] [--realm REALM] [--character NAME] [--map ID] [--spawn X Y] [--body 1..4] [--check-assets]\nOffline by default. In online mode the client authenticates and loads the server character/map. Click to move; Space stops; Escape exits. No bundled assets."
+                    "You must supply your own Conquer Online 5065 installation.\ngravak-co --assets <installation> [--online|--auth HOST:PORT] (opens the login screens) [--username USER] [--password PASS] [--realm REALM] [--character NAME] [--map ID] [--spawn X Y] [--body 1..4] [--check-assets]\nOffline by default. In online mode the client authenticates and loads the server character/map. Click to move; Space stops; Escape exits. No bundled assets."
                 );
                 return Ok(());
             }
             _ => return Err("Unknown argument; use --help".into()),
         }
     }
+    // Without --assets or gravak.ini, a `game` folder beside the executable.
+    let root = root.or_else(|| {
+        let game = std::env::current_exe().ok()?.parent()?.join("game");
+        game.is_dir().then_some(game)
+    });
+    // Opened before the login screens, which use the game's window art.
+    let mut assets = Assets::open(
+        &root.ok_or("Game data not found: install Gravak again, or pass --assets <directory>")?,
+    )?;
     let mut network = None;
     let mut server_ready = None;
+    let mut event_loop = None;
     if online {
-        let handle = NetworkHandle::start(NetworkConfig {
-            auth_address,
-            username,
-            password,
-            realm,
-            character_name,
-        });
+        let handle = match username {
+            Some(username) => NetworkHandle::start(NetworkConfig {
+                auth_address,
+                username,
+                password,
+                realm,
+                character_name,
+            }),
+            None => {
+                let mut screens = EventLoop::new()?;
+                let Some(handle) = launcher::run(&mut screens, &mut assets, auth_address, realm)? else {
+                    return Ok(());
+                };
+                event_loop = Some(screens);
+                handle
+            }
+        };
         let ready = handle.wait_ready()?;
         if map_id.is_none() {
             map_id = Some(ready.map_id);
@@ -6435,18 +7141,22 @@ fn run() -> Result<()> {
         network = Some(handle);
     }
     let map_id = map_id.unwrap_or(1002);
-    let mut assets = Assets::open(
-        &root.ok_or("You must supply your own 5065 installation: --assets <directory>")?,
-    )?;
     let npc_catalog = character::NpcCatalog::load(&mut assets)?;
     let map = map::Map::load(&mut assets, map_id)?;
+    // Online, the body (and so the sex) is the server's, not the sample
+    // profile's.
+    let body = server_ready
+        .as_ref()
+        .map(|ready| ready.body)
+        .filter(|body| (1..=4).contains(body))
+        .unwrap_or(body);
     let mut character = character::Character::load(&mut assets, body)?;
     if let Some(ready) = &server_ready {
-        if ready.body != 0
+        if ready.body != 0 {
             // Start bare: the server's equipment and guild packets dress the
             // character. The sample profile's gear and guild are offline-only,
             // and other clients never see them.
-            && let Ok(mut live_character) = character::Character::load_remote(
+            match character::Character::load_remote(
                 &mut assets,
                 ready.body,
                 0,
@@ -6456,17 +7166,31 @@ fn run() -> Result<()> {
                 0,
                 ready.character_name.clone(),
                 ready.health.min(u16::MAX as u32) as u16,
-            )
-        {
-            live_character.maximum_health = character
-                .maximum_health
-                .max(ready.maximum_health)
-                .max(ready.health);
-            character = live_character;
+            ) {
+                Ok(live_character) => character = live_character,
+                Err(error) => eprintln!(
+                    "Could not load the server look (body {}, hair {}): {error}; keeping the sample profile on that body",
+                    ready.body, ready.hair_style
+                ),
+            }
         }
+        // The Ready event is consumed by wait_ready, so the server's
+        // profile is applied here; the sample profile's 1000 life and
+        // attributes are offline-only.
         character.name = ready.character_name.clone();
         character.guild.clear();
         character.guild_rank.clear();
+        character.health = ready.health;
+        character.maximum_health = ready.maximum_health.max(ready.health).max(1);
+        character.strength = ready.strength;
+        character.agility = ready.agility;
+        character.vitality = ready.vitality;
+        character.spirit = ready.spirit;
+        character.attribute_points = ready.attribute_points;
+        character.current_class = ready.current_class;
+        character.previous_class = ready.previous_class;
+        character.rebirths = ready.rebirths;
+        character.kill_points = ready.kill_points;
     }
     let requested_spawn = spawn;
     let preferred_spawn = requested_spawn
@@ -6696,6 +7420,7 @@ fn run() -> Result<()> {
         queued_jump: None,
         local_action: None,
         stamina: 100,
+        xp_points: 0,
         dead_since: None,
         sitting: false,
         portal_armed: false,
@@ -6714,8 +7439,14 @@ fn run() -> Result<()> {
         nobility_ranking: Vec::new(),
         status_flags: 0,
         status_open: benchmark_character,
-        status_tab: shop::StatusTab::Equipment,
+        // The Character benchmark measures the equipment tab.
+        status_tab: if benchmark_character {
+            shop::StatusTab::Equipment
+        } else {
+            shop::StatusTab::Attributes
+        },
         weapon_filter: shop::WeaponFilter::OneHand,
+        skill_page: shop::SkillPage::default(),
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,
@@ -6779,11 +7510,19 @@ fn run() -> Result<()> {
         remote_models: HashMap::new(),
         remote_npcs: HashMap::new(),
         remote_monsters: HashMap::new(),
+        ghosts: HashMap::new(),
+        ghosts_requested: false,
+        ghost_actors: HashSet::new(),
         combat_numbers: Vec::new(),
         skill_effects: Vec::new(),
         known_skills: HashMap::new(),
         weapon_skills: Default::default(),
         kill_count: 0,
+        ko_count: 0,
+        actor_kos: HashMap::new(),
+        kills_by_kind: HashMap::new(),
+        last_kill_kind: None,
+        xp_lit_at: None,
         skill_bar_open: false,
         active_skill: None,
         team_members: Vec::new(),
@@ -6809,6 +7548,15 @@ fn run() -> Result<()> {
         player_shop_open: false,
         player_shop_price: "1000".into(),
         player_shop_price_focused: false,
+        player_shop_name: String::new(),
+        player_shop_name_focused: false,
+        booths: HashMap::new(),
+        status_timers: Vec::new(),
+        server_clock_offset: 0,
+        bounty: None,
+        store: None,
+        store_confirm: None,
+        bounty_confirm: None,
         ground_loot: Vec::new(),
         dialog: None,
         shop: benchmark_shop,
@@ -6835,7 +7583,10 @@ fn run() -> Result<()> {
         app.team_join_enabled = saved.team_join_enabled;
         app.saved_hud = Some(saved);
     }
-    EventLoop::new()?.run_app(&mut app)?;
+    match event_loop {
+        Some(mut event_loop) => event_loop.run_app_on_demand(&mut app)?,
+        None => EventLoop::new()?.run_app(&mut app)?,
+    }
     if let Some(error) = app.error {
         return Err(error.into());
     }

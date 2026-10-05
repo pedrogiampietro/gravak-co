@@ -60,23 +60,39 @@ pub struct SkillEffectInstance {
     pub level: u16,
     pub started: f32,
     pub expires: f32,
+    /// The cell the cast was aimed at, for its trail.
+    pub target_cell: (u16, u16),
+    /// Whether this one draws the cast's trail (the first of its targets).
+    pub trail: bool,
 }
+
+/// A slain monster's soul (the original's `soul` effect): it rises over the
+/// body, then flies to the one who slew it.
+#[derive(Debug, Clone, Copy)]
+struct Soul {
+    /// Where the monster fell, in cells.
+    from: [f32; 2],
+    killer_id: u32,
+    started: f32,
+}
+
+/// How long a soul lingers over the body, then how long it flies.
+const SOUL_RISE_SECONDS: f32 = 0.5;
+const SOUL_FLIGHT_SECONDS: f32 = 0.7;
+
+/// The original `born` effect (`3DEffect.ini`) over a respawning monster:
+/// 151 frames of 40 ms. The monster itself fades in over the first moments.
+pub const MONSTER_BORN_SECONDS: f32 = 6.04;
+const MONSTER_FADE_IN_SECONDS: f32 = 1.2;
+
+/// The server's VIP status flag (a Gravak runtime bit).
+pub const VIP_FLAG: u64 = 1 << 46;
 
 /// Upper bound kept by the client; each effect ends with its own animation.
 pub const SKILL_EFFECT_MAX_SECONDS: f32 = 4.0;
 
 /// An original 3D effect (`3DEffect.ini`) loaded into C3 layers.
 /// `ini/statuseffect.ini`: status flag and its looping effect.
-const STATUS_EFFECTS: [(u64, &str); 7] = [
-    (0x80, "attackfast40"),
-    (0x100, "zf2-e307"),
-    (0x200, "attackup40"),
-    (0x40000, "SuperSoldier"),
-    (0x800000, "Tornado"),
-    (0x4000000, "Dodge"),
-    (0x80000, "BodyShield"),
-];
-
 struct LoadedEffect {
     layers: Vec<LevelUpLayer>,
     frame_interval: f32,
@@ -209,6 +225,8 @@ enum UiTextureJob {
         path: String,
         name: String,
         monster: bool,
+        /// A monster of the bounty under way.
+        bounty: bool,
         health: u16,
         maximum_health: u16,
         name_colour: [u8; 3],
@@ -262,7 +280,7 @@ enum UiTextureJob {
         equipment: Vec<crate::network::OwnedItem>,
         weapon_skills: Vec<(u32, u32, u32)>,
         weapon_filter: crate::shop::WeaponFilter,
-        selected_skill: Option<u32>,
+        skill_page: crate::shop::SkillPage,
     },
     StatusOverlay {
         path: String,
@@ -307,7 +325,11 @@ enum UiTextureJob {
         player_shop_open: bool,
         player_shop_price: String,
         player_shop_price_focused: bool,
+        player_shop_name: String,
+        player_shop_name_focused: bool,
         hud_config: crate::hud::HudConfig,
+        bounty: Option<crate::bounty_board::BountyView>,
+        store: Option<crate::store_panel::StoreView>,
     },
     ShopBase {
         path: String,
@@ -393,13 +415,14 @@ impl UiTextureJob {
             Self::ActorLabel {
                 name,
                 monster,
+                bounty,
                 health,
                 maximum_health,
                 name_colour,
                 ..
             } => {
                 if monster {
-                    crate::labels::monster_image(&name, health, maximum_health)
+                    crate::labels::monster_image(&name, health, maximum_health, bounty)
                 } else {
                     crate::labels::actor_image(&name, name_colour)
                 }
@@ -481,7 +504,7 @@ impl UiTextureJob {
                 equipment,
                 weapon_skills,
                 weapon_filter,
-                selected_skill,
+                skill_page,
                 ..
             } => crate::shop::status_dynamic_image(
                 assets,
@@ -496,7 +519,7 @@ impl UiTextureJob {
                 &equipment,
                 &weapon_skills,
                 weapon_filter,
-                selected_skill,
+                skill_page,
             ),
             Self::StatusOverlay {
                 equipment,
@@ -572,7 +595,11 @@ impl UiTextureJob {
                 player_shop_open,
                 player_shop_price,
                 player_shop_price_focused,
+                player_shop_name,
+                player_shop_name_focused,
                 hud_config,
+                bounty,
+                store,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -598,7 +625,11 @@ impl UiTextureJob {
                 player_shop_open,
                 &player_shop_price,
                 player_shop_price_focused,
+                &player_shop_name,
+                player_shop_name_focused,
                 hud_config,
+                bounty.as_ref(),
+                store.as_ref(),
             ),
         };
         image.map_err(|error| error.to_string())
@@ -674,10 +705,32 @@ pub struct Renderer {
     feedback_signature: Option<u64>,
     /// When the shown feedback message last changed.
     feedback_since: f32,
+    /// Frames drawn, and the last frame each transient texture was drawn in.
+    frame_number: u64,
+    transient_used: HashMap<String, u64>,
     quick_panel_signature: Option<u64>,
+    /// Where the bounty line under the minimap was drawn, for clicks.
+    bounty_tracker_rect: Option<[f32; 4]>,
+    /// Where the Store icon was drawn, for clicks.
+    store_icon_rect: Option<[f32; 4]>,
+    /// Where the revive buttons were drawn (and whether each revives
+    /// here), for clicks.
+    revive_rects: Vec<([f32; 4], bool)>,
+    /// Souls of slain monsters on their way to whoever slew them.
+    souls: Vec<Soul>,
+    /// Effects played once on an actor: (actor, effect, started).
+    role_effects: Vec<(u32, String, f32)>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
     effects: HashMap<String, Option<std::rc::Rc<LoadedEffect>>>,
+    /// Where each actor with a status effect stood lately (time, world
+    /// pixel): the ribbons of shape effects stream along it.
+    trail_history: HashMap<u32, std::collections::VecDeque<(f32, [f32; 2])>>,
+    /// How large world effects are drawn (0.75); the XP fire is drawn 1:1.
+    effect_scale: f32,
+    /// The trail of the actor whose status effects are being drawn, in
+    /// screen pixels, newest first, and the time it is drawn at.
+    current_trail: (f32, Vec<(f32, [f32; 2])>),
     last_hud_key: Option<String>,
 }
 impl Renderer {
@@ -870,9 +923,19 @@ impl Renderer {
             last_status_overlay_key: None,
             feedback_signature: None,
             feedback_since: 0.0,
+            frame_number: 0,
+            transient_used: HashMap::new(),
             quick_panel_signature: None,
+            bounty_tracker_rect: None,
+            store_icon_rect: None,
+            revive_rects: Vec::new(),
+            souls: Vec::new(),
+            role_effects: Vec::new(),
             level_up_layers: None,
             effects: HashMap::new(),
+            trail_history: HashMap::new(),
+            effect_scale: 0.75,
+            current_trail: (0.0, Vec::new()),
             last_hud_key: None,
         })
     }
@@ -912,6 +975,46 @@ impl Renderer {
         viewport: [f32; 2],
         draws: &mut Vec<Draw>,
     ) -> bool {
+        self.push_effect_shaped(assets, name, origin, elapsed, sort_depth, viewport, draws, None)
+    }
+
+    /// A flat 2D effect (the original's status flags, 25 units square)
+    /// drawn `size` pixels wide over the interface, looping.
+    pub(crate) fn push_ui_effect(
+        &mut self,
+        assets: &mut Assets,
+        name: &str,
+        centre: [f32; 2],
+        time: f32,
+        size: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        let length = self
+            .effects
+            .get(name)
+            .cloned()
+            .flatten()
+            .map(|effect| effect.frames * effect.frame_interval / 1000.0)
+            .filter(|length| *length > 0.0)
+            .unwrap_or(1.0);
+        self.push_effect_shaped(assets, name, centre, time % length, f32::INFINITY, viewport, draws, Some(size));
+    }
+
+    /// `flat`: draw the effect face on, `flat` pixels for its 25 units,
+    /// instead of seen from the world camera.
+    #[allow(clippy::too_many_arguments)]
+    fn push_effect_shaped(
+        &mut self,
+        assets: &mut Assets,
+        name: &str,
+        origin: [f32; 2],
+        elapsed: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+        flat: Option<f32>,
+    ) -> bool {
         if !self.effects.contains_key(name) {
             let loaded = crate::magic::effect(assets, name).and_then(|definition| {
                 let layers = definition
@@ -920,7 +1023,7 @@ impl Renderer {
                     .filter_map(|layer| {
                         Some(LevelUpLayer {
                             document: C3Document::parse(&assets.read(&layer.mesh).ok()?).ok()?,
-                            texture: layer.texture.clone(),
+                            texture: layer.texture_key(),
                         })
                     })
                     .collect::<Vec<_>>();
@@ -939,6 +1042,7 @@ impl Renderer {
                                     .into_iter()
                                     .chain(mesh.draw_keys.last().map(|key| key.frame as f32))
                             }))
+                            .chain(layer.document.shapes.iter().map(|shape| shape.frames.len() as f32))
                     })
                     .fold(1.0_f32, f32::max);
                 (!layers.is_empty()).then(|| {
@@ -962,7 +1066,30 @@ impl Renderer {
             self.texture(assets, &layer.texture);
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
-        let scale = 0.75;
+        let scale = self.effect_scale;
+        // A flat effect (a status flag) is moved by its own animation far
+        // from its origin: centre it on its slot by the box it fills.
+        let centre = flat.map(|_| {
+            let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for layer in &effect.layers {
+                for (mesh_index, mesh) in layer.document.meshes.iter().enumerate() {
+                    let Some(motion) = layer.document.motions.get(mesh_index).or_else(|| layer.document.motions.first())
+                    else {
+                        continue;
+                    };
+                    for vertex in &mesh.vertices {
+                        let p = mesh.transformed_vertex_position(vertex, motion, Matrix4::IDENTITY, 0.0);
+                        let point = [p.x, p.y * sin + p.z * cos];
+                        for axis in 0..2 {
+                            low[axis] = low[axis].min(point[axis]);
+                            high[axis] = high[axis].max(point[axis]);
+                        }
+                    }
+                }
+            }
+            let span = (high[0] - low[0]).max(high[1] - low[1]).max(1.0);
+            ([(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0], span)
+        });
         for layer in &effect.layers {
             if !self.textures.contains_key(&layer.texture) {
                 continue;
@@ -980,6 +1107,7 @@ impl Renderer {
                     continue;
                 };
                 let alpha = transparency_at(&mesh.transparency_keys, frame);
+                let cell = sheet_cell(mesh, frame);
                 let vertices: Vec<Vertex> = mesh
                     .vertices
                     .iter()
@@ -990,15 +1118,24 @@ impl Renderer {
                             Matrix4::IDENTITY,
                             frame,
                         );
-                        let screen_y = (p.y * sin + p.z * cos) * scale;
-                        let depth = (p.y * cos - p.z * sin) * scale;
+                        let (screen, depth) = match (flat, centre) {
+                            (Some(size), Some((middle, span))) => {
+                                let unit = size / span;
+                                let screen_y = p.y * sin + p.z * cos;
+                                (
+                                    [origin[0] + (p.x - middle[0]) * unit, origin[1] + (screen_y - middle[1]) * unit],
+                                    0.5,
+                                )
+                            },
+                            _ => {
+                                let screen_y = (p.y * sin + p.z * cos) * scale;
+                                let depth = (p.y * cos - p.z * sin) * scale;
+                                ([origin[0] + p.x * scale, origin[1] + screen_y], (0.5 + depth * 0.0005).clamp(0.001, 0.999))
+                            },
+                        };
                         Vertex {
-                            position: clip(
-                                [origin[0] + p.x * scale, origin[1] + screen_y],
-                                (0.5 + depth * 0.0005).clamp(0.001, 0.999),
-                                viewport,
-                            ),
-                            uv: [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
+                            position: clip(screen, depth, viewport),
+                            uv: [vertex.texture_coordinate.x + cell[0], vertex.texture_coordinate.y + cell[1]],
                             alpha,
                         }
                     })
@@ -1014,6 +1151,57 @@ impl Renderer {
                     depth_test: false,
                     sort_depth,
                 });
+            }
+            // Shapes sweep a ribbon through their last places, fading
+            // towards the oldest.
+            for shape in &layer.document.shapes {
+                let segments = shape.segments.max(2) as usize;
+                // Each step back is a frame back: on the actor's trail
+                // where they stood then, or here when they stood still.
+                let step_origin = |step: usize| {
+                    let (now, trail) = &self.current_trail;
+                    let when = now - step as f32 * effect.frame_interval / 1000.0;
+                    trail_point(trail, when).unwrap_or(origin)
+                };
+                let project = |p: sandbox_data::c3::Vector3, origin: [f32; 2]| {
+                    let screen_y = (p.y * sin + p.z * cos) * scale;
+                    let depth = (p.y * cos - p.z * sin) * scale;
+                    ([origin[0] + p.x * scale, origin[1] + screen_y], (0.5 + depth * 0.0005).clamp(0.001, 0.999))
+                };
+                let origins: Vec<[f32; 2]> = (0..segments).map(step_origin).collect();
+                let mut vertices = Vec::new();
+                for line in &shape.lines {
+                    if line.len() < 2 {
+                        continue;
+                    }
+                    let places: Vec<Vec<sandbox_data::c3::Vector3>> =
+                        (0..segments).map(|step| shape.line_at(line, frame - step as f32)).collect();
+                    let last = (line.len() - 1) as f32;
+                    for step in 0..segments - 1 {
+                        let fade = |step: usize| 1.0 - step as f32 / (segments - 1) as f32;
+                        for point in 0..line.len() - 1 {
+                            let corner = |step: usize, point: usize| {
+                                let (screen, depth) = project(places[step][point], origins[step]);
+                                Vertex {
+                                    position: clip(screen, depth, viewport),
+                                    uv: [step as f32 / (segments - 1) as f32, point as f32 / last],
+                                    alpha: fade(step),
+                                }
+                            };
+                            let (a, b) = (corner(step, point), corner(step, point + 1));
+                            let (c, d) = (corner(step + 1, point + 1), corner(step + 1, point));
+                            vertices.extend([a, b, c, a, c, d]);
+                        }
+                    }
+                }
+                if !vertices.is_empty() {
+                    draws.push(Draw {
+                        texture: layer.texture.clone(),
+                        vertices,
+                        depth_test: false,
+                        sort_depth,
+                    });
+                }
             }
         }
         true
@@ -1260,6 +1448,38 @@ impl Renderer {
         }
     }
 
+    /// Frees the per-moment textures (a monster's life label, a damage
+    /// number, a hovered item's tooltip...) that have not been drawn for
+    /// `TRANSIENT_FRAMES`. Each is named after what it shows, so without
+    /// this every change of life or name left a texture behind in GPU
+    /// memory. They are made again whenever they are drawn.
+    fn release_unused_transients(&mut self, draws: &[Draw]) {
+        self.frame_number += 1;
+        let frame = self.frame_number;
+        for draw in draws {
+            if is_transient(&draw.texture) {
+                if let Some(last) = self.transient_used.get_mut(&draw.texture) {
+                    *last = frame;
+                } else {
+                    self.transient_used.insert(draw.texture.clone(), frame);
+                }
+            }
+        }
+        if frame % 120 != 0 {
+            return;
+        }
+        let used = &mut self.transient_used;
+        self.textures.retain(|key, _| {
+            if !is_transient(key) {
+                return true;
+            }
+            // Loaded but not drawn yet: its clock starts now.
+            let last = *used.entry(key.clone()).or_insert(frame);
+            frame - last < TRANSIENT_FRAMES
+        });
+        used.retain(|key, last| frame - *last < TRANSIENT_FRAMES && self.textures.contains_key(key));
+    }
+
     /// Frees the textures named `prefix...` except `keep`: versions of a
     /// redrawn image that are no longer shown.
     fn prune_textures(&mut self, prefix: &str, keep: &[Option<&str>]) {
@@ -1335,7 +1555,11 @@ impl Renderer {
                     }
                 };
                 while let Ok(path) = request_rx.recv() {
-                    let image = assets.image(&path).map_err(|error| error.to_string());
+                    let image = match path.strip_suffix(crate::magic::ADDITIVE_SUFFIX) {
+                        Some(texture) => assets.image(texture).map(crate::magic::additive_image),
+                        None => assets.image(&path),
+                    }
+                    .map_err(|error| error.to_string());
                     if result_tx
                         .send(LoadedTexture {
                             path,
@@ -1672,6 +1896,231 @@ impl Renderer {
             p[1] - self.config.height as f32 * 0.5,
         ]
     }
+    /// The revive button under `position`: `Some(true)` revives here.
+    pub fn revive_at(&self, position: [f32; 2]) -> Option<bool> {
+        self.revive_rects
+            .iter()
+            .find(|([left, top, width, height], _)| {
+                (*left..left + width).contains(&position[0]) && (*top..top + height).contains(&position[1])
+            })
+            .map(|(_, here)| *here)
+    }
+
+    /// The VIP title centred over a name whose top is at `name_top`.
+    fn push_vip_tag(&mut self, name_top: [f32; 2], viewport: [f32; 2], draws: &mut Vec<Draw>) -> Result<()> {
+        const KEY: &str = "@vip-tag";
+        if !self.textures.contains_key(KEY) {
+            self.upload(KEY, crate::ornate::vip_tag(1.0)?);
+        }
+        if let Some(tag) = self.textures.get(KEY) {
+            draws.push(Draw {
+                texture: KEY.to_owned(),
+                vertices: quad(
+                    [(name_top[0] - tag.size[0] * 0.5).round(), (name_top[1] - tag.size[1] + 6.0).round()],
+                    tag.size,
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+        Ok(())
+    }
+
+    /// Cyclone's and Superman's KOs over the head, as the original draws
+    /// them: the `Ko` mark and the count in two digits, green for
+    /// Cyclone and red for Superman.
+    fn push_ko_tag(
+        &mut self,
+        assets: &mut Assets,
+        ko: u32,
+        flags: u64,
+        name_top: [f32; 2],
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        const KO_MARK: &str = "@ko-mark";
+        let colour = if flags & crate::network::SUPERMAN_FLAG != 0 {
+            [255_u8, 0, 0]
+        } else if flags & crate::network::CYCLONE_FLAG != 0 {
+            [0, 255, 0]
+        } else {
+            return;
+        };
+        if !self.textures.contains_key(KO_MARK) {
+            let Ok(mark) = assets.image("data/pic/ko/ko.dds") else {
+                return;
+            };
+            self.upload(KO_MARK, mark);
+        }
+        let digits = format!("{:02}", ko.min(99_999));
+        let mut keys = Vec::with_capacity(digits.len());
+        for digit in digits.chars() {
+            let key = format!("@ko-digit-{digit}-{colour:?}");
+            if !self.textures.contains_key(&key) {
+                let Ok(mut image) = assets.image(&format!("data/pic/Num/{digit}.dds")) else {
+                    return;
+                };
+                for pixel in image.pixels_mut() {
+                    for channel in 0..3 {
+                        pixel[channel] = (u16::from(pixel[channel]) * u16::from(colour[channel]) / 255) as u8;
+                    }
+                }
+                self.upload(&key, image);
+            }
+            keys.push(key);
+        }
+        // The mark at two thirds of its 64 pixels, the digits 18 apart.
+        const MARK: f32 = 43.0;
+        const DIGIT: f32 = 32.0;
+        const STEP: f32 = 18.0;
+        let width = MARK + keys.len() as f32 * STEP;
+        let left = (name_top[0] - width * 0.5).round();
+        let top = (name_top[1] - MARK).round();
+        draws.push(Draw {
+            texture: KO_MARK.to_owned(),
+            vertices: quad([left, top], [MARK, MARK], viewport),
+            depth_test: false,
+            sort_depth: WORLD_OVERLAY_SORT,
+        });
+        for (index, key) in keys.into_iter().enumerate() {
+            draws.push(Draw {
+                texture: key,
+                vertices: quad(
+                    [left + MARK + index as f32 * STEP - 2.0, top + (MARK - DIGIT) * 0.5],
+                    [DIGIT, DIGIT],
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+    }
+
+    /// A lit XP circle's 20 seconds as `Conquer.exe` shows them
+    /// (`CMyBitmap::ShowBlock`): a bar 10 pixels high at `H - 85`, from
+    /// `(W - 110) * (20000 - ms) / 20000 + 100` to `W - 10`, green when
+    /// full, yellow at half, red at the end.
+    fn push_xp_bar(&mut self, until: Option<u64>, viewport: [f32; 2], draws: &mut Vec<Draw>) {
+        const FULL_MS: f32 = 20_000.0;
+        const GRADIENT: &str = "@xp-bar-gradient";
+        let Some(until) = until else {
+            return;
+        };
+        let now = crate::hud::unix_now_ms();
+        if until <= now {
+            return;
+        }
+        if !self.textures.contains_key(GRADIENT) {
+            // Left to right: none of the time left (red) to all of it
+            // (green), as the original works the colour out.
+            let gradient = image::RgbaImage::from_fn(256, 1, |x, _| {
+                let left = x as f32 / 255.0;
+                let (red, green) = if left > 0.5 {
+                    ((1.0 - left) / 0.5 * 255.0, 255.0)
+                } else {
+                    (255.0, 255.0 - (0.5 - left) / 0.5 * 255.0)
+                };
+                image::Rgba([red as u8, green as u8, 0, 255])
+            });
+            self.upload(GRADIENT, gradient);
+        }
+        let left_ms = ((until - now) as f32).clamp(50.0, FULL_MS);
+        let left = (viewport[0] - 110.0) * (FULL_MS - left_ms) / FULL_MS + 100.0;
+        let right = viewport[0] - 10.0;
+        if right <= left {
+            return;
+        }
+        let top = viewport[1] - 85.0;
+        let mut vertices = quad([left, top], [right - left, 10.0], viewport);
+        let u = (left_ms / FULL_MS * 255.0 + 0.5) / 256.0;
+        for vertex in &mut vertices {
+            vertex.uv = [u, 0.5];
+        }
+        draws.push(Draw {
+            texture: GRADIENT.to_owned(),
+            vertices,
+            depth_test: false,
+            sort_depth: WORLD_OVERLAY_SORT,
+        });
+    }
+
+    /// The fire along the bottom (`KOfire01`): Cyclone's or Superman's
+    /// time, burning from the left
+    /// (all of it left) to the right edge (none), as `Conquer.exe` moves
+    /// it: `x = (W - 100) * (20000 - ms) / 20000 + 100` at `H - 85`.
+    fn push_xp_fire(&mut self, assets: &mut Assets, until: Option<u64>, time: f32, viewport: [f32; 2], draws: &mut Vec<Draw>) {
+        const FULL_MS: f32 = 20_000.0;
+        // The effect's `OffsetX`/`OffsetY` and how wide its strip is.
+        const OFFSET: [f32; 2] = [460.0, -35.0];
+        const STRIP: f32 = 956.0;
+        let Some(until) = until else {
+            return;
+        };
+        let now = crate::hud::unix_now_ms();
+        if until <= now {
+            return;
+        }
+        let left = ((until - now) as f32).clamp(50.0, FULL_MS);
+        let x = (viewport[0] - 100.0) * (FULL_MS - left) / FULL_MS + 100.0;
+        let y = viewport[1] - 85.0 + OFFSET[1];
+        self.effect_scale = 1.0;
+        let mut origin = x + OFFSET[0];
+        // The strip repeats until it reaches the right edge.
+        while origin - STRIP * 0.5 < viewport[0] {
+            let mut fire = Vec::new();
+            self.push_looping_effect(assets, "KOfire01", [origin, y], time, WORLD_OVERLAY_SORT, viewport, &mut fire);
+            draws.extend(fire);
+            origin += STRIP;
+        }
+        self.effect_scale = 0.75;
+    }
+
+    /// A booth's name on a small ornate plate, above `name_top`.
+    fn push_booth_sign(&mut self, booth: &str, name_top: [f32; 2], viewport: [f32; 2], draws: &mut Vec<Draw>) -> Result<()> {
+        let key = format!("@booth-{booth}");
+        if !self.textures.contains_key(&key) {
+            self.upload(&key, crate::ornate::booth_sign(booth)?);
+        }
+        if let Some(sign) = self.textures.get(&key) {
+            draws.push(Draw {
+                texture: key,
+                vertices: quad(
+                    [(name_top[0] - sign.size[0] * 0.5).round(), (name_top[1] - sign.size[1]).round()],
+                    sign.size,
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+        Ok(())
+    }
+
+    /// Plays `effect` once on `actor_id` (fireworks, effects of events...).
+    pub fn add_role_effect(&mut self, actor_id: u32, effect: String, now: f32) {
+        self.role_effects.push((actor_id, effect, now));
+    }
+
+    /// A soul leaves the monster slain at `from` for `killer_id`.
+    pub fn add_soul(&mut self, from: [f32; 2], killer_id: u32, now: f32) {
+        self.souls.push(Soul { from, killer_id, started: now });
+    }
+
+    /// Whether `position` is on the Store icon.
+    pub fn store_icon_at(&self, position: [f32; 2]) -> bool {
+        self.store_icon_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
+    /// Whether `position` is on the bounty line under the minimap.
+    pub fn bounty_tracker_at(&self, position: [f32; 2]) -> bool {
+        self.bounty_tracker_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
     pub fn minimap_pointer(&mut self, position: [f32; 2]) -> bool {
         let viewport = [self.config.width as f32, self.config.height as f32];
         self.minimap
@@ -1707,6 +2156,8 @@ impl Renderer {
         remote_models: &HashMap<u32, Character>,
         remote_npcs: &HashMap<u32, crate::character::NpcModel>,
         remote_monsters: &HashMap<u32, crate::character::NpcModel>,
+        local_ghost: Option<&crate::character::NpcModel>,
+        revive: Option<(u32, bool)>,
         combat_numbers: &[(u32, u32, f32)],
         skill_effects: &[SkillEffectInstance],
         ground_loot: &[(u32, [f32; 2], u32, f32)],
@@ -1757,6 +2208,10 @@ impl Renderer {
         player_shop_open: bool,
         player_shop_price: &str,
         player_shop_price_focused: bool,
+        player_shop_name: &str,
+        player_shop_name_focused: bool,
+        bounty: Option<&crate::bounty_board::BountyView>,
+        store: Option<&crate::store_panel::StoreView>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -2003,7 +2458,42 @@ impl Renderer {
             && action_progress.is_none();
         let local_signature = appearance_signature(character);
         let local_facing_sector = (player.facing / std::f32::consts::FRAC_PI_4).round() as i8;
-        for (part_index, part) in character.parts.iter().enumerate() {
+        // A dead character, once fallen, is a ghost until revived.
+        if let Some(ghost) = local_ghost {
+            self.texture(assets, &ghost.texture);
+            let vertices = if player.moving() {
+                Arc::new(ghost.vertices_walk(time, player.facing))
+            } else if let Some(vertices) = self.cached_static_npc_vertices(ghost, player.facing) {
+                vertices
+            } else {
+                Arc::new(ghost.vertices_walk(0.0, player.facing))
+            };
+            let triangles = ghost
+                .mesh
+                .opaque_indices
+                .iter()
+                .chain(&ghost.mesh.alpha_indices)
+                .map(|i| {
+                    let (p, uv) = vertices[*i as usize];
+                    Vertex {
+                        position: clip(
+                            [origin[0] + p[0], origin[1] + p[1]],
+                            (0.5 + p[2] * 0.0005).clamp(0.001, 0.999),
+                            viewport,
+                        ),
+                        uv,
+                        alpha: 1.0,
+                    }
+                })
+                .collect();
+            draws.push(Draw {
+                texture: ghost.texture.clone(),
+                vertices: triangles,
+                depth_test: true,
+                sort_depth: actor_depth,
+            });
+        }
+        for (part_index, part) in character.parts.iter().enumerate().filter(|_| local_ghost.is_none()) {
             self.texture(assets, &part.texture);
             let vertices = if local_idle {
                 let Some(vertices) = self.queue_character_idle_geometry(
@@ -2109,21 +2599,7 @@ impl Renderer {
             };
             let projected = map.project(actor.position);
             let mut origin = [projected[0] - camera[0], projected[1] - camera[1]];
-            // A remote jump (action 130) follows the local player's arc.
-            if actor.action == 130
-                && actor.movement_until > actor.movement_started
-                && time < actor.movement_until
-            {
-                let progress = (time - actor.movement_started)
-                    / (actor.movement_until - actor.movement_started);
-                let peak = crate::motion_math::jump_motion(
-                    actor.movement_from,
-                    actor.movement_to,
-                    std::time::Duration::ZERO,
-                )
-                .peak_screen_pixels;
-                origin[1] -= crate::motion_math::jump_screen_height(peak, progress);
-            }
+            origin[1] -= remote_jump_lift(actor, time);
             let visibility_margin = if monster {
                 384.0
             } else if actor.npc {
@@ -2188,9 +2664,12 @@ impl Renderer {
                 // Monster C3 files contain a first motion that is the neutral
                 // pose. Keep it static while idle; continuously advancing the
                 // raw motion made Pheasants render with wings permanently open.
-                let dynamic_kind = if actor.respawn_until > time
-                    || (actor.action == 160 && time < actor.animation_until)
-                {
+                // A respawning monster stands while the `born` effect plays
+                // and it fades in; the fall pose is for deaths only.
+                // Seconds since the respawn, while the effect plays.
+                let born = (actor.respawn_until > time)
+                    .then(|| (MONSTER_BORN_SECONDS - (actor.respawn_until - time)).max(0.0));
+                let dynamic_kind = if actor.action == 160 && time < actor.animation_until {
                     Some(0)
                 } else if time < actor.animation_until {
                     Some(if matches!(actor.action, 110 | 111 | 120 | 121) {
@@ -2254,7 +2733,7 @@ impl Renderer {
                                 viewport,
                             ),
                             uv,
-                            alpha: 1.0,
+                            alpha: born.map_or(1.0, |since| 0.25 + (since / MONSTER_FADE_IN_SECONDS).min(1.0) * 0.75),
                         }
                     })
                     .collect();
@@ -2264,6 +2743,17 @@ impl Renderer {
                     depth_test: true,
                     sort_depth: depth,
                 });
+                if let Some(since) = born {
+                    self.push_effect(
+                        assets,
+                        "born",
+                        origin,
+                        since,
+                        depth + 0.02,
+                        viewport,
+                        &mut draws,
+                    );
+                }
             } else if let Some(remote_character) = remote_models.get(&actor.id) {
                 let signature = appearance_signature(remote_character);
                 let facing_sector = (facing / std::f32::consts::FRAC_PI_4).round() as i8;
@@ -2385,8 +2875,12 @@ impl Renderer {
                 let name_colour = crate::labels::name_colour(actor.status_flags);
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
+                let bounty_target = monster
+                    && bounty
+                        .and_then(|view| view.board.active())
+                        .is_some_and(|task| task.monster_name == actor.name);
                 let label_key = if monster {
-                    format!("@monster-label-{}-{}", actor.id, actor.health)
+                    format!("@monster-label-{}-{}-{bounty_target}", actor.id, actor.health)
                 } else {
                     format!("@actor-label-{}-{:?}", actor.id, name_colour)
                 };
@@ -2397,6 +2891,7 @@ impl Renderer {
                             path: label_key.clone(),
                             name: actor.name.clone(),
                             monster,
+                            bounty: bounty_target,
                             health: actor.health,
                             maximum_health: actor.maximum_health,
                             name_colour,
@@ -2425,6 +2920,18 @@ impl Renderer {
                         depth_test: false,
                         sort_depth: WORLD_OVERLAY_SORT,
                     });
+                }
+                let vip = !actor.npc && !monster && actor.status_flags & VIP_FLAG != 0;
+                if vip {
+                    self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
+                }
+                if !actor.npc && !monster {
+                    let over_name = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
+                    self.push_ko_tag(assets, actor.ko_count, actor.status_flags, [origin[0], over_name], viewport, &mut draws);
+                }
+                if let Some(booth) = actor.booth.as_deref().filter(|_| !actor.npc && !monster) {
+                    let top = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
+                    self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
                 }
             }
         }
@@ -2474,9 +2981,47 @@ impl Renderer {
                     .unwrap_or(player.position)
             };
             let elapsed = time - effect.started;
+            // The trail (FastBlade's green sword gas): its effects one after
+            // another along the line from the caster toward the aimed cell.
+            if let Some(trail) = magic.trail.as_deref().filter(|_| effect.trail) {
+                let caster = position_of(effect.attacker_id);
+                let from = map.project(caster);
+                let aimed = if effect.target_cell != (0, 0) {
+                    map.project([f32::from(effect.target_cell.0), f32::from(effect.target_cell.1)])
+                } else {
+                    map.project(position_of(effect.target_id))
+                };
+                let (dx, dy) = (aimed[0] - from[0], aimed[1] - from[1]);
+                let length = (dx * dx + dy * dy).sqrt();
+                if length > 1.0 {
+                    let (ux, uy) = (dx / length, dy / length);
+                    for step in crate::magic::trail(assets, trail) {
+                        let step_elapsed = elapsed - step.delay_ms as f32 / 1_000.0;
+                        if step_elapsed < 0.0 {
+                            continue;
+                        }
+                        let (along, across) = (step.along as f32, step.across as f32);
+                        let origin = [
+                            from[0] + ux * along - uy * across - camera[0],
+                            from[1] + uy * along + ux * across - camera[1],
+                        ];
+                        if world_point_visible(origin, viewport, 256.0) {
+                            self.push_effect(
+                                assets,
+                                &step.effect,
+                                origin,
+                                step_elapsed,
+                                caster[0] + caster[1] + 0.06,
+                                viewport,
+                                &mut draws,
+                            );
+                        }
+                    }
+                }
+            }
             for (name, actor) in [
                 (magic.intone_effect.as_deref(), effect.attacker_id),
-                (magic.target_effect.as_deref(), effect.target_id),
+                (magic.target_effect.as_deref().filter(|_| effect.target_id != 0), effect.target_id),
             ] {
                 let Some(name) = name else {
                     continue;
@@ -2498,6 +3043,49 @@ impl Renderer {
                 );
             }
         }
+        // Effects played once on an actor; each ends with its animation.
+        let mut finished = Vec::new();
+        for (index, (actor_id, effect, started)) in self.role_effects.clone().into_iter().enumerate() {
+            let elapsed = time - started;
+            let position = remote_actors
+                .get(&actor_id)
+                .map(|actor| actor.position)
+                .unwrap_or(player.position);
+            let projected = map.project(position);
+            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            let playing = elapsed < 20.0
+                && self.push_effect(assets, &effect, origin, elapsed, position[0] + position[1] + 0.08, viewport, &mut draws);
+            if !playing {
+                finished.push(index);
+            }
+        }
+        for index in finished.into_iter().rev() {
+            self.role_effects.remove(index);
+        }
+        // Souls of the slain, rising and then flying to their slayer.
+        self.souls
+            .retain(|soul| time - soul.started < SOUL_RISE_SECONDS + SOUL_FLIGHT_SECONDS);
+        for soul in self.souls.clone() {
+            let elapsed = time - soul.started;
+            let killer = remote_actors
+                .get(&soul.killer_id)
+                .map(|actor| actor.position)
+                .unwrap_or(player.position);
+            let flight = ((elapsed - SOUL_RISE_SECONDS) / SOUL_FLIGHT_SECONDS).clamp(0.0, 1.0);
+            let eased = flight * flight * (3.0 - 2.0 * flight);
+            let from = map.project(soul.from);
+            let to = map.project(killer);
+            let rise = (elapsed / SOUL_RISE_SECONDS).clamp(0.0, 1.0) * 30.0;
+            let arc = (eased * std::f32::consts::PI).sin() * 30.0;
+            let origin = [
+                from[0] + (to[0] - from[0]) * eased - camera[0],
+                from[1] + (to[1] - from[1]) * eased - camera[1] - 40.0 - rise * (1.0 - eased) - arc,
+            ];
+            if world_point_visible(origin, viewport, 128.0) {
+                let depth = soul.from[0] + soul.from[1] + 0.07;
+                self.push_looping_effect(assets, "soul", origin, elapsed, depth, viewport, &mut draws);
+            }
+        }
         // Map portals glow with the original client's `Exit` effect
         // (3DEffect.ini), which it draws on each DMap portal itself. It
         // sits under whoever stands on the portal.
@@ -2513,23 +3101,44 @@ impl Renderer {
         }
         // Status effects (`ini/statuseffect.ini`) around the player and the
         // other actors: shield, Superman, Cyclone, Stigma, accuracy...
-        let mut status_effects = vec![(player.position, status_flags)];
-        status_effects.extend(remote_actors.values().map(|actor| (actor.position, actor.status_flags)));
-        for (position, flags) in status_effects {
+        // In the air the effects rise with whoever jumps.
+        let mut status_effects = vec![(0_u32, player.position, status_flags, player.height)];
+        status_effects.extend(
+            remote_actors
+                .iter()
+                .map(|(id, actor)| (*id, actor.position, actor.status_flags, remote_jump_lift(actor, time))),
+        );
+        let mut trailing = std::collections::HashSet::new();
+        for (id, position, flags, lift) in status_effects {
             if flags == 0 {
                 continue;
             }
-            let projected = map.project(position);
+            let ground = map.project(position);
+            let projected = [ground[0], ground[1] - lift];
+            let history = self.trail_history.entry(id).or_default();
+            trailing.insert(id);
+            if history.front().is_none_or(|(_, last)| *last != projected) {
+                history.push_front((time, projected));
+            }
+            while history.len() > 2 && history.back().is_some_and(|(when, _)| time - when > 2.0) {
+                history.pop_back();
+            }
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             if !world_point_visible(origin, viewport, 256.0) {
                 continue;
             }
-            for (bit, name) in STATUS_EFFECTS {
+            self.current_trail = (
+                time,
+                history.iter().map(|(when, at)| (*when, [at[0] - camera[0], at[1] - camera[1]])).collect(),
+            );
+            for (bit, name) in crate::magic::status_effects(assets) {
                 if flags & bit != 0 {
                     self.push_looping_effect(assets, name, origin, time, position[0] + position[1] + 0.04, viewport, &mut draws);
                 }
             }
+            self.current_trail.1.clear();
         }
+        self.trail_history.retain(|id, _| trailing.contains(id));
         for (loot_id, position, item_id, _) in ground_loot {
             let projected = map.project(*position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
@@ -2607,6 +3216,15 @@ impl Renderer {
                 sort_depth: WORLD_OVERLAY_SORT,
             });
         }
+        if status_flags & VIP_FLAG != 0 {
+            self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
+        }
+        let over_name = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
+        self.push_ko_tag(assets, skill_hud.ko_count, status_flags, [origin[0], over_name], viewport, &mut draws);
+        if let Some(booth) = character.booth.as_deref() {
+            let top = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
+            self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
+        }
         if minimap_visible && self.minimap_map != Some(map.id) {
             self.minimap_map = Some(map.id);
             self.minimap = None;
@@ -2663,6 +3281,13 @@ impl Renderer {
                     });
                 }
             }
+        }
+        // A lit XP circle's 20 seconds run out as a bar; the XP skill's
+        // time burns as fire.
+        if status_flags & (crate::network::CYCLONE_FLAG | crate::network::SUPERMAN_FLAG) != 0 {
+            self.push_xp_fire(assets, skill_hud.xp_fire_until, time, viewport, &mut draws);
+        } else {
+            self.push_xp_bar(skill_hud.xp_fire_until, viewport, &mut draws);
         }
         let hud_hover = crate::hud::hovered_button(viewport, cursor);
         let action_context_hover = action_context_slot
@@ -2753,6 +3378,13 @@ impl Renderer {
                 sort_depth: f32::INFINITY,
             });
         }
+        // The original's animated status flags (double EXP, Heaven's
+        // Blessing, lucky time) in their slots of the status bar.
+        let hud_origin = crate::hud::position(viewport);
+        for (effect, centre) in crate::hud::status_flag_slots(skill_hud) {
+            let centre = [hud_origin[0] + centre[0], hud_origin[1] + centre[1]];
+            self.push_ui_effect(assets, effect, centre, time, 30.0, viewport, &mut draws);
+        }
         if show_feedback(network_status) {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -2779,6 +3411,132 @@ impl Renderer {
                         texture.size,
                         viewport,
                     ),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // Dead: the revive countdown above the KO counter, then the buttons
+        // there: Revive, and Revive here under Heaven's Blessing.
+        self.revive_rects.clear();
+        let mut revive_keys: Vec<(String, Option<bool>)> = Vec::new();
+        match revive {
+            Some((remaining, _)) if remaining > 0 => revive_keys.push((format!("@revive-{remaining}"), None)),
+            Some((_, here)) => {
+                revive_keys.push(("@revive-button".to_owned(), Some(false)));
+                if here {
+                    revive_keys.push(("@revive-here-button".to_owned(), Some(true)));
+                }
+            },
+            None => {},
+        }
+        let [right, mut bottom] = crate::hud::revive_anchor(viewport);
+        for (key, button) in &revive_keys {
+            if !self.textures.contains_key(key) {
+                let image = match (button, revive) {
+                    (None, Some((remaining, _))) => crate::hud::revive_countdown_image(remaining)?,
+                    (Some(true), _) => crate::hud::revive_button(assets, "Revive here")?,
+                    _ => crate::hud::revive_button(assets, "Revive")?,
+                };
+                self.upload(key, image);
+            }
+            if let Some(texture) = self.textures.get(key) {
+                let position = [right - texture.size[0], bottom - texture.size[1]];
+                if let Some(here) = button {
+                    self.revive_rects.push(([position[0], position[1], texture.size[0], texture.size[1]], *here));
+                }
+                draws.push(Draw {
+                    texture: key.clone(),
+                    vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+                bottom = position[1] - 6.0;
+            }
+        }
+        let countdown_key = revive_keys
+            .iter()
+            .find(|(_, button)| button.is_none())
+            .map(|(key, _)| key.as_str());
+        self.prune_textures("@revive-", &[countdown_key, Some("@revive-button"), Some("@revive-here-button")]);
+        // The bounty under way, counted under the minimap.
+        // The icon shows even before the board arrives.
+        let tracker = Some(bounty.map_or(
+            crate::bounty_board::Tracker { hunt: None, daily_available: false },
+            |view| crate::bounty_board::tracker(&view.board),
+        ));
+        let tracker_hovered = self.bounty_tracker_at(cursor);
+        let tracker_key = tracker.as_ref().map(|tracker| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            tracker.hash(&mut hasher);
+            tracker_hovered.hash(&mut hasher);
+            format!("@bounty-tracker-{}", hasher.finish())
+        });
+        if let (Some(tracker), Some(key)) = (&tracker, &tracker_key) {
+            if !self.textures.contains_key(key) {
+                self.upload(key, crate::bounty_board::tracker_image(assets, tracker, tracker_hovered)?);
+            }
+            let top = self.minimap.as_ref().map_or(180.0, |minimap| minimap.bottom(viewport)) + 8.0;
+            if let Some(texture) = self.textures.get(key) {
+                let left = viewport[0] - texture.size[0] - 8.0;
+                self.bounty_tracker_rect = Some([left, top, texture.size[0], texture.size[1]]);
+                draws.push(Draw {
+                    texture: key.clone(),
+                    vertices: quad([left, top], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+            // The icon's name under the cursor.
+            if tracker.hunt.is_none() && tracker_hovered {
+                let tip = crate::bounty_board::icon_tooltip(tracker);
+                let tip_key = format!("@bounty-tip-{tip}");
+                if !self.textures.contains_key(&tip_key) {
+                    self.upload(&tip_key, crate::labels::tooltip_image(tip)?);
+                }
+                if let (Some(texture), Some([left, top, _, height])) =
+                    (self.textures.get(&tip_key), self.bounty_tracker_rect)
+                {
+                    draws.push(Draw {
+                        texture: tip_key.clone(),
+                        vertices: quad(
+                            [left - texture.size[0] - 6.0, top + (height - texture.size[1]) * 0.5],
+                            texture.size,
+                            viewport,
+                        ),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
+            }
+        }
+        self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
+        // The Store button, by the round buttons over the orb.
+        let [left, top, width, height] = crate::hud::store_button_rect(viewport);
+        self.store_icon_rect = Some([left, top, width, height]);
+        let store_hovered = self.store_icon_at(cursor);
+        let store_key = if store_hovered { "@store-button-hover" } else { "@store-button" };
+        if !self.textures.contains_key(store_key) {
+            self.upload(store_key, crate::store_panel::button_image(assets, store_hovered)?);
+        }
+        if self.textures.contains_key(store_key) {
+            draws.push(Draw {
+                texture: store_key.to_owned(),
+                vertices: quad([left, top], [width, height], viewport),
+                depth_test: false,
+                sort_depth: f32::INFINITY,
+            });
+        }
+        if store_hovered {
+            let tip_key = "@store-tip";
+            if !self.textures.contains_key(tip_key) {
+                self.upload(tip_key, crate::labels::tooltip_image("Store (P)")?);
+            }
+            if let Some(tip) = self.textures.get(tip_key) {
+                draws.push(Draw {
+                    texture: tip_key.to_owned(),
+                    vertices: quad([left, top - tip.size[1] - 4.0], tip.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
@@ -2832,6 +3590,7 @@ impl Renderer {
             skill_hud.weapon_skills.hash(&mut hasher);
             skill_hud.weapon_filter.hash(&mut hasher);
             skill_hud.active_skill.hash(&mut hasher);
+            skill_hud.skill_page.hash(&mut hasher);
             mana.hash(&mut hasher);
             maximum_mana.hash(&mut hasher);
             let close_hovered = crate::shop::status_close_at(viewport, cursor);
@@ -2876,7 +3635,7 @@ impl Renderer {
                         equipment: status_equipment.clone(),
                         weapon_skills: skill_hud.weapon_skills.clone(),
                         weapon_filter,
-                        selected_skill: skill_hud.active_skill,
+                        skill_page: skill_hud.skill_page,
                     },
                 );
                 self.status_signature = Some(signature);
@@ -3138,6 +3897,7 @@ impl Renderer {
             character.name.hash(&mut hasher);
             character.guild.hash(&mut hasher);
             character.guild_rank.hash(&mut hasher);
+            character.guild_fund.hash(&mut hasher);
             action_bar.hash(&mut hasher);
             let mut skill_signature = known_skills.iter().collect::<Vec<_>>();
             skill_signature.sort_by_key(|(skill_id, _)| **skill_id);
@@ -3168,7 +3928,28 @@ impl Renderer {
             player_shop_open.hash(&mut hasher);
             player_shop_price.hash(&mut hasher);
             player_shop_price_focused.hash(&mut hasher);
+            player_shop_name.hash(&mut hasher);
+            player_shop_name_focused.hash(&mut hasher);
             hud_config.hash(&mut hasher);
+            if panel == crate::shop::QuickPanel::Quest {
+                bounty.hash(&mut hasher);
+            }
+            if matches!(panel, crate::shop::QuickPanel::Store | crate::shop::QuickPanel::Vip) {
+                store.hash(&mut hasher);
+                // VIP time left reads in minutes.
+                (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs())
+                    / 60)
+                    .hash(&mut hasher);
+                // The teleport countdown reads in seconds.
+                if let Some(view) = store
+                    && view.category == crate::store_panel::SERVICES
+                    && crate::store_panel::teleport_wait(view, crate::store_panel::now_secs()) > 0
+                {
+                    crate::store_panel::now_secs().hash(&mut hasher);
+                }
+            }
             friends.hash(&mut hasher);
             ignores.hash(&mut hasher);
             pending_friend_name.hash(&mut hasher);
@@ -3207,7 +3988,11 @@ impl Renderer {
                         player_shop_open,
                         player_shop_price: player_shop_price.to_owned(),
                         player_shop_price_focused,
+                        player_shop_name: player_shop_name.to_owned(),
+                        player_shop_name_focused,
                         hud_config,
+                        bounty: bounty.cloned(),
+                        store: store.cloned(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);
@@ -3753,7 +4538,7 @@ impl Renderer {
         }
         if let Some(prompt) = prompt {
             let hovered = prompt.button_at(cursor);
-            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, prompt.text));
+            let key = format!("@prompt-{:?}-{hovered:?}", (prompt.title, &prompt.name, &prompt.text, prompt.buttons));
             if !self.textures.contains_key(&key) {
                 self.upload(&key, prompt.image(assets, hovered)?);
             }
@@ -3987,6 +4772,7 @@ impl Renderer {
             }
         }
         let ui_phase_finished = Instant::now();
+        self.release_unused_transients(&draws);
         draws.sort_by(|a, b| a.sort_depth.total_cmp(&b.sort_depth));
         draws = coalesce_adjacent_draws(draws);
         let total_vertices = draws.iter().map(|draw| draw.vertices.len()).sum();
@@ -4097,25 +4883,39 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // State changes only when it differs from the draw before.
+            let mut current_clip: Option<bool> = None;
+            let mut current_pipeline: Option<bool> = None;
+            let mut current_texture: Option<&str> = None;
             for (draw, (start, end)) in draws.iter().zip(&ranges) {
                 let Some(texture) = self.textures.get(&draw.texture) else {
                     continue;
                 };
-                if draw.depth_test && draw.sort_depth == f32::INFINITY {
-                    let [x, y, width, height] = crate::shop::status_character_clip([
-                        self.config.width as f32,
-                        self.config.height as f32,
-                    ]);
-                    pass.set_scissor_rect(x, y, width, height);
-                } else {
-                    pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+                let clip = clipped_to_character(draw);
+                if current_clip != Some(clip) {
+                    if clip {
+                        let [x, y, width, height] = crate::shop::status_character_clip([
+                            self.config.width as f32,
+                            self.config.height as f32,
+                        ]);
+                        pass.set_scissor_rect(x, y, width, height);
+                    } else {
+                        pass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+                    }
+                    current_clip = Some(clip);
                 }
-                pass.set_pipeline(if draw.depth_test {
-                    &self.actor
-                } else {
-                    &self.sprites
-                });
-                pass.set_bind_group(0, &texture.bind, &[]);
+                if current_pipeline != Some(draw.depth_test) {
+                    pass.set_pipeline(if draw.depth_test {
+                        &self.actor
+                    } else {
+                        &self.sprites
+                    });
+                    current_pipeline = Some(draw.depth_test);
+                }
+                if current_texture != Some(draw.texture.as_str()) {
+                    pass.set_bind_group(0, &texture.bind, &[]);
+                    current_texture = Some(draw.texture.as_str());
+                }
                 let start = (*start * std::mem::size_of::<Vertex>()) as u64;
                 let end = (*end * std::mem::size_of::<Vertex>()) as u64;
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(start..end));
@@ -4193,13 +4993,22 @@ impl Renderer {
     }
 }
 
+/// Whether a draw is clipped to the status window's character view (the
+/// paper doll), which the encoder sets as a scissor.
+fn clipped_to_character(draw: &Draw) -> bool {
+    draw.depth_test && draw.sort_depth == f32::INFINITY
+}
+
+/// Merges neighbours of the sorted list that the GPU can draw in one call:
+/// same texture, same pipeline and same clipping. Their order is kept, so
+/// what overlaps what does not change; the depths only decided that order.
 fn coalesce_adjacent_draws(draws: Vec<Draw>) -> Vec<Draw> {
     let mut merged: Vec<Draw> = Vec::with_capacity(draws.len());
     for draw in draws {
         if let Some(previous) = merged.last_mut()
             && previous.texture == draw.texture
             && previous.depth_test == draw.depth_test
-            && previous.sort_depth == draw.sort_depth
+            && clipped_to_character(previous) == clipped_to_character(&draw)
         {
             previous.vertices.extend(draw.vertices);
         } else {
@@ -4214,6 +5023,33 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
         && origin[1] >= -margin
         && origin[0] <= viewport[0] + margin
         && origin[1] <= viewport[1] + margin
+}
+
+/// Textures made for one moment and named after what they show; they are
+/// recreated on demand, so the renderer may free them once unused (see
+/// `release_unused_transients`). Images redrawn only when their signature
+/// changes (inventory, status, panels) are not among them.
+const TRANSIENT_PREFIXES: [&str; 14] = [
+    "@actor-label-",
+    "@monster-label-",
+    "@label-",
+    "@damage-",
+    "@loot-name-",
+    "@minimap-pin-name-",
+    "@choice-menu-",
+    "@prompt-",
+    "@notice-",
+    "@shop-tooltip-",
+    "@trade-partner-",
+    "@item-context-",
+    "@inventory-drag-item-",
+    "@shop-drag-item-",
+];
+/// About ten seconds at 60 FPS.
+const TRANSIENT_FRAMES: u64 = 600;
+
+fn is_transient(key: &str) -> bool {
+    key.starts_with('@') && TRANSIENT_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
 }
 
 /// How long a feedback message stays at the top of the screen.
@@ -4430,11 +5266,93 @@ fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Te
         .create_view(&Default::default())
 }
 
+/// How high a remote actor's jump (action 130) lifts them now, along the
+/// local player's arc.
+fn remote_jump_lift(actor: &RemoteActor, time: f32) -> f32 {
+    if actor.action != 130 || actor.movement_until <= actor.movement_started || time >= actor.movement_until {
+        return 0.0;
+    }
+    let progress = (time - actor.movement_started) / (actor.movement_until - actor.movement_started);
+    let peak =
+        crate::motion_math::jump_motion(actor.movement_from, actor.movement_to, std::time::Duration::ZERO)
+            .peak_screen_pixels;
+    crate::motion_math::jump_screen_height(peak, progress)
+}
+
+/// The sprite-sheet cell a mesh shows at `frame`, as a UV offset: its
+/// texture keys pick cells of a grid the size of its UVs.
+fn sheet_cell(mesh: &sandbox_data::c3::C3Mesh, frame: f32) -> [f32; 2] {
+    let Some(key) = mesh
+        .texture_keys
+        .iter()
+        .rev()
+        .find(|key| key.frame as f32 <= frame)
+        .or(mesh.texture_keys.first())
+    else {
+        return [0.0, 0.0];
+    };
+    let span = mesh.vertices.iter().fold([0.0_f32; 2], |span, vertex| {
+        [span[0].max(vertex.texture_coordinate.x), span[1].max(vertex.texture_coordinate.y)]
+    });
+    if span[0] <= 0.0 || span[0] >= 1.0 || span[1] <= 0.0 {
+        return [0.0, 0.0];
+    }
+    let columns = (1.0 / span[0]).round().max(1.0) as i32;
+    let cell = key.texture.max(0);
+    [(cell % columns) as f32 * span[0], (cell / columns) as f32 * span[1]]
+}
+
+/// Where a trail (newest first) passed at `when`, between its samples;
+/// `None` when it holds nothing that old or new.
+fn trail_point(trail: &[(f32, [f32; 2])], when: f32) -> Option<[f32; 2]> {
+    let (newest_time, newest) = *trail.first()?;
+    if when >= newest_time {
+        return Some(newest);
+    }
+    for pair in trail.windows(2) {
+        let ((later_time, later), (earlier_time, earlier)) = (pair[0], pair[1]);
+        if when >= earlier_time {
+            let span = (later_time - earlier_time).max(f32::EPSILON);
+            let blend = (when - earlier_time) / span;
+            return Some([
+                earlier[0] + (later[0] - earlier[0]) * blend,
+                earlier[1] + (later[1] - earlier[1]) * blend,
+            ]);
+        }
+    }
+    trail.last().map(|(_, oldest)| *oldest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Draw, coalesce_adjacent_draws, quad, should_hide_dead_monster, world_point_visible,
     };
+
+    #[test]
+    fn neighbours_of_one_texture_draw_in_one_call() {
+        let draw = |texture: &str, depth_test: bool, sort_depth: f32| Draw {
+            texture: texture.to_owned(),
+            vertices: quad([0.0, 0.0], [8.0, 8.0], [100.0, 100.0]),
+            depth_test,
+            sort_depth,
+        };
+        let merged = coalesce_adjacent_draws(vec![
+            draw("tiles", false, 1.0),
+            draw("tiles", false, 1.5),
+            draw("tiles", false, 2.0),
+            draw("hero", true, 2.5),
+            draw("tiles", false, 3.0),
+            // The paper doll keeps its own call: it is clipped.
+            draw("hero", true, f32::INFINITY),
+            draw("hero", true, f32::INFINITY),
+        ]);
+        let shape: Vec<(&str, usize)> = merged
+            .iter()
+            .map(|draw| (draw.texture.as_str(), draw.vertices.len() / 6))
+            .collect();
+        assert_eq!(shape, [("tiles", 3), ("hero", 1), ("tiles", 1), ("hero", 2)]);
+    }
 
     #[test]
     fn sprite_quad_keeps_its_winding_and_uvs() {
@@ -4502,5 +5420,19 @@ mod tests {
         assert!(world_point_visible([1_096.0, 350.0], viewport, 96.0));
         assert!(!world_point_visible([-96.1, 350.0], viewport, 96.0));
         assert!(!world_point_visible([500.0, 900.1], viewport, 96.0));
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    #[test]
+    fn only_on_demand_textures_are_released() {
+        for key in ["@monster-label-400010-37", "@label-Gravak-80-120-[255, 255, 255]", "@damage-128", "@item-context-410003-[Equip]-None"] {
+            assert!(super::is_transient(key), "{key}");
+        }
+        // Redrawn only when their signature changes: never released.
+        for key in ["@hud-123", "@inventory-overlay-9", "@quick-panel-4", "@shadow", "c3/texture/1.dds"] {
+            assert!(!super::is_transient(key), "{key}");
+        }
     }
 }

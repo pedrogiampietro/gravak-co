@@ -6,3 +6,5 @@ VALUES (
     -- Change this to the game server's address for a remote deployment
     5816
   ) ON CONFLICT(name) DO NOTHING;
+
+SELECT sync_identity_sequences();

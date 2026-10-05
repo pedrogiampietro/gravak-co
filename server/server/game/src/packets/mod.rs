@@ -1,3 +1,7 @@
+mod msg_broadcast;
+pub use msg_broadcast::MsgBroadcast;
+mod msg_name;
+pub use msg_name::MsgName;
 mod msg_connect;
 pub use msg_connect::MsgConnect;
 
@@ -23,7 +27,7 @@ mod msg_item;
 pub use msg_item::MsgItem;
 
 mod msg_transfer;
-pub use msg_transfer::MsgTransfer;
+pub use msg_transfer::{MsgTransfer, MsgTransferKey};
 
 mod msg_register;
 pub use msg_register::{BaseClass, BodyType, MsgRegister};
@@ -74,7 +78,7 @@ mod msg_guild_warehouse;
 pub use msg_guild_warehouse::MsgGuildWarehouse;
 
 mod msg_trade;
-pub use msg_trade::{expire_trades, MsgTrade};
+pub use msg_trade::{expire_trades, left_mid_trade, returned_from_trade, MsgTrade};
 
 mod msg_warehouse;
 pub use msg_warehouse::MsgWarehouse;
@@ -139,3 +143,11 @@ pub use msg_item_rarity::MsgItemRarity;
 
 mod msg_item_rarity_reroll;
 pub use msg_item_rarity_reroll::MsgItemRarityReroll;
+
+mod msg_bounty;
+pub use msg_bounty::{add_kills as add_bounty_kills, send_board, MsgBounty, MsgBountyState};
+
+mod msg_status_timers;
+pub use msg_status_timers::MsgStatusTimers;
+mod msg_store;
+pub use msg_store::{expire_vip, load_vip, send_store, show_vip, MsgStore, MsgStoreProduct, MsgStoreState};

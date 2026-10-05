@@ -77,9 +77,10 @@ pub trait TQServer: Sized + Send + Sync {
                 };
                 Builder::new().name("TCP Stream").spawn(async {
                     tracing::trace!("Calling on_connected lifetime hook");
-                    Self::on_connected(state, stream.peer_addr()?).await?;
+                    let peer = stream.peer_addr()?;
+                    Self::on_connected(state, peer).await?;
                     let (tx, rx) = mpsc::channel(1024);
-                    let actor = Actor::<Self::ActorState>::new(tx);
+                    let actor = Actor::<Self::ActorState>::new(tx).with_peer(peer);
                     match handle_stream::<Self>(stream, state, &actor, rx).await {
                         Err(e) => {
                             tracing::error!("{e}");
@@ -96,10 +97,9 @@ pub trait TQServer: Sized + Send + Sync {
             }
             Result::<_, Error>::Ok(())
         })?;
-        let ctrl_c = tokio::signal::ctrl_c();
         tokio::select! {
-            _ = ctrl_c => {
-                tracing::debug!("Ctrl-C received, shutting down.");
+            signal = stop_signal() => {
+                tracing::info!(target: "server", "{signal}; shutting down");
             },
             _ = main_loop_task => {
                 tracing::debug!("Main Loop Task Ended, shutting down.");
@@ -107,6 +107,30 @@ pub trait TQServer: Sized + Send + Sync {
         };
         tracing::debug!("Server is shutting down.");
         Ok(())
+    }
+}
+
+/// Waits for a request to stop and names it: Ctrl+C, and on Windows also
+/// Ctrl+Break (which a console started by `start` cannot ignore, so
+/// `scripts/stop-servers.ps1` sends it) and the console window closing.
+async fn stop_signal() -> &'static str {
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows;
+        let (Ok(mut ctrl_break), Ok(mut ctrl_close)) = (windows::ctrl_break(), windows::ctrl_close()) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return "Ctrl+C";
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => "Ctrl+C",
+            _ = ctrl_break.recv() => "Ctrl+Break",
+            _ = ctrl_close.recv() => "Console window closed",
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "Ctrl+C"
     }
 }
 

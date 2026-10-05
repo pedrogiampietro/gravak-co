@@ -3,7 +3,7 @@ use gravak_protocol::{
     GroundItemPacket, GuildPacket, GuildWarehouseActionPacket, InteractionPacket, ItemActionPacket,
     ItemRarityPacket, ItemRarityRerollPacket, NpcDialogPacket, NpcPacket, RefineryPacket,
     RegisterCharacter, ServerNpcInfo, ServerPlayer, SocketGemPacket, TalkPacket, TaskDialog,
-    TeamActionPacket, TeamMemberPacket, TradePacket, WarehouseActionPacket, authenticate,
+    TeamActionPacket, TeamMemberPacket, TradePacket, UserInfo, WarehouseActionPacket, authenticate,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -187,6 +187,8 @@ pub enum NetworkEvent {
     Silver(u32),
     Cps(u32),
     Stamina(u8),
+    /// The XP circle's points.
+    XpPoints(u8),
     /// MsgUserAttrib life (0) or maximum life (1) of another entity: the
     /// Guild War pole and gates, whose life does not fit the spawn packet.
     ActorLife {
@@ -224,6 +226,23 @@ pub enum NetworkEvent {
         title_id: u32,
     },
     NobilityRanking(NobilityEntry),
+    /// The bounty Task Board.
+    Bounty(gravak_protocol::BountyState),
+    /// One product of the Store catalog.
+    StoreProduct(gravak_protocol::StoreProduct),
+    /// The buyer's CPs and VIP.
+    StoreState(gravak_protocol::StoreState),
+    /// One of the buyer's latest purchases.
+    StorePurchase(gravak_protocol::StorePurchase),
+    /// When each of the hero's statuses ends.
+    StatusTimers(gravak_protocol::StatusTimers),
+    /// A `3DEffect.ini` effect played once on an actor (fireworks...).
+    RoleEffect { actor_id: u32, effect: String },
+    /// Kills counted toward the bounty under way.
+    BountyProgress {
+        done: u32,
+        required: u32,
+    },
     ExperienceGain {
         experience: u64,
     },
@@ -332,6 +351,10 @@ pub enum NetworkEvent {
         target_id: u32,
         skill_id: u16,
         damage: u32,
+        /// The cell the cast was aimed at.
+        target_cell: (u16, u16),
+        /// The first event of a cast, which draws its trail.
+        first: bool,
     },
     Skill {
         skill_id: u16,
@@ -397,9 +420,24 @@ pub struct RemoteActor {
     pub npc: bool,
     /// Player level from MsgPlayer; 0 for NPCs.
     pub level: u16,
+    /// The name over the player's booth while it is open.
+    pub booth: Option<String>,
+    /// KOs of their Cyclone or Superman, shown over their head.
+    pub ko_count: u32,
 }
 
-enum NetworkCommand {
+pub(crate) enum NetworkCommand {
+    /// A Store request.
+    Broadcast { message: String },
+    Store {
+        action: u32,
+        param: u32,
+    },
+    /// A bounty Task Board action.
+    Bounty {
+        action: u32,
+        param: u32,
+    },
     Walk {
         character_id: u32,
         direction: u8,
@@ -418,6 +456,7 @@ enum NetworkCommand {
     },
     Revive {
         character_id: u32,
+        here: bool,
     },
     Mine {
         character_id: u32,
@@ -602,6 +641,14 @@ impl NetworkHandle {
         Self { events, commands }
     }
 
+    /// A handle plus the network-side ends of its channels, for a session
+    /// driven by [`play`] on another thread.
+    pub(crate) fn channels() -> (Self, Sender<NetworkEvent>, UnboundedReceiver<NetworkCommand>) {
+        let (events_tx, events) = mpsc::channel();
+        let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
+        (Self { events, commands }, events_tx, commands_rx)
+    }
+
     pub fn drain(&self) -> Vec<NetworkEvent> {
         self.events.try_iter().collect()
     }
@@ -632,6 +679,7 @@ impl NetworkHandle {
                 | NetworkEvent::Skill { .. }
                 | NetworkEvent::WeaponSkill { .. }
                 | NetworkEvent::Stamina(_)
+                | NetworkEvent::XpPoints(_)
                 | NetworkEvent::ActorLife { .. }
                 | NetworkEvent::EquipmentItem(_)
                 | NetworkEvent::EquipmentItemRemoved { .. }
@@ -655,6 +703,13 @@ impl NetworkHandle {
                 | NetworkEvent::Attributes { .. }
                 | NetworkEvent::Nobility { .. }
                 | NetworkEvent::NobilityRanking(_)
+                | NetworkEvent::Bounty(_)
+                | NetworkEvent::BountyProgress { .. }
+                | NetworkEvent::StoreProduct(_)
+                | NetworkEvent::StoreState(_)
+                | NetworkEvent::StorePurchase(_)
+                | NetworkEvent::StatusTimers(_)
+                | NetworkEvent::RoleEffect { .. }
                 | NetworkEvent::ExperienceGain { .. }
                 | NetworkEvent::InventoryItem(_)
                 | NetworkEvent::InventoryItemRemoved(_)
@@ -721,6 +776,16 @@ impl NetworkHandle {
         });
     }
 
+    /// A Store request (`StorePacket` constants).
+    pub fn send_store(&self, action: u32, param: u32) {
+        let _ = self.commands.send(NetworkCommand::Store { action, param });
+    }
+
+    /// A bounty Task Board action (`gravak_protocol::BountyPacket` constants).
+    pub fn send_bounty(&self, action: u32, param: u32) {
+        let _ = self.commands.send(NetworkCommand::Bounty { action, param });
+    }
+
     pub fn send_team(&self, action: u32, target_id: u32) {
         let _ = self
             .commands
@@ -759,8 +824,10 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Mine { character_id });
     }
 
-    pub fn revive(&self, character_id: u32) {
-        let _ = self.commands.send(NetworkCommand::Revive { character_id });
+    /// Asks to revive in town, or `here` where the body lies (MsgAction 94
+    /// with data 1, Heaven's Blessing only).
+    pub fn revive(&self, character_id: u32, here: bool) {
+        let _ = self.commands.send(NetworkCommand::Revive { character_id, here });
     }
 
     pub fn player_shop_query(&self, character_id: u32, owner_id: u32) {
@@ -1034,6 +1101,16 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Talk { packet });
     }
 
+    pub fn send_booth_name(&self, character_id: u32, sender_name: &str, name: &str) {
+        let packet = TalkPacket::booth(character_id, sender_name, name);
+        let _ = self.commands.send(NetworkCommand::Talk { packet });
+    }
+
+    /// Pays for a broadcast to the whole server.
+    pub fn send_broadcast(&self, message: &str) {
+        let _ = self.commands.send(NetworkCommand::Broadcast { message: message.to_owned() });
+    }
+
     pub fn send_whisper(
         &self,
         character_id: u32,
@@ -1058,7 +1135,7 @@ impl NetworkHandle {
 async fn run(
     config: NetworkConfig,
     events: Sender<NetworkEvent>,
-    mut commands: UnboundedReceiver<NetworkCommand>,
+    commands: UnboundedReceiver<NetworkCommand>,
 ) -> Result<(), String> {
     send_status(&events, "authenticating");
     let server = match authenticate(
@@ -1143,6 +1220,18 @@ async fn run(
         }
     };
 
+    play(session, user, events, commands).await
+}
+
+/// The in-game half of a session: `session` has reached `user`'s
+/// MsgUserInfo; this loads the map and then serves events and commands
+/// until the connection ends.
+pub(crate) async fn play(
+    mut session: GameSession,
+    user: UserInfo,
+    events: Sender<NetworkEvent>,
+    mut commands: UnboundedReceiver<NetworkCommand>,
+) -> Result<(), String> {
     send_status(&events, &format!("loading {}", user.character_name));
     session
         .send(&ActionPacket::send_location(user.character_id))
@@ -1150,6 +1239,12 @@ async fn run(
         .map_err(|error| error.to_string())?;
 
     let (map_id, position, deferred_events) = load_location(&mut session, user.character_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    // The board the server sends at login goes by while the map loads; ask
+    // for it again so the bounty tracker shows from the start.
+    session
+        .send(&gravak_protocol::BountyPacket::new(gravak_protocol::BountyPacket::OPEN, 0))
         .await
         .map_err(|error| error.to_string())?;
     let local_character_id = user.character_id;
@@ -1358,6 +1453,38 @@ async fn run(
                         rank: info.rank,
                         remaining: info.remaining,
                         title_id: info.title_id,
+                    });
+                }
+                Some(GameEvent::StoreProduct(product)) => {
+                    let _ = events.send(NetworkEvent::StoreProduct(product));
+                }
+                Some(GameEvent::StoreState(store)) => {
+                    let _ = events.send(NetworkEvent::StoreState(store));
+                }
+                Some(GameEvent::StorePurchase(purchase)) => {
+                    let _ = events.send(NetworkEvent::StorePurchase(purchase));
+                }
+                Some(GameEvent::StatusTimers(timers)) => {
+                    let _ = events.send(NetworkEvent::StatusTimers(timers));
+                }
+                Some(GameEvent::Name(name)) => {
+                    let text = name.strings.first().cloned().unwrap_or_default();
+                    let effect = match name.action {
+                        gravak_protocol::NamePacket::FIREWORKS => Some(firework_effect(&text).to_owned()),
+                        gravak_protocol::NamePacket::ROLE_EFFECT if !text.is_empty() => Some(text),
+                        _ => None,
+                    };
+                    if let Some(effect) = effect {
+                        let _ = events.send(NetworkEvent::RoleEffect { actor_id: name.uid, effect });
+                    }
+                }
+                Some(GameEvent::BountyState(board)) => {
+                    let _ = events.send(NetworkEvent::Bounty(board));
+                }
+                Some(GameEvent::Bounty(packet)) if packet.action == gravak_protocol::BountyPacket::PROGRESS => {
+                    let _ = events.send(NetworkEvent::BountyProgress {
+                        done: packet.param,
+                        required: packet.extra,
                     });
                 }
                 Some(GameEvent::NobilityRanking(info)) if info.action == 1 => {
@@ -1638,12 +1765,17 @@ async fn run(
                     });
                 }
                 Some(GameEvent::SkillEffect(effect)) => {
-                    for (target_id, damage) in effect.targets {
+                    let target_cell = ((effect.data & 0xffff) as u16, (effect.data >> 16) as u16);
+                    // A cast that hit nothing still shows on its caster.
+                    let targets = if effect.targets.is_empty() { vec![(0, 0)] } else { effect.targets };
+                    for (index, (target_id, damage)) in targets.into_iter().enumerate() {
                         let _ = events.send(NetworkEvent::SkillEffect {
                             attacker_id: effect.attacker_id,
                             target_id,
                             skill_id: effect.skill_id,
                             damage,
+                            target_cell,
+                            first: index == 0,
                         });
                     }
                 }
@@ -1659,6 +1791,12 @@ async fn run(
                         && packet.attribute == gravak_protocol::UserAttribPacket::STAMINA =>
                 {
                     let _ = events.send(NetworkEvent::Stamina(packet.value.min(255) as u8));
+                }
+                Some(GameEvent::UserAttrib(packet))
+                    if packet.character_id == local_character_id
+                        && packet.attribute == gravak_protocol::UserAttribPacket::XP =>
+                {
+                    let _ = events.send(NetworkEvent::XpPoints(packet.value.min(100) as u8));
                 }
                 Some(GameEvent::UserAttrib(packet))
                     if packet.character_id != local_character_id && packet.attribute <= 1 =>
@@ -1748,9 +1886,9 @@ async fn run(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
-                Some(NetworkCommand::Revive { character_id }) => {
+                Some(NetworkCommand::Revive { character_id, here }) => {
                     session
-                        .send(&ActionPacket::reborn(character_id))
+                        .send(&ActionPacket::reborn(character_id, here))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
@@ -1781,6 +1919,24 @@ async fn run(
                 }) => {
                     session
                         .send(&ActionPacket::query_team_member(character_id, member_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Broadcast { message }) => {
+                    session
+                        .send(&gravak_protocol::BroadcastPacket::send(&message))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Store { action, param }) => {
+                    session
+                        .send(&gravak_protocol::StorePacket::new(action, param))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Bounty { action, param }) => {
+                    session
+                        .send(&gravak_protocol::BountyPacket::new(action, param))
                         .await
                         .map_err(|error| error.to_string())?;
                 }
@@ -1986,6 +2142,15 @@ async fn run(
     }
 }
 
+/// The effect a firework item sets off (`3DEffect.ini`).
+pub fn firework_effect(item_name: &str) -> &'static str {
+    match item_name {
+        "EndlessLove" => "firework-1love",
+        "MyWish" => "firework-2love",
+        _ => "firework-like",
+    }
+}
+
 fn player_actor(player: ServerPlayer) -> RemoteActor {
     RemoteActor {
         id: player.character_id.max(0) as u32,
@@ -2015,6 +2180,8 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         step_right: false,
         npc: false,
         level: player.level.max(0) as u16,
+        booth: None,
+        ko_count: 0,
     }
 }
 
@@ -2056,17 +2223,33 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         step_right: false,
         npc: true,
         level: 0,
+        booth: None,
+        ko_count: 0,
     }
 }
 
+/// The 3D body (armor.ini's `body * 1_000_000` sections) of a look: its
+/// last digit. 2001/2002 are the small/large female bodies 1 and 2,
+/// 1003/1004 the small/large male bodies 3 and 4.
 pub fn body_from_mesh(mesh: u32) -> u32 {
     match mesh % 10_000 {
-        1003 => 1,
-        1004 => 2,
-        2001 => 3,
-        2002 => 4,
+        2001 => 1,
+        2002 => 2,
+        1003 => 3,
+        1004 => 4,
         _ => 0,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn male_looks_use_the_male_bodies() {
+    // Avatar 31, small male: the sample profile's body 3.
+    assert_eq!(body_from_mesh(311_003), 3);
+    assert_eq!(body_from_mesh(1004), 4);
+    assert_eq!(body_from_mesh(2_012_001), 1);
+    assert_eq!(body_from_mesh(2002), 2);
+    assert_eq!(body_from_mesh(999), 0);
 }
 
 fn unpack_position(value: u32) -> [i32; 2] {

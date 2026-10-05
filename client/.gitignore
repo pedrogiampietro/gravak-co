@@ -13,3 +13,6 @@
 *.tga
 *.c3
 .env*
+
+# Output of the login-art probe test
+login-art-probe/

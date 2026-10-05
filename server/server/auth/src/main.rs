@@ -29,28 +29,15 @@ async fn main() -> Result<(), Error> {
     let log_verbosity = env::var("LOG_VERBOSITY")
         .map(|s| s.parse::<i32>().unwrap_or(2))
         .unwrap_or(2);
-    setup_logger(log_verbosity)?;
-    println!(
-        r#"
- _____         _____                  
-/  __ \       |  ___|                 
-| /  \/  ___  | |__  _ __ ___   _   _ 
-| |     / _ \ |  __|| '_ ` _ \ | | | |
-| \__/\| (_) || |___| | | | | || |_| |
- \____/ \___/ \____/|_| |_| |_| \__,_|
-                                      
-                                       
-Copyright 2020-2023 Shady Khalifa (@shekohex)
-     All Rights Reserved.
- "#
-    );
+    let started = std::time::Instant::now();
+    let _logs = tq_logging::init("auth", log_verbosity);
     let mut config = Config::new();
     config.async_support(true).wasm_reference_types(true);
 
     let engine = Engine::new(&config)?;
     let mut linker = Linker::new(&engine);
     auth::add_to_linker(&mut linker)?;
-    tracing::info!("Loading Packet and handlers..");
+    tracing::debug!(target: "auth", "Loading the packet handlers");
 
     let msg_connect = Module::from_file(
         &engine,
@@ -60,8 +47,11 @@ Copyright 2020-2023 Shady Khalifa (@shekohex)
         &engine,
         msg_account::WASM_BINARY.ok_or(Error::State("msg-account WASM was not built"))?,
     )?;
-    tracing::info!("Initializing State ..");
+    tracing::debug!(target: "auth", "Opening the database");
     let state = State::init().await?;
+    let published = tq_db::account::Account::with_published_password(state.pool())
+        .await
+        .unwrap_or_default();
     let packets = auth::Packets {
         msg_connect,
         msg_account,
@@ -80,10 +70,26 @@ Copyright 2020-2023 Shady Khalifa (@shekohex)
     // it. This happens only once, so no one else can access.
     let runtime: &'static _ = unsafe { &*static_runtime };
 
-    tracing::info!("Starting Auth Server");
-    tracing::info!("Initializing server...");
     let auth_port = env::var("AUTH_PORT")?;
-    tracing::info!("Auth Server will be available on {auth_port}");
+    let mut rows = vec![
+        ("Listening", format!("0.0.0.0:{auth_port}")),
+        ("Database", tq_db::database_label()),
+        ("Log level", log_level_name(log_verbosity).to_owned()),
+        ("Log files", "logs/auth.log.<date>".to_owned()),
+    ];
+    if !published.is_empty() {
+        rows.push(("Test accounts", format!("{} (password 123456)", published.join(", "))));
+    }
+    rows.push(("Started in", format!("{:.2} s", started.elapsed().as_secs_f32())));
+    tq_logging::banner("GRAVAK  ·  AUTH SERVER", concat!("v", env!("CARGO_PKG_VERSION")), &rows);
+    if !published.is_empty() {
+        tracing::warn!(
+            target: "auth",
+            accounts = %published.join(", "),
+            "Development accounts still have the password 123456; change or delete them before others play"
+        );
+    }
+    tracing::info!(target: "auth", port = %auth_port, "Ready for logins");
     AuthServer::run(format!("0.0.0.0:{}", auth_port), runtime).await?;
     unsafe {
         // SAFETY: We are the only owner of this Box, and we are dropping
@@ -91,34 +97,17 @@ Copyright 2020-2023 Shady Khalifa (@shekohex)
         // else can access.
         let _ = Box::from_raw(static_runtime);
     };
-    tracing::info!("Shutdown.");
+    tracing::info!(target: "auth", "Shut down");
     Ok(())
 }
 
-fn setup_logger(verbosity: i32) -> Result<(), Error> {
-    use tracing::Level;
-    let log_level = match verbosity {
-        0 => Level::ERROR,
-        1 => Level::WARN,
-        2 => Level::INFO,
-        3 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
-
-    let env_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive(format!("tq_db={}", log_level).parse().unwrap())
-        .add_directive(format!("tq_serde={}", log_level).parse().unwrap())
-        .add_directive(format!("tq_crypto={}", log_level).parse().unwrap())
-        .add_directive(format!("tq_codec={}", log_level).parse().unwrap())
-        .add_directive(format!("tq_network={}", log_level).parse().unwrap())
-        .add_directive(format!("tq_server={}", log_level).parse().unwrap())
-        .add_directive(format!("auth={}", log_level).parse().unwrap())
-        .add_directive(format!("auth_server={}", log_level).parse().unwrap());
-    let logger = tracing_subscriber::fmt()
-        .pretty()
-        .with_target(true)
-        .with_max_level(log_level)
-        .with_env_filter(env_filter);
-    logger.init();
-    Ok(())
+/// `LOG_VERBOSITY` in words, for the startup box.
+fn log_level_name(verbosity: i32) -> &'static str {
+    match verbosity {
+        i32::MIN..=0 => "errors",
+        1 => "warnings",
+        2 => "information",
+        3 => "debug",
+        _ => "trace",
+    }
 }

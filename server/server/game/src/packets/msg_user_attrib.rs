@@ -9,6 +9,8 @@ pub enum UserAttribute {
     MaxLife = 1,
     Pk = 6,
     Stamina = 9,
+    /// The XP circle's points (0-100; Redux `UpdateType.Xp`).
+    Xp = 28,
 }
 
 /// 5065 single-attribute update (1017): one changed value of a character.

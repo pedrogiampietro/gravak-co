@@ -56,18 +56,42 @@ rem -- Parse arguments ---------------------------------------------
 if /I "%~1"=="stop" goto stop
 if /I "%~1"=="status" goto status
 
+rem -- Database ----------------------------------------------------
+rem The servers keep their data in the Postgres container of
+rem server\docker-compose.yml; start it (and Docker Desktop) if needed.
+docker info >nul 2>&1 || (
+    echo Iniciando o Docker Desktop...
+    start "" "%ProgramFiles%\Docker\Docker\Docker Desktop.exe"
+    powershell.exe -NoProfile -Command "for ($i = 0; $i -lt 90; $i++) { docker info *> $null; if ($LASTEXITCODE -eq 0) { exit 0 }; Start-Sleep 2 }; exit 1"
+)
+docker info >nul 2>&1 || (
+    echo [ERRO] O Docker nao respondeu; abra o Docker Desktop e tente de novo.
+    pause
+    exit /b 1
+)
+echo Iniciando o Postgres...
+docker compose -f "%SERVER_DIR%\docker-compose.yml" up -d --wait >nul
+if errorlevel 1 (
+    echo [ERRO] O Postgres nao subiu; veja: docker compose -f server\docker-compose.yml logs
+    pause
+    exit /b 1
+)
+rem One backup a day into server\backups (the newest 14 are kept).
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SERVER_DIR%\scripts\db-backup.ps1" -Daily || (
+    echo [AVISO] O backup do banco falhou; os servidores sobem mesmo assim.
+)
+
 rem -- Start servers -----------------------------------------------
 rem A server left over from an earlier run holds its port, and the new one
 rem would exit with "address in use"; stop the old ones first.
-taskkill /IM auth-server.exe /F >nul 2>&1
-taskkill /IM game-server.exe /F >nul 2>&1
-taskkill /FI "WINDOWTITLE eq CoEmu - Auth Server*" /F >nul 2>&1
-taskkill /FI "WINDOWTITLE eq CoEmu - Game Server*" /F >nul 2>&1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SERVER_DIR%\scripts\stop-servers.ps1" >nul
+taskkill /FI "WINDOWTITLE eq Gravak - Auth Server*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Gravak - Game Server*" /F >nul 2>&1
 
 echo [1/2] Iniciando Auth Server...
 pushd "%SERVER_DIR%"
 rem cmd /k keeps the window open if the server exits, so its error stays visible.
-start "CoEmu - Auth Server" /MIN cmd /k ""%AUTH_EXE%""
+start "Gravak - Auth Server" /MIN cmd /k ""%AUTH_EXE%""
 popd
 
 rem Small delay to let the auth server bind its port
@@ -75,7 +99,7 @@ timeout /t 2 /nobreak >nul
 
 echo [2/2] Iniciando Game Server...
 pushd "%SERVER_DIR%"
-start "CoEmu - Game Server" /MIN cmd /k ""%GAME_EXE%""
+start "Gravak - Game Server" /MIN cmd /k ""%GAME_EXE%""
 popd
 
 rem The game server loads the database and maps before binding its port.
@@ -84,12 +108,12 @@ timeout /t 5 /nobreak >nul
 set "FAILED="
 tasklist /FI "IMAGENAME eq auth-server.exe" 2>nul | find /I "auth-server.exe" >nul || (
     echo [ERRO] O Auth Server encerrou logo apos iniciar.
-    echo        Veja o erro na janela "CoEmu - Auth Server".
+    echo        Veja o erro na janela "Gravak - Auth Server".
     set "FAILED=1"
 )
 tasklist /FI "IMAGENAME eq game-server.exe" 2>nul | find /I "game-server.exe" >nul || (
     echo [ERRO] O Game Server encerrou logo apos iniciar.
-    echo        Veja o erro na janela "CoEmu - Game Server".
+    echo        Veja o erro na janela "Gravak - Game Server".
     set "FAILED=1"
 )
 if defined FAILED (
@@ -100,8 +124,8 @@ if defined FAILED (
 
 echo.
 echo   +-----------------------------------------+
-echo   |  Auth Server  -  porta 9958  (login)    |
-echo   |  Game Server  -  porta 5816  (jogo)     |
+echo   ^|  Auth Server  -  porta 9958  (login)    ^|
+echo   ^|  Game Server  -  porta 5816  (jogo)     ^|
 echo   +-----------------------------------------+
 echo.
 echo   Ambos os servidores foram iniciados em janelas
@@ -115,20 +139,13 @@ goto :eof
 
 rem -- Stop servers ------------------------------------------------
 :stop
-echo Encerrando servidores...
-taskkill /IM auth-server.exe /F >nul 2>&1 && (
-    echo   [OK] Auth Server encerrado.
-) || (
-    echo   [--] Auth Server nao estava rodando.
-)
-taskkill /IM game-server.exe /F >nul 2>&1 && (
-    echo   [OK] Game Server encerrado.
-) || (
-    echo   [--] Game Server nao estava rodando.
-)
+echo Encerrando servidores (o game salva quem esta online)...
+rem Ctrl+Break in each server's window, as if it were closed; the game
+rem server saves everyone online before it exits.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SERVER_DIR%\scripts\stop-servers.ps1"
 rem Close the console windows that hosted the servers.
-taskkill /FI "WINDOWTITLE eq CoEmu - Auth Server*" /F >nul 2>&1
-taskkill /FI "WINDOWTITLE eq CoEmu - Game Server*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Gravak - Auth Server*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Gravak - Game Server*" /F >nul 2>&1
 echo.
 echo Servidores encerrados.
 goto :eof

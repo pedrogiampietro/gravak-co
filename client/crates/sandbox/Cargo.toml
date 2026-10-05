@@ -15,7 +15,11 @@ image.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
 arboard = "3.6"
+softbuffer = "0.4"
 tokio = { version = "1.48", features = ["net", "rt", "sync", "time"] }
 fontdb = "0.23"
 fontdue = "0.9"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav"] }
+
+[build-dependencies]
+winresource = "0.1"

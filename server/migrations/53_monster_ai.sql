@@ -1,9 +1,9 @@
 -- Per-type AI from Redux `cq_monstertype`: how far a monster sees and
 -- reaches, and its attack mode (bit 2 hunts players on sight; without it
 -- the monster only fights back).
-ALTER TABLE monster_types ADD COLUMN view_range INTEGER NOT NULL DEFAULT 15;
-ALTER TABLE monster_types ADD COLUMN attack_range INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE monster_types ADD COLUMN attack_mode INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE monster_types ADD COLUMN view_range BIGINT NOT NULL DEFAULT 15;
+ALTER TABLE monster_types ADD COLUMN attack_range BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE monster_types ADD COLUMN attack_mode BIGINT NOT NULL DEFAULT 3;
 
 UPDATE monster_types SET view_range = 8, attack_range = 1, attack_mode = 3 WHERE id = 1;
 UPDATE monster_types SET view_range = 8, attack_range = 1, attack_mode = 3 WHERE id = 2;

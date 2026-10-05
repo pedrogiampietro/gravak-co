@@ -15,7 +15,8 @@ pub struct MsgSkill {
 impl From<SkillProgress> for MsgSkill {
     fn from(skill: SkillProgress) -> Self {
         Self {
-            experience: skill.experience.min(u64::from(u32::MAX)) as u32,
+            // Experience inside the current level, as the client's bar shows.
+            experience: skill.proficiency,
             skill_id: skill.skill_id.min(u32::from(u16::MAX)) as u16,
             level: skill.level,
             reserved: [0; 10],

@@ -3,6 +3,14 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Appends a line to `logs/<name>`, next to the server's own logs.
+fn append(name: &str, line: &str) {
+    let _ = std::fs::create_dir_all("logs");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(format!("logs/{name}")) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 fn timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -25,9 +33,7 @@ fn item_line(
 
 pub fn item(action: &str, character_id: u32, item_uid: u32, item_type: u32, details: impl Display) {
     let line = item_line(timestamp(), action, character_id, item_uid, item_type, details);
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("item-audit.log") {
-        let _ = writeln!(file, "{line}");
-    }
+    append("item-audit.log", &line);
 }
 
 /// Records a completed currency movement. `price` is kept for compatibility
@@ -47,9 +53,7 @@ fn economic_line(
 
 pub fn economic(action: &str, actor_id: u32, counterparty_id: u32, item_uid: u32, price: u32) {
     let line = economic_line(timestamp(), action, actor_id, counterparty_id, item_uid, price);
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("economic-audit.log") {
-        let _ = writeln!(file, "{line}");
-    }
+    append("economic-audit.log", &line);
 }
 
 #[cfg(test)]

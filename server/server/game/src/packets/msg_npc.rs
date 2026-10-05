@@ -63,8 +63,13 @@ impl PacketProcess for MsgNpc {
         let npc_loc = npc.entity().location();
         let in_screen = tq_math::in_screen(my_loc.into(), npc_loc.into());
         if !in_screen {
-            // TODO: Player is using some kind of hack to interact with NPCs
-            // that are not in the screen.
+            tracing::warn!(
+                target: "world",
+                character = %me.basic().name(),
+                account = actor.id(),
+                npc = npc.id(),
+                "NPC used from out of sight; ignored"
+            );
             return Ok(());
         }
         let npc_id = npc.id();
@@ -82,6 +87,7 @@ impl PacketProcess for MsgNpc {
             .or_else(|| crate::trainers::opening(npc_id, character))
             .or_else(|| crate::market_npcs::opening(npc_id, character))
             .or_else(|| crate::quest_npcs::opening(npc_id, character))
+            .or_else(|| crate::quest_givers::opening(npc_id, character))
             .or_else(|| crate::guild_war::opening(state, npc_id, character))
             .or_else(|| crate::city_npcs::opening(npc_id, character))
             .or_else(|| crate::offline_tg::opening(npc_id))
@@ -181,7 +187,7 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
                 (1, "How can I become stronger?".into()),
                 (2, "I will return later.".into()),
                 (3, "Teach me a skill.".into()),
-                (4, "Accept a Pheasant Hunt quest.".into()),
+                (4, "Do you have a task for me?".into()),
             ],
             47,
         );
@@ -232,7 +238,7 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
                 (1, "How can I become stronger?".into()),
                 (2, "I will return later.".into()),
                 (3, "Teach me a skill.".into()),
-                (4, "Accept a Pheasant Hunt quest.".into()),
+                (4, "Do you have a task for me?".into()),
             ],
             47,
         ),

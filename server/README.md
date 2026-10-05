@@ -32,19 +32,13 @@ git clone https://github.com/shekohex/coemu && cd coemu && cp .env.example .env 
 
 4. Start Database
 
-We are using [Sqlite](https://sqlite.org/) as Database for storing all of server data and states.
-
-To make things easy, Install [sqlx-cli](https://github.com/launchbadge/sqlx/tree/master/sqlx-cli) for running Database Migrations.
+We are using [Postgres](https://www.postgresql.org/) for storing all of server data and states; for development it runs in Docker:
 
 ```bash
-$ cargo install sqlx-cli --no-default-features --features rustls,sqlite
+docker compose up -d
 ```
 
-that will take some time, then run
-
-```bash
-sqlx migrate run --database-url 'sqlite://data/coemu.db?mode=rwc'
-```
+The game server applies the migrations when it starts. Without a `DATABASE_URL`, the servers use `postgres://gravak:gravak@localhost:5432/gravak`, the database of `docker-compose.yml`.
 
 Good, let's build the servers!
 

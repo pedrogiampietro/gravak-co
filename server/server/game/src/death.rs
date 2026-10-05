@@ -11,7 +11,7 @@ use crate::state::GroundItem;
 use crate::{Error, State};
 
 /// The client offers Revive after this long.
-pub const REVIVE_DELAY: Duration = Duration::from_secs(18);
+pub const REVIVE_DELAY: Duration = Duration::from_secs(20);
 /// A killer's name flashes blue this long.
 pub const PK_FLASH: Duration = Duration::from_secs(180);
 /// Attacking a player who is not fair game flashes the name this long.
@@ -163,9 +163,24 @@ pub async fn kill_character(
         screen.send_message(blow).await?;
         screen.send_message(MsgPlayer::from(victim)).await?;
     }
-    tracing::info!(victim = victim.id(), killer = killer_id, "Character died");
+    let killer_name = state
+        .entity(killer_id)
+        .map_or_else(|| format!("#{killer_id}"), |killer| killer.basic().name().to_owned());
+    tracing::info!(
+        target: "pk",
+        map = victim.entity().map_id(),
+        "{} was killed by {}",
+        victim.entity().name(),
+        killer_name
+    );
 
     let map_id = victim.entity().map_id();
+    if map_id == crate::events::EVENT_MAP {
+        // Events keep their own score; nothing drops.
+        crate::events::on_kill(state, victim, killer).await?;
+        victim.save(state).await?;
+        return Ok(());
+    }
     if map_id == ARENA_MAP {
         victim.save(state).await?;
         return Ok(());
@@ -254,6 +269,9 @@ async fn drop_equipment(
     victim.drop_inventory_item(state.pool(), item.uid).await
 }
 
+/// How long a revived player takes no damage, unless they attack first.
+pub const REVIVE_PROTECTION: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Revive and Pray: the dead player gets up where they lie.
 pub async fn revive_here(character: &Character) -> Result<(), Error> {
     character.entity().restore_health();
@@ -272,9 +290,10 @@ pub async fn revive_here(character: &Character) -> Result<(), Error> {
     Ok(())
 }
 
-/// Revives a dead character at the revive point of the map's reborn map.
-/// `false` while the revive delay is still running.
-pub async fn revive(state: &State, character: &Character) -> Result<bool, Error> {
+/// Revives a dead character at the revive point of the map's reborn map, or
+/// where they lie when they ask to (`here`) under Heaven's Blessing (Redux:
+/// MsgAction 94 with data 1). `false` while the revive delay is running.
+pub async fn revive(state: &State, character: &Character, here: bool) -> Result<bool, Error> {
     if !character.can_revive() {
         return Ok(false);
     }
@@ -282,6 +301,14 @@ pub async fn revive(state: &State, character: &Character) -> Result<bool, Error>
     character.clear_death();
     character.refresh_after_revive();
     let map_id = character.entity().map_id();
+    if here && character.heaven_blessing_active() {
+        revive_here(character).await?;
+        return Ok(true);
+    }
+    if map_id == crate::events::EVENT_MAP {
+        // The event stands its players up itself.
+        return Ok(false);
+    }
     if map_id == ARENA_MAP {
         // Arena fighters get up where they fell.
         revive_here(character).await?;

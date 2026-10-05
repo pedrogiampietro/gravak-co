@@ -1,6 +1,7 @@
 #![allow(non_upper_case_globals)]
 
 pub mod artisans;
+pub mod bounty;
 pub mod city_npcs;
 pub mod audit;
 pub mod combat;
@@ -15,6 +16,13 @@ pub mod leveling;
 pub mod market_npcs;
 pub mod mining;
 pub mod nobility;
+pub mod status;
+pub mod bosses;
+pub mod broadcast;
+pub mod events;
+pub mod lucky;
+pub mod special_items;
+pub mod store;
 pub mod systems;
 pub mod titles;
 pub mod utils;
@@ -33,6 +41,7 @@ pub mod packets;
 pub mod player_shop;
 pub mod offline_tg;
 pub mod pets;
+pub mod quest_givers;
 pub mod quest_npcs;
 pub mod quests;
 pub mod refinery;

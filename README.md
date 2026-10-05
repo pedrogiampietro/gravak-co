@@ -37,7 +37,7 @@ Para abrir o cliente conectado ao servidor local:
 
 ```powershell
 cd R:\gravak-co\client
-cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm CoEmu
+cargo run --release --locked -p conquer-sandbox -- --assets R:\5065 --online --auth 127.0.0.1:9958 --username test1 --password 123456 --realm Gravak
 ```
 
 ### Diagnóstico de performance
@@ -89,15 +89,21 @@ Nos limites fixos, o pacing usa uma janela híbrida: aguarda até 2 ms antes do 
 
 ## Servidor
 
-O servidor exige Rust nightly; a versão está fixada em `server\rust-toolchain.toml`. Para preparar o banco local:
+O servidor exige Rust nightly; a versão está fixada em `server\rust-toolchain.toml`. O banco é Postgres, num container Docker durante o desenvolvimento; o game server aplica as migrations ao iniciar, e o `run-server.bat` sobe o container sozinho:
 
 ```powershell
 cd R:\gravak-co\server
-sqlx migrate run --source migrations --database-url "sqlite://data/coemu.db?mode=rwc"
+docker compose up -d
 cargo build -p auth --features server -p game
 ```
 
-Os servidores usam, por padrão, as portas `9958` (auth) e `5816` (game). O banco SQLite, logs, builds e fixtures locais são ignorados pelo Git. As regras das skills ficam em `server/server/game/data/skills.dat`; é possível apontar outro catálogo com a variável `SKILLS_DATA`. Os comandos `$test-health` e `$test-mana` restauram recursos apenas em memória para testes; `$test-skill-book` cria o livro `723100`, que ensina Whirlwind (`1002`) pelo fluxo transacional de uso de item. `$test-durability` cria uma arma com 10/100 de durabilidade para validação manual de combate/reparo; `$test-quality` cria uma arma normal `410005` e um DragonBall para testar qualidade; `$test-refinery` cria um helmet e o material compatível para testar a refinaria; `$test-artifact` cria um helmet, um FlameHat (`820001`) e um Meteor para testar o artefato. O treinamento pelo NPC exige nível 10 e 500 silver para Whirlwind. Armas perdem durabilidade ao atacar e podem ser reparadas pelo ferreiro. O comando `$add-stat vitality 2` (também aceita strength/agility/spirit) gasta pontos disponíveis de forma autoritativa; cada level-up concede 3 pontos. `$upgrade-item <uid>` aumenta em um nível o `plus` de um item próprio; a ação clássica `1009/19` melhora a qualidade com DragonBall, consumindo o catalisador e penalizando a durabilidade em caso de falha. Sockets/gems, composição, refinaria, artefatos e social possuem fluxos equivalentes no menu/NPC/probe. O comando `$quest-status` lista o progresso persistido das quests, e o probe aceita `--skill-book`, `--combat`, `--quest`, `--quest-status`, `--team <usuário> <senha>`, `--friends <usuário> <senha>` e `--pvp <usuário> <senha>` para validar os fluxos ponta a ponta. O mapa de gaps e prioridades está em `docs/reference-gap-matrix.md`.
+Sem `DATABASE_URL` no `.env`, os servidores usam `postgres://gravak:gravak@localhost:5432/gravak`, o do `docker-compose.yml`. Os testes criam um banco novo por teste nesse mesmo Postgres (ou em `TEST_DATABASE_URL`).
+
+O `run-server.bat` guarda um backup do banco por dia em `server/backups/` (os 14 mais novos ficam). Para um backup na hora, `server\scripts\db-backup.ps1`; para voltar um, pare os servidores e rode `server\scripts\db-restore.ps1 <arquivo>` (o estado atual é salvo antes).
+
+Os terminais do auth e do game mostram uma linha por evento — hora, nível, categoria (`login`, `trade`, `pk`, `net`, `db`, `status`...) e campos — e gravam as mesmas linhas em `server/logs/<auth|game>.log.<data>`. `LOG_VERBOSITY` (0 a 4) escolhe o nível e `RUST_LOG` o refina por módulo.
+
+Os servidores usam, por padrão, as portas `9958` (auth) e `5816` (game). Logs, builds e fixtures locais são ignorados pelo Git. As regras das skills ficam em `server/server/game/data/skills.dat`; é possível apontar outro catálogo com a variável `SKILLS_DATA`. Os comandos `$test-health` e `$test-mana` restauram recursos apenas em memória para testes; `$test-skill-book` cria o livro `723100`, que ensina Whirlwind (`1002`) pelo fluxo transacional de uso de item. `$test-durability` cria uma arma com 10/100 de durabilidade para validação manual de combate/reparo; `$test-quality` cria uma arma normal `410005` e um DragonBall para testar qualidade; `$test-refinery` cria um helmet e o material compatível para testar a refinaria; `$test-artifact` cria um helmet, um FlameHat (`820001`) e um Meteor para testar o artefato. O treinamento pelo NPC exige nível 10 e 500 silver para Whirlwind. Armas perdem durabilidade ao atacar e podem ser reparadas pelo ferreiro. O comando `$add-stat vitality 2` (também aceita strength/agility/spirit) gasta pontos disponíveis de forma autoritativa; cada level-up concede 3 pontos. `$upgrade-item <uid>` aumenta em um nível o `plus` de um item próprio; a ação clássica `1009/19` melhora a qualidade com DragonBall, consumindo o catalisador e penalizando a durabilidade em caso de falha. Sockets/gems, composição, refinaria, artefatos e social possuem fluxos equivalentes no menu/NPC/probe. O comando `$quest-status` lista o progresso persistido das quests, e o probe aceita `--skill-book`, `--combat`, `--quest`, `--quest-status`, `--team <usuário> <senha>`, `--friends <usuário> <senha>` e `--pvp <usuário> <senha>` para validar os fluxos ponta a ponta. O mapa de gaps e prioridades está em `docs/reference-gap-matrix.md`.
 
 ## Acompanhamento do projeto
 

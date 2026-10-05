@@ -124,6 +124,7 @@ impl MsgInteract {
         if experience == 0 {
             return Ok(());
         }
+        let experience = crate::store::with_vip_bonus(experience, state.vip().is_vip(character.id()));
         let leveled = character.grant_experience(experience);
         actor.send(MsgUserInfo::from(character)).await?;
         if let Some(level) = leveled {
@@ -369,6 +370,14 @@ impl MsgInteract {
             );
             return Ok(());
         }
+        if skill.id == crate::lucky::BLESS {
+            if let Some(line) = crate::lucky::bless(state, character).await? {
+                actor
+                    .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, line))
+                    .await?;
+            }
+            return Ok(());
+        }
         if skill.xp && !character.xp_ready() {
             actor
                 .send(MsgTalk::from_system(
@@ -421,6 +430,9 @@ impl MsgInteract {
             let Some(effect) = skill.status.map(|status| status.effect()) else {
                 return Ok(());
             };
+            if skill.xp && !character.in_xp_skill() {
+                character.reset_ko_count();
+            }
             character.apply_status(effect, skill.status_duration);
             actor.send(MsgUserInfo::from(character)).await?;
             actor.send(MsgPlayer::from(character)).await?;
@@ -671,7 +683,7 @@ impl MsgInteract {
         character: &crate::entities::Character,
         skill: &crate::skills::SkillDefinition,
     ) -> Option<Vec<Arc<crate::entities::GameEntity>>> {
-        let Some(primary) = map.monster_entity(self.target_id).cloned().or_else(|| {
+        let Some(primary) = map.monster_entity(self.target_id).or_else(|| {
             state
                 .entities()
                 .into_iter()
@@ -693,7 +705,12 @@ impl MsgInteract {
         );
         let target_character = primary.as_character();
         let pvp_allowed = match target_character {
-            Some(target) => character.can_attack_character(target) && !team_mode_spares(state, character, target),
+            Some(target) => {
+                (character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
+                    && !team_mode_spares(state, character, target)
+                    && !crate::events::allies(character.id(), target.id())
+                    && !target.revive_protected()
+            },
             None => true,
         };
         let valid_target = primary_entity.map_id() == character.entity().map_id()
@@ -859,9 +876,16 @@ impl MsgInteract {
                 .saturating_add(skill.flat_power)
                 .saturating_mul(100 + character.gem_bonus(crate::entities::GemFamily::Phoenix))
                 / 100;
-            let outcome = if skill.physical {
+            // Superman strengthens every physical blow, skills too (Redux
+            // `CalculatePhysicalDamage`): 10x on monsters, 2x on players.
+            let superman = if character.has_status(crate::entities::StatusEffect::Superman) {
+                crate::combat::superman_damage_percent(target.as_monster().is_some())
+            } else {
+                100
+            };
+            let mut outcome = if skill.physical {
                 resolve_physical_hit(
-                    scale_skill_power(physical_stats, physical_power),
+                    scale_skill_power(scale_skill_power(physical_stats, physical_power), superman),
                     target_stats,
                     u32::from(health_before.current),
                     next_roll(),
@@ -880,12 +904,22 @@ impl MsgInteract {
                     fire_resistance,
                 )
             };
+            if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
+                crate::bounty::empower(
+                    &talisman,
+                    monster_name_of(monster),
+                    &mut outcome,
+                    u32::from(health_before.current),
+                );
+            }
+            crate::lucky::empower(Some(character), target.as_character(), &mut outcome, u32::from(health_before.current));
             let health_after = target_entity.apply_damage(outcome.damage);
             if let Some(victim) = target.as_character() {
                 crate::death::check_crime(state, character, victim).await?;
             }
             if let Some(monster) = target.as_monster() {
                 crate::systems::monster_ai::provoke(monster.id(), character.id());
+                bounty_leech(state, character, monster, outcome.damage).await?;
                 hit_experience += crate::leveling::combat_experience(
                     character.entity().level(),
                     u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
@@ -949,12 +983,17 @@ impl MsgInteract {
             owner.send(effect.clone()).await?;
         }
         self.degrade_used_weapons(state, actor, character).await?;
-        if let Some(progress) = character.practice_skill(state.pool(), skill.id, 1).await? {
+        // Attack skills learn as much as the hit earned (Redux
+        // `AddSkillExperience(expGain)`), at least one.
+        let practice = u32::try_from(hit_experience).unwrap_or(u32::MAX).max(1);
+        if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
             actor.send(super::MsgSkill::from(progress)).await?;
         }
         for target_id in defeated {
-            if let Some(monster) = map.monster_entity(target_id).and_then(|entity| entity.as_monster()) {
-                self.reward_monster_defeat(state, actor, character, monster).await?;
+            if let Some(entity) = map.monster_entity(target_id) {
+                if let Some(monster) = entity.as_monster() {
+                    self.reward_monster_defeat(state, actor, character, monster).await?;
+                }
             }
         }
         self.grant_hit_experience(state, actor, character, hit_experience).await?;
@@ -989,6 +1028,37 @@ fn team_mode_spares(state: &State, attacker: &crate::entities::Character, target
         .is_some_and(|kind| kind == "ally")
 }
 
+fn monster_name_of(monster: &crate::entities::Monster) -> &str {
+    &monster.monster_type().name
+}
+
+/// The bounty talisman's life leech: part of the damage dealt to the task's
+/// monster comes back as life.
+async fn bounty_leech(
+    state: &State,
+    character: &crate::entities::Character,
+    monster: &crate::entities::Monster,
+    damage: u32,
+) -> Result<(), Error> {
+    let Some(talisman) = state.talismans().get(character.id()) else {
+        return Ok(());
+    };
+    let leeched = talisman.leech(monster_name_of(monster), damage);
+    if leeched == 0 || character.entity().hp().current == 0 {
+        return Ok(());
+    }
+    let life = character.entity().heal_health(u16::try_from(leeched).unwrap_or(u16::MAX));
+    character
+        .owner()
+        .send(super::MsgUserAttrib::new(
+            character.id(),
+            super::UserAttribute::Life,
+            u64::from(life.current),
+        ))
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn reward_monster_defeat(
     state: &State,
     character: &crate::entities::Character,
@@ -997,7 +1067,7 @@ pub(crate) async fn reward_monster_defeat(
 ) -> Result<(), Error> {
     character.add_xp_point();
     let level = monster.monster_type().level.max(1) as u32;
-    let silver_drop = level + next_roll() % (level.saturating_mul(104).saturating_add(1));
+    let silver_drop = crate::drops::roll_silver(level, next_roll(), next_roll());
     let experience = monster.monster_type().level.max(1) as u64 * 25;
     let recipients = team_reward_recipients(state, character);
     let recipient_count = recipients.len().max(1) as u64;
@@ -1011,13 +1081,23 @@ pub(crate) async fn reward_monster_defeat(
             continue;
         };
         let share = base_share + u64::from((index as u64) < remainder);
+        let share = crate::store::with_vip_bonus(share, state.vip().is_vip(recipient.id()));
         let leveled = recipient.grant_experience(share.max(1));
         if let Some(level) = leveled {
             crate::leveling::after_level_up(state, recipient, level).await?;
         }
-        let quest_completions =
-            crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
-        let quest_leveled = quest_completions.iter().filter_map(|quest| quest.leveled_to).max();
+        let quests = crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
+        let bounty_leveled =
+            super::msg_bounty::count_kill(state, recipient, monster_type_id, &monster.monster_type().name).await?;
+        if let Some(level) = bounty_leveled {
+            crate::leveling::after_level_up(state, recipient, level).await?;
+        }
+        let quest_leveled = quests
+            .completed
+            .iter()
+            .filter_map(|quest| quest.leveled_to)
+            .chain(bounty_leveled)
+            .max();
         recipient.save(state).await?;
         let owner = recipient.owner();
         owner.send(MsgUserInfo::from(recipient)).await?;
@@ -1043,21 +1123,42 @@ pub(crate) async fn reward_monster_defeat(
                 ))
                 .await?;
         }
-        for quest in quest_completions {
+        for quest in quests.completed {
+            let item = quest
+                .definition
+                .reward_item
+                .map(|item_type| format!(" and {}", crate::quests::item_name(item_type)))
+                .unwrap_or_default();
+            if let Some(item) = quest.reward_item {
+                owner.send(crate::packets::MsgItemInfo::inventory_item(item)).await?;
+            }
             owner
                 .send(MsgTalk::from_system(
                     recipient.id(),
                     TalkChannel::System,
                     format!(
-                        "Quest complete: {}. Reward: {} silver and {} experience.",
+                        "Quest complete: {}. Reward: {} silver, {} experience{item}.",
                         quest.definition.name, quest.reward_silver, quest.reward_experience
+                    ),
+                ))
+                .await?;
+        }
+        for quest in quests.waiting_for_room {
+            owner
+                .send(MsgTalk::from_system(
+                    recipient.id(),
+                    TalkChannel::System,
+                    format!(
+                        "Quest {}: make room in your bag for {}, then defeat one more.",
+                        quest.name,
+                        crate::quests::item_name(quest.reward_item.unwrap_or_default())
                     ),
                 ))
                 .await?;
         }
     }
 
-    for entity in &recipients {
+    for entity in recipients.iter().filter(|_| silver_drop.is_some()) {
         let Some(recipient) = entity.as_character() else {
             continue;
         };
@@ -1066,20 +1167,74 @@ pub(crate) async fn reward_monster_defeat(
             .send(MsgTalk::from_system(
                 recipient.id(),
                 TalkChannel::System,
-                format!("Loot: {silver_drop} silver dropped."),
+                format!("Loot: {} silver dropped.", silver_drop.unwrap_or_default()),
             ))
             .await?;
     }
     let location = monster.entity().location();
     let monster_level = monster.monster_type().level.max(0) as u16;
-    let mut drops = vec![(silver_item_id(silver_drop), silver_drop)];
+    let mut drops = silver_drop
+        .map(|silver| (silver_item_id(silver), silver))
+        .into_iter()
+        .collect::<Vec<_>>();
     drops.extend(
         state
             .drop_catalog()
             .roll(monster_type_id, monster_level)
             .into_iter()
+            .chain(state.drop_catalog().roll_rares())
+            .chain(crate::drops::roll_extras(monster_level, next_roll, |item| {
+                state.shop_catalog().template(item).is_some()
+            }))
             .map(|item_id| (item_id, 0)),
     );
+    // The bounty talisman's loot bonus: one more roll of the drop table.
+    if state
+        .talismans()
+        .get(character.id())
+        .is_some_and(|talisman| talisman.extra_loot(&monster.monster_type().name, next_roll()))
+    {
+        drops.extend(
+            state
+                .drop_catalog()
+                .roll(monster_type_id, monster_level)
+                .into_iter()
+                .map(|item_id| (item_id, 0)),
+        );
+    }
+    // A boss: the server hears of its fall, and it drops more.
+    drops.extend(
+        crate::bosses::slain(state, character, monster)
+            .await?
+            .into_iter()
+            .map(|item_id| (item_id, 0)),
+    );
+    // VIP: the drops their loot filter picks go straight into the bag.
+    if state.vip().is_vip(character.id()) {
+        let filter = state.vip().loot_filter(character.id());
+        let mut kept = Vec::with_capacity(drops.len());
+        for (item_id, silver) in drops {
+            if !crate::store::loot::picks(filter, item_id, silver) {
+                kept.push((item_id, silver));
+            } else if silver > 0 {
+                character.grant_silver(state.pool(), silver).await?;
+                character.owner().send(MsgUserInfo::from(character)).await?;
+            } else {
+                let template = state.shop_catalog().template(item_id);
+                let (durability, max_durability) =
+                    template.map_or((0, 0), |template| (template.durability, template.max_durability));
+                match character.add_ground_item(state.pool(), item_id, durability, max_durability).await? {
+                    Some(item) => {
+                        crate::audit::item("vip_auto_pickup", character.id(), item.uid, item.item_type, format_args!(""));
+                        character.owner().send(super::MsgItemInfo::inventory_item(item)).await?;
+                    },
+                    // A full bag: it falls to the ground as usual.
+                    None => kept.push((item_id, silver)),
+                }
+            }
+        }
+        drops = kept;
+    }
     for (index, item_id) in drops.into_iter().enumerate() {
         let (offset_x, offset_y) = drop_offset(index);
         let item_uid = state.next_ground_item_uid();
@@ -1101,6 +1256,10 @@ pub(crate) async fn reward_monster_defeat(
         }
     }
     let location = monster.entity().location();
+    // In Cyclone or Superman each kill counts and lengthens it; the death
+    // carries the count as the original's (`65541 * KOCount`, the client
+    // reads the high word).
+    let ko = (killer_id == character.id()).then(|| character.count_ko()).flatten();
     let kill = MsgInteract {
         timestamp: 0,
         character_id: killer_id,
@@ -1108,7 +1267,7 @@ pub(crate) async fn reward_monster_defeat(
         x: location.x,
         y: location.y,
         action: InteractAction::Kill as u32,
-        value: silver_drop,
+        value: ko.map_or(silver_drop.unwrap_or_default(), |ko| ko.saturating_mul(65_541)),
         reserved: [0; 12],
     };
     character.owner().send(kill.clone()).await?;
@@ -1134,6 +1293,16 @@ impl PacketProcess for MsgInteract {
                 "Rejected interaction from another character"
             );
             return Ok(());
+        }
+
+        // Ghosts walk, but do not fight.
+        if character.entity().is_dead()
+            && matches!(self.action_kind(), InteractAction::Attack | InteractAction::MagicAttack)
+        {
+            return Ok(());
+        }
+        if matches!(self.action_kind(), InteractAction::Attack | InteractAction::MagicAttack) {
+            character.end_revive_protection();
         }
 
         if character.has_status(crate::entities::StatusEffect::Stunned) {
@@ -1178,7 +1347,7 @@ impl PacketProcess for MsgInteract {
         if let Some(npc) = map.npc(self.target_id).filter(|npc| npc.is_training_goal() || crate::guild_war::is_war_structure(npc.id())) {
             return self.train_on_dummy(state, actor, character, npc, None).await;
         }
-        let Some(target) = map.monster_entity(self.target_id).cloned().or_else(|| {
+        let Some(target) = map.monster_entity(self.target_id).or_else(|| {
             state
                 .entities()
                 .into_iter()
@@ -1198,7 +1367,12 @@ impl PacketProcess for MsgInteract {
                 .is_some_and(|target| target.id() == character.id())
             || target
                 .as_character()
-                .is_some_and(|target| !character.can_attack_character(target) || team_mode_spares(state, character, target))
+                .is_some_and(|target| {
+                    !(character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
+                        || team_mode_spares(state, character, target)
+                        || crate::events::allies(character.id(), target.id())
+                        || target.revive_protected()
+                })
         {
             tracing::debug!(target_id = self.target_id, "Rejected invalid player attack target");
             return Ok(());
@@ -1222,6 +1396,16 @@ impl PacketProcess for MsgInteract {
         if !can_attack {
             tracing::trace!(character_id = character.id(), "Rejected attack during cooldown");
             return Ok(());
+        }
+        // A weapon skill the weapon knows may go off instead of the plain hit.
+        if let Some(skill_id) = weapon_skill_roll(state, character) {
+            let mut cast = self.clone();
+            cast.action = InteractAction::MagicAttack as u32;
+            cast.value = skill_id;
+            let location = target_entity.location();
+            cast.x = location.x;
+            cast.y = location.y;
+            return cast.process_magic_attack(state, actor, character).await;
         }
 
         let attacker_stats = character.combat_stats_with_catalog(Some(state.shop_catalog()));
@@ -1276,9 +1460,14 @@ impl PacketProcess for MsgInteract {
             outcome.remaining_health = life_before;
             outcome.defeated = false;
         }
+        if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
+            crate::bounty::empower(&talisman, monster_name_of(monster), &mut outcome, life_before);
+        }
+        crate::lucky::empower(Some(character), target.as_character(), &mut outcome, life_before);
         target_entity.apply_damage(outcome.damage);
         if let Some(monster) = target.as_monster() {
             crate::systems::monster_ai::provoke(monster.id(), character.id());
+            bounty_leech(state, character, monster, outcome.damage).await?;
         }
         if let Some(victim) = target.as_character() {
             crate::death::check_crime(state, character, victim).await?;
@@ -1363,6 +1552,18 @@ impl PacketProcess for MsgInteract {
         }
         Ok(())
     }
+}
+
+/// The weapon skill a plain attack sets off, if any: the right hand's first,
+/// then the left's, each going off `chance` times in a hundred (Redux
+/// `GetWeaponSkill`).
+fn weapon_skill_roll(state: &State, character: &crate::entities::Character) -> Option<u32> {
+    let skill = [4_u8, 5].into_iter().find_map(|slot| {
+        let weapon = character.equipment_item(slot)?;
+        let skill = state.skill_catalog().weapon_skill(weapon.item_type / 1_000)?;
+        character.has_skill(skill.id).then_some(skill)
+    })?;
+    (crate::combat::next_roll() % 100 < u32::from(skill.chance)).then_some(skill.id)
 }
 
 #[cfg(test)]

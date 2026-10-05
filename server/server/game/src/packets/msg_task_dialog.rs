@@ -280,7 +280,7 @@ impl PacketProcess for MsgTaskDialog {
             }
             return Ok(());
         }
-        if self.task_id == 425 && self.option_id == 4 {
+        if crate::quest_givers::asks_for_task(self.task_id, self.option_id) {
             let Some(npc) = npc else {
                 return Ok(());
             };
@@ -291,32 +291,12 @@ impl PacketProcess for MsgTaskDialog {
                     .send(super::MsgTalk::from_system(
                         character.id(),
                         super::TalkChannel::TopLeft,
-                        "Old General Yang is too far away.",
+                        format!("{} is too far away.", npc.entity().name()),
                     ))
                     .await?;
                 return Ok(());
             }
-            let response = match crate::quests::start(_state.pool(), character.database_id(), 1).await? {
-                crate::quests::StartOutcome::Started(quest) => {
-                    format!("Quest accepted: {}. {}", quest.name, quest.description)
-                },
-                crate::quests::StartOutcome::AlreadyActive(quest, progress) => format!(
-                    "Quest already active: {} ({}/{}).",
-                    quest.name, progress, quest.required_count
-                ),
-                crate::quests::StartOutcome::AlreadyCompleted(quest) => {
-                    format!("Quest already completed: {}.", quest.name)
-                },
-                crate::quests::StartOutcome::NotFound => "This quest is not available.".to_owned(),
-            };
-            actor
-                .send(super::MsgTalk::from_system(
-                    character.id(),
-                    super::TalkChannel::System,
-                    response,
-                ))
-                .await?;
-            return Ok(());
+            return crate::quest_givers::ask(_state, actor, character, self.task_id).await;
         }
         let character_name = entity.basic().name().to_owned();
         let npc_name = npc.map(|value| value.entity().name().to_owned());
@@ -1010,6 +990,8 @@ async fn city_teleport(
         return Ok(());
     };
 
+    // VIPs ride the Conductresses for free.
+    let fee = if fee == crate::teleports::CONDUCTRESS_FEE && state.vip().is_vip(character.id()) { 0 } else { fee };
     if fee > 0 {
         if character.spend_silver(state.pool(), fee).await?.is_none() {
             // The reference scripts answer in the dialog itself.

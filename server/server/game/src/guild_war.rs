@@ -301,7 +301,7 @@ async fn round_end(state: &State) {
 
 async fn persist_winner(state: &State, guild_id: u32, name: &str) {
     let result = sqlx::query(
-        "INSERT INTO guild_war (id, winner_guild_id, winner_name) VALUES (1, ?, ?)
+        "INSERT INTO guild_war (id, winner_guild_id, winner_name) VALUES (1, $1, $2)
          ON CONFLICT(id) DO UPDATE SET winner_guild_id = excluded.winner_guild_id, winner_name = excluded.winner_name",
     )
     .bind(i64::from(guild_id))

@@ -51,6 +51,8 @@ const ROBOT: u32 = 1_270;
 const SPEED_LIGHTNING: u32 = 5_001;
 const RAPID_FIRE: u32 = 8_000;
 const SCATTER: u32 = 8_001;
+/// The bow's weapon skill: no book teaches it, the Archer God does.
+const FREEZING_ARROW: u32 = 5_000;
 const FLY: u32 = 8_002;
 const ADVANCED_FLY: u32 = 8_003;
 const ARROW_RAIN: u32 = 8_030;
@@ -466,6 +468,7 @@ fn skill_menu(family: Family, student: &Student, option: u8) -> Option<Reply> {
             .text("The Archer's Skills are numerous, varied and powerful. Which would you like to learn?")
             .option(9, "Advanced Fly")
             .option(10, "Arrow Rain")
+            .option(11, "Freezing Arrow")
             .option(3, "Previous Skills")
             .option(255, "Nothing."),
         (Family::Archer, 4) => one(15, FLY, "Fly"),
@@ -474,6 +477,7 @@ fn skill_menu(family: Family, student: &Student, option: u8) -> Option<Reply> {
         (Family::Archer, 7) => one(71, INTENSIFY, "Intensify"),
         (Family::Archer, 9) => one(70, ADVANCED_FLY, "Advanced Fly"),
         (Family::Archer, 10) => one(70, ARROW_RAIN, "Arrow Rain"),
+        (Family::Archer, 11) => one(30, FREEZING_ARROW, "Freezing Arrow"),
         (Family::Taoist, 5) => reply()
             .text("What skill would you like to learn?")
             .option(10, "Basic Spells")

@@ -73,14 +73,24 @@ pub async fn tick(state: &State) {
                 continue;
             };
             if monster_ref.entity().is_dead() {
+                // A game master's monster lies a moment, then is gone.
+                let summoned = crate::constants::is_summoned(monster.id());
                 let should_respawn = {
                     let mut respawns = next_respawn.lock().unwrap();
                     let due = respawns.entry(monster.id()).or_insert_with(|| {
-                        now + Duration::from_secs(monster_ref.monster_type().respawn_seconds.max(3) as u64)
+                        let seconds = if summoned { 5 } else { monster_ref.monster_type().respawn_seconds.max(3) as u64 };
+                        now + Duration::from_secs(seconds)
                     });
                     *due <= now
                 };
-                if should_respawn {
+                if should_respawn && summoned {
+                    map.remove_monster(monster.id());
+                    aggro().lock().unwrap().remove(&monster.id());
+                    next_respawn.lock().unwrap().remove(&monster.id());
+                    let _ = map
+                        .broadcast(MsgAction::new(monster.id(), 0, 0, 0, ActionType::LeaveMap))
+                        .await;
+                } else if should_respawn {
                     let home = monster_ref.home();
                     let location = if map.is_walkable(home.x, home.y) {
                         home
@@ -187,6 +197,18 @@ pub async fn tick(state: &State) {
                     .is_none_or(|due| *due <= now);
                 if can_attack {
                     attack(state, monster_ref, character).await;
+                    // A boss's blow strikes everyone close to it.
+                    if crate::bosses::is_boss(monster.id()) {
+                        for other in &characters {
+                            let Some(other) = other.as_character() else {
+                                continue;
+                            };
+                            let near = distance_between(mloc, other.entity().location()) <= crate::bosses::AREA_BLOW;
+                            if other.id() != character.id() && near && !other.entity().is_dead() {
+                                attack(state, monster_ref, other).await;
+                            }
+                        }
+                    }
                     let delay = monster_ref.monster_type().attack_speed.max(350) as u64;
                     next_attack
                         .lock()
@@ -239,6 +261,7 @@ fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, view_ran
     // Dead, invisible or flying players are out of reach.
     let flags = character.entity().flags();
     if character.entity().is_dead()
+        || character.revive_protected()
         || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
     {
         return None;
@@ -337,16 +360,21 @@ fn direction(dx: i16, dy: i16) -> u8 {
 }
 
 async fn attack(state: &State, monster: &crate::entities::Monster, character: &crate::entities::Character) {
+    if character.revive_protected() {
+        return;
+    }
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs() as u32)
         .unwrap_or_default();
-    let outcome = resolve_physical_hit(
+    let life_before = u32::from(character.entity().hp().current());
+    let mut outcome = resolve_physical_hit(
         monster.combat_stats(),
         character.combat_stats_with_catalog(Some(state.shop_catalog())),
-        u32::from(character.entity().hp().current()),
+        life_before,
         next_roll(),
     );
+    crate::lucky::empower(None, Some(character), &mut outcome, life_before);
     character.entity().apply_damage(outcome.damage);
     // MsgInteract is an effect packet; the local HUD receives its actual life
     // through MsgUserInfo. Without this update the server lost HP internally,

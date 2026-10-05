@@ -1,6 +1,6 @@
 //! Minimal Conquer Online 5065-compatible wire protocol used by the client.
 //!
-//! The server currently exposes the CoEmu 5017-era packet IDs. Keeping the
+//! The server currently exposes the 5017-era packet IDs of its CoEmu base. Keeping the
 //! transport and the first authentication messages in a small crate gives us
 //! a stable place to measure and close that compatibility gap.
 
@@ -21,6 +21,19 @@ pub const MSG_REGISTER: u16 = 1001;
 pub const MSG_WALK: u16 = 1005;
 pub const MSG_USER_INFO: u16 = 1006;
 pub const MSG_NOBILITY: u16 = 2064;
+/// Gravak's bounty tasks: board actions and the kill counter.
+pub const MSG_BOUNTY: u16 = 9100;
+/// Gravak's bounty tasks: the whole Task Board.
+pub const MSG_BOUNTY_STATE: u16 = 9101;
+/// Gravak's Store: one product of the catalog, and the buyer's CPs and VIP.
+pub const MSG_STORE_PRODUCT: u16 = 9111;
+pub const MSG_STORE_STATE: u16 = 9112;
+/// Gravak's Store: one of the buyer's latest purchases.
+pub const MSG_STORE_PURCHASE: u16 = 9113;
+/// Gravak: when each of the hero's statuses ends.
+pub const MSG_STATUS_TIMERS: u16 = 9120;
+/// Strings tied to an entity: fireworks, an effect played on it...
+pub const MSG_NAME: u16 = 1015;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
 pub const MSG_ITEM_INFO: u16 = 1008;
 pub const MSG_ITEM: u16 = 1009;
@@ -91,17 +104,73 @@ pub struct RegisterCharacter {
     pub mesh: u16,
     pub class: u16,
     pub token: u32,
+    /// Gravak: the dye (3..=9) of the starter coat; 0 leaves it plain.
+    pub coat_dye: u32,
 }
 
 impl RegisterCharacter {
     pub fn new(username: &str, character_name: &str, token: u32) -> Self {
+        Self::with_look(username, character_name, 1003, 10, token)
+    }
+
+    /// `mesh` is the body (1003/1004 male, 2001/2002 female) and `class`
+    /// the base profession (10 Trojan, 20 Warrior, 40 Archer, 100 Taoist).
+    pub fn with_look(
+        username: &str,
+        character_name: &str,
+        mesh: u16,
+        class: u16,
+        token: u32,
+    ) -> Self {
         Self {
             username: username.to_owned().into(),
             character_name: character_name.to_owned().into(),
             password: "********".to_owned().into(),
-            mesh: 1003,
-            class: 10,
+            mesh,
+            class,
             token,
+            coat_dye: 0,
+        }
+    }
+
+    /// The starter coat in Tinter dye `dye` (3..=9).
+    pub fn with_coat_dye(mut self, dye: u8) -> Self {
+        self.coat_dye = u32::from(dye);
+        self
+    }
+}
+
+/// Account registration request (project extension, not part of 5065),
+/// answered by [`MSG_REGISTER_ACCOUNT_RESULT`].
+#[derive(Debug, Serialize, PacketID)]
+#[packet(id = 9001)]
+pub struct RegisterAccount {
+    pub username: String16,
+    pub password: TQPassword,
+}
+
+pub const MSG_REGISTER_ACCOUNT_RESULT: u16 = 9002;
+
+/// Outcome of [`register_account`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterAccountResult {
+    Created,
+    UsernameTaken,
+    InvalidUsername,
+    InvalidPassword,
+    TryAgainLater,
+    Unknown(u32),
+}
+
+impl RegisterAccountResult {
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            0 => Self::Created,
+            1 => Self::UsernameTaken,
+            2 => Self::InvalidUsername,
+            3 => Self::InvalidPassword,
+            4 => Self::TryAgainLater,
+            other => Self::Unknown(other),
         }
     }
 }
@@ -128,6 +197,244 @@ pub struct InteractionPacket {
     pub action: u32,
     pub value: u32,
     pub reserved: [u8; 12],
+}
+
+/// Bounty board action (client) or kill counter (server, action 10).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 9100)]
+pub struct BountyPacket {
+    pub action: u32,
+    pub param: u32,
+    pub extra: u32,
+}
+
+impl BountyPacket {
+    pub const OPEN: u32 = 0;
+    pub const REROLL: u32 = 1;
+    pub const PICK: u32 = 2;
+    pub const CLAIM_DAILY: u32 = 3;
+    pub const UPGRADE: u32 = 4;
+    /// Puts monster type `param` on the preferred list.
+    pub const PREFER: u32 = 5;
+    /// Puts monster type `param` on the avoided list.
+    pub const AVOID: u32 = 6;
+    /// Takes a name off a list: `param` = list (0 preferred, 1 avoided) * 10
+    /// + the name's place.
+    pub const UNLIST: u32 = 7;
+    pub const PROGRESS: u32 = 10;
+
+    pub fn new(action: u32, param: u32) -> Self {
+        Self { action, param, extra: 0 }
+    }
+}
+
+/// A paid broadcast to the whole server (`MsgBroadcast`, 2050).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2050)]
+pub struct BroadcastPacket {
+    pub subtype: u32,
+    pub unknown: u32,
+    pub strings: tq_serde::StringList,
+}
+
+impl BroadcastPacket {
+    pub const SEND: u32 = 3;
+
+    pub fn send(message: &str) -> Self {
+        Self {
+            subtype: Self::SEND,
+            unknown: 0,
+            strings: vec![message.to_owned()].into(),
+        }
+    }
+}
+
+/// A Store request: the catalog (0) or buying product `param` (1).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 9110)]
+pub struct StorePacket {
+    pub action: u32,
+    pub param: u32,
+}
+
+impl StorePacket {
+    pub const OPEN: u32 = 0;
+    pub const BUY: u32 = 1;
+    /// VIP: teleport to city `param`.
+    pub const TELEPORT: u32 = 2;
+    /// VIP: the loot filter becomes `param`.
+    pub const LOOT_FILTER: u32 = 3;
+
+    pub fn new(action: u32, param: u32) -> Self {
+        Self { action, param }
+    }
+}
+
+/// One product of the Store, `index` of `total` (index 0 starts a catalog).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9111)]
+pub struct StoreProduct {
+    pub index: u32,
+    pub total: u32,
+    pub product_id: u32,
+    /// 0 VIP, 1 Consumables, 2 Upgrades.
+    pub category: u32,
+    /// The item sold, or 0 for days of VIP.
+    pub item_type: u32,
+    pub amount: u32,
+    pub vip_days: u32,
+    pub price_cps: u32,
+    /// Left today; `u32::MAX` without a daily stock.
+    pub stock_left: u32,
+    pub name: String,
+    pub description: String,
+}
+
+impl StoreProduct {
+    pub fn limited(&self) -> bool {
+        self.stock_left != u32::MAX
+    }
+}
+
+/// The buyer's CPs and when their VIP ends (seconds since 1970, 0: none).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9112)]
+pub struct StoreState {
+    pub cps: u64,
+    pub vip_until: u64,
+    /// Which drops go straight to a VIP's bag (a bit per kind).
+    pub loot_filter: u32,
+    /// When the next VIP teleport is allowed (seconds since 1970).
+    pub teleport_ready_at: u64,
+}
+
+/// One of the buyer's latest purchases, `index` of `total`, newest first;
+/// `total` 0 when there are none.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9113)]
+pub struct StorePurchase {
+    pub index: u32,
+    pub total: u32,
+    pub price_cps: u32,
+    /// Seconds since 1970.
+    pub bought_at: u64,
+    pub name: String,
+}
+
+/// When each of the hero's statuses ends: `timers` is `flag:end,...` (a
+/// status flag bit, seconds since 1970); `now` is the server's clock.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9120)]
+pub struct StatusTimers {
+    pub now: u64,
+    pub timers: String,
+}
+
+impl StatusTimers {
+    /// The (flag, end) pairs.
+    pub fn entries(&self) -> Vec<(u64, u64)> {
+        self.timers
+            .split(',')
+            .filter_map(|entry| {
+                let (flag, end) = entry.split_once(':')?;
+                Some((flag.parse().ok()?, end.parse().ok()?))
+            })
+            .collect()
+    }
+}
+
+/// `MsgName` (1015): an entity, an action and its strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamePacket {
+    pub uid: u32,
+    pub action: u8,
+    pub strings: Vec<String>,
+}
+
+impl NamePacket {
+    /// Fireworks: the string is the firework item's name.
+    pub const FIREWORKS: u8 = 1;
+    /// An effect from `3DEffect.ini` played on the entity.
+    pub const ROLE_EFFECT: u8 = 10;
+
+    pub fn parse(body: &[u8]) -> Option<Self> {
+        let uid = u32::from_le_bytes(body.get(0..4)?.try_into().ok()?);
+        let action = *body.get(4)?;
+        let count = usize::from(*body.get(5).unwrap_or(&0));
+        let mut strings = Vec::with_capacity(count);
+        let mut offset = 6;
+        for _ in 0..count {
+            let length = usize::from(*body.get(offset)?);
+            let text = body.get(offset + 1..offset + 1 + length)?;
+            strings.push(String::from_utf8_lossy(text).into_owned());
+            offset += 1 + length;
+        }
+        Some(Self { uid, action, strings })
+    }
+}
+
+/// One bounty on offer, or the one under way (`monster_type` 0: none).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash)]
+pub struct BountyTask {
+    pub monster_type: u32,
+    pub kills: u32,
+    pub kills_done: u32,
+    /// 0 Normal, 1 Silver, 2 Gold.
+    pub grade: u32,
+    pub points: u32,
+    pub experience: u64,
+    pub monster_name: String,
+}
+
+/// The Task Board of bounty tasks.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9101)]
+pub struct BountyState {
+    pub points: u32,
+    pub tokens: u32,
+    pub daily_available: u32,
+    /// 0 Beginner, 1 Adept, 2 Expert, 3 Master.
+    pub difficulty: u32,
+    pub completed: u32,
+    pub damage_level: u32,
+    pub leech_level: u32,
+    pub loot_level: u32,
+    pub double_kill_level: u32,
+    pub offer_count: u32,
+    pub offer0: BountyTask,
+    pub offer1: BountyTask,
+    pub offer2: BountyTask,
+    pub task: BountyTask,
+    /// Preferred monsters' names, joined by `|`.
+    pub preferred: String,
+    /// Avoided monsters' names, joined by `|`.
+    pub avoided: String,
+}
+
+impl BountyState {
+    /// The preferred monsters (`avoided` false) or the avoided ones.
+    pub fn listed(&self, avoided: bool) -> Vec<&str> {
+        let joined = if avoided { &self.avoided } else { &self.preferred };
+        joined.split('|').filter(|name| !name.is_empty()).collect()
+    }
+
+    /// The bounties on offer.
+    pub fn offers(&self) -> Vec<&BountyTask> {
+        [&self.offer0, &self.offer1, &self.offer2]
+            .into_iter()
+            .take(self.offer_count as usize)
+            .collect()
+    }
+
+    /// The bounty under way.
+    pub fn active(&self) -> Option<&BountyTask> {
+        (self.task.monster_type != 0).then_some(&self.task)
+    }
+
+    /// Talisman levels: damage, life leech, loot, double kills.
+    pub fn talisman(&self) -> [u32; 4] {
+        [self.damage_level, self.leech_level, self.loot_level, self.double_kill_level]
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
@@ -271,6 +578,8 @@ pub struct UserAttribPacket {
 
 impl UserAttribPacket {
     pub const STAMINA: u32 = 9;
+    /// The XP circle's points (0-100).
+    pub const XP: u32 = 28;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
@@ -343,6 +652,14 @@ pub struct TalkPacket {
 }
 
 impl TalkPacket {
+    /// Names the sender's booth (the original's Vendor channel, 2104).
+    pub fn booth(character_id: u32, sender_name: &str, name: &str) -> Self {
+        Self {
+            channel: 2104,
+            ..Self::public(character_id, sender_name, name)
+        }
+    }
+
     pub fn public(character_id: u32, sender_name: &str, message: &str) -> Self {
         Self {
             color: 0x00FF_FFFF,
@@ -486,11 +803,12 @@ impl ActionPacket {
         }
     }
 
-    pub fn reborn(character_id: u32) -> Self {
+    /// Revive (94): in town, or `here` where the body lies (data 1).
+    pub fn reborn(character_id: u32, here: bool) -> Self {
         Self {
             client_timestamp: unix_timestamp(),
             character_id,
-            data1: 0,
+            data1: u32::from(here),
             data2: 0,
             details: 0,
             action_type: 94,
@@ -1265,6 +1583,13 @@ pub enum GameEvent {
     UserInfo(UserInfo),
     Nobility(NobilityInfo),
     NobilityRanking(NobilityRankingInfo),
+    Bounty(BountyPacket),
+    BountyState(BountyState),
+    StoreProduct(StoreProduct),
+    StoreState(StoreState),
+    StorePurchase(StorePurchase),
+    StatusTimers(StatusTimers),
+    Name(NamePacket),
     ItemInfo(ItemInfoPacket),
     Data(ServerData),
     MapInfo(MapInfo),
@@ -1362,6 +1687,27 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_NOBILITY_RANKING => Ok(GameEvent::NobilityRanking(
             NobilityRankingInfo::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_BOUNTY => Ok(GameEvent::Bounty(
+            BountyPacket::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_BOUNTY_STATE => Ok(GameEvent::BountyState(
+            BountyState::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STORE_PRODUCT => Ok(GameEvent::StoreProduct(
+            StoreProduct::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STORE_STATE => Ok(GameEvent::StoreState(
+            StoreState::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STORE_PURCHASE => Ok(GameEvent::StorePurchase(
+            StorePurchase::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_STATUS_TIMERS => Ok(GameEvent::StatusTimers(
+            StatusTimers::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_NAME => NamePacket::parse(body)
+            .map(GameEvent::Name)
+            .ok_or(ProtocolError::MalformedResponse("MsgName is truncated")),
         MSG_ITEM_INFO => Ok(GameEvent::ItemInfo(
             ItemInfoPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
@@ -1612,6 +1958,38 @@ pub async fn authenticate(
     )))
 }
 
+/// Creates an account on the account server (`9001`/`9002`).
+pub async fn register_account(
+    address: &str,
+    username: &str,
+    password: &str,
+) -> Result<RegisterAccountResult, ProtocolError> {
+    let stream = TcpStream::connect(address).await?;
+    let (mut encoder, mut decoder) = TQCodec::new(stream, CQCipher::new()).split();
+    let packet = RegisterAccount {
+        username: username.to_owned().into(),
+        password: password.to_owned().into(),
+    }
+    .encode()
+    .map_err(ProtocolError::Encode)?;
+    encoder.send(packet).await?;
+    while let Some(packet) = decoder.next().await {
+        let (id, body) = packet?;
+        if id != MSG_REGISTER_ACCOUNT_RESULT {
+            return Err(ProtocolError::UnexpectedPacket(id));
+        }
+        if body.len() < 4 {
+            return Err(ProtocolError::MalformedResponse("missing registration result"));
+        }
+        let code = u32::from_le_bytes(body[..4].try_into().expect("four bytes"));
+        return Ok(RegisterAccountResult::from_code(code));
+    }
+    Err(ProtocolError::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "account server closed the connection without a registration result",
+    )))
+}
+
 /// Performs the second leg of the login flow against a game server.
 pub async fn connect_game(
     address: &str,
@@ -1699,14 +2077,24 @@ mod tests {
     use tq_network::{PacketEncode, PacketID};
 
     #[test]
+    fn name_packets_read_their_strings() {
+        let mut body = 1_000_001_u32.to_le_bytes().to_vec();
+        body.extend([NamePacket::ROLE_EFFECT, 1, 7]);
+        body.extend(b"LevelUp");
+        let name = NamePacket::parse(&body).expect("parses");
+        assert_eq!((name.uid, name.action, name.strings), (1_000_001, 10, vec!["LevelUp".to_owned()]));
+        assert!(NamePacket::parse(&body[..3]).is_none());
+    }
+
+    #[test]
     fn account_login_matches_server_wire_shape() {
-        let packet = AccountLogin::new("test1", "123456", "CoEmu")
+        let packet = AccountLogin::new("test1", "123456", "Gravak")
             .encode()
             .expect("account packet should encode");
         assert_eq!(packet.0, MSG_ACCOUNT);
         assert_eq!(packet.1.len(), 48);
         assert_eq!(&packet.1[..6], b"test1\0");
-        assert_eq!(&packet.1[32..37], b"CoEmu");
+        assert_eq!(&packet.1[32..38], b"Gravak");
     }
 
     #[test]
@@ -1733,7 +2121,7 @@ mod tests {
             TQCodec::new(client_stream, CQCipher::new()).split();
         let (_server_encoder, mut server_decoder) =
             TQCodec::new(server_stream, TQCipher::new()).split();
-        let packet = AccountLogin::new("test1", "123456", "CoEmu")
+        let packet = AccountLogin::new("test1", "123456", "Gravak")
             .encode()
             .expect("account packet should encode");
 
@@ -1760,8 +2148,14 @@ mod tests {
             .encode()
             .expect("register packet should encode");
         assert_eq!(register.0, MSG_REGISTER);
-        assert_eq!(register.1.len(), 56);
+        assert_eq!(register.1.len(), 60);
         assert_eq!(&register.1[52..56], &42_u32.to_le_bytes());
+        // Gravak's starter coat dye follows the classic fields.
+        let dyed = RegisterCharacter::new("test1", "Gravak", 42)
+            .with_coat_dye(5)
+            .encode()
+            .expect("register packet should encode");
+        assert_eq!(&dyed.1[56..60], &5_u32.to_le_bytes());
 
         let action = ActionPacket::send_location(1000001)
             .encode()
@@ -1876,7 +2270,7 @@ mod tests {
             96
         );
 
-        let reborn = ActionPacket::reborn(1_000_001)
+        let reborn = ActionPacket::reborn(1_000_001, false)
             .encode()
             .expect("reborn packet should encode");
         assert_eq!(reborn.0, MSG_ACTION);

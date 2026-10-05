@@ -141,6 +141,12 @@ const HP_CLIP: [u32; 2] = [40, 86];
 const MP_ORIGIN: [i64; 2] = [52, 54];
 const MP_CLIP: [u32; 2] = [40, 86];
 const STAMINA_ORIGIN: [i64; 2] = [44, 57];
+/// The XP circle (`Control.Ani` `[Progress42]`): a gold ring around the orb
+/// that fills with the XP points and lights up full.
+const XP_FILL: &str = "data/main/ProgressPower.dds";
+const XP_FULL: &str = "data/main/ProgressPowerH.dds";
+/// Where the ring's texture goes so its centre meets the orb's.
+const XP_ORIGIN: [i64; 2] = [3, 40];
 
 /// Decoded artwork, cropped and cached for the life of the process.
 pub struct MainHudArt {
@@ -149,6 +155,8 @@ pub struct MainHudArt {
     hp: RgbaImage,
     mp: RgbaImage,
     stamina: RgbaImage,
+    xp: RgbaImage,
+    xp_full: RgbaImage,
     buttons: Vec<(MainHudButton, [RgbaImage; 2])>,
     /// The Capture button's art for each kill mode, `shop::KILL_MODES` order.
     kill_modes: Vec<[RgbaImage; 2]>,
@@ -205,6 +213,8 @@ impl MainHudArt {
             hp: clipped(assets, HP_FILL, HP_CLIP)?,
             mp: clipped(assets, MP_FILL, MP_CLIP)?,
             stamina: assets.image(STAMINA_FILL)?,
+            xp: assets.image(XP_FILL)?,
+            xp_full: assets.image(XP_FULL)?,
             buttons,
             kill_modes,
             chat,
@@ -229,6 +239,9 @@ pub struct MainHudState<'a> {
     pub max_mana: u32,
     pub stamina: u32,
     pub max_stamina: u32,
+    /// XP points, 0-100, and whether the circle is lit.
+    pub xp: u32,
+    pub xp_ready: bool,
     pub experience: f32,
     pub hovered_button: Option<MainHudButton>,
     pub hovered_chat: Option<ChatStripControl>,
@@ -292,6 +305,13 @@ pub fn draw(
     let [x, y] = at(STAMINA_ORIGIN);
     draw_gauge(img, &art.stamina, [x, y], ratio(state.stamina, state.max_stamina));
     imageops::overlay(img, &art.base, origin[0], origin[1]);
+    // The XP circle over the frame: filling from the bottom, lit when full.
+    let [x, y] = at(XP_ORIGIN);
+    if state.xp_ready {
+        imageops::overlay(img, &art.xp_full, x, y);
+    } else {
+        draw_gauge(img, &art.xp, [x, y], ratio(state.xp, 100));
+    }
 
     // Experience: a four-row gold gradient sampled from the original.
     const EXP_ROWS: [[u8; 4]; 4] = [

@@ -64,29 +64,27 @@ fn target_entity(state: &State, actor: &crate::entities::Character, target_id: u
 }
 
 async fn is_friend(state: &State, character_id: u32, friend_id: u32) -> Result<bool, Error> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM character_friends WHERE character_id = ? AND friend_id = ?)",
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM character_friends WHERE character_id = $1 AND friend_id = $2)",
     )
     .bind(database_id(character_id))
     .bind(database_id(friend_id))
     .fetch_one(state.pool())
-    .await?
-        != 0)
+    .await?)
 }
 
 pub async fn is_ignored(state: &State, character_id: u32, ignored_id: u32) -> Result<bool, Error> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM character_ignores WHERE character_id = ? AND ignored_id = ?)",
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM character_ignores WHERE character_id = $1 AND ignored_id = $2)",
     )
     .bind(database_id(character_id))
     .bind(database_id(ignored_id))
     .fetch_one(state.pool())
-    .await?
-        != 0)
+    .await?)
 }
 
 async fn set_ignore(state: &State, character_id: u32, ignored_id: u32, ignored_name: &str) -> Result<(), Error> {
-    sqlx::query("INSERT OR IGNORE INTO character_ignores (character_id, ignored_id, ignored_name) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO character_ignores (character_id, ignored_id, ignored_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
         .bind(database_id(character_id))
         .bind(database_id(ignored_id))
         .bind(ignored_name)
@@ -96,7 +94,7 @@ async fn set_ignore(state: &State, character_id: u32, ignored_id: u32, ignored_n
 }
 
 async fn remove_ignore(state: &State, character_id: u32, ignored_id: u32) -> Result<(), Error> {
-    sqlx::query("DELETE FROM character_ignores WHERE character_id = ? AND ignored_id = ?")
+    sqlx::query("DELETE FROM character_ignores WHERE character_id = $1 AND ignored_id = $2")
         .bind(database_id(character_id))
         .bind(database_id(ignored_id))
         .execute(state.pool())
@@ -112,13 +110,13 @@ async fn add_mutual_friendship(
     right_name: &str,
 ) -> Result<(), Error> {
     let mut transaction = state.pool().begin().await?;
-    sqlx::query("INSERT OR IGNORE INTO character_friends (character_id, friend_id, friend_name) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO character_friends (character_id, friend_id, friend_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
         .bind(database_id(left_id))
         .bind(database_id(right_id))
         .bind(right_name)
         .execute(&mut *transaction)
         .await?;
-    sqlx::query("INSERT OR IGNORE INTO character_friends (character_id, friend_id, friend_name) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO character_friends (character_id, friend_id, friend_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
         .bind(database_id(right_id))
         .bind(database_id(left_id))
         .bind(left_name)
@@ -130,12 +128,12 @@ async fn add_mutual_friendship(
 
 async fn remove_mutual_friendship(state: &State, left_id: u32, right_id: u32) -> Result<(), Error> {
     let mut transaction = state.pool().begin().await?;
-    sqlx::query("DELETE FROM character_friends WHERE character_id = ? AND friend_id = ?")
+    sqlx::query("DELETE FROM character_friends WHERE character_id = $1 AND friend_id = $2")
         .bind(database_id(left_id))
         .bind(database_id(right_id))
         .execute(&mut *transaction)
         .await?;
-    sqlx::query("DELETE FROM character_friends WHERE character_id = ? AND friend_id = ?")
+    sqlx::query("DELETE FROM character_friends WHERE character_id = $1 AND friend_id = $2")
         .bind(database_id(right_id))
         .bind(database_id(left_id))
         .execute(&mut *transaction)
@@ -160,7 +158,7 @@ async fn send_to_character(state: &State, character_id: u32, packet: MsgFriend) 
 
 pub async fn send_friend_list(state: &State, actor: &Actor<ActorState>, character_id: u32) -> Result<(), Error> {
     let rows = sqlx::query_as::<_, (i64, String)>(
-        "SELECT friend_id, friend_name FROM character_friends WHERE character_id = ? ORDER BY friend_name",
+        "SELECT friend_id, friend_name FROM character_friends WHERE character_id = $1 ORDER BY friend_name",
     )
     .bind(database_id(character_id))
     .fetch_all(state.pool())
@@ -177,7 +175,7 @@ pub async fn send_friend_list(state: &State, actor: &Actor<ActorState>, characte
 
 pub async fn send_ignore_list(state: &State, actor: &Actor<ActorState>, character_id: u32) -> Result<(), Error> {
     let rows = sqlx::query_as::<_, (i64, String)>(
-        "SELECT ignored_id, ignored_name FROM character_ignores WHERE character_id = ? ORDER BY ignored_name",
+        "SELECT ignored_id, ignored_name FROM character_ignores WHERE character_id = $1 ORDER BY ignored_name",
     )
     .bind(database_id(character_id))
     .fetch_all(state.pool())

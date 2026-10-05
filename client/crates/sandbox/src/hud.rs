@@ -87,17 +87,133 @@ pub struct SkillHud {
     pub max_stamina: u8,
     /// The XP circle is lit: XP skills can be cast.
     pub xp_ready: bool,
+    /// The XP circle's points, 0-100.
+    pub xp_points: u8,
     /// The page selected in the status Weapon tab.
     pub weapon_filter: crate::shop::WeaponFilter,
     pub bar_open: bool,
     pub active_skill: Option<u32>,
     pub kill_count: u32,
+    /// KOs of the current Cyclone or Superman.
+    pub ko_count: u32,
+    /// When the fire along the bottom burns out (unix ms): a lit XP
+    /// circle's 20 seconds, then the XP skill's time.
+    pub xp_fire_until: Option<u64>,
     /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
     pub kill_mode: u8,
     /// The top-left information lines: map and position, FPS and ping.
     pub info: Vec<String>,
     /// Skill under the cursor in the bar; filled in by the renderer.
     pub hovered: Option<u32>,
+    /// Timed statuses: their flag and the seconds left.
+    pub timers: Vec<(u64, u32)>,
+    /// The Character window's Skills tab: page, scroll and pick.
+    pub skill_page: crate::shop::SkillPage,
+}
+
+/// Seconds since 1970 on this machine.
+pub fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// What a status's icon shows: a skill's icon, an item's, or the VIP title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusIcon {
+    Skill(u32),
+    Item(u32),
+    Vip,
+    /// One of the original's animated status flags (`3DEffect.ini`), drawn
+    /// by the renderer over the HUD.
+    Flag(&'static str),
+}
+
+/// The icon of each timed status flag.
+const STATUS_ICONS: [(u64, StatusIcon); 14] = [
+    (1 << 18, StatusIcon::Skill(1_025)), // Superman
+    (1 << 23, StatusIcon::Skill(1_110)), // Cyclone
+    (1 << 9, StatusIcon::Skill(1_095)),  // Stigma
+    (1 << 8, StatusIcon::Skill(1_020)),  // Shield
+    (1 << 7, StatusIcon::Skill(1_015)),  // Accuracy
+    (1 << 22, StatusIcon::Skill(1_075)), // Invisibility
+    (1 << 27, StatusIcon::Skill(8_002)), // Fly
+    (1 << 47, StatusIcon::Skill(9_000)), // Intensify
+    (1 << 1, StatusIcon::Skill(5_002)),  // Poisoned
+    (1 << 5, StatusIcon::Skill(1_002)),  // Stunned
+    (1 << 48, StatusIcon::Flag("DblExpFlag")), // Double experience
+    (1 << 49, StatusIcon::Flag("BlessFlag")),  // Heaven's Blessing
+    (1 << 46, StatusIcon::Vip),
+    (1 << 50, StatusIcon::Flag("Lucky")),      // Lucky time (Bless)
+];
+
+/// Time left as the bar shows it: `3d`, `5h`, `2:05`, `45s`.
+pub fn short_time(seconds: u32) -> String {
+    match seconds {
+        86_400.. => format!("{}d", seconds / 86_400),
+        3_600.. => format!("{}h", seconds / 3_600),
+        60.. => format!("{}:{:02}", seconds / 60, seconds % 60),
+        _ => format!("{seconds}s"),
+    }
+}
+
+/// The timed statuses with an icon, in the bar's order.
+fn sorted_timers(skills: &SkillHud) -> Vec<(u64, u32)> {
+    let mut timed: Vec<(u64, u32)> = skills
+        .timers
+        .iter()
+        .copied()
+        .filter(|(flag, _)| STATUS_ICONS.iter().any(|(bit, _)| bit == flag))
+        .collect();
+    timed.sort_by_key(|(flag, _)| STATUS_ICONS.iter().position(|(bit, _)| bit == flag).unwrap_or(usize::MAX));
+    timed
+}
+
+/// The original's animated flag for a status, if it has one.
+fn flag_effect(flag: u64) -> Option<&'static str> {
+    STATUS_ICONS.iter().find_map(|(bit, icon)| match icon {
+        StatusIcon::Flag(effect) if *bit == flag => Some(*effect),
+        _ => None,
+    })
+}
+
+/// Where the renderer draws the animated status flags: their effect and
+/// the centre of their slot, in window pixels.
+pub fn status_flag_slots(skills: &SkillHud) -> Vec<(&'static str, [f32; 2])> {
+    let top = 6 + skills.info.len().max(2) as i32 * 15;
+    sorted_timers(skills)
+        .iter()
+        .enumerate()
+        .filter_map(|(column, (flag, _))| {
+            let effect = flag_effect(*flag)?;
+            Some((effect, [(4 + column as i32 * 34 + 15) as f32, (top + 13) as f32]))
+        })
+        .collect()
+}
+
+/// A status's icon, `size` pixels square.
+fn status_icon(assets: &mut Assets, flag: u64, size: u32) -> Option<RgbaImage> {
+    let icon = STATUS_ICONS.iter().find(|(bit, _)| *bit == flag).map(|(_, icon)| *icon)?;
+    let image = match icon {
+        StatusIcon::Skill(skill) => crate::main_hud::skill_icon(assets, skill)?,
+        StatusIcon::Item(item) => crate::shop::item_icon_image(assets, item).ok()?,
+        StatusIcon::Vip => crate::ornate::vip_tag(1.0).ok()?,
+        StatusIcon::Flag(_) => return None,
+    };
+    let (width, height) = image.dimensions();
+    let scale = size as f32 / width.max(height).max(1) as f32;
+    Some(image::imageops::resize(
+        &image,
+        ((width as f32 * scale).round() as u32).max(1),
+        ((height as f32 * scale).round() as u32).max(1),
+        image::imageops::FilterType::Triangle,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,25 +277,41 @@ const SKILL_ROW_CAPACITY: usize = 10;
 /// Skill bar slots: XP skills on the row just above the bar, other skills
 /// on the row above it (or on the lower row when there are no XP skills).
 /// Rows end at the right edge of the "Skill" button, like the original.
+///
+/// A lit XP circle brings its skills up on their own at the right edge,
+/// as `Conquer.exe` places its XP dialog (189): `W - n * 50` across,
+/// `H - 173` down, 50 pixels each, ten at most. A click picks one for the
+/// right button.
 fn skill_bar_slots(assets: &mut Assets, viewport: [f32; 2], hud: &SkillHud) -> Vec<(u32, Rect)> {
-    if !hud.bar_open {
-        return Vec::new();
-    }
-    let [x, y] = hud_origin(viewport);
-    let skill = MainHudButton::Skill.local_rect();
-    let right = x + (skill.x + skill.width).round() as i32;
+    const XP_SLOT: i32 = 50;
+    const XP_SHOWN: usize = 10;
     let (xp, magic): (Vec<u32>, Vec<u32>) = hud
         .skills
         .iter()
         .map(|(id, _, _)| *id)
         .partition(|id| crate::main_hud::is_xp_skill(assets, *id));
+    let mut slots = Vec::new();
+    if hud.xp_ready {
+        let shown = xp.len().min(XP_SHOWN) as i32;
+        let left = viewport[0] as i32 - shown * XP_SLOT;
+        let top = viewport[1] as i32 - 173;
+        for (index, id) in xp.iter().take(XP_SHOWN).enumerate() {
+            slots.push((*id, Rect(left + index as i32 * XP_SLOT, top, XP_SLOT, XP_SLOT)));
+        }
+    }
+    if !hud.bar_open {
+        return slots;
+    }
+    let [x, y] = hud_origin(viewport);
+    let skill = MainHudButton::Skill.local_rect();
+    let right = x + (skill.x + skill.width).round() as i32;
     let lower = y + 16;
-    let rows = if xp.is_empty() {
+    // Lit, the XP skills are in their own row at the right edge.
+    let rows = if xp.is_empty() || hud.xp_ready {
         vec![(magic, lower)]
     } else {
         vec![(xp, lower), (magic, lower - SKILL_SLOT)]
     };
-    let mut slots = Vec::new();
     for (ids, top) in rows {
         let count = ids.len().min(SKILL_ROW_CAPACITY) as i32;
         for (index, id) in ids.into_iter().take(SKILL_ROW_CAPACITY).enumerate() {
@@ -250,26 +382,178 @@ fn draw_skill_bar(
     }
 }
 
-/// The KO counter ("<n> 斩") at the right edge above the bar.
-fn draw_kill_counter(img: &mut RgbaImage, viewport: [f32; 2], kills: u32) {
-    let (Ok(digits), Ok(glyph)) = (crate::main_hud::italic_font(), crate::main_hud::client_font())
-    else {
-        return;
+/// Cyclone (1 << 23) and Superman (1 << 18).
+const XP_SKILL_FLAGS: u64 = (1 << 23) | (1 << 18);
+
+/// The counts at the bottom right, drawn with the original's
+/// `CountB`/`CountK` effects (`3DEffect.ini`): the kills, small and blue,
+/// and an XP skill's KOs, big and red.
+#[derive(Clone, Copy)]
+enum Count {
+    Kills,
+    Ko,
+}
+
+impl Count {
+    /// The effect prefix, the 斩's centre from the bottom right and the
+    /// digits' spacing, as the original places them (`W - 30, H - 111`
+    /// and `W - 57, H - 138`).
+    fn layout(self) -> (&'static str, [i32; 2], i32) {
+        match self {
+            Self::Kills => ("CountB", [30, 111], 26),
+            Self::Ko => ("CountK", [57, 138], 53),
+        }
+    }
+
+    /// Each glyph's drawn size: the effect's quad (93 x 123) at the
+    /// original's scale, 1.2 for the KOs; the kills a little smaller than
+    /// its 0.6, under the XP skills as the original shows them.
+    fn glyph_size(self) -> [u32; 2] {
+        match self {
+            Self::Kills => [40, 52],
+            Self::Ko => [112, 148],
+        }
+    }
+}
+
+fn draw_count(img: &mut RgbaImage, assets: &mut Assets, viewport: [f32; 2], count: u32, kind: Count) {
+    let (prefix, [from_right, from_bottom], spacing) = kind.layout();
+    let [width, height] = kind.glyph_size();
+    let mut glyph = |assets: &mut Assets, name: String, centre: [i32; 2]| {
+        let Some(texture) = crate::magic::effect(assets, &name).and_then(|effect| effect.layers.first().cloned())
+        else {
+            return;
+        };
+        let Ok(image) = assets.image(&texture.texture) else {
+            return;
+        };
+        let image = imageops::resize(&image, width, height, imageops::FilterType::Triangle);
+        let left = centre[0] - width as i32 / 2;
+        let top = centre[1] - height as i32 / 2;
+        imageops::overlay(img, &image, i64::from(left), i64::from(top));
     };
+    let mark = [viewport[0] as i32 - from_right, viewport[1] as i32 - from_bottom];
+    glyph(assets, format!("{prefix}Z"), mark);
+    let digits = count.to_string();
+    let first = mark[0] - 10 - digits.len() as i32 * spacing;
+    for (index, digit) in digits.chars().enumerate() {
+        glyph(assets, format!("{prefix}{digit}"), [first + index as i32 * spacing, mark[1]]);
+    }
+}
+
+/// The revive countdown and button sit above the KO counter, against the
+/// right edge: this is their bottom right corner.
+pub fn revive_anchor(viewport: [f32; 2]) -> [f32; 2] {
     let [_, hud_y] = hud_origin(viewport);
-    let right = viewport[0] as i32 - 10;
-    let number = kills.to_string();
-    let glyph_x = right - 34;
-    let number_width = crate::main_hud::text_width(digits, &number, 40.0);
-    crate::main_hud::glow_text(
-        img,
-        digits,
-        &number,
-        40.0,
-        [glyph_x - 6 - number_width, hud_y - 4],
-        [150, 110, 255],
-    );
-    crate::main_hud::glow_text(img, glyph, "斩", 34.0, [glyph_x, hud_y], [150, 110, 255]);
+    [viewport[0] - 10.0, hud_y as f32 - 8.0]
+}
+
+/// While dead, the countdown: "Revive 14" in the KO counter's glow.
+pub fn revive_countdown_image(remaining: u32) -> crate::assets::Result<RgbaImage> {
+    let (digits, glyph) = (crate::main_hud::italic_font()?, crate::main_hud::client_font()?);
+    let label = "Revive";
+    let number = remaining.to_string();
+    let label_width = crate::main_hud::text_width(glyph, label, 22.0);
+    let number_width = crate::main_hud::text_width(digits, &number, 34.0);
+    let width = (label_width + number_width + 22).max(1) as u32;
+    let mut image = RgbaImage::new(width, 42);
+    let glow = [150, 110, 255];
+    crate::main_hud::glow_text(&mut image, glyph, label, 22.0, [4, 12], glow);
+    crate::main_hud::glow_text(&mut image, digits, &number, 34.0, [label_width + 14, 2], glow);
+    Ok(image)
+}
+
+/// Size of a revive button.
+pub const REVIVE_BUTTON: [u32; 2] = [136, 40];
+
+/// A button in the style of the HUD's "Skill" button: the HUD's diamond
+/// pattern on deep teal, a thin gold frame with corner brackets, and the
+/// client's serif text in pale teal.
+/// The panel of the HUD-style buttons: the HUD's diamond pattern on deep
+/// teal, a thin `frame` coloured frame with corner brackets.
+pub fn hud_style_panel(assets: &mut Assets, width: u32, height: u32, frame: [u8; 3]) -> RgbaImage {
+    let mut image = RgbaImage::from_pixel(width, height, image::Rgba([12, 34, 44, 255]));
+    // The diamond pattern beside the HUD's emblem (mainDialog2.dds).
+    if let Ok(art) = assets.image("data/main/mainDialog2.dds") {
+        let tile = image::imageops::crop_imm(&art, 33, 66, 18, 44).to_image();
+        let mut y = 0;
+        while y < height {
+            let mut x = 0;
+            while x < width {
+                image::imageops::overlay(&mut image, &tile, i64::from(x), i64::from(y));
+                x += tile.width();
+            }
+            y += tile.height();
+        }
+        // Darken it so the text reads, as on the Skill button.
+        for pixel in image.pixels_mut() {
+            for channel in 0..3 {
+                pixel.0[channel] = (u16::from(pixel.0[channel]) * 7 / 10) as u8;
+            }
+            pixel.0[3] = 255;
+        }
+    }
+    let gold = image::Rgba([frame[0], frame[1], frame[2], 255]);
+    let shade = image::Rgba([40, 34, 20, 255]);
+    let (w, h) = (width as i32, height as i32);
+    let mut put = |x: i32, y: i32, colour: image::Rgba<u8>| {
+        if x >= 0 && y >= 0 && x < w && y < h {
+            image.put_pixel(x as u32, y as u32, colour);
+        }
+    };
+    // The frame, inset like the original, with a dark line outside it.
+    for x in 3..w - 3 {
+        put(x, 3, gold);
+        put(x, h - 4, gold);
+        put(x, 2, shade);
+        put(x, h - 3, shade);
+    }
+    for y in 3..h - 3 {
+        put(3, y, gold);
+        put(w - 4, y, gold);
+        put(2, y, shade);
+        put(w - 3, y, shade);
+    }
+    // Corner brackets: a small square bracket hooked on each corner.
+    for (cx, cy, sx, sy) in [(3, 3, 1, 1), (w - 4, 3, -1, 1), (3, h - 4, 1, -1), (w - 4, h - 4, -1, -1)] {
+        for step in 0..5 {
+            put(cx - sx * 2 + sx * step, cy - sy * 2, gold);
+            put(cx - sx * 2, cy - sy * 2 + sy * step, gold);
+        }
+        put(cx + sx, cy + sy, gold);
+    }
+    image
+}
+
+/// The revive buttons: ornate plates like the Store's.
+pub fn revive_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
+    crate::ornate::plate(Some(assets), REVIVE_BUTTON, label, crate::ornate::GRAVAK, crate::ornate::Look::Normal, None)
+}
+
+pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
+    let [width, height] = REVIVE_BUTTON;
+    let mut image = hud_style_panel(assets, width, height, [176, 158, 104]);
+    let (w, h) = (width as i32, height as i32);
+    // Cinzel, the decorative font of the titles, with a one-pixel shadow.
+    let font = crate::labels::decorative_font()?;
+    let text_width = |size: f32| label.chars().map(|c| font.metrics(c, size).advance_width).sum::<f32>();
+    let mut size = 17.0;
+    while size > 11.0 && text_width(size) > (w - 20) as f32 {
+        size -= 0.5;
+    }
+    let x = ((w as f32 - text_width(size)) / 2.0).max(4.0).round();
+    let y = ((h as f32 - size) / 2.0 - 1.0).round();
+    crate::labels::text_sized(&mut image, &font, &[(label, [12, 22, 28])], [x + 1.0, y + 1.0], size);
+    crate::labels::text_sized(&mut image, &font, &[(label, [150, 214, 216])], [x, y], size);
+    Ok(image)
+}
+
+/// The Store button: beside the round buttons over the orb, above the chat
+/// strip. Left, top, width and height in window pixels.
+pub fn store_button_rect(viewport: [f32; 2]) -> [f32; 4] {
+    let [x, y] = layout::main_hud_position(viewport);
+    let [width, height] = crate::store_panel::BUTTON_SIZE;
+    [x + 96.0, y + 30.0, width as f32, height as f32]
 }
 
 fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {
@@ -506,6 +790,7 @@ fn chat_color(channel: u16) -> ([u8; 4], Option<(&'static str, [u8; 4])>) {
             Some(("[World]", [255, 200, 120, 255])),
         ),
         2005 | 2007 | 2011 => ([255, 255, 0, 255], Some(("[System]", [255, 64, 255, 255]))),
+        2500 => ([255, 214, 96, 255], Some(("[Broadcast]", [255, 160, 60, 255]))),
         _ => ([255, 255, 255, 255], None),
     }
 }
@@ -809,6 +1094,8 @@ pub fn image(
             max_mana,
             stamina: u32::from(skills.stamina),
             max_stamina: u32::from(skills.max_stamina),
+            xp: u32::from(skills.xp_points),
+            xp_ready: skills.xp_ready,
             experience: experience_fraction(level, experience),
             hovered_button,
             hovered_chat,
@@ -822,8 +1109,13 @@ pub fn image(
         font,
     );
     draw_skill_bar(&mut img, assets, font, viewport, skills);
-    if hud_config.kill_counter {
-        draw_kill_counter(&mut img, viewport, skills.kill_count);
+    // Cyclone or Superman: their KOs in the big red count ("<n> 斩"),
+    // otherwise the kills of the last kind of monster in the small blue one.
+    let in_xp_skill = skills.timers.iter().any(|(flag, _)| *flag & XP_SKILL_FLAGS != 0);
+    if in_xp_skill {
+        draw_count(&mut img, assets, viewport, skills.ko_count, Count::Ko);
+    } else if hud_config.kill_counter {
+        draw_count(&mut img, assets, viewport, skills.kill_count, Count::Kills);
     }
     draw_hotkeys(&mut img, assets, font, viewport, action_bar, hover)?;
 
@@ -852,7 +1144,57 @@ pub fn image(
             None,
         );
     }
-    let badges_top = 6 + skills.info.len().max(2) as i32 * 15;
+    let mut badges_top = 6 + skills.info.len().max(2) as i32 * 15;
+    // Timed statuses as icons with the time left under each; their text
+    // badges give way.
+    let timed = sorted_timers(skills);
+    let mut column = 0;
+    for (flag, seconds) in &timed {
+        let x = 4 + column * 34;
+        // The animated flags are left for the renderer to draw here.
+        if flag_effect(*flag).is_none() {
+            let Some(icon) = status_icon(assets, *flag, 30) else {
+                continue;
+            };
+            let (icon_width, icon_height) = icon.dimensions();
+            image::imageops::overlay(
+                &mut img,
+                &icon,
+                i64::from(x + (30 - icon_width as i32) / 2),
+                i64::from(badges_top + (26 - icon_height as i32) / 2),
+            );
+        }
+        let label = short_time(*seconds);
+        let width = crate::main_hud::text_width(font, &label, 11.0);
+        main_hud::text(
+            &mut img,
+            font,
+            &label,
+            11.0,
+            [x + (30 - width) / 2, badges_top + 27],
+            if *seconds <= 10 { [255, 140, 110, 255] } else { [255, 240, 200, 255] },
+            None,
+        );
+        column += 1;
+    }
+    if column > 0 {
+        badges_top += 44;
+        let shown = |label: &str| {
+            let flag = match label {
+                "2X XP" => 1 << 48,
+                "Blessing" => 1 << 49,
+                "Poisoned" => 1 << 1,
+                "Stunned" => 1 << 5,
+                "Cyclone" => 1 << 23,
+                "Superman" => 1 << 18,
+                "Stigma" => 1 << 9,
+                "Shield" => 1 << 8,
+                _ => 0,
+            };
+            timed.iter().any(|(bit, _)| *bit == flag)
+        };
+        badges.retain(|(label, _)| !shown(label));
+    }
     for (row, (label, color)) in badges.into_iter().enumerate() {
         main_hud::text(
             &mut img,
@@ -975,6 +1317,10 @@ mod tests {
 
     #[test]
     fn combat_buffs_are_listed_in_order() {
+        assert_eq!(
+            (short_time(45), short_time(125), short_time(7_300), short_time(200_000)),
+            ("45s".to_owned(), "2:05".to_owned(), "2h".to_owned(), "2d".to_owned())
+        );
         let none = active_buff_badges(false, false, false, false, false, false, false, false);
         assert!(none.is_empty());
         let all = active_buff_badges(true, true, true, true, true, true, true, true);
@@ -1022,7 +1368,7 @@ mod tests {
                 "Olá, Twin City!",
             ),
             ("hud-1024.png", 1024, 768, 25, 0, Some(HOVER_ORB), ""),
-            ("hud-1904.png", 1904, 915, 100, 100, Some(HOVER_SLOT), ""),
+            ("hud-1704.png", 1704, 960, 100, 100, Some(HOVER_SLOT), ""),
         ] {
             image(
                 &mut assets,
@@ -1053,11 +1399,17 @@ mod tests {
                 false,
                 HudConfig::default(),
                 &SkillHud {
-                    skills: vec![(1_000, 3, 120), (1_001, 1, 15), (1_110, 1, 0)],
+                    skills: vec![(1_000, 3, 120), (1_001, 1, 15), (1_025, 1, 0), (1_110, 1, 0)],
                     bar_open: true,
                     active_skill: Some(1_001),
                     kill_count: 7,
+                    ko_count: 37,
+                    xp_fire_until: None,
                     hovered: Some(1_000),
+                    info: vec!["Twin City (430, 380)".into(), "FPS 144  ping 12 ms".into()],
+                    xp_ready: true,
+                    xp_points: 65,
+                    timers: vec![(1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
                     ..SkillHud::default()
                 },
             )?

@@ -22,6 +22,8 @@ bitflags::bitflags! {
     /// Gravak runtime flag for double experience, so the XP circle (bit 4)
     /// keeps its classic meaning: XP skills ready.
     const DOUBLE_EXPERIENCE = 1 << 48;
+    /// Gravak runtime flag: a VIP account; clients draw its badge.
+    const VIP = 1 << 46;
     /// Gravak runtime flag: Intensify is charged for the next shot.
     const INTENSIFY = 1 << 47;
     const RESTRICT_MOVEMENT = 1 << 5;

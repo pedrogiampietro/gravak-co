@@ -20,6 +20,7 @@ bytes.workspace = true
 tq-db = { workspace = true, features = ["sqlx"] }
 tq-network.workspace = true
 tq-serde.workspace = true
+tq-logging = { workspace = true, optional = true }
 async-trait.workspace = true
 tracing.workspace = true
 dotenvy.workspace = true
@@ -34,6 +35,7 @@ rkyv = { workspace = true, default-features = false, features = ["alloc", "size_
 msg-account.workspace = true
 msg-connect.workspace = true
 msg-transfer.workspace = true
+msg-connect-ex = { workspace = true, features = ["std"] }
 
 
 [dependencies.tq-server]
@@ -61,11 +63,12 @@ features = []
 [dependencies.sqlx]
 workspace = true
 default-features = false
-features = ["sqlite"]
+features = ["postgres"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-sqlx = { workspace = true, features = ["sqlite", "runtime-tokio", "migrate"] }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "migrate"] }
+tq-db = { workspace = true, features = ["testing"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
 
 msg-connect-ex.workspace = true
@@ -84,4 +87,5 @@ server = [
   "dep:tq-server",
   "sqlx/runtime-tokio",
   "dep:tracing-subscriber",
+  "dep:tq-logging",
 ]

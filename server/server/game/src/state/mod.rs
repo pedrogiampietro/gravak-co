@@ -9,7 +9,7 @@ use crate::trade::TradeManager;
 use crate::world::Map;
 use crate::Error;
 use parking_lot::{Mutex, RwLock};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -55,7 +55,9 @@ pub struct State {
     player_shop_manager: PlayerShopManager,
     guild_manager: GuildManager,
     friend_requests: FriendRequests,
-    pool: SqlitePool,
+    talismans: crate::bounty::TalismanBook,
+    vip: crate::store::VipBook,
+    pool: PgPool,
 }
 
 impl State {
@@ -63,9 +65,8 @@ impl State {
     /// Should only get called once.
     pub async fn init() -> Result<Self, Error> {
         let data_dir = dotenvy::var("DATA_LOCATION")?;
-        let default_db_location = format!("sqlite://{data_dir}/coemu.db?mode=rwc");
-        let db_url = dotenvy::var("DATABASE_URL").unwrap_or(default_db_location);
-        let pool = SqlitePoolOptions::new()
+        let db_url = dotenvy::var("DATABASE_URL").unwrap_or_else(|_| tq_db::DEFAULT_DATABASE_URL.to_owned());
+        let pool = PgPoolOptions::new()
             .max_connections(42)
             .min_connections(4)
             .connect(&db_url)
@@ -74,11 +75,12 @@ impl State {
             .run(&pool)
             .await
             .map_err(|error| Error::Other(error.to_string()))?;
+        sqlx::query("SELECT sync_identity_sequences()").execute(&pool).await?;
         ensure_game_map_catalog(&pool, &data_dir).await?;
         Self::with_pool(pool).await
     }
 
-    pub async fn with_pool(pool: SqlitePool) -> Result<Self, Error> {
+    pub async fn with_pool(pool: PgPool) -> Result<Self, Error> {
         debug!("Loading Maps from Database");
         let db_maps = tq_db::map::Map::load_all(&pool).await?;
         let mut maps = HashMap::with_capacity(db_maps.len());
@@ -128,13 +130,15 @@ impl State {
             player_shop_manager: PlayerShopManager::default(),
             guild_manager,
             friend_requests: Default::default(),
+            talismans: Default::default(),
+            vip: Default::default(),
             pool,
         };
         Ok(state)
     }
 
     /// Get access to the database pool
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 
@@ -148,6 +152,16 @@ impl State {
 
     pub fn skill_catalog(&self) -> &SkillCatalog {
         &self.skill_catalog
+    }
+
+    /// The VIP of the characters online.
+    pub fn vip(&self) -> &crate::store::VipBook {
+        &self.vip
+    }
+
+    /// The bounty talismans of the characters online with a task.
+    pub fn talismans(&self) -> &crate::bounty::TalismanBook {
+        &self.talismans
     }
 
     pub fn team_manager(&self) -> &TeamManager {
@@ -295,9 +309,13 @@ impl State {
         debug!("Clean up ..");
         debug!("Saving Entities data ..");
         let entities = self.drain_entities();
+        let mut saved = 0;
         for e in entities {
             match e.as_ref() {
-                GameEntity::Character(character) => character.save(&self).await?,
+                GameEntity::Character(character) => {
+                    character.save(&self).await?;
+                    saved += 1;
+                },
                 GameEntity::Npc(_) => {
                     // Do nothing for now
                 },
@@ -307,6 +325,7 @@ impl State {
                 },
             }
         }
+        tracing::info!(target: "server", characters = saved, "Saved everyone online");
         self.pool().close().await;
         debug!("Closed Database Connection ..");
         Ok(())
@@ -319,19 +338,11 @@ mod tests {
     use crate::entities::Character;
     use crate::packets::{BaseClass, BodyType, MsgRegister};
     use crate::systems::Screen;
-    use sqlx::sqlite::SqlitePoolOptions;
     use tq_network::Actor;
 
     #[tokio::test]
     async fn autosave_persists_connected_character_runtime_state() -> Result<(), Error> {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(2)
-            .connect("sqlite::memory:")
-            .await?;
-        sqlx::migrate!("../../migrations")
-            .run(&pool)
-            .await
-            .map_err(|error| Error::Other(error.to_string()))?;
+        let pool = tq_db::testing::pool().await;
         let state = State::with_pool(pool.clone()).await?;
 
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
@@ -362,7 +373,7 @@ mod tests {
     }
 }
 
-async fn ensure_game_map_catalog(pool: &SqlitePool, data_dir: &str) -> Result<(), Error> {
+async fn ensure_game_map_catalog(pool: &PgPool, data_dir: &str) -> Result<(), Error> {
     fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, Error> {
         let end = offset.saturating_add(4);
         let raw = bytes
@@ -405,9 +416,9 @@ async fn ensure_game_map_catalog(pool: &SqlitePool, data_dir: &str) -> Result<()
         }
         let compressed_path = path.strip_suffix(".DMap").unwrap_or(&path).to_owned() + ".cmap";
         sqlx::query(
-            "INSERT OR IGNORE INTO maps \
+            "INSERT INTO maps \
              (id, map_id, path, revive_point_x, revive_point_y, flags, weather, reborn_map, color) \
-             VALUES (?, ?, ?, 430, 380, 0, 0, ?, 4294967295)",
+             VALUES ($1, $2, $3, 430, 380, 0, 0, $4, 4294967295) ON CONFLICT DO NOTHING",
         )
         .bind(map_id as i32)
         .bind(map_id as i32)

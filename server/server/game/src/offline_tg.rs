@@ -46,7 +46,7 @@ fn now_unix() -> i64 {
 
 async fn timer(state: &State, character: &Character, kind: &str) -> Result<Option<i64>, Error> {
     Ok(
-        sqlx::query_scalar::<_, i64>("SELECT until_unix FROM character_timers WHERE character_id = ? AND kind = ?")
+        sqlx::query_scalar::<_, i64>("SELECT until_unix FROM character_timers WHERE character_id = $1 AND kind = $2")
             .bind(character.database_id())
             .bind(kind)
             .fetch_optional(state.pool())
@@ -58,7 +58,7 @@ async fn set_timer(state: &State, character: &Character, kind: &str, value: Opti
     match value {
         Some(value) => {
             sqlx::query(
-                "INSERT INTO character_timers (character_id, kind, until_unix) VALUES (?, ?, ?)
+                "INSERT INTO character_timers (character_id, kind, until_unix) VALUES ($1, $2, $3)
                  ON CONFLICT(character_id, kind) DO UPDATE SET until_unix = excluded.until_unix",
             )
             .bind(character.database_id())
@@ -68,7 +68,7 @@ async fn set_timer(state: &State, character: &Character, kind: &str, value: Opti
             .await?;
         },
         None => {
-            sqlx::query("DELETE FROM character_timers WHERE character_id = ? AND kind = ?")
+            sqlx::query("DELETE FROM character_timers WHERE character_id = $1 AND kind = $2")
                 .bind(character.database_id())
                 .bind(kind)
                 .execute(state.pool())

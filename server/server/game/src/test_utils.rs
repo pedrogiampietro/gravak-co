@@ -1,5 +1,4 @@
 use futures::future::BoxFuture;
-use sqlx::sqlite::SqlitePoolOptions;
 use tq_network::Actor;
 use tracing_subscriber::prelude::*;
 
@@ -36,16 +35,7 @@ where
         .with_test_writer();
     tracing_subscriber::registry().with(env_filter).with(logger).init();
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(42)
-        .min_connections(4)
-        .connect("sqlite::memory:")
-        .await?;
-    // Run database migrations
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to migrate database");
+    let pool = tq_db::testing::pool().await;
     let state = crate::State::with_pool(pool).await?;
     let actors = [make_test_actor(&state, 1).await?, make_test_actor(&state, 2).await?];
     f(state, actors).await

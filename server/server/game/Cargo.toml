@@ -22,6 +22,7 @@ tq-serde = { workspace = true, features = ["std"] }
 tq-math.workspace = true
 tq-db = { workspace = true, features = ["sqlx"] }
 tq-server.workspace = true
+tq-logging.workspace = true
 primitives.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
@@ -62,12 +63,16 @@ features = ["rt-multi-thread", "macros", "signal", "sync", "parking_lot", "traci
 [dependencies.sqlx]
 workspace = true
 default-features = false
-features = ["runtime-tokio-rustls", "sqlite", "time", "migrate"]
+features = ["runtime-tokio-rustls", "postgres", "time", "migrate"]
 
 [dev-dependencies.sqlx]
 workspace = true
 default-features = false
-features = ["runtime-tokio-rustls", "sqlite", "time", "migrate"]
+features = ["runtime-tokio-rustls", "postgres", "time", "migrate"]
+
+[dev-dependencies.tq-db]
+workspace = true
+features = ["sqlx", "testing"]
 
 [features]
 default = []

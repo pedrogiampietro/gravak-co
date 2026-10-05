@@ -576,6 +576,9 @@ pub enum QuickPanel {
     Team,
     System,
     Settings,
+    Store,
+    /// The VIP Rights window.
+    Vip,
 }
 
 pub use crate::original_panels::SettingsAction as SettingsPanelAction;
@@ -638,6 +641,10 @@ pub enum PlayerShopPanelAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuildPanelAction {
+    /// Gives this much silver to the guild fund.
+    Donate(u32),
+    /// The leader takes this much silver from the fund.
+    Withdraw(u32),
     AcceptInvite,
     Warehouse,
     Invite,
@@ -664,7 +671,7 @@ impl QuickPanel {
     fn title(self) -> &'static str {
         match self {
             Self::Skills => "SKILLS",
-            Self::Quest => "QUESTS",
+            Self::Quest => "BOUNTY TASKS",
             Self::Guild => "GUILD",
             Self::Friends => "FRIENDS",
             Self::Trade => "TRADE",
@@ -672,6 +679,8 @@ impl QuickPanel {
             Self::Market => "MARKET",
             Self::Team => "TEAM",
             Self::System => "SYSTEM",
+            Self::Store => "STORE",
+            Self::Vip => "VIP",
             Self::Settings => "SETTINGS",
         }
     }
@@ -723,6 +732,12 @@ pub fn player_shop_panel_action_at(
         }
     }
     None
+}
+
+/// The booth name field, right of the Query button.
+pub fn player_shop_name_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
+    (left + 268.0..=left + 500.0).contains(&cursor[0]) && (top + 144.0..=top + 172.0).contains(&cursor[1])
 }
 
 pub fn player_shop_price_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -975,7 +990,11 @@ pub fn quick_panel_image(
     player_shop_open: bool,
     player_shop_price: &str,
     player_shop_price_focused: bool,
+    player_shop_name: &str,
+    player_shop_name_focused: bool,
     hud_config: crate::hud::HudConfig,
+    bounty: Option<&crate::bounty_board::BountyView>,
+    store: Option<&crate::store_panel::StoreView>,
 ) -> Result<RgbaImage> {
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(
@@ -998,18 +1017,15 @@ pub fn quick_panel_image(
                 pending_friend_name,
                 selected_target_name,
                 trade,
+                vip_until: store.map_or(0, |store| store.state.vip_until),
                 options: hud_config,
             },
         );
     }
+    // Clear: `framed` puts the game's frame, title and close button
+    // around the contents, like the item and trade windows.
     let mut image =
         RgbaImage::from_pixel(QUICK_PANEL_WIDTH, QUICK_PANEL_HEIGHT, Rgba([0, 0, 0, 0]));
-    crate::components::draw_window_rect(
-        &mut image,
-        UiRect::new(0, 0, QUICK_PANEL_WIDTH as i32, QUICK_PANEL_HEIGHT as i32),
-        panel.title(),
-        crate::components::WidgetState::Normal,
-    )?;
     let font = labels::font()?;
     match panel {
         QuickPanel::Skills => {
@@ -1063,20 +1079,7 @@ pub fn quick_panel_image(
                 );
             }
         }
-        QuickPanel::Quest => {
-            labels::text(
-                &mut image,
-                &font,
-                &[("No active quests", [220, 210, 175])],
-                [24.0, 64.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[("Quest progress will appear here.", [150, 150, 150])],
-                [24.0, 94.0],
-            );
-        }
+        QuickPanel::Quest => crate::bounty_board::draw(&mut image, &font, bounty),
         QuickPanel::Guild => {
             crate::components::draw_card(
                 &mut image,
@@ -1484,14 +1487,37 @@ pub fn quick_panel_image(
                 team_button(&mut image, &font, 24, 112, "FECHAR BANCA");
                 team_button(&mut image, &font, 268, 112, "ADICIONAR ITEM");
             } else {
+                // Beside the button, which sits where this line was.
                 labels::text(
                     &mut image,
                     &font,
                     &[("Preço padrão: 1000 silver", [170, 164, 143])],
-                    [24.0, 104.0],
+                    [268.0, 116.0],
                 );
                 team_button(&mut image, &font, 24, 112, "ABRIR BANCA");
             }
+            // The booth's name: shown over the seller while open, kept for
+            // the next time. Enter saves it.
+            labels::text(&mut image, &font, &[("Nome da banca", [255, 224, 146])], [268.0, 146.0]);
+            let shown_name = if player_shop_name.is_empty() && !player_shop_name_focused {
+                "clique e digite; Enter salva"
+            } else {
+                player_shop_name
+            };
+            let name_colour = if player_shop_name_focused {
+                [255, 255, 255]
+            } else if player_shop_name.is_empty() {
+                [150, 150, 150]
+            } else {
+                [220, 210, 175]
+            };
+            let caret = if player_shop_name_focused { "_" } else { "" };
+            labels::text(
+                &mut image,
+                &font,
+                &[(shown_name, name_colour), (caret, [255, 255, 255])],
+                [268.0, 162.0],
+            );
             if selected_target_name.is_some() {
                 team_button(&mut image, &font, 24, 146, "CONSULTAR ALVO");
             } else {
@@ -1642,6 +1668,9 @@ pub fn quick_panel_image(
                 );
             }
         }
+        QuickPanel::Store => crate::store_panel::draw(&mut image, assets, store),
+        // Drawn over its original art by `original_panels`.
+        QuickPanel::Vip => {}
         QuickPanel::System => {
             labels::text(
                 &mut image,
@@ -1744,13 +1773,9 @@ pub fn quick_panel_image(
             );
         }
     }
-    labels::text(
-        &mut image,
-        &font,
-        &[("Click X or press ESC to close", [150, 150, 150])],
-        [24.0, 340.0],
-    );
-    Ok(image)
+    // The frame's close button replaces the old "Click X or press ESC"
+    // line, which sat on the Skills window's action bar.
+    framed(assets, image, &title_case(panel.title()), false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1825,6 +1850,104 @@ impl WeaponFilter {
             Self::Others => 136,
         };
         UiRect::new(StatusLayout::PAPER_X + x, StatusLayout::PAPER_Y + 297, 64, 21)
+    }
+}
+
+/// The Skills tab's three pages (`QuerySkillBtnZ/M/J`): weapon and physical
+/// skills, magic, and XP skills.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SkillFilter {
+    #[default]
+    Skill,
+    Magic,
+    Xp,
+}
+
+impl SkillFilter {
+    pub const ALL: [SkillFilter; 3] = [Self::Skill, Self::Magic, Self::Xp];
+
+    /// Same places as the Weapon tab's page buttons.
+    fn rect(self) -> UiRect {
+        let x = match self {
+            Self::Skill => 4,
+            Self::Magic => 70,
+            Self::Xp => 136,
+        };
+        UiRect::new(StatusLayout::PAPER_X + x, StatusLayout::PAPER_Y + 297, 64, 21)
+    }
+
+    /// The page a skill belongs on.
+    pub fn of(assets: &mut Assets, skill_id: u32) -> Self {
+        if crate::main_hud::is_xp_skill(assets, skill_id) {
+            return Self::Xp;
+        }
+        let physical = crate::magic::magic_type(assets, skill_id, 0)
+            .is_some_and(|magic| magic.kind.to_ascii_lowercase().contains("physical"));
+        if physical { Self::Skill } else { Self::Magic }
+    }
+}
+
+/// What the Skills tab shows: its page, how far it is scrolled, the skill
+/// picked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SkillPage {
+    pub filter: SkillFilter,
+    pub scroll: u8,
+    pub selected: Option<u32>,
+}
+
+/// The skills of a page, in id order.
+pub fn skill_rows(assets: &mut Assets, known_skills: &[(u32, u16, u32)], filter: SkillFilter) -> Vec<(u32, u16, u32)> {
+    let mut rows: Vec<(u32, u16, u32)> = known_skills
+        .iter()
+        .copied()
+        .filter(|(skill_id, _, _)| SkillFilter::of(assets, *skill_id) == filter)
+        .collect();
+    rows.sort_unstable_by_key(|(skill_id, _, _)| *skill_id);
+    rows
+}
+
+/// Experience a skill at the server's `level` needs for the next (the
+/// client's MagicType, whose levels start at 0); 0 at the top.
+pub fn skill_level_experience(assets: &mut Assets, skill_id: u32, level: u16) -> u32 {
+    crate::magic::magic_type(assets, skill_id, level.saturating_sub(1)).map_or(0, |magic| magic.need_exp)
+}
+
+/// A row of the skill list ([134-1522..1526]).
+fn skill_row_rect(row: usize) -> UiRect {
+    UiRect::new(
+        StatusLayout::PAPER_X + 15,
+        StatusLayout::PAPER_Y + 67 + row as i32 * 38,
+        162,
+        37,
+    )
+}
+
+pub fn status_skill_filter_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<SkillFilter> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    SkillFilter::ALL.into_iter().find(|filter| filter.rect().contains_local(local))
+}
+
+/// The row of the skill list under the cursor.
+pub fn status_skill_row_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<usize> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    (0..STATUS_LIST_ROWS).find(|row| skill_row_rect(*row).contains_local(local))
+}
+
+/// The list's up (`Some(true)`) or down arrow under the cursor.
+pub fn status_list_scroll_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    let up = UiRect::new(StatusLayout::PAPER_X + 183, StatusLayout::PAPER_Y + 230, 24, 30);
+    let down = UiRect::new(StatusLayout::PAPER_X + 183, StatusLayout::PAPER_Y + 264, 24, 30);
+    if up.contains_local(local) {
+        Some(true)
+    } else if down.contains_local(local) {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -2450,7 +2573,7 @@ pub fn status_dynamic_image(
     equipment: &[crate::network::OwnedItem],
     weapon_skills: &[(u32, u32, u32)],
     weapon_filter: WeaponFilter,
-    selected_skill: Option<u32>,
+    skill_page: SkillPage,
 ) -> Result<RgbaImage> {
     let (width, height) = status_surface_size(active_tab);
     let mut image = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
@@ -2574,37 +2697,56 @@ pub fn status_dynamic_image(
             }
         }
         StatusTab::Skills => {
-            let selected = known_skills
+            let rows = skill_rows(assets, known_skills, skill_page.filter);
+            let selected = rows
                 .iter()
-                .find(|(id, _, _)| Some(*id) == selected_skill)
-                .or(known_skills.first())
+                .find(|(id, _, _)| Some(*id) == skill_page.selected)
+                .or(rows.first())
                 .copied();
+            let percent = |assets: &mut Assets, skill_id: u32, level: u16, experience: u32| {
+                let need = skill_level_experience(assets, skill_id, level);
+                (need > 0).then(|| (u64::from(experience) * 100 / u64::from(need)).min(99) as u32)
+            };
             if let Some((skill_id, level, experience)) = selected {
-                let kind = crate::magic::magic_type(assets, skill_id, level)
+                let kind = crate::magic::magic_type(assets, skill_id, level.saturating_sub(1))
                     .map(|magic| magic.kind.clone())
                     .filter(|kind| !kind.is_empty())
-                    .unwrap_or_else(|| format!("Level {level}  Exp {experience}"));
+                    .unwrap_or_default();
                 let name = crate::magic::skill_name(assets, skill_id);
-                for (index, line) in [name, kind].iter().enumerate() {
-                    let y = paper[1] + 8 + index as i32 * 18;
-                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 12, y], WHITE, Some(180));
+                let need = skill_level_experience(assets, skill_id, level);
+                let progress = if need == 0 {
+                    "EXP: Max".to_owned()
+                } else {
+                    format!("EXP: {experience}/{need} ({}%)", percent(assets, skill_id, level, experience).unwrap_or(0))
+                };
+                let lines = [format!("{name}: Level {level}"), kind, progress];
+                // Inside the description box, as on the Weapon tab.
+                for (index, line) in lines.iter().enumerate() {
+                    let y = paper[1] + 6 + index as i32 * 17;
+                    crate::main_hud::text(&mut image, font, line, 12.0, [paper[0] + 24, y], WHITE, Some(180));
                 }
             }
-            // [134-1522..1526]/[134-1165] icons and the level boxes beside.
-            for (row, &(skill_id, skill_level, _)) in
-                known_skills.iter().take(STATUS_LIST_ROWS).enumerate()
-            {
+            // [134-1522..1526]/[134-1165] icons, the level stars and the
+            // progress beside them.
+            let shown = rows.iter().skip(usize::from(skill_page.scroll)).take(STATUS_LIST_ROWS);
+            for (row, &(skill_id, skill_level, experience)) in shown.enumerate() {
                 let y = paper[1] + 67 + row as i32 * 38;
+                if Some(skill_id) == selected.map(|(id, _, _)| id) {
+                    let rect = skill_row_rect(row);
+                    crate::ui_theme::outline(&mut image, rect, [255, 214, 102, 255]);
+                }
                 if let Some(icon) = crate::main_hud::skill_icon(assets, skill_id) {
                     draw_list_icon(&mut image, &icon, [paper[0] + 17, y]);
                 }
-                draw_level_stars(
-                    &mut image,
-                    assets,
-                    u32::from(skill_level),
-                    [paper[0] + 82, y + 18],
-                );
+                draw_level_stars(&mut image, assets, u32::from(skill_level), [paper[0] + 82, y + 11]);
+                let line = match percent(assets, skill_id, skill_level, experience) {
+                    Some(percent) => format!("Lv {skill_level}   {percent}%"),
+                    None => format!("Lv {skill_level}   Max"),
+                };
+                crate::main_hud::text(&mut image, font, &line, 11.0, [paper[0] + 82, y + 20], WHITE, Some(90));
             }
+            // The page being shown, marked over its button.
+            crate::ui_theme::outline(&mut image, skill_page.filter.rect(), [255, 214, 102, 255]);
         }
         _ => {}
     }
@@ -4269,7 +4411,9 @@ pub struct PromptDialog {
     pub title: &'static str,
     /// The player asking, drawn bright under the title.
     pub name: String,
-    pub text: &'static str,
+    pub text: String,
+    /// The two buttons: yes, then no.
+    pub buttons: [&'static str; 2],
     /// Top-left corner in window pixels.
     pub position: [i32; 2],
 }
@@ -4279,17 +4423,24 @@ const PROMPT_BUTTONS: [[i32; 4]; 2] = [[28, 92, 70, 24], [110, 92, 70, 24]];
 
 impl PromptDialog {
     /// A prompt centred across the window, in its upper third.
-    pub fn new(viewport: [f32; 2], title: &'static str, name: String, text: &'static str) -> Self {
+    pub fn new(viewport: [f32; 2], title: &'static str, name: String, text: impl Into<String>) -> Self {
+        let text = text.into();
         let width = crate::original_panels::FRAMED_WIDTH as f32;
         Self {
             title,
             name,
             text,
+            buttons: ["Accept", "Refuse"],
             position: [
                 ((viewport[0] - width) * 0.5).max(8.0) as i32,
                 (viewport[1] * 0.22).max(8.0) as i32,
             ],
         }
+    }
+
+    /// The same prompt with other button labels.
+    pub fn with_buttons(self, buttons: [&'static str; 2]) -> Self {
+        Self { buttons, ..self }
     }
 
     fn size() -> [i32; 2] {
@@ -4315,28 +4466,25 @@ impl PromptDialog {
     }
 
     pub fn image(&self, assets: &mut Assets, hovered: Option<bool>) -> Result<RgbaImage> {
-        use crate::original_panels::{LABEL_GOLD, fill, label_centered};
+        use crate::original_panels::{LABEL_GOLD, label_centered};
         let mut image = crate::original_panels::framed_panel(assets, PROMPT_INNER)?;
         let center = (crate::original_panels::FRAMED_LIST_X[0] + crate::original_panels::FRAMED_LIST_X[1]) / 2;
         label_centered(&mut image, self.title, 14.0, center, 12, LABEL_GOLD);
-        label_centered(&mut image, &self.name, 14.0, center, 50, [255, 244, 214, 255]);
-        label_centered(&mut image, self.text, 13.0, center, 70, LABEL_GOLD);
-        for (index, ([x, y, width, height], label)) in PROMPT_BUTTONS.into_iter().zip(["Accept", "Refuse"]).enumerate() {
-            let hot = hovered == Some(index == 0);
-            fill(&mut image, [x, y, width, height], if hot { [120, 90, 30, 150] } else { [0, 0, 0, 90] });
-            ui_theme::outline(
-                &mut image,
-                UiRect::new(x, y, width, height),
-                if hot { [255, 214, 102, 255] } else { [168, 128, 52, 255] },
-            );
-            label_centered(
-                &mut image,
+        // Long names and prices shrink to stay inside the frame.
+        let room = crate::original_panels::FRAMED_LIST_X[1] - crate::original_panels::FRAMED_LIST_X[0] - 8;
+        crate::original_panels::label_fitted(&mut image, &self.name, 14.0, center, 50, [255, 244, 214, 255], room);
+        crate::original_panels::label_fitted(&mut image, &self.text, 13.0, center, 70, LABEL_GOLD, room);
+        for (index, ([x, y, width, height], label)) in PROMPT_BUTTONS.into_iter().zip(self.buttons).enumerate() {
+            let look = if hovered == Some(index == 0) { crate::ornate::Look::Hovered } else { crate::ornate::Look::Normal };
+            let button = crate::ornate::plate(
+                Some(&mut *assets),
+                [width as u32, height as u32],
                 label,
-                13.0,
-                x + width / 2,
-                y + (height - 15) / 2,
-                if hot { [255, 244, 214, 255] } else { LABEL_GOLD },
-            );
+                crate::ornate::GRAVAK,
+                look,
+                None,
+            )?;
+            image::imageops::overlay(&mut image, &button, i64::from(x), i64::from(y));
         }
         Ok(image)
     }
@@ -4734,10 +4882,11 @@ fn rarity_action_panel_image(
     inventory: &[crate::network::OwnedItem],
     animation_progress: Option<f32>,
 ) -> Result<RgbaImage> {
+    // Clear: the friend dialog's frame (see `framed`) shows around the cards.
     let mut image = RgbaImage::from_pixel(
         RARITY_PANEL_WIDTH as u32,
         RARITY_PANEL_HEIGHT as u32,
-        Rgba([5, 17, 25, 255]),
+        Rgba([0, 0, 0, 0]),
     );
     let font = labels::font()?;
     let next_rarity = panel.item.rarity.saturating_add(1).min(4);
@@ -7860,7 +8009,7 @@ mod icon_tests {
                 &equipment,
                 &[(410, 1, 110), (420, 12, 3_500), (480, 3, 90)],
                 super::WeaponFilter::OneHand,
-                Some(1_000),
+                super::SkillPage { filter: super::SkillFilter::Magic, scroll: 0, selected: Some(1_000) },
             )?;
             image::imageops::overlay(&mut image, &values, 0, 0);
             if tab == StatusTab::Equipment {

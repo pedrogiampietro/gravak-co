@@ -2,6 +2,79 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 
 pub const MAX_LISTINGS: usize = 10;
+/// The longest booth name.
+pub const MAX_NAME: usize = 24;
+
+/// A booth name as typed: trimmed, printable, at most [`MAX_NAME`] letters;
+/// `None` when nothing is left.
+pub fn clean_name(name: &str) -> Option<String> {
+    let name: String = name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_NAME)
+        .collect();
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// The name a character's booth had, if they ever named one.
+pub async fn saved_name(pool: &sqlx::PgPool, character_id: i32) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT name FROM player_shops WHERE character_id = $1")
+        .bind(i64::from(character_id))
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn save_name(pool: &sqlx::PgPool, character_id: i32, name: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO player_shops (character_id, name) VALUES ($1, $2)
+         ON CONFLICT (character_id) DO UPDATE SET name = EXCLUDED.name",
+    )
+    .bind(i64::from(character_id))
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// A character's saved listings.
+pub async fn saved_listings(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<ShopListing>, sqlx::Error> {
+    let rows: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT item_uid, price FROM player_shop_listings WHERE character_id = $1 ORDER BY item_uid")
+            .bind(i64::from(character_id))
+            .fetch_all(pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(uid, price)| {
+            Some(ShopListing {
+                item_uid: u32::try_from(uid).ok()?,
+                price: u32::try_from(price).ok()?,
+            })
+        })
+        .collect())
+}
+
+pub async fn save_listing(pool: &sqlx::PgPool, character_id: i32, listing: ShopListing) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO player_shop_listings (item_uid, character_id, price) VALUES ($1, $2, $3)
+         ON CONFLICT (item_uid) DO UPDATE SET character_id = EXCLUDED.character_id, price = EXCLUDED.price",
+    )
+    .bind(i64::from(listing.item_uid))
+    .bind(i64::from(character_id))
+    .bind(i64::from(listing.price))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn forget_listing(pool: &sqlx::PgPool, item_uid: u32) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM player_shop_listings WHERE item_uid = $1")
+        .bind(i64::from(item_uid))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShopListing {
@@ -131,6 +204,41 @@ impl PlayerShopManager {
 #[cfg(test)]
 mod tests {
     use super::{PlayerShopError, PlayerShopManager, MAX_LISTINGS};
+
+    #[test]
+    fn booth_names_are_cleaned() {
+        assert_eq!(super::clean_name("  Pedro's Gems  ").as_deref(), Some("Pedro's Gems"));
+        assert_eq!(super::clean_name("   "), None);
+        assert_eq!(super::clean_name("a\u{7}b").as_deref(), Some("ab"));
+        assert_eq!(super::clean_name(&"x".repeat(40)).map(|name| name.len()), Some(super::MAX_NAME));
+    }
+
+    #[tokio::test]
+    async fn names_and_listings_are_kept() -> Result<(), sqlx::Error> {
+        let pool = tq_db::testing::pool().await;
+        let id = crate::packets::MsgRegister::build_character_with(
+            "booth-test".to_owned(),
+            crate::packets::BodyType::MuscularMale,
+            crate::packets::BaseClass::Trojan,
+            1,
+            1,
+        )
+        .expect("character")
+        .save(&pool)
+        .await
+        .expect("saved");
+        assert_eq!(super::saved_name(&pool, id).await?, None);
+        super::save_name(&pool, id, "Gems").await?;
+        super::save_name(&pool, id, "Cheap Gems").await?;
+        assert_eq!(super::saved_name(&pool, id).await?.as_deref(), Some("Cheap Gems"));
+        let listing = super::ShopListing { item_uid: 77, price: 900 };
+        super::save_listing(&pool, id, listing).await?;
+        super::save_listing(&pool, id, super::ShopListing { price: 800, ..listing }).await?;
+        assert_eq!(super::saved_listings(&pool, id).await?, [super::ShopListing { item_uid: 77, price: 800 }]);
+        super::forget_listing(&pool, 77).await?;
+        assert!(super::saved_listings(&pool, id).await?.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn shop_lifecycle_limits_and_reserves_listings() {

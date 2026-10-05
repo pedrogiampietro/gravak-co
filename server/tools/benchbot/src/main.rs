@@ -71,7 +71,7 @@ async fn main() -> Result<(), Error> {
         "Starting benchbot load"
     );
     let accounts = create_or_get_accounts(&state, bot_count).await?;
-    let maybe_realm = Realm::by_name(state.pool(), "CoEmu").await?;
+    let maybe_realm = Realm::by_name(state.pool(), "Gravak").await?;
     let local_ip = local_ip_address::local_ip().expect("local ip");
     // Check if there is a realm with that name
     let realm = match maybe_realm {

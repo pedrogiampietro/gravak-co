@@ -244,6 +244,19 @@ pub mod server_bus {
 
     use crate::linker::MODULE;
 
+    /// The game server's proof that a connection is the auth server: the
+    /// `TRANSFER_SECRET` both share, sent before `MsgTransfer`.
+    #[derive(serde::Serialize, PacketID)]
+    #[packet(id = 4002)]
+    struct MsgTransferKey {
+        key: String,
+    }
+
+    /// `TRANSFER_SECRET`, when set and not empty.
+    fn transfer_secret() -> Option<String> {
+        std::env::var("TRANSFER_SECRET").ok().filter(|key| !key.trim().is_empty())
+    }
+
     pub fn check(linker: &mut Linker<crate::State>) -> Result<(), crate::error::Error> {
         const NAME: &str = "auth_server_bus_check";
         linker.func_wrap1_async::<u64, i32>(MODULE, NAME, |mut caller, realm| {
@@ -312,6 +325,13 @@ pub mod server_bus {
                 };
                 let cipher = CQCipher::new();
                 let (mut encoder, mut decoder) = TQCodec::new(tcp_stream, cipher).split();
+                if let Some(key) = transfer_secret() {
+                    let key = MsgTransferKey { key }.encode().expect("failed to encode transfer key");
+                    if let Err(error) = encoder.send(key).await {
+                        tracing::error!(error = ?error, "Failed to send the transfer key");
+                        return -1;
+                    }
+                }
                 let transfer = MsgTransfer {
                     account_id: actor.id() as _,
                     realm_id: realm.realm_id as _,

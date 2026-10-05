@@ -831,3 +831,5 @@ VALUES (
     1015,
     4294967295
   );
+
+SELECT sync_identity_sequences();

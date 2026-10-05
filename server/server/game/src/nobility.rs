@@ -72,14 +72,14 @@ pub struct NobilityEntry {
 }
 
 /// Returns the top donation holders in deterministic order.
-pub async fn ranking(pool: &sqlx::SqlitePool, limit: u8) -> Result<Vec<NobilityEntry>, sqlx::Error> {
+pub async fn ranking(pool: &sqlx::PgPool, limit: u8) -> Result<Vec<NobilityEntry>, sqlx::Error> {
     let limit = i64::from(limit.clamp(1, 20));
     let rows = sqlx::query_as::<_, (i64, String, i64)>(
         "SELECT character_id, name, nobility_donation
          FROM characters
          WHERE nobility_donation > 0
          ORDER BY nobility_donation DESC, character_id ASC
-         LIMIT ?",
+         LIMIT $1",
     )
     .bind(limit)
     .fetch_all(pool)

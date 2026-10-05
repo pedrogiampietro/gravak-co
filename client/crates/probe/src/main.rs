@@ -12,7 +12,7 @@ async fn main() {
     let address = args.first().map(String::as_str).unwrap_or("127.0.0.1:9958");
     let username = args.get(1).map(String::as_str).unwrap_or("test1");
     let password = args.get(2).map(String::as_str).unwrap_or("123456");
-    let realm = args.get(3).map(String::as_str).unwrap_or("CoEmu");
+    let realm = args.get(3).map(String::as_str).unwrap_or("Gravak");
 
     println!("Connecting to auth {address} as {username} on realm {realm}...");
     let server = match authenticate(address, username, password, realm).await {
@@ -178,6 +178,13 @@ async fn main() {
         .await
         {
             eprintln!("Title smoke failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.iter().any(|argument| argument == "--bounty") {
+        if let Err(error) = run_bounty_smoke(&mut session).await {
+            eprintln!("Bounty smoke failed: {error}");
             std::process::exit(1);
         }
         return;
@@ -512,6 +519,13 @@ async fn main() {
         eprintln!("Superman smoke failed: {error}");
         std::process::exit(1);
     }
+    if args.iter().any(|argument| argument == "--bless")
+        && let Err(error) =
+            run_bless_smoke(&mut session, character_id, &loaded_character_name).await
+    {
+        eprintln!("Bless smoke failed: {error}");
+        std::process::exit(1);
+    }
     if args.iter().any(|argument| argument == "--stigma")
         && let Err(error) =
             run_stigma_smoke(&mut session, character_id, &loaded_character_name).await
@@ -692,6 +706,76 @@ async fn connect_existing_session(
             }
         }
     }
+}
+
+/// The next bounty board, skipping other packets.
+async fn next_bounty_board(
+    session: &mut GameSession,
+) -> Result<gravak_protocol::BountyState, gravak_protocol::ProtocolError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = timeout_at(deadline, session.next_event())
+            .await
+            .map_err(|_| gravak_protocol::ProtocolError::MalformedResponse("bounty board timed out"))??;
+        match event {
+            Some(GameEvent::BountyState(board)) => return Ok(board),
+            Some(GameEvent::Talk(talk)) => println!("Bounty talk: {}", talk.message),
+            Some(_) => {}
+            None => {
+                return Err(gravak_protocol::ProtocolError::MalformedResponse(
+                    "game server closed during the bounty smoke",
+                ));
+            }
+        }
+    }
+}
+
+/// Opens the Task Board, takes the first bounty, checks it is under way and
+/// abandons it again (one reroll token).
+async fn run_bounty_smoke(session: &mut GameSession) -> Result<(), gravak_protocol::ProtocolError> {
+    use gravak_protocol::BountyPacket;
+    let malformed = gravak_protocol::ProtocolError::MalformedResponse;
+    session.send(&BountyPacket::new(BountyPacket::OPEN, 0)).await?;
+    let board = next_bounty_board(session).await?;
+    println!(
+        "Bounty board OK: points={}, tokens={}, difficulty={}, offers={:?}, active={:?}",
+        board.points,
+        board.tokens,
+        board.difficulty,
+        board.offers().iter().map(|offer| (&offer.monster_name, offer.kills, offer.grade)).collect::<Vec<_>>(),
+        board.active().map(|task| (&task.monster_name, task.kills_done, task.kills)),
+    );
+    if board.active().is_some() {
+        println!("A bounty is already under way; leaving it alone.");
+        return Ok(());
+    }
+    let Some(offer) = board.offers().first().map(|offer| (*offer).clone()) else {
+        return Err(malformed("the board has no offers"));
+    };
+    session.send(&BountyPacket::new(BountyPacket::PICK, 0)).await?;
+    // Boards sent before the pick (at login) may still be on their way.
+    let mut board = next_bounty_board(session).await?;
+    while board.active().is_none() {
+        board = next_bounty_board(session).await?;
+    }
+    let task = board.active().ok_or(malformed("the picked bounty is not under way"))?;
+    if task.monster_type != offer.monster_type {
+        return Err(malformed("the bounty under way is not the one picked"));
+    }
+    println!("Bounty pick OK: hunting {} 0/{}", task.monster_name, task.kills);
+    if board.tokens == 0 {
+        return Ok(());
+    }
+    session.send(&BountyPacket::new(BountyPacket::REROLL, board.difficulty)).await?;
+    let mut after = next_bounty_board(session).await?;
+    while after.active().is_some() {
+        after = next_bounty_board(session).await?;
+    }
+    if after.active().is_some() || after.tokens + 1 != board.tokens || after.offers().is_empty() {
+        return Err(malformed("abandoning did not spend a token for a new list"));
+    }
+    println!("Bounty abandon OK: tokens {} -> {}, {} new offers", board.tokens, after.tokens, after.offers().len());
+    Ok(())
 }
 
 async fn run_nobility_smoke(
@@ -2706,7 +2790,7 @@ async fn run_pvp_smoke(
     }
 
     target_session
-        .send(&ActionPacket::reborn(target_id))
+        .send(&ActionPacket::reborn(target_id, false))
         .await?;
     let revived_hp = wait_for_revived_health(&mut target_session, target_id).await?;
     session
@@ -3392,7 +3476,27 @@ async fn run_cyclone_smoke(
             "$test-mana",
         ))
         .await?;
-    sleep(Duration::from_millis(100)).await;
+    // Cyclone is an XP skill: fill the circle and wait for it to light.
+    session
+        .send(&TalkPacket::public(character_id, character_name, "$xp"))
+        .await?;
+    let xp_flag = 1_i64 << 4;
+    let lit_deadline = Instant::now() + Duration::from_secs(4);
+    let mut lit = false;
+    while let Ok(event_result) = timeout_at(lit_deadline, session.next_event()).await {
+        let Some(event) = event_result? else { break };
+        match event {
+            GameEvent::Player(player)
+                if player.character_id == character_id as i32 && (player.status_flags & xp_flag) != 0 =>
+            {
+                lit = true;
+                break;
+            }
+            GameEvent::Talk(talk) => println!("Cyclone XP talk: {}", talk.message),
+            _ => {}
+        }
+    }
+    println!("Cyclone XP circle lit: {lit}");
     session
         .send(&InteractionPacket::magic_attack(
             character_id,
@@ -3449,6 +3553,53 @@ async fn run_cyclone_smoke(
     Ok(())
 }
 
+/// Bless: two rebirths, cast where you stand, and the praying flag
+/// (CASTING_PRAY, 1 << 30) shows with lucky time counting up.
+async fn run_bless_smoke(
+    session: &mut GameSession,
+    character_id: u32,
+    character_name: &str,
+) -> Result<(), gravak_protocol::ProtocolError> {
+    for command in ["$rebirths 2", "$learn-skill 9876 1"] {
+        session
+            .send(&TalkPacket::public(character_id, character_name, command))
+            .await?;
+        sleep(Duration::from_millis(300)).await;
+    }
+    session
+        .send(&InteractionPacket::magic_attack(
+            character_id,
+            character_id,
+            0,
+            0,
+            9_876,
+        ))
+        .await?;
+    let praying_flag = 1_i64 << 30;
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut praying = false;
+    while let Ok(event_result) = timeout_at(deadline, session.next_event()).await {
+        let Some(event) = event_result? else { break };
+        match event {
+            GameEvent::Player(player)
+                if player.character_id == character_id as i32 && (player.status_flags & praying_flag) != 0 =>
+            {
+                praying = true;
+                break;
+            }
+            GameEvent::Talk(talk) => println!("Bless talk: {}", talk.message),
+            _ => {}
+        }
+    }
+    if !praying {
+        return Err(gravak_protocol::ProtocolError::MalformedResponse(
+            "the praying flag was not broadcast",
+        ));
+    }
+    println!("Bless smoke OK: praying=true");
+    Ok(())
+}
+
 async fn run_superman_smoke(
     session: &mut GameSession,
     character_id: u32,
@@ -3487,6 +3638,27 @@ async fn run_superman_smoke(
         ))
         .await?;
     sleep(Duration::from_millis(100)).await;
+    // Superman is an XP skill: fill the circle and wait for it to light.
+    session
+        .send(&TalkPacket::public(character_id, character_name, "$xp"))
+        .await?;
+    let xp_flag = 1_i64 << 4;
+    let lit_deadline = Instant::now() + Duration::from_secs(4);
+    let mut lit = false;
+    while let Ok(event_result) = timeout_at(lit_deadline, session.next_event()).await {
+        let Some(event) = event_result? else { break };
+        match event {
+            GameEvent::Player(player)
+                if player.character_id == character_id as i32 && (player.status_flags & xp_flag) != 0 =>
+            {
+                lit = true;
+                break;
+            }
+            GameEvent::Talk(talk) => println!("Superman XP talk: {}", talk.message),
+            _ => {}
+        }
+    }
+    println!("Superman XP circle lit: {lit}");
     session
         .send(&InteractionPacket::magic_attack(
             character_id,

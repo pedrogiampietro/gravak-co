@@ -1,0 +1,392 @@
+//! The pre-game session: account registration, login, character creation
+//! and entering the world, driven by the login screens.
+//!
+//! Everything runs on one network thread so the game connection opened at
+//! login is the same one [`crate::network::play`] keeps using in game.
+
+use crate::network::{NetworkEvent, NetworkHandle};
+use gravak_protocol::{
+    AuthResponse, ForwardedGameServer, GameEvent, GameSession, RegisterAccountResult,
+    RegisterCharacter, UserInfo, authenticate, register_account,
+};
+use std::{
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+const REGISTER_CHANNEL: u16 = 2100;
+const LOGIN_CHANNEL: u16 = 2101;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginCommand {
+    Register {
+        username: String,
+        password: String,
+    },
+    Login {
+        username: String,
+        password: String,
+    },
+    CreateCharacter {
+        name: String,
+        mesh: u16,
+        class: u16,
+        /// The starter coat's dye (3..=9).
+        coat_dye: u8,
+    },
+    /// Enter the world with the account's character.
+    Enter,
+    /// Drop the game connection and go back to the login screen.
+    Logout,
+}
+
+/// The account's character, shown on the selection screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterSummary {
+    pub name: String,
+    pub level: u8,
+    pub class: u8,
+    pub mesh: u32,
+}
+
+impl CharacterSummary {
+    fn from_user(user: &UserInfo) -> Self {
+        Self {
+            name: user.character_name.clone(),
+            level: user.level,
+            class: user.current_class,
+            mesh: user.mesh,
+        }
+    }
+}
+
+pub enum LoginEvent {
+    /// Progress line for the status bar.
+    Status(String),
+    Registered(String),
+    RegisterFailed(String),
+    LoginFailed(String),
+    /// The account has no character yet.
+    NeedsCharacter,
+    CharacterRejected(String),
+    Character(CharacterSummary),
+    /// The world is loading; the handle receives the game events.
+    Entered(NetworkHandle),
+    Disconnected(String),
+}
+
+pub struct LoginClient {
+    commands: UnboundedSender<LoginCommand>,
+    events: Receiver<LoginEvent>,
+}
+
+impl LoginClient {
+    pub fn start(auth_address: String, realm: String) -> Self {
+        let (events_tx, events) = mpsc::channel();
+        let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
+        thread::Builder::new()
+            .name("gravak-login".into())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = events_tx.send(LoginEvent::Disconnected(error.to_string()));
+                        return;
+                    }
+                };
+                runtime.block_on(serve(auth_address, realm, events_tx, commands_rx));
+            })
+            .expect("login thread should start");
+        Self { commands, events }
+    }
+
+    pub fn send(&self, command: LoginCommand) {
+        let _ = self.commands.send(command);
+    }
+
+    pub fn drain(&self) -> Vec<LoginEvent> {
+        self.events.try_iter().collect()
+    }
+}
+
+enum Phase {
+    Idle,
+    /// Logged in, waiting for a character to be created.
+    Creating {
+        session: GameSession,
+        username: String,
+        password: String,
+        token: u32,
+    },
+    /// Logged in with a character, waiting for Enter.
+    Selected {
+        session: GameSession,
+        user: UserInfo,
+    },
+}
+
+enum Login {
+    NeedsCharacter(GameSession, u32),
+    Character(GameSession, UserInfo),
+}
+
+async fn serve(
+    auth: String,
+    realm: String,
+    events: Sender<LoginEvent>,
+    mut commands: UnboundedReceiver<LoginCommand>,
+) {
+    let send = |event| {
+        let _ = events.send(event);
+    };
+    let mut phase = Phase::Idle;
+    while let Some(command) = commands.recv().await {
+        match command {
+            LoginCommand::Register { username, password } => {
+                send(LoginEvent::Status("creating account".into()));
+                send(match register_account(&auth, &username, &password).await {
+                    Ok(RegisterAccountResult::Created) => LoginEvent::Registered(username),
+                    Ok(result) => LoginEvent::RegisterFailed(register_message(result).into()),
+                    Err(error) => {
+                        LoginEvent::RegisterFailed(format!("account server unavailable ({error})"))
+                    }
+                });
+            }
+            LoginCommand::Login { username, password } => {
+                phase = Phase::Idle;
+                send(LoginEvent::Status("authenticating".into()));
+                match login(&auth, &username, &password, &realm, &send).await {
+                    Ok(Login::NeedsCharacter(session, token)) => {
+                        phase = Phase::Creating {
+                            session,
+                            username,
+                            password,
+                            token,
+                        };
+                        send(LoginEvent::NeedsCharacter);
+                    }
+                    Ok(Login::Character(session, user)) => {
+                        send(LoginEvent::Character(CharacterSummary::from_user(&user)));
+                        phase = Phase::Selected { session, user };
+                    }
+                    Err(error) => send(LoginEvent::LoginFailed(error)),
+                }
+            }
+            LoginCommand::CreateCharacter { name, mesh, class, coat_dye } => {
+                let Phase::Creating {
+                    mut session,
+                    username,
+                    password,
+                    token,
+                } = std::mem::replace(&mut phase, Phase::Idle)
+                else {
+                    send(LoginEvent::CharacterRejected("not logged in".into()));
+                    continue;
+                };
+                send(LoginEvent::Status(format!("creating {name}")));
+                match create_character(&mut session, &username, &name, mesh, class, coat_dye, token).await {
+                    Ok(()) => {
+                        // The server ends the registration session; log in
+                        // again to load the new character.
+                        drop(session);
+                        match login(&auth, &username, &password, &realm, &send).await {
+                            Ok(Login::Character(session, user)) => {
+                                send(LoginEvent::Character(CharacterSummary::from_user(&user)));
+                                phase = Phase::Selected { session, user };
+                            }
+                            Ok(Login::NeedsCharacter(..)) => send(LoginEvent::Disconnected(
+                                "the new character was not found".into(),
+                            )),
+                            Err(error) => send(LoginEvent::Disconnected(error)),
+                        }
+                    }
+                    Err(CreateError::Rejected(message)) => {
+                        phase = Phase::Creating {
+                            session,
+                            username,
+                            password,
+                            token,
+                        };
+                        send(LoginEvent::CharacterRejected(message));
+                    }
+                    Err(CreateError::Closed(message)) => send(LoginEvent::Disconnected(message)),
+                }
+            }
+            LoginCommand::Enter => {
+                let Phase::Selected { session, user } = std::mem::replace(&mut phase, Phase::Idle)
+                else {
+                    continue;
+                };
+                let (handle, network_events, network_commands) = NetworkHandle::channels();
+                send(LoginEvent::Entered(handle));
+                if let Err(error) =
+                    crate::network::play(session, user, network_events.clone(), network_commands)
+                        .await
+                {
+                    let _ = network_events.send(NetworkEvent::Error(error));
+                }
+                return;
+            }
+            LoginCommand::Logout => phase = Phase::Idle,
+        }
+    }
+}
+
+fn register_message(result: RegisterAccountResult) -> &'static str {
+    match result {
+        RegisterAccountResult::Created => "account created",
+        RegisterAccountResult::UsernameTaken => "this account name is already in use",
+        RegisterAccountResult::InvalidUsername => "account names are 4-15 letters, digits or _",
+        RegisterAccountResult::InvalidPassword => "passwords are 4-15 characters, no spaces",
+        RegisterAccountResult::TryAgainLater | RegisterAccountResult::Unknown(_) => {
+            "the account server could not create the account, try again"
+        }
+    }
+}
+
+async fn login(
+    auth: &str,
+    username: &str,
+    password: &str,
+    realm: &str,
+    send: &impl Fn(LoginEvent),
+) -> Result<Login, String> {
+    let server = match authenticate(auth, username, password, realm).await {
+        Ok(AuthResponse::Forwarded(server)) => server,
+        Ok(AuthResponse::Rejected(rejection)) => {
+            return Err(if rejection.message.is_empty() {
+                "wrong account or password".into()
+            } else {
+                rejection.message
+            });
+        }
+        Err(error) => return Err(format!("account server unavailable ({error})")),
+    };
+    send(LoginEvent::Status("connecting to the game server".into()));
+    let mut session = connect(&server)
+        .await
+        .map_err(|error| format!("game server unavailable ({error})"))?;
+    loop {
+        match session
+            .next_event()
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            Some(GameEvent::Talk(talk)) if talk.message == "NEW_ROLE" => {
+                return Ok(Login::NeedsCharacter(session, server.token as u32));
+            }
+            Some(GameEvent::Talk(talk))
+                if talk.channel == LOGIN_CHANNEL && talk.message != "ANSWER_OK" =>
+            {
+                return Err(talk.message);
+            }
+            Some(GameEvent::UserInfo(user)) => return Ok(Login::Character(session, user)),
+            Some(_) => {}
+            None => return Err("the game server closed the connection".into()),
+        }
+    }
+}
+
+async fn connect(
+    server: &ForwardedGameServer,
+) -> Result<GameSession, gravak_protocol::ProtocolError> {
+    let address = format!("{}:{}", server.address, server.port);
+    GameSession::connect(&address, server.token, 5065, "English").await
+}
+
+enum CreateError {
+    /// The server refused the name or look; the session stays usable.
+    Rejected(String),
+    Closed(String),
+}
+
+async fn create_character(
+    session: &mut GameSession,
+    username: &str,
+    name: &str,
+    mesh: u16,
+    class: u16,
+    coat_dye: u8,
+    token: u32,
+) -> Result<(), CreateError> {
+    session
+        .send(&RegisterCharacter::with_look(username, name, mesh, class, token).with_coat_dye(coat_dye))
+        .await
+        .map_err(|error| CreateError::Closed(error.to_string()))?;
+    loop {
+        match session.next_event().await {
+            Ok(Some(GameEvent::Talk(talk))) if talk.message == "ANSWER_OK" => return Ok(()),
+            Ok(Some(GameEvent::Talk(talk))) if talk.channel == REGISTER_CHANNEL => {
+                return Err(CreateError::Rejected(talk.message));
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(CreateError::Closed(
+                    "the game server closed the connection".into(),
+                ));
+            }
+            Err(error) => return Err(CreateError::Closed(error.to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod smoke {
+    use super::*;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    fn next(client: &LoginClient) -> LoginEvent {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(event) = client.drain().into_iter().find(|event| !matches!(event, LoginEvent::Status(_))) {
+                return event;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for the login session");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Registers a fresh account, creates its character and enters the
+    /// world against running servers (GRAVAK_AUTH, default 127.0.0.1:9958).
+    #[test]
+    #[ignore = "Needs the auth and game servers running"]
+    fn register_create_and_enter() {
+        let auth = std::env::var("GRAVAK_AUTH").unwrap_or_else(|_| "127.0.0.1:9958".into());
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 1_000_000;
+        let account = format!("smoke{suffix}");
+        let client = LoginClient::start(auth, "Gravak".into());
+
+        client.send(LoginCommand::Register { username: account.clone(), password: "pass1234".into() });
+        assert!(matches!(next(&client), LoginEvent::Registered(name) if name == account));
+        client.send(LoginCommand::Register { username: account.clone(), password: "pass1234".into() });
+        assert!(matches!(next(&client), LoginEvent::RegisterFailed(_)));
+
+        client.send(LoginCommand::Login { username: account.clone(), password: "wrong".into() });
+        assert!(matches!(next(&client), LoginEvent::LoginFailed(_)));
+        client.send(LoginCommand::Login { username: account.clone(), password: "pass1234".into() });
+        assert!(matches!(next(&client), LoginEvent::NeedsCharacter));
+
+        client.send(LoginCommand::CreateCharacter { name: "x".into(), mesh: 2001, class: 40, coat_dye: 3 });
+        assert!(matches!(next(&client), LoginEvent::CharacterRejected(_)));
+        let name = format!("Smoke{suffix}");
+        client.send(LoginCommand::CreateCharacter { name: name.clone(), mesh: 2001, class: 40, coat_dye: 3 });
+        match next(&client) {
+            LoginEvent::Character(summary) => {
+                assert_eq!(summary.name, name);
+                assert_eq!(summary.class, 40);
+            }
+            _ => panic!("expected the new character"),
+        }
+
+        client.send(LoginCommand::Enter);
+        let LoginEvent::Entered(handle) = next(&client) else {
+            panic!("expected to enter the world");
+        };
+        let ready = handle.wait_ready().expect("world loads");
+        assert_eq!(ready.character_name, name);
+    }
+}

@@ -17,8 +17,10 @@ rkyv = { workspace = true, default-features = false, features = ["alloc", "size_
 workspace = true
 default-features = false
 optional = true
-features = ["sqlite", "macros"]
+features = ["postgres", "macros"]
 
 [features]
 default = ["sqlx"]
 sqlx = ["dep:sqlx"]
+# A fresh, migrated database for each test (needs `docker compose up -d`).
+testing = ["sqlx", "sqlx/migrate", "sqlx/runtime-tokio-rustls"]

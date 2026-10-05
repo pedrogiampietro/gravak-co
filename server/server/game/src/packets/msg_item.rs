@@ -7,9 +7,6 @@ use async_trait::async_trait;
 use num_enum::{FromPrimitive, IntoPrimitive};
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tq_network::{Actor, PacketID, PacketProcess};
 
 /// Enumeration type for defining item actions that may be requested by the
@@ -70,18 +67,7 @@ pub struct MsgItem {
 }
 
 fn dragdrop_log(message: impl Display) {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    let line = format!("[{timestamp}] [DRAGDROP-SERVER] {message}");
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("dragdrop-server-debug.log")
-    {
-        let _ = writeln!(file, "{line}");
-    }
+    tracing::debug!(target: "economy", "Drag and drop: {message}");
 }
 
 fn item_audit_log(action: &str, character_id: u32, item_uid: u32, item_type: u32, details: impl std::fmt::Display) {
@@ -246,7 +232,8 @@ impl PacketProcess for MsgItem {
                     .player_shop_manager()
                     .add_item(character.id(), item.uid, self.amount)
                 {
-                    Ok(_) => {
+                    Ok(listing) => {
+                        crate::player_shop::save_listing(state.pool(), character.database_id(), listing).await?;
                         economic_audit_log(
                             "player_shop_list",
                             character.id(),
@@ -285,6 +272,7 @@ impl PacketProcess for MsgItem {
                 }
                 match state.player_shop_manager().remove_item(character.id(), self.param0) {
                     Ok(listing) => {
+                        crate::player_shop::forget_listing(state.pool(), listing.item_uid).await?;
                         economic_audit_log(
                             "player_shop_remove",
                             character.id(),
@@ -413,6 +401,7 @@ impl PacketProcess for MsgItem {
                 {
                     Some(transfer) => {
                         economic_audit_log("player_shop_buy", buyer.id(), seller.id(), item.uid, listing.price);
+                        crate::player_shop::forget_listing(state.pool(), item.uid).await?;
                         for removed in transfer.left_removed {
                             seller.owner().send(MsgItemInfo::remove_inventory_item(removed)).await?;
                         }
@@ -556,6 +545,9 @@ impl PacketProcess for MsgItem {
                     actor.send(reject("Use rejected: item is not in inventory.")).await?;
                     return Ok(());
                 };
+                if crate::special_items::use_item(state, actor, character, &item).await? {
+                    return Ok(());
+                }
                 if item.item_type == crate::leveling::EXP_BALL {
                     if character.entity().level() >= u16::from(crate::leveling::MAX_LEVEL) {
                         actor.send(reject("You are already at the highest level.")).await?;
@@ -635,6 +627,15 @@ impl PacketProcess for MsgItem {
                     return Ok(());
                 }
                 if let Some(effect) = crate::shop::ShopCatalog::temporary_effect_for_item(item.item_type) {
+                    if effect
+                        .experience_multiplier()
+                        .is_some_and(|multiplier| character.experience_multiplier() > multiplier)
+                    {
+                        actor
+                            .send(reject("A stronger experience boost is already active."))
+                            .await?;
+                        return Ok(());
+                    }
                     let Some(consumed) = character.drop_inventory_item(state.pool(), item.uid).await? else {
                         actor
                             .send(reject("Use rejected: item disappeared from inventory."))
@@ -645,6 +646,13 @@ impl PacketProcess for MsgItem {
                         TemporaryEffect::DoubleExperience(duration) => {
                             character.activate_double_experience(duration);
                             format!("Double experience activated for {} minutes.", duration.as_secs() / 60)
+                        },
+                        TemporaryEffect::BoostedExperience(multiplier, duration) => {
+                            character.activate_experience_boost(multiplier, duration);
+                            format!(
+                                "{multiplier}x experience activated for {} minutes.",
+                                duration.as_secs() / 60
+                            )
                         },
                         TemporaryEffect::HeavenBlessing(duration) => {
                             character.activate_heaven_blessing(duration);

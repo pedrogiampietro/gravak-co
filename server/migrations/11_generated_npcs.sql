@@ -18686,3 +18686,5 @@ VALUES (
     0000,
     0000
   );
+
+SELECT sync_identity_sequences();

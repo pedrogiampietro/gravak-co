@@ -10,7 +10,7 @@ bytes.workspace = true
 tq-serde.workspace = true
 tq-codec.workspace = true
 tq-crypto.workspace = true
-tq-network.workspace = true
+tq-network = { workspace = true, features = ["std"] }
 async-trait.workspace = true
 tracing.workspace = true
 futures.workspace = true
@@ -23,4 +23,4 @@ features = ["io-util", "net"]
 [dependencies.tokio]
 workspace = true
 default-features = false
-features = ["io-util", "sync", "tracing"]
+features = ["io-util", "sync", "tracing", "signal"]

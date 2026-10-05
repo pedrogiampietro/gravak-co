@@ -43,7 +43,20 @@ pub struct ItemTemplate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporaryEffect {
     DoubleExperience(Duration),
+    /// Experience times the first number (the ExpPill and ExpAmrita).
+    BoostedExperience(u8, Duration),
     HeavenBlessing(Duration),
+}
+
+impl TemporaryEffect {
+    /// How many times the experience, for an experience boost.
+    pub fn experience_multiplier(self) -> Option<u8> {
+        match self {
+            Self::DoubleExperience(_) => Some(2),
+            Self::BoostedExperience(multiplier, _) => Some(multiplier),
+            Self::HeavenBlessing(_) => None,
+        }
+    }
 }
 
 impl ShopCatalog {
@@ -202,7 +215,7 @@ impl ShopCatalog {
             1_002_000 => Some(800),
             1_002_010 => Some(1_200),
             1_002_020 => Some(2_000),
-            1_002_050 => Some(3_000),
+            1_002_050 | 721_331 => Some(3_000),
             _ => None,
         }
     }
@@ -215,7 +228,7 @@ impl ShopCatalog {
             1_001_030 => Some(1_000),
             1_001_040 => Some(2_000),
             1_002_030 => Some(3_000),
-            1_002_040 => Some(4_500),
+            1_002_040 | 721_333 => Some(4_500),
             _ => None,
         }
     }
@@ -242,6 +255,9 @@ impl ShopCatalog {
         match item_id {
             722_700 => Some(TemporaryEffect::DoubleExperience(Duration::from_secs(10 * 60))),
             723_017 => Some(TemporaryEffect::DoubleExperience(Duration::from_secs(60 * 60))),
+            // As the client describes them: 300% and 500% for two hours.
+            720_393 => Some(TemporaryEffect::BoostedExperience(3, Duration::from_secs(2 * 60 * 60))),
+            720_394 => Some(TemporaryEffect::BoostedExperience(5, Duration::from_secs(2 * 60 * 60))),
             1_200_000 => Some(TemporaryEffect::HeavenBlessing(Duration::from_secs(3 * 24 * 60 * 60))),
             1_200_001 => Some(TemporaryEffect::HeavenBlessing(Duration::from_secs(7 * 24 * 60 * 60))),
             1_200_002 => Some(TemporaryEffect::HeavenBlessing(Duration::from_secs(30 * 24 * 60 * 60))),

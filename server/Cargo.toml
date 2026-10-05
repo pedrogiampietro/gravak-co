@@ -1,7 +1,7 @@
 [workspace.package]
-authors = ["Shady Khalifa <dev+coemu@shadykhalifa>"]
+authors = ["Pedro Giampietro"]
 edition = "2021"
-repository = "https://github.com/shekohex/coemu.git"
+repository = "https://github.com/pedrogiampietro/gravak-co.git"
 license = "GPL-3.0-only"
 
 [workspace]
@@ -15,7 +15,7 @@ members = [
   # Utils
   "macros/*",
   # Cli Tools
-  "tools/*", "apply_sql", "import_monsters", "import_npcs",
+  "tools/*",
 ]
 
 [workspace.dependencies]
@@ -28,6 +28,7 @@ tq-crypto = { path = "crates/crypto" }
 tq-codec = { path = "crates/codec" }
 tq-db = { path = "crates/db", default-features = false }
 tq-server = { path = "crates/server" }
+tq-logging = { path = "crates/logging" }
 tq-bindings = { path = "crates/bindings" }
 tq-wasm-builder = { path = "crates/wasm-builder" }
 tracing-wasm = { path = "crates/tracing-wasm" }
@@ -83,7 +84,7 @@ default-features = false
 
 [workspace.dependencies.sqlx]
 default-features = false
-version = "0.7.3"
+version = "0.8"
 
 [profile.dev]
 split-debuginfo = 'packed'

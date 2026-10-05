@@ -1,8 +1,8 @@
 CREATE TABLE IF NOT EXISTS character_friends (
-    character_id INTEGER NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
-    friend_id INTEGER NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    character_id BIGINT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
+    friend_id BIGINT NOT NULL REFERENCES characters(character_id) ON DELETE CASCADE,
     friend_name TEXT NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now())::BIGINT),
     PRIMARY KEY (character_id, friend_id),
     CHECK (character_id <> friend_id)
 );

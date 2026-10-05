@@ -9,6 +9,106 @@ use argh::FromArgs;
 use std::time::Duration;
 use tq_network::Actor;
 
+/// Moves a character to `map_id` at `location`, with its screen refreshed.
+async fn move_to(
+    state: &crate::State,
+    entity: &std::sync::Arc<crate::entities::GameEntity>,
+    map_id: u32,
+    location: (u16, u16),
+) -> Result<(), Error> {
+    let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+    let old_map_id = character.entity().map_id();
+    let old_map = state.try_map(old_map_id)?;
+    let map = state.try_map(map_id)?;
+    character.teleport(state, map_id, location).await?;
+    map.insert_entity(entity.clone()).await?;
+    // `Character::teleport` removes the entity from its old map.  Do not
+    // remove it a second time when the destination is the same map: in that
+    // case `old_map` and `map` are the same map object, and the second
+    // removal would erase the freshly reinserted character from the world
+    // index.
+    if old_map_id != map_id {
+        old_map.remove_entity(entity)?;
+    }
+    // Teleport updates the character location and map membership, but does
+    // not itself repopulate the client's surrounding entities. Refresh the
+    // screen so nearby NPCs and monsters are spawned.
+    character.try_screen()?.load_surroundings(state).await?;
+    Ok(())
+}
+
+/// Monsters one `$monster` creates, at most.
+const MAX_SUMMONED: u32 = 20;
+
+/// Creates `amount` monsters of type `wanted` (an id or a name) around a
+/// game master; they fight as any other, drop loot, and are gone once dead.
+async fn summon_monsters(
+    state: &crate::State,
+    me: &crate::entities::Character,
+    wanted: &str,
+    amount: u32,
+) -> Result<String, Error> {
+    let id = wanted.parse::<i64>().unwrap_or(-1);
+    let monster_type = sqlx::query_as::<_, tq_db::monster::MonsterType>(
+        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance \
+         FROM monster_types WHERE id = $1 OR lower(name) = lower($2) ORDER BY (id = $1) DESC, id LIMIT 1",
+    )
+    .bind(id)
+    .bind(wanted)
+    .fetch_optional(state.pool())
+    .await?;
+    let Some(monster_type) = monster_type else {
+        return Ok(format!("No monster called {wanted}."));
+    };
+    let map_id = me.entity().map_id();
+    let map = state.try_map(map_id)?;
+    let here = me.entity().location();
+    let mut created = 0;
+    for index in 0..amount {
+        // Around the game master, a ring at a time, on walkable cells.
+        let ring = 2 + index as i32 / 8;
+        let (dx, dy) = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)][index as usize % 8];
+        let mut origin = here;
+        origin.x = (i32::from(here.x) + dx * ring).max(0) as u16;
+        origin.y = (i32::from(here.y) + dy * ring).max(0) as u16;
+        let Some(spot) = map.landing_position(origin, 4) else {
+            continue;
+        };
+        let spawn = tq_db::monster::MonsterSpawn {
+            id: 0,
+            monster_type_id: monster_type.id,
+            map_id: map_id as i32,
+            x: spot.x as i16,
+            y: spot.y as i16,
+            amount: 1,
+            radius: 3,
+        };
+        let id = crate::world::next_summoned_id();
+        let monster = crate::entities::Monster::new(id, monster_type.clone(), spawn);
+        let entity = std::sync::Arc::new(crate::entities::GameEntity::from(monster));
+        map.add_monster(entity.clone()).await?;
+        if let Some(monster) = entity.as_monster() {
+            let _ = map.broadcast(MsgPlayer::from_monster(monster)).await;
+            let _ = map
+                .broadcast(crate::packets::MsgAction::new(id, 0, 0, 0, crate::packets::ActionType::SpawnEffect))
+                .await;
+        }
+        created += 1;
+    }
+    tracing::info!(
+        target: "world",
+        character = %me.entity().name(),
+        monster = %monster_type.name,
+        created,
+        map_id,
+        "Game master created monsters"
+    );
+    Ok(format!(
+        "Created {created} {} (level {}). $monster-clear removes them.",
+        monster_type.name, monster_type.level
+    ))
+}
+
 pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, args: &[&str]) -> Result<(), Error> {
     let entity = actor.entity();
     let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
@@ -24,32 +124,229 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             return Ok(());
         },
     };
+    if !c.commands.for_players() && !actor.is_gm() {
+        let name = args.first().copied().unwrap_or_default();
+        tracing::warn!(target: "auth", character = %me.entity().name(), command = name, "Game master command refused");
+        actor
+            .send(MsgTalk::from_system(
+                me.id(),
+                TalkChannel::System,
+                format!("${name} is for game masters."),
+            ))
+            .await?;
+        return Ok(());
+    }
     match c.commands {
         SubCommands::Dc(_) => {
             actor.shutdown().await?;
             Ok(())
         },
         SubCommands::Teleport(info) => {
-            let old_map_id = me.entity().map_id();
-            let old_map = state.try_map(old_map_id)?;
-            let map = state.try_map(info.map_id)?;
-            me.teleport(state, info.map_id, (info.x, info.y)).await?;
-            map.insert_entity(actor.entity()).await?;
-            // `Character::teleport` removes the entity from its old map.  Do
-            // not remove it a second time when the destination is the same
-            // map: in that case `old_map` and `map` are the same map object,
-            // and the second removal would erase the freshly reinserted
-            // character from the world index.
-            if old_map_id != info.map_id {
-                old_map.remove_entity(&actor.entity())?;
-            }
-            // Teleport updates the character location and map membership, but
-            // does not itself repopulate the client's surrounding entities.
-            // Refresh the screen so nearby NPCs and monsters are spawned.
-            me.try_screen()?.load_surroundings(state).await?;
+            move_to(state, &actor.entity(), info.map_id, (info.x, info.y)).await?;
             if info.all {
-                // TODO: teleport all
+                let mut summoned = 0;
+                for entity in state.entities() {
+                    let Some(other) = entity.as_character() else { continue };
+                    if other.id() == me.id() {
+                        continue;
+                    }
+                    move_to(state, &entity, info.map_id, (info.x, info.y)).await?;
+                    let _ = other
+                        .owner()
+                        .send(MsgTalk::from_system(
+                            other.id(),
+                            TalkChannel::TopLeft,
+                            format!("{} summoned everyone here.", me.entity().name()),
+                        ))
+                        .await;
+                    summoned += 1;
+                }
+                tracing::info!(target: "world", gm = %me.entity().name(), summoned, map = info.map_id, "Summoned everyone online");
+                actor
+                    .send(MsgTalk::from_system(
+                        me.id(),
+                        TalkChannel::System,
+                        format!("Summoned {summoned} players."),
+                    ))
+                    .await?;
             }
+            Ok(())
+        },
+        SubCommands::BountyGo(_) => {
+            let board = crate::bounty::board(state.pool(), me.database_id()).await?;
+            let Some(task) = board.task else {
+                actor
+                    .send(MsgTalk::from_system(me.id(), TalkChannel::System, "No bounty under way."))
+                    .await?;
+                return Ok(());
+            };
+            // The biggest spawn of any monster type of that name.
+            let spawn: Option<(i64, i64, i64)> = sqlx::query_as(
+                "SELECT s.map_id, s.x, s.y FROM monster_spawns s
+                 JOIN monster_types t ON t.id = s.monster_type_id
+                 WHERE t.name = $1 ORDER BY s.amount DESC, s.id LIMIT 1",
+            )
+            .bind(&task.monster_name)
+            .fetch_optional(state.pool())
+            .await?;
+            let Some((map_id, x, y)) = spawn else {
+                actor
+                    .send(MsgTalk::from_system(me.id(), TalkChannel::System, "That monster roams nowhere."))
+                    .await?;
+                return Ok(());
+            };
+            let map_id = u32::try_from(map_id).unwrap_or_default();
+            let map = state.try_map(map_id)?;
+            map.load().await?;
+            let origin = primitives::Location::new(
+                u16::try_from(x).unwrap_or_default(),
+                u16::try_from(y).unwrap_or_default(),
+                0,
+            );
+            let spot = map.nearest_walkable_position(origin, 12).unwrap_or(origin);
+            move_to(state, &actor.entity(), map_id, (spot.x, spot.y)).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("{} roam here.", task.monster_name),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Monster(info) => {
+            let amount = info.amount.unwrap_or(1).clamp(1, MAX_SUMMONED);
+            let line = summon_monsters(state, me, &info.monster, amount).await?;
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
+            Ok(())
+        },
+        SubCommands::Boss(info) => {
+            let line = match crate::bosses::appear(state, info.id).await? {
+                Some(name) => format!("{name} appeared."),
+                None => format!("No boss {} (or no room for it). Bosses: 8300-8318 and 3120.", info.id),
+            };
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
+            Ok(())
+        },
+        SubCommands::Event(info) => {
+            let line = match crate::events::Mode::parse(&info.mode) {
+                Some(mode) => crate::events::open(state, mode).await,
+                None => "Events: tdm, freeze, infection, ctf, lms.".to_owned(),
+            };
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, line)).await?;
+            Ok(())
+        },
+        SubCommands::Join(_) => {
+            let line = crate::events::join(me);
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::TopLeft, line)).await?;
+            Ok(())
+        },
+        SubCommands::Leave(_) => {
+            let line = crate::events::leave(me);
+            actor.send(MsgTalk::from_system(me.id(), TalkChannel::TopLeft, line)).await?;
+            Ok(())
+        },
+        SubCommands::Xp(_) => {
+            me.fill_xp();
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    "The XP circle fills: in a second the XP skills light up in the skill bar. Pick Cyclone (1110) or Superman (1025, level 40) there and right-click within 20 seconds.",
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Stamina(info) => {
+            me.set_stamina(info.amount.unwrap_or(0));
+            actor
+                .send(crate::packets::MsgUserAttrib::new(
+                    me.id(),
+                    crate::packets::UserAttribute::Stamina,
+                    u64::from(me.stamina()),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Lucky(info) => {
+            me.add_lucky_time(info.seconds.unwrap_or(600));
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Lucky time: {} seconds.", me.lucky_time()),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Rebirths(info) => {
+            me.set_rebirths(info.count);
+            me.save(state).await?;
+            if crate::lucky::grant_bless(state, me).await? {
+                if let Some(progress) = me.skills().into_iter().find(|skill| skill.skill_id == crate::lucky::BLESS) {
+                    actor.send(MsgSkill::from(progress)).await?;
+                }
+            }
+            actor
+                .send(MsgTalk::from_system(me.id(), TalkChannel::System, format!("Rebirths: {}.", me.rebirths())))
+                .await?;
+            Ok(())
+        },
+        SubCommands::MonsterClear(_) => {
+            let map = state.try_map(me.entity().map_id())?;
+            let summoned: Vec<u32> = map
+                .monster_entities()
+                .into_iter()
+                .map(|entity| entity.id())
+                .filter(|id| crate::constants::is_summoned(*id))
+                .collect();
+            for id in &summoned {
+                map.remove_monster(*id);
+                let _ = map
+                    .broadcast(crate::packets::MsgAction::new(*id, 0, 0, 0, crate::packets::ActionType::LeaveMap))
+                    .await;
+            }
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Removed {} created monster(s) from this map.", summoned.len()),
+                ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::BountyKills(info) => {
+            let kills = info.amount.unwrap_or(10).max(1);
+            match crate::packets::add_bounty_kills(state, me, kills).await? {
+                Ok(leveled) => {
+                    if let Some(level) = leveled {
+                        crate::leveling::after_level_up(state, me, level).await?;
+                    }
+                    me.save(state).await?;
+                    actor.send(MsgUserInfo::from(me)).await?;
+                },
+                Err(reason) => {
+                    actor.send(MsgTalk::from_system(me.id(), TalkChannel::System, reason)).await?;
+                },
+            }
+            Ok(())
+        },
+        SubCommands::BountyPoints(info) => {
+            let points = info.amount.unwrap_or(100);
+            crate::bounty::board(state.pool(), me.database_id()).await?;
+            sqlx::query("UPDATE bounty_profiles SET points = points + $2 WHERE character_id = $1")
+                .bind(i64::from(me.database_id()))
+                .bind(i64::from(points))
+                .execute(state.pool())
+                .await?;
+            crate::packets::send_board(state, me).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Added {points} bounty points."),
+                ))
+                .await?;
             Ok(())
         },
         SubCommands::Which(which) => {
@@ -677,11 +974,12 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             // character eligible for the first trainer skill, and persists
             // the fixture before the real NPC dialog is exercised.
             let starter_ids: Vec<u32> = state.skill_catalog().starter_ids().collect();
-            let placeholders = std::iter::repeat_n("?", starter_ids.len())
+            let placeholders = (2..starter_ids.len() + 2)
+                .map(|n| format!("${n}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let query =
-                format!("DELETE FROM character_skills WHERE character_id = ? AND skill_id NOT IN ({placeholders})");
+                format!("DELETE FROM character_skills WHERE character_id = $1 AND skill_id NOT IN ({placeholders})");
             let mut statement = sqlx::query(&query).bind(me.database_id());
             for skill_id in &starter_ids {
                 statement = statement.bind(i64::from(*skill_id));
@@ -1060,6 +1358,40 @@ enum SubCommands {
     SetPk(SetPkCmd),
     SetVirtue(SetVirtueCmd),
     GuildWar(GuildWarCmd),
+    BountyGo(BountyGoCmd),
+    BountyKills(BountyKillsCmd),
+    BountyPoints(BountyPointsCmd),
+    Monster(MonsterCmd),
+    MonsterClear(MonsterClearCmd),
+    Boss(BossCmd),
+    Event(EventCmd),
+    Join(JoinCmd),
+    Leave(LeaveCmd),
+    Xp(XpCmd),
+    Stamina(StaminaCmd),
+    Lucky(LuckyCmd),
+    Rebirths(RebirthsCmd),
+}
+
+impl SubCommands {
+    /// The commands any player may use; the client sends some of them
+    /// itself (titles, nobility). The rest are for game masters.
+    fn for_players(&self) -> bool {
+        matches!(
+            self,
+            Self::Dc(_)
+                | Self::Which(_)
+                | Self::QuestStatus(_)
+                | Self::NobilityStatus(_)
+                | Self::NobilityDonate(_)
+                | Self::NobilityRanking(_)
+                | Self::TitleStatus(_)
+                | Self::TitleEquip(_)
+                | Self::AddAttribute(_)
+                | Self::Join(_)
+                | Self::Leave(_)
+        )
+    }
 }
 
 /// Start or end the Guild War now (it also runs on Saturdays 20:00-22:00).
@@ -1096,6 +1428,106 @@ struct SetLevelCmd {
     /// new level (1-130)
     #[argh(positional)]
     level: u16,
+}
+
+/// Create monsters around you: $monster <name or type id> [amount].
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "monster")]
+struct MonsterCmd {
+    /// the monster's name (as in monster_types) or its type id
+    #[argh(positional)]
+    monster: String,
+    /// how many (default 1, at most 20)
+    #[argh(positional)]
+    amount: Option<u32>,
+}
+
+/// Bring a world boss out now: $boss <monster type> (8300-8318, 3120).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "boss")]
+struct BossCmd {
+    /// the boss's monster type
+    #[argh(positional)]
+    id: u32,
+}
+
+/// Open an event for signups: $event <tdm|freeze|infection|ctf|lms>.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "event")]
+struct EventCmd {
+    /// tdm, freeze, infection, ctf or lms
+    #[argh(positional)]
+    mode: String,
+}
+
+/// Fill the XP circle, for testing XP skills.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "xp")]
+struct XpCmd {}
+
+/// Set stamina, for testing (default 0, to watch it refill).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "stamina")]
+struct StaminaCmd {
+    /// stamina (0-150)
+    #[argh(positional)]
+    amount: Option<u8>,
+}
+
+/// Add lucky time, for testing (default 600 seconds).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "lucky")]
+struct LuckyCmd {
+    /// seconds
+    #[argh(positional)]
+    seconds: Option<u32>,
+}
+
+/// Set the number of rebirths (two learn Bless), for testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "rebirths")]
+struct RebirthsCmd {
+    /// rebirths (0-2)
+    #[argh(positional)]
+    count: u8,
+}
+
+/// Take part in the event open for signups.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "join")]
+struct JoinCmd {}
+
+/// Leave the event signups.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "leave")]
+struct LeaveCmd {}
+
+/// Remove the monsters created with $monster from this map.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "monster-clear")]
+struct MonsterClearCmd {}
+
+/// Go to where the monster of your bounty roams.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-go")]
+struct BountyGoCmd {}
+
+/// Count kills toward your bounty, for testing.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-kills")]
+struct BountyKillsCmd {
+    /// kills to count (default 10)
+    #[argh(positional)]
+    amount: Option<u32>,
+}
+
+/// Add bounty points, for testing the talisman.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "bounty-points")]
+struct BountyPointsCmd {
+    /// points to add (default 100)
+    #[argh(positional)]
+    amount: Option<u32>,
 }
 
 /// Add silver to the current character for local testing.
@@ -1221,8 +1653,8 @@ struct TeleportCmd {
     x: u16,
     #[argh(positional)]
     y: u16,
-    /// teleport all characters with you
-    #[argh(option, default = "false")]
+    /// bring every player online along
+    #[argh(switch)]
     all: bool,
 }
 
@@ -1376,6 +1808,54 @@ struct UpgradeItemCmd {
 mod tests {
     use super::{Command, SubCommands};
     use argh::FromArgs;
+
+    #[test]
+    fn teleport_takes_everyone_along_with_a_switch() {
+        let command = Command::from_args(&["commands"], &["tele", "1002", "430", "380", "--all"]).expect("tele --all");
+        assert_eq!(
+            command.commands,
+            SubCommands::Teleport(super::TeleportCmd { map_id: 1002, x: 430, y: 380, all: true })
+        );
+        let command = Command::from_args(&["commands"], &["tele", "1002", "430", "380"]).expect("tele");
+        assert_eq!(
+            command.commands,
+            SubCommands::Teleport(super::TeleportCmd { map_id: 1002, x: 430, y: 380, all: false })
+        );
+    }
+
+    #[tokio::test]
+    async fn only_game_masters_run_game_master_commands() -> Result<(), crate::Error> {
+        use tq_network::Actor;
+        let state = crate::State::with_pool(tq_db::testing::pool().await).await?;
+        let (tx, mut replies) = tokio::sync::mpsc::channel(64);
+        let actor = Actor::<crate::ActorState>::new(tx);
+        actor.set_id(1);
+        let inner = crate::packets::MsgRegister::build_character_with(
+            "gm-test".to_owned(),
+            crate::packets::BodyType::MuscularMale,
+            crate::packets::BaseClass::Trojan,
+            1,
+            1,
+        )?;
+        inner.save(state.pool()).await?;
+        let inner = tq_db::character::Character::from_account(state.pool(), 1)
+            .await?
+            .expect("character");
+        let screen = crate::systems::Screen::new(actor.handle());
+        actor.update(crate::entities::Character::new(actor.handle(), inner), screen);
+        let silver = || actor.entity().as_character().expect("character").silver();
+        let before = silver();
+
+        super::parse_and_execute(&state, &actor, &["silver", "5000"]).await?;
+        assert_eq!(silver(), before, "a player gets nothing");
+        super::parse_and_execute(&state, &actor, &["quest-status"]).await?;
+
+        actor.set_gm(true);
+        super::parse_and_execute(&state, &actor, &["silver", "5000"]).await?;
+        assert_eq!(silver(), before + 5000, "a game master gets the silver");
+        while replies.try_recv().is_ok() {}
+        Ok(())
+    }
 
     #[test]
     fn parses_learn_skill_command_with_optional_level() {

@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use crate::Error;
 use parking_lot::RwLock;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::postgres::{PgPool, PgPoolOptions};
 
 type Shared<T> = Arc<RwLock<T>>;
 
 #[derive(Debug, Clone)]
 pub struct State {
-    pool: SqlitePool,
+    pool: PgPool,
     /// Maps Account ID to Token value
     tokens: Shared<HashMap<i32, u64>>,
 }
@@ -18,10 +18,8 @@ impl State {
     /// Init The State.
     /// Should only get called once.
     pub async fn init() -> Result<Self, Error> {
-        let data_dir = dotenvy::var("DATA_LOCATION")?;
-        let default_db_location = format!("sqlite://{data_dir}/coemu.db?mode=rwc");
-        let db_url = dotenvy::var("DATABASE_URL").unwrap_or(default_db_location);
-        let pool = SqlitePoolOptions::new()
+        let db_url = dotenvy::var("DATABASE_URL").unwrap_or_else(|_| tq_db::DEFAULT_DATABASE_URL.to_owned());
+        let pool = PgPoolOptions::new()
             .max_connections(42)
             .min_connections(4)
             .connect(&db_url)
@@ -34,7 +32,7 @@ impl State {
     }
 
     /// Get access to the database pool
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 

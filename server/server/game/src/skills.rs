@@ -94,6 +94,44 @@ pub struct SkillDefinition {
     pub mana_heal: u32,
     /// Needs a shield in the left hand (Dash).
     pub needs_shield: bool,
+    /// A weapon skill (Redux `Common.WeaponSkills`): the weapon types
+    /// (item type / 1000) whose plain attacks may set it off instead...
+    pub weapon: Vec<u32>,
+    /// ...one attack in a hundred times this (MagicType `Percent`).
+    pub chance: u8,
+}
+
+/// Skill experience per level, from the client's MagicType (`NeedExp`):
+/// MagicType levels start at 0, the server's at 1.
+fn level_table() -> &'static HashMap<(u32, u16), u32> {
+    static TABLE: std::sync::OnceLock<HashMap<(u32, u16), u32>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        include_str!("../data/skill_levels.dat")
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace().map(str::parse::<u32>);
+                let (Some(Ok(id)), Some(Ok(level)), Some(Ok(need))) = (fields.next(), fields.next(), fields.next())
+                else {
+                    return None;
+                };
+                Some(((id, u16::try_from(level).ok()?), need))
+            })
+            .collect()
+    })
+}
+
+/// Experience a skill at the server's `level` needs to reach the next:
+/// `Some(0)` at its top level, `None` for a skill the original lacks.
+pub fn experience_to_level(skill_id: u32, level: u16) -> Option<u32> {
+    let table = level_table();
+    let magic_level = level.saturating_sub(1);
+    match table.get(&(skill_id, magic_level)) {
+        Some(need) => Some(*need),
+        // Past the last level the original lists: the top.
+        None if table.keys().any(|(id, _)| *id == skill_id) => Some(0),
+        None => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +173,12 @@ impl SkillCatalog {
         self.skills.values().filter(|skill| skill.starter).map(|skill| skill.id)
     }
 
+    /// The weapon skill a weapon of `weapon_type` (item type / 1000) can set
+    /// off.
+    pub fn weapon_skill(&self, weapon_type: u32) -> Option<&SkillDefinition> {
+        self.skills.values().find(|skill| skill.weapon.contains(&weapon_type))
+    }
+
     pub fn skill_for_book(&self, item_type: u32) -> Option<&SkillDefinition> {
         self.skills.values().find(|skill| skill.learn_item == Some(item_type))
     }
@@ -162,7 +206,7 @@ impl SkillCatalog {
             .min_by_key(|skill| (skill.required_level, skill.id))
     }
 
-    fn parse(contents: &str) -> Result<Self, String> {
+    pub(crate) fn parse(contents: &str) -> Result<Self, String> {
         let mut catalog = Self { skills: HashMap::new() };
         let mut current: Option<SkillDefinition> = None;
         let mut seen_keys = HashSet::new();
@@ -209,6 +253,8 @@ impl SkillCatalog {
                         dispatch_xp: false,
                         mana_heal: 0,
                         needs_shield: false,
+                        weapon: Vec::new(),
+                        chance: 0,
                     });
                 }
                 continue;
@@ -347,6 +393,19 @@ impl SkillCatalog {
                         .parse()
                         .map_err(|_| format!("invalid skill line at line {}", line_number + 1))?;
                 },
+                "Weapon" => {
+                    skill.weapon = value
+                        .split(',')
+                        .map(|id| id.trim().parse())
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| format!("invalid skill weapon at line {}", line_number + 1))?;
+                },
+                "Chance" => {
+                    skill.chance = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill chance at line {}", line_number + 1))?;
+                },
                 "Sector" => {
                     skill.sector = value
                         .trim()
@@ -472,6 +531,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -503,6 +564,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -534,6 +597,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -565,6 +630,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -596,6 +663,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -627,6 +696,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         skills.insert(
@@ -658,6 +729,8 @@ impl Default for SkillCatalog {
                 dispatch_xp: false,
                 mana_heal: 0,
                 needs_shield: false,
+                weapon: Vec::new(),
+                chance: 0,
             },
         );
         Self { skills }
@@ -682,6 +755,16 @@ mod tests {
     }
 
     #[test]
+    fn skill_levels_follow_the_original_table() {
+        assert_eq!(super::experience_to_level(1_045, 1), Some(100_000), "FastBlade's first level");
+        assert_eq!(super::experience_to_level(1_045, 2), Some(300_000));
+        assert_eq!(super::experience_to_level(1_045, 5), Some(0), "FastBlade tops at the original's level 4");
+        assert_eq!(super::experience_to_level(1_045, 9), Some(0));
+        assert_eq!(super::experience_to_level(5_010, 1), Some(20_243));
+        assert_eq!(super::experience_to_level(4_242_424, 1), None);
+    }
+
+    #[test]
     fn the_shipped_catalog_parses() {
         let contents = include_str!("../data/skills.dat");
         let catalog = SkillCatalog::parse(contents).expect("skills.dat parses");
@@ -690,6 +773,15 @@ mod tests {
         let volcano = catalog.get(1_125).expect("Volcano");
         assert!(volcano.xp && volcano.centered && volcano.flat_power == 300);
         assert_eq!(catalog.get(1_005).expect("Cure").heal, 20);
+        // Weapon skills: a club sets off Snow one attack in five.
+        let snow = catalog.weapon_skill(561).expect("Snow for clubs");
+        assert_eq!((snow.id, snow.chance, snow.learn_item), (5_010, 20, Some(725_026)));
+        assert!(snow.physical && snow.radius > 0.0 && snow.mana_cost == 0);
+        assert_eq!(catalog.weapon_skill(421).map(|skill| skill.id), Some(5_030), "both blades set off Phoenix");
+        assert!(catalog.weapon_skill(410).is_none(), "blades of 410 have none");
+        let quake = catalog.weapon_skill(450).expect("Earthquake for axes");
+        assert_eq!((quake.id, quake.status.is_some(), quake.power_percent), (7_010, true, 100));
+        assert_eq!(catalog.weapon_skill(500).map(|skill| skill.id), Some(5_000), "bows freeze");
     }
 
     #[test]

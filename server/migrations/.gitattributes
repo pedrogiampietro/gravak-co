@@ -1,0 +1,2 @@
+# sqlx checks each applied migration by its bytes; keep them the same on every checkout.
+*.sql text eol=lf

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use arc_swap::ArcSwapOption;
@@ -10,6 +11,10 @@ use crate::Error;
 pub struct ActorState {
     entity: ArcSwapOption<GameEntity>,
     screen: ArcSwapOption<Screen>,
+    /// The connection proved it is the auth server (`MsgTransferKey`).
+    auth_server: AtomicBool,
+    /// The account logged in on this connection is a game master.
+    gm: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -18,6 +23,8 @@ impl tq_network::ActorState for ActorState {
         ActorState {
             entity: Default::default(),
             screen: Default::default(),
+            auth_server: AtomicBool::new(false),
+            gm: AtomicBool::new(false),
         }
     }
 }
@@ -37,6 +44,24 @@ impl ActorState {
         screen.set_character(Arc::downgrade(&character));
         self.entity.store(Some(character));
         self.screen.store(Some(screen));
+    }
+
+    /// Whether the connection proved it is the auth server.
+    pub fn is_auth_server(&self) -> bool {
+        self.auth_server.load(Ordering::Acquire)
+    }
+
+    pub fn mark_auth_server(&self) {
+        self.auth_server.store(true, Ordering::Release);
+    }
+
+    /// Whether the account logged in on this connection is a game master.
+    pub fn is_gm(&self) -> bool {
+        self.gm.load(Ordering::Acquire)
+    }
+
+    pub fn set_gm(&self, gm: bool) {
+        self.gm.store(gm, Ordering::Release);
     }
 
     pub fn entity(&self) -> Arc<GameEntity> {

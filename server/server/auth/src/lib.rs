@@ -1,7 +1,9 @@
 //! Auth Server
 
 pub mod error;
+pub mod limits;
 pub mod linker;
+pub mod register;
 pub mod state;
 
 use bytes::Bytes;
@@ -21,6 +23,36 @@ pub struct Packets {
     pub msg_account: Module,
 }
 
+/// The login and registration attempts of every address.
+fn login_limiter() -> &'static std::sync::Mutex<limits::LoginLimiter> {
+    static LIMITER: std::sync::OnceLock<std::sync::Mutex<limits::LoginLimiter>> = std::sync::OnceLock::new();
+    LIMITER.get_or_init(Default::default)
+}
+
+/// Whether `actor` may try once more to log in or register; it is told why
+/// not when it may not.
+async fn may_try_login(actor: &Actor<()>, packet_id: u16) -> Result<bool, crate::error::Error> {
+    let Some(peer) = actor.peer() else {
+        return Ok(true);
+    };
+    let allowed = login_limiter()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .allow(peer.ip(), std::time::Instant::now());
+    if allowed {
+        return Ok(true);
+    }
+    tracing::warn!(target: "auth", peer = %peer, "Too many login attempts from one address; refused");
+    if packet_id == register::MsgRegisterAccount::PACKET_ID {
+        actor.send(register::RegisterResult::TryAgainLater.packet()).await?;
+    } else {
+        actor
+            .send(msg_connect_ex::RejectionCode::AccountMaxLoginAttempts.packet())
+            .await?;
+    }
+    Ok(false)
+}
+
 #[async_trait::async_trait]
 impl PacketHandler for Runtime {
     type ActorState = ();
@@ -35,7 +67,15 @@ impl PacketHandler for Runtime {
         const PROCESS_PACKET: &str = "process_packet";
         let packet_len = packet.1.len();
 
+        if matches!(
+            packet.0,
+            msg_account::MsgAccount::PACKET_ID | register::MsgRegisterAccount::PACKET_ID
+        ) && !may_try_login(actor, packet.0).await?
+        {
+            return Ok(());
+        }
         let mut store = wasmtime::Store::new(&runtime.engine, runtime.state.clone());
+        let session = actor;
         let actor = wasmtime::ExternRef::new(actor.handle());
         match packet.0 {
             msg_connect::MsgConnect::PACKET_ID => {
@@ -106,6 +146,10 @@ impl PacketHandler for Runtime {
                     },
                 }
             },
+            register::MsgRegisterAccount::PACKET_ID => {
+                let msg = <register::MsgRegisterAccount as tq_network::PacketDecode>::decode(&packet.1)?;
+                register::process(msg, runtime.state.pool(), session).await
+            },
             _ => {
                 tracing::warn!("Unknown packet: {:#?}", packet);
                 Ok(())
@@ -156,14 +200,7 @@ mod tests {
         let msg_connect = Module::from_file(&engine, msg_connect::WASM_BINARY.unwrap()).unwrap();
         let msg_account = Module::from_file(&engine, msg_account::WASM_BINARY.unwrap()).unwrap();
 
-        std::env::set_var("DATABASE_URL", "sqlite::memory:");
-        let state = State::init().await.unwrap();
-
-        // Run database migrations
-        sqlx::migrate!("../../migrations")
-            .run(state.pool())
-            .await
-            .expect("Failed to migrate database");
+        let state = State::with_pool(tq_db::testing::pool().await);
         let packets = Packets {
             msg_connect,
             msg_account,
@@ -231,7 +268,7 @@ mod tests {
         let msg = MsgAccount {
             username: String::from("test").into(),
             password: String::from("test").into(),
-            realm: String::from("coemu").into(),
+            realm: String::from("Gravak").into(),
             ..Default::default()
         };
         let actor = Actor::<()>::new(tx);
