@@ -1055,7 +1055,9 @@ impl Character {
             }
         }
 
-        for skill_id in catalog.starter_ids() {
+        // Only Taoists start with magic (Thunder), as the original.
+        let taoist = (100..=145).contains(&self.current_class());
+        for skill_id in catalog.starter_ids().filter(|_| taoist) {
             if self.has_skill(skill_id) {
                 continue;
             }
@@ -1516,6 +1518,12 @@ impl Character {
         if threshold == 0 {
             // The top level: experience no longer fills.
             next.proficiency = 0;
+        } else if next.proficiency >= threshold
+            && !crate::magictype::may_raise(skill_id, next.level, self.entity.level())
+        {
+            // Full, waiting for the character level the next one needs
+            // (MagicType `NeedLevel`).
+            next.proficiency = threshold;
         } else if next.proficiency >= threshold && next.level < u16::MAX {
             next.proficiency -= threshold;
             next.level = next.level.saturating_add(1);
@@ -6696,9 +6704,13 @@ mod tests {
     async fn starter_skills_are_seeded_and_learned_levels_persist() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
         let catalog = crate::skills::SkillCatalog::default();
+        // Only Taoists start with Thunder; Fire waits for level 40.
+        character.load_skills(&pool, &catalog).await?;
+        assert!(!character.has_skill(crate::skills::BASIC_FIRE_ID), "not a Taoist");
+        character.set_class(&pool, 100).await?;
         character.load_skills(&pool, &catalog).await?;
         assert!(character.has_skill(crate::skills::BASIC_FIRE_ID));
-        assert!(character.has_skill(crate::skills::FLAME_BURST_ID));
+        assert!(!character.has_skill(crate::skills::FLAME_BURST_ID));
 
         character.learn_skill(&pool, crate::skills::BASIC_FIRE_ID, 3).await?;
         let saved_level: i64 =
@@ -6727,6 +6739,7 @@ mod tests {
     async fn practicing_a_skill_persists_experience_and_proficiency() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
         let catalog = crate::skills::SkillCatalog::default();
+        character.set_class(&pool, 100).await?;
         character.load_skills(&pool, &catalog).await?;
 
         let progress = character

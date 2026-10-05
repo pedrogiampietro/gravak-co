@@ -347,7 +347,10 @@ impl MsgInteract {
         actor: &Actor<ActorState>,
         character: &crate::entities::Character,
     ) -> Result<(), Error> {
-        let Some(skill) = state.skill_catalog().get(self.value).cloned() else {
+        // The skill at the level the caster has it (`magictype.rs`).
+        let Some(skill) = state.skill_catalog().get(self.value).map(|skill| {
+            skill.at_level(character.skill_progress(skill.id).map_or(1, |progress| progress.level))
+        }) else {
             tracing::debug!(skill_id = self.value, "Rejected unknown or invalid skill");
             return Ok(());
         };
@@ -819,7 +822,12 @@ impl MsgInteract {
                 experience: 0,
                 proficiency: 0,
             });
-        let skill_power = skill_power_percent(skill.power_percent, progress.level, progress.proficiency);
+        let leveled = crate::magictype::level(skill.id, progress.level).is_some();
+        let skill_power = if leveled {
+            skill.power_percent
+        } else {
+            skill_power_percent(skill.power_percent, progress.level, progress.proficiency)
+        };
         let magic_attack_bonus = character.magic_attack_bonus_with_catalog(Some(state.shop_catalog()));
         let attacker_stats = CombatStats {
             min_attack: attacker
@@ -870,12 +878,34 @@ impl MsgInteract {
                 attacker_stats
             };
             // Phoenix gems strengthen magic (Redux `CalculateSkillDamage`).
-            let magic_attack = target_attacker_stats
-                .min_attack
-                .saturating_add(target_attacker_stats.attack_flat)
-                .saturating_add(skill.flat_power)
-                .saturating_mul(100 + character.gem_bonus(crate::entities::GemFamily::Phoenix))
-                / 100;
+            // A skill of the original: (the gear's magic attack + its
+            // level's power) x (200 + Phoenix) / 100.
+            let original_magic = u32::try_from(
+                (u64::from(magic_attack_bonus) + u64::from(skill.flat_power))
+                    * (200 + u64::from(character.gem_bonus(crate::entities::GemFamily::Phoenix)))
+                    / 100,
+            )
+            .unwrap_or(u32::MAX);
+            let original_magic = if target.as_monster().is_some() {
+                original_magic
+                    .saturating_mul(u32::from(level_advantage_percent(
+                        character.entity().level(),
+                        target_entity.level(),
+                    )))
+                    / 100
+            } else {
+                original_magic
+            };
+            let magic_attack = if leveled {
+                original_magic
+            } else {
+                target_attacker_stats
+                    .min_attack
+                    .saturating_add(target_attacker_stats.attack_flat)
+                    .saturating_add(skill.flat_power)
+                    .saturating_mul(100 + character.gem_bonus(crate::entities::GemFamily::Phoenix))
+                    / 100
+            };
             // Superman strengthens every physical blow, skills too (Redux
             // `CalculatePhysicalDamage`): 10x on monsters, 2x on players.
             let superman = if character.has_status(crate::entities::StatusEffect::Superman) {
@@ -1430,10 +1460,16 @@ impl PacketProcess for MsgInteract {
                 scale_skill_power(scale_skill_power(attacker_stats, level_bonus), class_bonus),
                 superman_bonus,
             )
-        } else if character.has_status(crate::entities::StatusEffect::Superman) {
-            scale_skill_power(attacker_stats, crate::combat::superman_damage_percent(false))
         } else {
-            attacker_stats
+            // On players a bow shoots for a third of what it does on
+            // monsters (Redux `CalculateBowDamage`).
+            let bow_percent = if bow { crate::combat::BOW_PVP_PERCENT } else { 100 };
+            let attacker_stats = scale_skill_power(attacker_stats, bow_percent);
+            if character.has_status(crate::entities::StatusEffect::Superman) {
+                scale_skill_power(attacker_stats, crate::combat::superman_damage_percent(false))
+            } else {
+                attacker_stats
+            }
         };
         // Intensify: the charged shot hits twice as hard and is spent.
         let attacker_stats = if character.has_status(crate::entities::StatusEffect::Intensify) {
@@ -1561,7 +1597,8 @@ fn weapon_skill_roll(state: &State, character: &crate::entities::Character) -> O
     let skill = [4_u8, 5].into_iter().find_map(|slot| {
         let weapon = character.equipment_item(slot)?;
         let skill = state.skill_catalog().weapon_skill(weapon.item_type / 1_000)?;
-        character.has_skill(skill.id).then_some(skill)
+        let level = character.skill_progress(skill.id)?.level;
+        Some(skill.at_level(level))
     })?;
     (crate::combat::next_roll() % 100 < u32::from(skill.chance)).then_some(skill.id)
 }

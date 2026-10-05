@@ -21,6 +21,7 @@ pub mod bosses;
 pub mod broadcast;
 pub mod events;
 pub mod lucky;
+pub mod magictype;
 pub mod movement_pace;
 pub mod special_items;
 pub mod store;
