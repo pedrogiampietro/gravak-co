@@ -84,16 +84,16 @@ fn choice_card(index: usize, count: usize) -> UiRect {
     UiRect::new(left + index as i32 * (CHOICE_WIDTH + 14), CHOICE_TOP, CHOICE_WIDTH, CHOICE_HEIGHT)
 }
 
-fn width_of(font: &Font, text: &str, size: f32) -> f32 {
+pub(crate) fn width_of(font: &Font, text: &str, size: f32) -> f32 {
     text.chars().map(|c| font.metrics(c, size).advance_width).sum()
 }
 
-fn say(image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], x: i32, y: i32, size: f32) {
+pub(crate) fn say(image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], x: i32, y: i32, size: f32) {
     labels::text_sized(image, font, &[(text, [6, 12, 16])], [x as f32 + 1.0, y as f32 + 1.0], size);
     labels::text_sized(image, font, &[(text, colour)], [x as f32, y as f32], size);
 }
 
-fn centred(image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], centre_x: i32, y: i32, size: f32) {
+pub(crate) fn centred(image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], centre_x: i32, y: i32, size: f32) {
     let x = centre_x - width_of(font, text, size).round() as i32 / 2;
     say(image, font, text, colour, x, y, size);
 }
@@ -102,7 +102,7 @@ fn centred(image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], cent
 // on every change, and `paint::fill` walks the whole image).
 
 /// Paints `shape` (a signed distance) within `rect` grown by `margin`.
-fn paint_in(
+pub(crate) fn paint_in(
     image: &mut RgbaImage,
     rect: UiRect,
     margin: i32,
@@ -122,7 +122,7 @@ fn paint_in(
 }
 
 /// A soft glow outside `shape`, within `rect` grown by `reach`.
-fn glow_in(image: &mut RgbaImage, rect: UiRect, shape: impl Fn(f32, f32) -> f32, reach: f32, colour: Colour, alpha: f32) {
+pub(crate) fn glow_in(image: &mut RgbaImage, rect: UiRect, shape: impl Fn(f32, f32) -> f32, reach: f32, colour: Colour, alpha: f32) {
     let margin = reach.ceil() as i32;
     for y in rect.y - margin..rect.y + rect.height + margin {
         for x in rect.x - margin..rect.x + rect.width + margin {
@@ -135,21 +135,21 @@ fn glow_in(image: &mut RgbaImage, rect: UiRect, shape: impl Fn(f32, f32) -> f32,
     }
 }
 
-fn rounded(rect: UiRect, radius: f32) -> impl Fn(f32, f32) -> f32 {
+pub(crate) fn rounded(rect: UiRect, radius: f32) -> impl Fn(f32, f32) -> f32 {
     let centre = [rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0];
     let half = [rect.width as f32 / 2.0, rect.height as f32 / 2.0];
     move |x, y| paint::rounded_rect(x, y, centre, half, radius)
 }
 
 /// Distance to the segment from `a` to `b`.
-fn segment(x: f32, y: f32, a: [f32; 2], b: [f32; 2]) -> f32 {
+pub(crate) fn segment(x: f32, y: f32, a: [f32; 2], b: [f32; 2]) -> f32 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let t = (((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy).max(f32::EPSILON)).clamp(0.0, 1.0);
     ((x - a[0] - t * dx).powi(2) + (y - a[1] - t * dy).powi(2)).sqrt()
 }
 
 /// A tick in a circle of `radius` around `centre`.
-fn tick(image: &mut RgbaImage, centre: [f32; 2], radius: f32, colour: Colour) {
+pub(crate) fn tick(image: &mut RgbaImage, centre: [f32; 2], radius: f32, colour: Colour) {
     let [cx, cy] = centre;
     let r = radius;
     let a = [cx - r * 0.45, cy + r * 0.02];
@@ -160,16 +160,16 @@ fn tick(image: &mut RgbaImage, centre: [f32; 2], radius: f32, colour: Colour) {
     paint_in(image, bounds, 1, |x, y| segment(x, y, a, b).min(segment(x, y, b, c)) - width, |_, _| colour, 1.0);
 }
 
-const GOLD_LIGHT: Colour = paint::hex(0xfbe7a8);
-const GOLD: Colour = paint::hex(0xd8a648);
-const GOLD_DARK: Colour = paint::hex(0x7a5218);
+pub(crate) const GOLD_LIGHT: Colour = paint::hex(0xfbe7a8);
+pub(crate) const GOLD: Colour = paint::hex(0xd8a648);
+pub(crate) const GOLD_DARK: Colour = paint::hex(0x7a5218);
 const TEAL_TOP: Colour = paint::hex(0x163a52);
 const TEAL_BOTTOM: Colour = paint::hex(0x081a26);
-const GREEN: Colour = paint::hex(0x5fbf6a);
+pub(crate) const GREEN: Colour = paint::hex(0x5fbf6a);
 
 /// A card: rounded, a teal gradient, a thin border; `lit` gives it a gold
 /// border and glow (today, the picked choice), `dim` darkens it.
-fn card(image: &mut RgbaImage, rect: UiRect, lit: bool, dim: bool, special: bool) {
+pub(crate) fn card(image: &mut RgbaImage, rect: UiRect, lit: bool, dim: bool, special: bool) {
     let shape = rounded(rect, 6.0);
     if lit {
         glow_in(image, rect, &shape, 7.0, paint::hex(0xffd36b), 0.45);
@@ -196,7 +196,7 @@ fn card(image: &mut RgbaImage, rect: UiRect, lit: bool, dim: bool, special: bool
 }
 
 /// A slot for an icon: a dark well in a gold-brown frame.
-fn slot(image: &mut RgbaImage, rect: UiRect, dim: bool) {
+pub(crate) fn slot(image: &mut RgbaImage, rect: UiRect, dim: bool) {
     let shape = rounded(rect, 3.0);
     paint_in(image, rect, 1, &shape, |_, _| paint::hex(0x050c11), 0.95);
     let frame = if dim { paint::hex(0x3a3328) } else { paint::hex(0x9c7434) };
@@ -228,7 +228,7 @@ fn reward_in_slot(image: &mut RgbaImage, assets: &mut Assets, ui: &Font, choice:
 }
 
 /// A gold rule with a diamond in its middle, from `left` to `right`.
-fn rule(image: &mut RgbaImage, left: i32, right: i32, y: i32) {
+pub(crate) fn rule(image: &mut RgbaImage, left: i32, right: i32, y: i32) {
     let bounds = UiRect::new(left, y - 4, right - left, 9);
     let (a, b) = ([left as f32, y as f32 + 0.5], [right as f32, y as f32 + 0.5]);
     let middle = (left + right) as f32 / 2.0;
@@ -246,7 +246,7 @@ fn rule(image: &mut RgbaImage, left: i32, right: i32, y: i32) {
 }
 
 /// A heading in the decorative font between two gold rules.
-fn heading(image: &mut RgbaImage, cinzel: &Font, text: &str, centre_x: i32, y: i32, size: f32, reach: i32) {
+pub(crate) fn heading(image: &mut RgbaImage, cinzel: &Font, text: &str, centre_x: i32, y: i32, size: f32, reach: i32) {
     let width = width_of(cinzel, text, size).round() as i32;
     centred(image, cinzel, text, [255, 226, 143], centre_x, y, size);
     let line_y = y + (size * 0.55) as i32;
@@ -262,7 +262,7 @@ fn until(then: u64, now: u64) -> String {
 }
 
 /// The streak medallion: a gold coin with the number of days on it.
-fn medallion(image: &mut RgbaImage, cinzel: &Font, centre: [f32; 2], days: u32) {
+pub(crate) fn medallion(image: &mut RgbaImage, cinzel: &Font, centre: [f32; 2], days: u32) {
     let radius = 17.0;
     let bounds = UiRect::new((centre[0] - radius) as i32 - 1, (centre[1] - radius) as i32 - 1, 37, 37);
     glow_in(image, bounds, |x, y| paint::circle(x, y, centre, radius), 6.0, paint::hex(0xffc85a), 0.35);
@@ -282,7 +282,7 @@ fn medallion(image: &mut RgbaImage, cinzel: &Font, centre: [f32; 2], days: u32) 
 }
 
 /// A pill: a dark rounded label with a gold edge.
-fn pill(image: &mut RgbaImage, ui: &Font, text: &str, right: i32, y: i32) {
+pub(crate) fn pill(image: &mut RgbaImage, ui: &Font, text: &str, right: i32, y: i32) {
     let width = width_of(ui, text, 12.0).round() as i32 + 22;
     let rect = UiRect::new(right - width, y, width, 22);
     let shape = rounded(rect, 11.0);

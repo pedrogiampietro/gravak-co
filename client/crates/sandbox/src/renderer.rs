@@ -331,6 +331,7 @@ enum UiTextureJob {
         bounty: Option<crate::bounty_board::BountyView>,
         store: Option<crate::store_panel::StoreView>,
         daily: Option<crate::daily_rewards_panel::DailyRewardsView>,
+        highscores: Option<crate::highscores_panel::HighscoresView>,
     },
     ShopBase {
         path: String,
@@ -602,6 +603,7 @@ impl UiTextureJob {
                 bounty,
                 store,
                 daily,
+                highscores,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -633,6 +635,7 @@ impl UiTextureJob {
                 bounty.as_ref(),
                 store.as_ref(),
                 daily.as_ref(),
+                highscores.as_ref(),
             ),
         };
         image.map_err(|error| error.to_string())
@@ -716,6 +719,7 @@ pub struct Renderer {
     bounty_tracker_rect: Option<[f32; 4]>,
     /// Where the Store icon was drawn, for clicks.
     store_icon_rect: Option<[f32; 4]>,
+    ranking_icon_rect: Option<[f32; 4]>,
     /// Where the revive buttons were drawn (and whether each revives
     /// here), for clicks.
     revive_rects: Vec<([f32; 4], bool)>,
@@ -931,6 +935,7 @@ impl Renderer {
             quick_panel_signature: None,
             bounty_tracker_rect: None,
             store_icon_rect: None,
+            ranking_icon_rect: None,
             revive_rects: Vec::new(),
             souls: Vec::new(),
             role_effects: Vec::new(),
@@ -2110,6 +2115,13 @@ impl Renderer {
         self.souls.push(Soul { from, killer_id, started: now });
     }
 
+    /// Whether `position` is on the Ranking button.
+    pub fn ranking_icon_at(&self, position: [f32; 2]) -> bool {
+        self.ranking_icon_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
     /// Whether `position` is on the Store icon.
     pub fn store_icon_at(&self, position: [f32; 2]) -> bool {
         self.store_icon_rect.is_some_and(|[left, top, width, height]| {
@@ -2216,6 +2228,7 @@ impl Renderer {
         bounty: Option<&crate::bounty_board::BountyView>,
         store: Option<&crate::store_panel::StoreView>,
         daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
+        highscores: Option<&crate::highscores_panel::HighscoresView>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -3546,6 +3559,39 @@ impl Renderer {
                 });
             }
         }
+        // The Ranking button, beside the Store's.
+        let [left, top, width, height] = crate::hud::ranking_button_rect(viewport);
+        self.ranking_icon_rect = Some([left, top, width, height]);
+        let ranking_hovered = self.ranking_icon_at(cursor);
+        let ranking_key = if ranking_hovered { "@ranking-button-hover" } else { "@ranking-button" };
+        if !self.textures.contains_key(ranking_key) {
+            self.upload(
+                ranking_key,
+                crate::ornate::button(assets, "Ranking", crate::ornate::GRAVAK, ranking_hovered, Some("R"))?,
+            );
+        }
+        if self.textures.contains_key(ranking_key) {
+            draws.push(Draw {
+                texture: ranking_key.to_owned(),
+                vertices: quad([left, top], [width, height], viewport),
+                depth_test: false,
+                sort_depth: f32::INFINITY,
+            });
+        }
+        if ranking_hovered {
+            let tip_key = "@ranking-tip";
+            if !self.textures.contains_key(tip_key) {
+                self.upload(tip_key, crate::labels::tooltip_image("Highscores (H)")?);
+            }
+            if let Some(tip) = self.textures.get(tip_key) {
+                draws.push(Draw {
+                    texture: tip_key.to_owned(),
+                    vertices: quad([left, top - tip.size[1] - 4.0], tip.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         // Each status message is its own texture; keep only the latest.
         let current_feedback = self
             .feedback_signature
@@ -3938,6 +3984,11 @@ impl Renderer {
             if panel == crate::shop::QuickPanel::Quest {
                 bounty.hash(&mut hasher);
             }
+            if panel == crate::shop::QuickPanel::Highscores {
+                highscores.hash(&mut hasher);
+                // "Last update" reads in minutes.
+                (crate::store_panel::now_secs() / 60).hash(&mut hasher);
+            }
             if panel == crate::shop::QuickPanel::DailyRewards {
                 daily.hash(&mut hasher);
                 // The countdown to the next day reads in minutes.
@@ -4003,6 +4054,7 @@ impl Renderer {
                         bounty: bounty.cloned(),
                         store: store.cloned(),
                         daily: daily.cloned(),
+                        highscores: highscores.cloned(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);

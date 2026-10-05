@@ -581,6 +581,8 @@ pub enum QuickPanel {
     Vip,
     /// The Reward Wall, opened at the Gravak statue.
     DailyRewards,
+    /// The Highscores (H, or the Ranking button).
+    Highscores,
 }
 
 pub use crate::original_panels::SettingsAction as SettingsPanelAction;
@@ -684,6 +686,7 @@ impl QuickPanel {
             Self::Store => "STORE",
             Self::Vip => "VIP",
             Self::DailyRewards => "DAILY REWARDS",
+            Self::Highscores => "HIGHSCORES",
             Self::Settings => "SETTINGS",
         }
     }
@@ -999,6 +1002,7 @@ pub fn quick_panel_image(
     bounty: Option<&crate::bounty_board::BountyView>,
     store: Option<&crate::store_panel::StoreView>,
     daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
+    highscores: Option<&crate::highscores_panel::HighscoresView>,
 ) -> Result<RgbaImage> {
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(
@@ -1674,6 +1678,7 @@ pub fn quick_panel_image(
         }
         QuickPanel::Store => crate::store_panel::draw(&mut image, assets, store),
         QuickPanel::DailyRewards => crate::daily_rewards_panel::draw(&mut image, assets, daily),
+        QuickPanel::Highscores => crate::highscores_panel::draw(&mut image, assets, highscores),
         // Drawn over its original art by `original_panels`.
         QuickPanel::Vip => {}
         QuickPanel::System => {

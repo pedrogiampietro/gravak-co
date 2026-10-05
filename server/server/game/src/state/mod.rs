@@ -57,6 +57,8 @@ pub struct State {
     friend_requests: FriendRequests,
     talismans: crate::bounty::TalismanBook,
     vip: crate::store::VipBook,
+    /// The highscores, kept between refreshes.
+    highscores: crate::highscores::Highscores,
     pool: PgPool,
 }
 
@@ -132,6 +134,7 @@ impl State {
             friend_requests: Default::default(),
             talismans: Default::default(),
             vip: Default::default(),
+            highscores: Default::default(),
             pool,
         };
         Ok(state)
@@ -157,6 +160,11 @@ impl State {
     /// The VIP of the characters online.
     pub fn vip(&self) -> &crate::store::VipBook {
         &self.vip
+    }
+
+    /// The highscores, kept between refreshes.
+    pub fn highscores(&self) -> &crate::highscores::Highscores {
+        &self.highscores
     }
 
     /// The bounty talismans of the characters online with a task.

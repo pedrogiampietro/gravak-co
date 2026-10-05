@@ -21,6 +21,7 @@ pub mod bosses;
 pub mod broadcast;
 pub mod events;
 pub mod daily_rewards;
+pub mod highscores;
 pub mod lucky;
 pub mod magictype;
 pub mod movement_pace;

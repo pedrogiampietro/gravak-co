@@ -36,6 +36,9 @@ pub const MSG_STATUS_TIMERS: u16 = 9120;
 /// hero stands in it.
 pub const MSG_DAILY_REWARD_CHOICE: u16 = 9131;
 pub const MSG_DAILY_REWARD_STATE: u16 = 9132;
+/// Gravak's Highscores: one ranked character, and the page shown.
+pub const MSG_HIGHSCORE_ROW: u16 = 9141;
+pub const MSG_HIGHSCORE_STATE: u16 = 9142;
 /// Strings tied to an entity: fireworks, an effect played on it...
 pub const MSG_NAME: u16 = 1015;
 pub const MSG_NOBILITY_RANKING: u16 = 2065;
@@ -365,6 +368,57 @@ pub struct DailyRewardState {
     pub day: u32,
     pub claimed: u32,
     pub next_day_at: u64,
+}
+
+/// A Highscores request: a page of `category` narrowed to `profession`
+/// ([`HighscoresPacket::OWN_PAGE`]: the hero's own page).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 9140)]
+pub struct HighscoresPacket {
+    pub category: u32,
+    pub profession: u32,
+    pub page: u32,
+}
+
+impl HighscoresPacket {
+    pub const OWN_PAGE: u32 = u32::MAX;
+
+    pub fn new(category: u32, profession: u32, page: u32) -> Self {
+        Self { category, profession, page }
+    }
+}
+
+/// One ranked character, `index` of `total` (index 0 starts the rows over);
+/// `kind` 0 a row of the page, 1 one of the podium's three.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9141)]
+pub struct HighscoreRow {
+    pub index: u32,
+    pub total: u32,
+    pub kind: u32,
+    pub rank: u32,
+    pub value: u64,
+    pub level: u32,
+    pub rebirths: u32,
+    pub class: u32,
+    pub mesh: u32,
+    pub name: String,
+}
+
+/// The page shown, how many there are, the hero's rank (0: not ranked) and
+/// when the ranking was worked out (seconds since 1970).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9142)]
+pub struct HighscoreState {
+    pub category: u32,
+    pub profession: u32,
+    pub page: u32,
+    pub pages: u32,
+    pub own_rank: u32,
+    pub own_value: u64,
+    pub updated_at: u64,
+    /// The hero's look, for their portrait.
+    pub own_mesh: u32,
 }
 
 /// When each of the hero's statuses ends: `timers` is `flag:end,...` (a
@@ -1635,6 +1689,8 @@ pub enum GameEvent {
     StoreState(StoreState),
     DailyRewardChoice(DailyRewardChoice),
     DailyRewardState(DailyRewardState),
+    HighscoreRow(HighscoreRow),
+    HighscoreState(HighscoreState),
     StorePurchase(StorePurchase),
     StatusTimers(StatusTimers),
     Name(NamePacket),
@@ -1755,6 +1811,12 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_DAILY_REWARD_STATE => Ok(GameEvent::DailyRewardState(
             DailyRewardState::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_HIGHSCORE_ROW => Ok(GameEvent::HighscoreRow(
+            HighscoreRow::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_HIGHSCORE_STATE => Ok(GameEvent::HighscoreState(
+            HighscoreState::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_STATUS_TIMERS => Ok(GameEvent::StatusTimers(
             StatusTimers::decode(body).map_err(ProtocolError::Decode)?,

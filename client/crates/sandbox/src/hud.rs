@@ -556,6 +556,12 @@ pub fn store_button_rect(viewport: [f32; 2]) -> [f32; 4] {
     [x + 96.0, y + 30.0, width as f32, height as f32]
 }
 
+/// The Ranking button, beside the Store's.
+pub fn ranking_button_rect(viewport: [f32; 2]) -> [f32; 4] {
+    let [left, top, width, height] = store_button_rect(viewport);
+    [left + width + 4.0, top, width, height]
+}
+
 fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {
     let [x, y] = layout::main_hud_position(viewport);
     [x.round() as i32, y.round() as i32]

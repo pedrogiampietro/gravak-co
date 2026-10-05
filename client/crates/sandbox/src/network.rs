@@ -238,6 +238,10 @@ pub enum NetworkEvent {
     DailyRewardChoice(gravak_protocol::DailyRewardChoice),
     /// Where the hero stands in the cycle: the Reward Wall opens on it.
     DailyRewardState(gravak_protocol::DailyRewardState),
+    /// One ranked character of the Highscores.
+    HighscoreRow(gravak_protocol::HighscoreRow),
+    /// The Highscores page shown: the window opens on it.
+    HighscoreState(gravak_protocol::HighscoreState),
     /// When each of the hero's statuses ends.
     StatusTimers(gravak_protocol::StatusTimers),
     /// A `3DEffect.ini` effect played once on an actor (fireworks...).
@@ -441,6 +445,12 @@ pub(crate) enum NetworkCommand {
     DailyReward {
         action: u32,
         param: u32,
+    },
+    /// A Highscores page.
+    Highscores {
+        category: u32,
+        profession: u32,
+        page: u32,
     },
     /// A bounty Task Board action.
     Bounty {
@@ -719,6 +729,8 @@ impl NetworkHandle {
                 | NetworkEvent::StorePurchase(_)
                 | NetworkEvent::DailyRewardChoice(_)
                 | NetworkEvent::DailyRewardState(_)
+                | NetworkEvent::HighscoreRow(_)
+                | NetworkEvent::HighscoreState(_)
                 | NetworkEvent::StatusTimers(_)
                 | NetworkEvent::RoleEffect { .. }
                 | NetworkEvent::ExperienceGain { .. }
@@ -790,6 +802,11 @@ impl NetworkHandle {
     /// A Store request (`StorePacket` constants).
     pub fn send_store(&self, action: u32, param: u32) {
         let _ = self.commands.send(NetworkCommand::Store { action, param });
+    }
+
+    /// A Highscores page.
+    pub fn send_highscores(&self, category: u32, profession: u32, page: u32) {
+        let _ = self.commands.send(NetworkCommand::Highscores { category, profession, page });
     }
 
     /// A Reward Shrine request (`DailyRewardPacket` constants).
@@ -1483,6 +1500,12 @@ pub(crate) async fn play(
                 Some(GameEvent::DailyRewardState(state)) => {
                     let _ = events.send(NetworkEvent::DailyRewardState(state));
                 }
+                Some(GameEvent::HighscoreRow(row)) => {
+                    let _ = events.send(NetworkEvent::HighscoreRow(row));
+                }
+                Some(GameEvent::HighscoreState(state)) => {
+                    let _ = events.send(NetworkEvent::HighscoreState(state));
+                }
                 Some(GameEvent::StorePurchase(purchase)) => {
                     let _ = events.send(NetworkEvent::StorePurchase(purchase));
                 }
@@ -1953,6 +1976,12 @@ pub(crate) async fn play(
                 Some(NetworkCommand::Store { action, param }) => {
                     session
                         .send(&gravak_protocol::StorePacket::new(action, param))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Highscores { category, profession, page }) => {
+                    session
+                        .send(&gravak_protocol::HighscoresPacket::new(category, profession, page))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

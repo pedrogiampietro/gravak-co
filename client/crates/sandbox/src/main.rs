@@ -35,6 +35,7 @@ mod settings;
 mod shop;
 mod store_panel;
 mod daily_rewards_panel;
+mod highscores_panel;
 mod showcase;
 mod ui;
 mod ui_theme;
@@ -445,6 +446,9 @@ struct App {
     /// answers a click on the shrine.
     daily_rewards: Option<daily_rewards_panel::DailyRewardsView>,
     daily_rewards_asked: bool,
+    /// The Highscores; `highscores_asked` opens them when the server answers.
+    highscores: Option<highscores_panel::HighscoresView>,
+    highscores_asked: bool,
     /// The sizes of the Gravak objects' images, for their clicks.
     gravak_object_sizes: HashMap<String, [f32; 2]>,
     /// A purchase waiting for the player's yes.
@@ -918,6 +922,15 @@ impl ApplicationHandler for App {
                 if self
                     .renderer
                     .as_ref()
+                    .is_some_and(|renderer| renderer.ranking_icon_at(self.cursor))
+                {
+                    self.toggle_highscores();
+                    self.held = false;
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
                     .is_some_and(|renderer| renderer.bounty_tracker_at(self.cursor))
                 {
                     self.toggle_bounty_board();
@@ -1020,6 +1033,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyM) => self.request_mining(),
                     PhysicalKey::Code(KeyCode::KeyB) => self.toggle_bounty_board(),
                     PhysicalKey::Code(KeyCode::KeyP) => self.toggle_store(),
+                    PhysicalKey::Code(KeyCode::KeyH) => self.toggle_highscores(),
                     _ => {}
                 }
             }
@@ -1236,6 +1250,7 @@ impl ApplicationHandler for App {
                         self.bounty.as_ref(),
                         self.store.as_ref(),
                         self.daily_rewards.as_ref(),
+                        self.highscores.as_ref(),
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -1641,6 +1656,17 @@ impl App {
                 let local = [self.cursor[0] - left, self.cursor[1] - top];
                 if let Some(action) = store_panel::action_at(view, local) {
                     self.handle_store_action(action);
+                    self.held = false;
+                    return true;
+                }
+            }
+            if self.quick_panel == Some(shop::QuickPanel::Highscores)
+                && let Some(view) = &self.highscores
+            {
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Highscores);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                if let Some(action) = highscores_panel::action_at(view, local) {
+                    self.handle_highscores_action(action);
                     self.held = false;
                     return true;
                 }
@@ -2423,6 +2449,38 @@ impl App {
         }
     }
 
+    /// H (or the Ranking button) opens and closes the Highscores, at the
+    /// hero's own page of the last category looked at.
+    fn toggle_highscores(&mut self) {
+        if self.quick_panel == Some(shop::QuickPanel::Highscores) {
+            self.quick_panel = None;
+            return;
+        }
+        let (category, profession) = self
+            .highscores
+            .as_ref()
+            .and_then(|view| view.state.as_ref())
+            .map_or((0, 0), |state| (state.category, state.profession));
+        if let Some(network) = &self.network {
+            self.highscores_asked = true;
+            network.send_highscores(category, profession, gravak_protocol::HighscoresPacket::OWN_PAGE);
+        }
+    }
+
+    fn handle_highscores_action(&mut self, action: highscores_panel::HighscoresAction) {
+        let Some(network) = &self.network else {
+            return;
+        };
+        match action {
+            highscores_panel::HighscoresAction::Show { category, profession, page } => {
+                network.send_highscores(category, profession, page);
+            }
+            highscores_panel::HighscoresAction::OwnPage { category, profession } => {
+                network.send_highscores(category, profession, gravak_protocol::HighscoresPacket::OWN_PAGE);
+            }
+        }
+    }
+
     fn handle_daily_reward_action(&mut self, action: daily_rewards_panel::DailyRewardAction) {
         match action {
             daily_rewards_panel::DailyRewardAction::Choose(index) => {
@@ -3140,6 +3198,20 @@ impl App {
             NetworkEvent::Status(status) => self.network_status = status,
             NetworkEvent::StoreProduct(product) => {
                 self.store.get_or_insert_with(Default::default).receive(product);
+            }
+            NetworkEvent::HighscoreRow(row) => {
+                self.highscores.get_or_insert_with(Default::default).receive(row);
+            }
+            NetworkEvent::HighscoreState(state) => {
+                let own_name = self.character.name.clone();
+                let own_mesh = state.own_mesh;
+                let view = self.highscores.get_or_insert_with(Default::default);
+                view.state = Some(state);
+                view.own_name = own_name;
+                view.own_mesh = own_mesh;
+                if std::mem::take(&mut self.highscores_asked) {
+                    self.quick_panel = Some(shop::QuickPanel::Highscores);
+                }
             }
             NetworkEvent::DailyRewardChoice(choice) => {
                 self.daily_rewards.get_or_insert_with(Default::default).receive(choice);
@@ -7655,6 +7727,8 @@ fn run() -> Result<()> {
         store: None,
         daily_rewards: None,
         daily_rewards_asked: false,
+        highscores: None,
+        highscores_asked: false,
         gravak_object_sizes: HashMap::new(),
         store_confirm: None,
         bounty_confirm: None,
