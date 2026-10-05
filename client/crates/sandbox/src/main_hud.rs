@@ -20,8 +20,6 @@ struct Slice {
 }
 
 /// The slice holding the "Conquer" emblem, relettered "v0x".
-const EMBLEM_ASSET: &str = "data/main/mainDialog2.dds";
-const EMBLEM_ROW: u32 = 64;
 
 const SLICES: [Slice; 8] = [
     // Orb with the four small buttons, F1-F4.
@@ -179,12 +177,11 @@ impl MainHudArt {
         for slice in SLICES {
             let source = assets.image(slice.asset)?;
             let [x, y, width, height] = slice.source;
-            let mut part = imageops::crop_imm(&source, x, y, width, height).to_image();
-            if slice.asset == EMBLEM_ASSET && y == EMBLEM_ROW {
-                crate::logo::replace_lettering(&mut part);
-            }
+            let part = imageops::crop_imm(&source, x, y, width, height).to_image();
             imageops::overlay(&mut base, &part, slice.dest[0], slice.dest[1]);
         }
+        // Gravak's emblem over the original's, bottom right.
+        crate::logo::draw_emblem(&mut base);
         let mut buttons = Vec::new();
         for button in MainHudButton::ALL {
             if let Some([normal, pressed]) = button_frames(button) {

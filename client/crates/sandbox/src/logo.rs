@@ -1,25 +1,25 @@
-//! The HUD emblem reads "v0x" instead of "Conquer".
-//!
-//! The original lettering ("onquer", beside the dragon disc that forms the
-//! "C") is painted into `data/main/mainDialog2.dds`. The client edits that
-//! slice when it loads: the letters are wiped by copying the background's
-//! diamond pattern over them, then "v0x" is set in the client's decorative
-//! face (Cinzel Decorative): a gold gradient lined in navy, rimmed dark and
-//! lit by a soft glow. Nothing of the original art is stored in the
-//! repository.
+//! The HUD's emblem, bottom right: where the original shows its dragon disc
+//! and "Conquer" (painted across `mainDialog2.dds` and the chat strip's
+//! last piece), Gravak sets a plaque in the style of the rest of its
+//! interface: navy in gold, a gold medallion with a "V" on it, and "v0x" in
+//! the client's decorative face (Cinzel Decorative) over a gold rule.
+//! Nothing of the original art is stored in the repository.
 
 use image::RgbaImage;
 
-/// The background diamond pattern repeats every 19 rows.
-const PATTERN_PERIOD: i64 = 19;
-/// Where the "onquer" letters sit inside the 256x55 emblem slice.
-const LETTERS: [u32; 4] = [95, 21, 214, 55];
+/// The emblem's region on the composed 1024 x 141 HUD: from the "Skill"
+/// button's right to the edge, from the chat strip's top to the bottom.
+const REGION: [u32; 4] = [806, 66, 218, 75];
 
 /// Supersampling of the lettering before it is reduced to the slice.
 const SCALE: usize = 4;
-/// Size of the letters, and where their middle sits in the slice.
-const LETTER_SIZE: f32 = 33.0;
-const LETTER_CENTRE: [f32; 2] = [154.0, 33.0];
+/// Size of the letters, and where their middle sits in the region: right
+/// of the medallion, on the plaque.
+const LETTER_SIZE: f32 = 34.0;
+const LETTER_CENTRE: [f32; 2] = [134.0, 34.0];
+/// The plaque, in the region, and its medallion.
+const PLAQUE: [i32; 4] = [2, 5, 212, 66];
+const MEDALLION: ([f32; 2], f32) = ([36.0, 38.0], 24.0);
 /// The "0" is narrowed so it reads as a digit, not the letter O.
 const ZERO_WIDTH: f32 = 0.72;
 const FILL_TOP: [u8; 3] = [255, 242, 196];
@@ -28,88 +28,106 @@ const LINE: [u8; 3] = [14, 30, 52];
 const RIM: [u8; 3] = [40, 28, 10];
 const GLOW: [u8; 3] = [255, 196, 100];
 
-/// Replaces the lettering of the emblem slice (`mainDialog2.dds` rows
-/// 64..119) with "v0x".
-pub fn replace_lettering(slice: &mut RgbaImage) {
-    let mask = lettering_mask(slice);
-    wipe(slice, &mask);
+/// Draws the emblem over the composed HUD (1024 x 141): a plaque in the
+/// style of the rest of Gravak's interface over the dragon disc, a gold
+/// medallion with a "V" on it, and "v0x" beside it over a gold rule.
+pub fn draw_emblem(hud: &mut RgbaImage) {
+    let [x, y, width, height] = REGION;
+    let mut slice = image::imageops::crop_imm(hud, x, y, width, height).to_image();
+    draw_on(&mut slice);
+    image::imageops::replace(hud, &slice, i64::from(x), i64::from(y));
+}
+
+fn draw_on(slice: &mut RgbaImage) {
+    plaque(slice);
+    medallion(slice);
     let Ok(font) = crate::labels::decorative_font() else {
         return;
     };
     letter_v0x(slice, &font);
+    // The rule under the letters, a diamond at its middle.
+    let centre = LETTER_CENTRE[0] as i32;
+    crate::daily_rewards_panel::rule(slice, centre - 58, centre + 58, 60);
 }
 
-/// The gold rim and pale fill of the letters, closed and grown so their navy
-/// lining goes with them.
-fn lettering_mask(slice: &RgbaImage) -> Vec<bool> {
-    let (width, height) = slice.dimensions();
-    let mut mask = vec![false; (width * height) as usize];
-    for y in LETTERS[1]..LETTERS[3].min(height) {
-        for x in LETTERS[0]..LETTERS[2].min(width) {
-            let [r, g, b, _] = slice.get_pixel(x, y).0.map(i32::from);
-            // The tail of the "q" below the line is a darker gold.
-            let gold = if y >= 44 {
-                r > 90 && r >= b + 5 && g > 70
-            } else {
-                r > 100 && r >= b + 10 && g > 85
-            };
-            let pale = r > 140 && g > 150 && b > 140;
-            mask[(y * width + x) as usize] = gold || pale;
-        }
-    }
-    let mask = grow(&mask, width, height, 2);
-    let mask = shrink(&mask, width, height, 2);
-    grow(&mask, width, height, 2)
+/// A rounded navy plaque in gold over the emblem, lit along its top.
+fn plaque(slice: &mut RgbaImage) {
+    use crate::daily_rewards_panel::{glow_in, paint_in, rounded, GOLD, GOLD_DARK, GOLD_LIGHT};
+    use crate::paint;
+    let [x, y, width, height] = PLAQUE;
+    let rect = crate::ui::UiRect::new(x, y, width, height);
+    let shape = rounded(rect, 12.0);
+    glow_in(slice, rect, &shape, 3.0, paint::hex(0x000000), 0.55);
+    let (y0, h) = (y as f32, height as f32);
+    paint_in(slice, rect, 1, &shape, |_, py| paint::mix(paint::hex(0x15405a), paint::hex(0x040e15), (py - y0) / h), 1.0);
+    paint_in(slice, rect, 1, |px, py| shape(px, py).abs() - 0.7, |_, _| GOLD, 1.0);
+    let inner = crate::ui::UiRect::new(x + 3, y + 3, width - 6, height - 6);
+    let inner_shape = rounded(inner, 9.5);
+    paint_in(slice, inner, 0, |px, py| inner_shape(px, py).abs() - 0.4, |_, _| GOLD_DARK, 0.7);
+    let shine = crate::ui::UiRect::new(x + 18, y + 2, width - 36, 2);
+    let middle = (x + width / 2) as f32;
+    paint_in(
+        slice,
+        shine,
+        0,
+        |_, py| (py - shine.y as f32 - 0.5).abs() - 0.5,
+        |px, _| paint::mix(GOLD_LIGHT, paint::hex(0x15405a), ((px - middle).abs() / (width as f32 / 2.0)).powf(1.3)),
+        0.55,
+    );
 }
 
-fn grow(mask: &[bool], width: u32, height: u32, steps: u32) -> Vec<bool> {
-    let mut mask = mask.to_vec();
-    for _ in 0..steps {
-        let previous = mask.clone();
-        for y in 0..height as i64 {
-            for x in 0..width as i64 {
-                let set = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
-                    let (nx, ny) = (x + dx, y + dy);
-                    nx >= 0
-                        && ny >= 0
-                        && nx < width as i64
-                        && ny < height as i64
-                        && previous[(ny * width as i64 + nx) as usize]
-                });
-                mask[(y * width as i64 + x) as usize] = set;
-            }
-        }
-    }
-    mask
-}
-
-fn shrink(mask: &[bool], width: u32, height: u32, steps: u32) -> Vec<bool> {
-    let inverted: Vec<bool> = mask.iter().map(|set| !set).collect();
-    grow(&inverted, width, height, steps)
-        .into_iter()
-        .map(|set| !set)
-        .collect()
-}
-
-/// Covers the masked pixels with the background one pattern period above or
-/// below, whichever is clear of the letters.
-fn wipe(slice: &mut RgbaImage, mask: &[bool]) {
-    let source = slice.clone();
-    let (width, height) = slice.dimensions();
-    for y in 0..height as i64 {
-        for x in 0..width {
-            if !mask[(y * width as i64 + x as i64) as usize] {
-                continue;
-            }
-            let clear = [-1, 1, -2, 2]
-                .into_iter()
-                .map(|periods| y + periods * PATTERN_PERIOD)
-                .find(|&sy| sy >= 0 && sy < height as i64 && !mask[(sy * width as i64 + x as i64) as usize]);
-            if let Some(sy) = clear {
-                slice.put_pixel(x, y as u32, *source.get_pixel(x, sy as u32));
-            }
-        }
-    }
+/// The gold medallion at the plaque's left, a "V" with a diamond crest on
+/// its deep blue face.
+fn medallion(slice: &mut RgbaImage) {
+    use crate::daily_rewards_panel::{glow_in, paint_in, GOLD, GOLD_DARK, GOLD_LIGHT};
+    use crate::paint;
+    let (centre, r) = MEDALLION;
+    let bounds = crate::ui::UiRect::new((centre[0] - r) as i32 - 3, (centre[1] - r) as i32 - 3, (2.0 * r) as i32 + 7, (2.0 * r) as i32 + 7);
+    let circle = move |x: f32, y: f32, radius: f32| paint::circle(x, y, centre, radius);
+    glow_in(slice, bounds, |x, y| circle(x, y, r), 3.0, paint::hex(0xffc85a), 0.3);
+    paint_in(
+        slice,
+        bounds,
+        1,
+        |x, y| circle(x, y, r),
+        |_, y| paint::gradient(&[(0.0, GOLD_LIGHT), (0.45, GOLD), (1.0, GOLD_DARK)], (y - centre[1] + r) / (2.0 * r)),
+        1.0,
+    );
+    let face = r - 3.4;
+    paint_in(
+        slice,
+        bounds,
+        1,
+        |x, y| circle(x, y, face),
+        |x, y| {
+            let distance = ((x - centre[0]).powi(2) + (y - centre[1] + 3.0).powi(2)).sqrt() / face;
+            paint::mix(paint::hex(0x2a6d92), paint::hex(0x061620), distance.min(1.0))
+        },
+        1.0,
+    );
+    paint_in(slice, bounds, 1, |x, y| circle(x, y, face).abs() - 0.5, |_, _| GOLD_DARK, 1.0);
+    // The "V": two strokes meeting at its foot, lit on the left.
+    let foot = [centre[0], centre[1] + 12.0];
+    let left_top = [centre[0] - 11.0, centre[1] - 7.5];
+    let right_top = [centre[0] + 11.0, centre[1] - 7.5];
+    let stroke = move |x: f32, y: f32| {
+        crate::daily_rewards_panel::segment(x, y, left_top, foot).min(crate::daily_rewards_panel::segment(x, y, right_top, foot)) - 3.0
+    };
+    paint_in(slice, bounds, 0, move |x, y| stroke(x, y) - 1.0, |_, _| paint::hex(0x2a1a06), 0.9);
+    paint_in(
+        slice,
+        bounds,
+        0,
+        stroke,
+        move |x, y| {
+            let shade = paint::mix(paint::hex(0xfff2c4), paint::hex(0xc4922c), (y - (centre[1] - 7.5)) / 20.0);
+            if x < centre[0] { shade } else { paint::mix(shade, paint::hex(0x8a5f1c), 0.25) }
+        },
+        1.0,
+    );
+    // The crest: a small diamond over the "V".
+    let crest = [centre[0], centre[1] - 12.0];
+    paint_in(slice, bounds, 0, move |x, y| (x - crest[0]).abs() + (y - crest[1]).abs() * 1.3 - 3.8, |_, _| GOLD_LIGHT, 1.0);
 }
 
 /// Coverage (0..=1) of the lettering in slice pixels, `width` x `height`.
