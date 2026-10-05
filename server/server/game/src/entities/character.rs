@@ -65,6 +65,8 @@ pub struct Character {
     ko_count: AtomicU32,
     /// How fast the character has been moving (`movement_pace.rs`).
     pace: crate::movement_pace::Pace,
+    /// The most KOs in one Cyclone or Superman written this session.
+    best_ko: AtomicU32,
     /// Where the character started praying (map, x, y).
     prayer_origin: Mutex<Option<(u32, u16, u16)>>,
     /// The blue flashing name after killing someone.
@@ -505,6 +507,7 @@ impl Character {
             lucky_time: AtomicU32::new(lucky_time),
             ko_count: AtomicU32::new(0),
             pace: Default::default(),
+            best_ko: AtomicU32::new(0),
             prayer_origin: Mutex::new(None),
             xp_sent: std::sync::atomic::AtomicU8::new(u8::MAX),
             flashing_until: Mutex::new(None),
@@ -857,6 +860,20 @@ impl Character {
             );
         }
         false
+    }
+
+    /// A KO count of the Cyclone or Superman under way: a new best is
+    /// written, the database keeping the greatest ever (the KO record).
+    pub async fn record_ko(&self, pool: &sqlx::PgPool, ko: u32) -> Result<(), Error> {
+        if self.best_ko.fetch_max(ko, Ordering::Relaxed) >= ko {
+            return Ok(());
+        }
+        sqlx::query("UPDATE characters SET best_ko = GREATEST(best_ko, $1) WHERE character_id = $2")
+            .bind(i64::from(ko))
+            .bind(self.inner.character_id)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 
     /// Whether Cyclone or Superman is under way.

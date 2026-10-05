@@ -84,7 +84,16 @@ impl PacketProcess for MsgHighscores {
         };
         let profession = Profession::from_id(self.profession);
         let page = (self.page != OWN_PAGE).then_some(self.page as usize);
-        let asker = u32::try_from(character.database_id()).unwrap_or_default();
+        let asker = if category == Category::Guilds {
+            // The guild ranks, so the asker is their guild.
+            let guild: Option<(i64,)> = sqlx::query_as("SELECT guild_id FROM guild_members WHERE character_id = $1")
+                .bind(i64::from(character.database_id()))
+                .fetch_optional(state.pool())
+                .await?;
+            guild.and_then(|(id,)| u32::try_from(id).ok()).unwrap_or_default()
+        } else {
+            u32::try_from(character.database_id()).unwrap_or_default()
+        };
         let page = state.highscores().page(state.pool(), category, profession, page, asker).await?;
         let total = page.rows.len() + page.podium.len();
         let rows = page

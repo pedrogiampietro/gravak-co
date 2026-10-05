@@ -1290,6 +1290,9 @@ pub(crate) async fn reward_monster_defeat(
     // carries the count as the original's (`65541 * KOCount`, the client
     // reads the high word).
     let ko = (killer_id == character.id()).then(|| character.count_ko()).flatten();
+    if let Some(ko) = ko {
+        character.record_ko(state.pool(), ko).await?;
+    }
     let kill = MsgInteract {
         timestamp: 0,
         character_id: killer_id,

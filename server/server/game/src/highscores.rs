@@ -26,10 +26,28 @@ pub enum Category {
     Nobility = 2,
     /// Days in a row of daily rewards, while the streak lives.
     DailyStreak = 3,
+    /// Silver in the bag.
+    Wealth = 4,
+    /// PK points.
+    Pk = 5,
+    /// Guilds by their fund: the guild's id, name and fund, the leader's
+    /// class and look, and the members in `level`.
+    Guilds = 6,
+    /// The most KOs in one Cyclone or Superman.
+    KoRecord = 7,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] = [Self::Level, Self::Bounties, Self::Nobility, Self::DailyStreak];
+    pub const ALL: [Category; 8] = [
+        Self::Level,
+        Self::Bounties,
+        Self::Nobility,
+        Self::DailyStreak,
+        Self::Wealth,
+        Self::Pk,
+        Self::Guilds,
+        Self::KoRecord,
+    ];
 
     pub fn from_id(id: u32) -> Option<Self> {
         Self::ALL.into_iter().find(|category| *category as u32 == id)
@@ -58,6 +76,27 @@ impl Category {
                  FROM characters c JOIN daily_rewards d ON d.character_id = c.character_id
                  WHERE d.streak > 0 AND d.last_day >= $1 - 1
                  ORDER BY d.streak DESC, d.last_day DESC, c.character_id"
+            },
+            Self::Wealth => {
+                "SELECT character_id, name, current_class, level, rebirths, mesh + avatar * 10000, silver
+                 FROM characters WHERE silver > 0 ORDER BY silver DESC, character_id"
+            },
+            Self::Pk => {
+                "SELECT character_id, name, current_class, level, rebirths, mesh + avatar * 10000, kill_points
+                 FROM characters WHERE kill_points > 0 ORDER BY kill_points DESC, character_id"
+            },
+            Self::Guilds => {
+                "SELECT g.guild_id, g.name, l.current_class, COUNT(m.character_id), l.rebirths,
+                        l.mesh + l.avatar * 10000, g.silver
+                 FROM guilds g
+                 JOIN characters l ON l.character_id = g.leader_id
+                 LEFT JOIN guild_members m ON m.guild_id = g.guild_id
+                 GROUP BY g.guild_id, g.name, l.current_class, l.rebirths, l.mesh, l.avatar, g.silver
+                 ORDER BY g.silver DESC, COUNT(m.character_id) DESC, g.name"
+            },
+            Self::KoRecord => {
+                "SELECT character_id, name, current_class, level, rebirths, mesh + avatar * 10000, best_ko
+                 FROM characters WHERE best_ko > 0 ORDER BY best_ko DESC, level DESC, character_id"
             },
         }
     }
@@ -136,7 +175,8 @@ pub struct Page {
 
 impl Highscores {
     /// The page `page` of `category` narrowed to `profession`; the asker's
-    /// own page when `page` is `None`.
+    /// own page when `page` is `None`. `asker` is a character's id, or for
+    /// [`Category::Guilds`] their guild's.
     pub async fn page(
         &self,
         pool: &sqlx::PgPool,
@@ -160,6 +200,7 @@ impl Highscores {
                 ranking
             },
         };
+        let profession = if category == Category::Guilds { Profession::All } else { profession };
         Ok(paginate(&ranking.entries, profession, page, asker, ranking.updated_at))
     }
 }

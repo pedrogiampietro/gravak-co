@@ -2474,6 +2474,14 @@ impl App {
         match action {
             highscores_panel::HighscoresAction::Show { category, profession, page } => {
                 network.send_highscores(category, profession, page);
+                if let Some(view) = &mut self.highscores {
+                    view.menu_open = false;
+                }
+            }
+            highscores_panel::HighscoresAction::Menu(open) => {
+                if let Some(view) = &mut self.highscores {
+                    view.menu_open = open;
+                }
             }
             highscores_panel::HighscoresAction::OwnPage { category, profession } => {
                 network.send_highscores(category, profession, gravak_protocol::HighscoresPacket::OWN_PAGE);
