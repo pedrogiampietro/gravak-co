@@ -123,6 +123,14 @@ pub fn build(installation: &mut Installation, content: &Path) -> Result<Report> 
         report.icons += 1;
     }
     (report.maps, report.objects) = crate::maps::build(content, &report.output)?;
+    // Last, so an interrupted build never looks finished.
+    std::fs::write(
+        report.output.join(MARKER),
+        format!(
+            "{MARKER_TEXT}fingerprint={:016x}\n",
+            fingerprint(installation.root(), content)
+        ),
+    )?;
     Ok(report)
 }
 
@@ -241,11 +249,68 @@ fn reset_output(output: &Path) -> Result<()> {
         std::fs::remove_dir_all(output)?;
     }
     std::fs::create_dir_all(output)?;
-    std::fs::write(
-        output.join(MARKER),
-        b"Gerado por gravak-content build; nao edite.\n",
-    )?;
+    std::fs::write(output.join(MARKER), MARKER_TEXT)?;
     Ok(())
+}
+
+const MARKER_TEXT: &str = "Gerado por gravak-content build; nao edite.\n";
+
+/// Whether `content/build` already holds what a build would write now:
+/// nothing in `content/` nor the installation's `itemtype.dat` changed since.
+pub fn up_to_date(installation: &Installation, content: &Path) -> bool {
+    let marker = client_output(content).join(MARKER);
+    let expected = format!(
+        "fingerprint={:016x}",
+        fingerprint(installation.root(), content)
+    );
+    std::fs::read_to_string(marker).is_ok_and(|text| text.lines().any(|line| line == expected))
+}
+
+/// Every file of `content/` (but the build) and the installation's
+/// `itemtype.dat`, by path, size and time.
+fn fingerprint(installation: &Path, content: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn walk(directory: &Path, skip: &Path, files: &mut Vec<(PathBuf, u64, u128)>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == skip {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                walk(&path, skip, files);
+            } else {
+                let time = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |time| time.as_nanos());
+                files.push((path, metadata.len(), time));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(content, &content.join("build"), &mut files);
+    if let Some(itemtype) = crate::assets::find_loose(installation, ITEMTYPE)
+        && let Ok(metadata) = std::fs::metadata(&itemtype)
+    {
+        let time = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |time| time.as_nanos());
+        files.push((itemtype, metadata.len(), time));
+    }
+    files.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    env!("CARGO_PKG_VERSION").hash(&mut hasher);
+    files.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]
@@ -329,6 +394,17 @@ mod tests {
         assert_eq!(objects.objects[0].offset, [-60, -80]);
         assert_eq!(objects.blocked, [[10, 20]]);
         assert!(report.output.join("gravak/icons/statue.png").is_file());
+
+        // Up to date until something in content/ changes.
+        assert!(up_to_date(&installation, &content));
+        std::fs::write(
+            content.join("items/more.toml"),
+            "[[item]]\nid = 721010\nbase = 721000\n",
+        )
+        .unwrap();
+        assert!(!up_to_date(&installation, &content));
+        build(&mut installation, &content).unwrap();
+        assert!(up_to_date(&installation, &content));
 
         // Again over its own output, and never over a folder it did not make.
         build(&mut installation, &content).unwrap();

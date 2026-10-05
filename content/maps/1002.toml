@@ -1,7 +1,7 @@
 [[object]]
 name = "Estátua de Gravak"
 image = "objects/gravak-statue.png"
-x = 440
-y = 372
-offset = [0, 50]
+x = 438
+y = 377
+offset = [0, 30]
 block = [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]

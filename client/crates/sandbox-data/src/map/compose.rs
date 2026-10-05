@@ -24,6 +24,8 @@ pub struct ComposedMap {
     pub data: DMap,
     pub sprites: Vec<MapSprite>,
     pub extent: [f32; 2],
+    /// How many of Gravak's own objects were laid over the map.
+    pub gravak_objects: usize,
 }
 
 /// The file the content build writes for a map's Gravak objects.
@@ -101,6 +103,7 @@ impl ComposedMap {
             data,
             sprites,
             extent,
+            gravak_objects: 0,
         };
         if let Ok(objects) = read(&gravak_objects_path(id)) {
             let objects = GravakObjects::parse(&String::from_utf8_lossy(&objects))?;
@@ -112,6 +115,7 @@ impl ComposedMap {
 
     /// Draws the objects over the map and closes the cells they block.
     pub fn add_gravak_objects(&mut self, objects: &GravakObjects) {
+        self.gravak_objects += objects.objects.len();
         for object in &objects.objects {
             let p = self.project([object.x as f32, object.y as f32]);
             self.sprites.push(MapSprite {
@@ -354,6 +358,7 @@ mod tests {
         // Drawn in depth order: the house (2 + 3) before the statue.
         assert_eq!(map.sprites.last().unwrap(), statue);
         assert_eq!(map.data.cell(4, 5).unwrap().access, 1);
+        assert_eq!((plain.gravak_objects, map.gravak_objects), (0, 1));
     }
 
     #[test]

@@ -25,7 +25,8 @@ content/
    **Importar**. Com "Tirar o fundo da imagem" marcado, o fundo (branco, ou o
    xadrez de um print) fica transparente. A imagem é recortada e salva em
    `content/icons/<id>.png` com 64×64.
-4. **🔨 Build** gera `content/build/client/`:
+4. **🔨 Build** (ou só abrir o `run-server.bat`/`run-client.bat`, que fazem o
+   build sozinhos quando algo mudou) gera `content/build/client/`:
    - `ini/itemtype.dat`, os itens originais com os nossos;
    - `data/ItemMinIcon/<id>.dds` e `data/MapItemIcon/<id>.dds`, os ícones.
 5. Reinicie o servidor e o cliente:
@@ -103,8 +104,12 @@ Na aba **🗺 Mapas** do editor:
    - **Delete** remove o objeto.
    "Células bloqueadas" mostra em vermelho as células bloqueadas do mapa e em
    laranja as que os nossos objetos bloqueiam.
-5. Clique em **💾 Salvar mapa**, que grava `content/maps/<id>.toml`. Depois
-   clique em **🔨 Build** e reinicie o servidor e o cliente.
+5. Clique em **💾 Salvar mapa**, que grava `content/maps/<id>.toml`. Reinicie
+   o servidor e o cliente: o `run-server.bat` e o `run-client.bat` refazem o
+   build sozinhos quando `content/` mudou (o botão **🔨 Build** faz o mesmo na
+   hora). Ao carregar um mapa, o console do cliente mostra
+   `map 1002: 1 Gravak objects (content …)`; se aparecer
+   `Gravak content off`, o build não foi gerado.
 
 No jogo:
 
@@ -113,8 +118,8 @@ No jogo:
 - o cliente e o servidor fecham as células bloqueadas;
 - todo jogador que passar por ali vê o objeto.
 
-Já existe uma: a **Estátua de Gravak** em Twin City (`maps/1002.toml`, célula
-440, 372, a leste do ponto de renascer). O sprite (`objects/gravak-statue.png`)
+Já existe uma: a **Estátua de Gravak** em Twin City (`maps/1002.toml`), no
+centro do tablado da praça (célula 438, 377). O sprite (`objects/gravak-statue.png`)
 é gerado por `objects/src/make-gravak-statue.py` a partir de
 `objects/src/gravak-relic.png`.
 

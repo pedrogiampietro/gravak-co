@@ -16,6 +16,16 @@ impl Map {
     pub fn load(assets: &mut Assets, id: u32) -> Result<Self> {
         let mut read = |name: &str| assets.read(name).map_err(|error| error.to_string());
         let map = ComposedMap::load(&mut read, id)?;
+        // Says whether our content reached the client, where a missing
+        // build would otherwise go unnoticed.
+        match assets.overlay_path() {
+            Some(overlay) => eprintln!(
+                "map {id}: {} Gravak objects (content {})",
+                map.gravak_objects,
+                overlay.display()
+            ),
+            None => eprintln!("map {id}: Gravak content off (GRAVAK_CONTENT not set or missing)"),
+        }
         Ok(Self {
             id: map.id,
             data: map.data,

@@ -1,7 +1,7 @@
 //! `gravak-content`: builds and inspects the Gravak content.
 
 use gravak_content::assets::Installation;
-use gravak_content::build::{Merged, build, default_content_dir, default_installation};
+use gravak_content::build::{Merged, build, default_content_dir, default_installation, up_to_date};
 use gravak_content::itemtype::{COLUMNS, decrypt, encrypt};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -10,7 +10,8 @@ const USAGE: &str = "\
 gravak-content <comando> [opções]
 
 Comandos:
-  build                 junta content/ à instalação em content/build
+  build [--if-changed]  junta content/ à instalação em content/build
+                        (--if-changed: só se algo mudou desde o último)
   check                 confere content/ sem gerar nada
   items [texto]         lista os itens (todos, ou os que têm o texto no nome/ID)
   item <id>             mostra todas as colunas de um item
@@ -59,6 +60,12 @@ fn run() -> gravak_content::Result<()> {
     match command.as_str() {
         "build" => {
             let mut installation = Installation::open(&assets)?;
+            if positional.iter().any(|arg| arg == "--if-changed")
+                && up_to_date(&installation, &content)
+            {
+                println!("content/build já está em dia");
+                return Ok(());
+            }
             let report = build(&mut installation, &content)?;
             println!(
                 "{} itens novos, {} alterados, {} ícones, {} objetos em {} mapas -> {}",

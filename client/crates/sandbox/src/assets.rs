@@ -218,6 +218,10 @@ impl Assets {
     pub fn root_path(&self) -> &Path {
         &self.root
     }
+    /// The built content read before the installation, when there is one.
+    pub fn overlay_path(&self) -> Option<&Path> {
+        self.overlay.as_deref()
+    }
     fn loose(&mut self, name: &str) -> Result<Option<PathBuf>> {
         let virtual_path = VirtualPath::try_from(name)?;
         let name = virtual_path.as_str();

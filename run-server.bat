@@ -18,12 +18,6 @@ set "SERVER_DIR=%~dp0server"
 set "AUTH_EXE=%SERVER_DIR%\target\debug\auth-server.exe"
 set "GAME_EXE=%SERVER_DIR%\target\release\game-server.exe"
 
-rem Built content (gravak-content build / the editor): the server takes its
-rem itemtype.dat over the one named in server\.env, and closes the cells our
-rem map objects stand on.
-if exist "%~dp0content\build\client\ini\itemtype.dat" set "ITEMTYPE_DATA=%~dp0content\build\client\ini\itemtype.dat"
-if exist "%~dp0content\build\client\.gravak-build" set "GRAVAK_CONTENT=%~dp0content\build\client"
-
 rem -- Build -------------------------------------------------------
 rem Rebuild before every start (not for stop/status) so a git pull takes
 rem effect; cargo only recompiles what changed, and the build script stops
@@ -38,6 +32,18 @@ if /I not "%~1"=="stop" if /I not "%~1"=="status" (
     )
     echo.
 )
+
+rem -- Content -----------------------------------------------------
+rem content\ (items, icons, map objects) built over the installation: the
+rem server takes its itemtype.dat over the one named in server\.env and
+rem closes the cells our map objects stand on. Not for stop/status.
+if /I not "%~1"=="stop" if /I not "%~1"=="status" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-content.ps1" || (
+        echo [AVISO] content\ nao foi gerado; os servidores sobem sem ele.
+    )
+)
+if exist "%~dp0content\build\client\ini\itemtype.dat" set "ITEMTYPE_DATA=%~dp0content\build\client\ini\itemtype.dat"
+if exist "%~dp0content\build\client\.gravak-build" set "GRAVAK_CONTENT=%~dp0content\build\client"
 
 rem -- Check binaries ----------------------------------------------
 if not exist "%AUTH_EXE%" (
