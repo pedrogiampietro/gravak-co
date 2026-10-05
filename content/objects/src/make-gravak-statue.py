@@ -1,5 +1,5 @@
 # Generates content/objects/gravak-statue.png: the relic of gravak-relic.png
-# standing upright on its spiked grip, as large as a monument, with a soft
+# standing upright on its spiked grip, a little taller than a character, with a soft
 # contact shadow and a faint glow, for the centre of Twin City's plaza.
 # The grip's tip is 12 px above the bottom of the image (the object's
 # `offset` in content/maps/1002.toml puts it on the dais).
@@ -11,7 +11,9 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 relic_src, out = sys.argv[1], sys.argv[2]
-HEIGHT = 230          # the relic, grip to blade tip
+HEIGHT = 140          # the relic, grip to top: a little over a character
+SQUASH = 0.68         # the icon draws the shield foreshortened, lying down;
+                      # standing, it is rounder than the drawing
 MARGIN = 12           # below the grip's tip, for the shadow
 
 # 1. The relic without the screenshot's background (white, the two greys of a
@@ -55,10 +57,13 @@ big = np.array(relic)
 big = scale2x(scale2x(big))
 relic = Image.fromarray(big, "RGBA")
 
-# 3. Upright: the long axis of the drawing turned vertical, the grip (the
-#    spiked knob at the lower right of the icon) at the bottom.
-a = np.array(relic)[..., 3] > 128
-ys, xs = np.nonzero(a)
+# 3. Upright: the steel disc in the middle (its blue-grey pixels, not the
+#    grip nor the curled end, which pull the axis aside) gives the long axis;
+#    it turns vertical with the grip down, then the height is squashed.
+pixels = np.array(relic).astype(np.int32)
+red, green, blue, alpha_ = (pixels[..., i] for i in range(4))
+disc = (alpha_ > 128) & (blue > red + 12) & (blue > 90)
+ys, xs = np.nonzero(disc)
 pts = np.stack([xs - xs.mean(), ys - ys.mean()], 1)
 eigval, eigvec = np.linalg.eigh(np.cov(pts.T))
 axis = eigvec[:, np.argmax(eigval)]            # (dx, dy), y down
@@ -68,13 +73,13 @@ angle = np.degrees(np.arctan2(axis[1], axis[0]))   # below the horizontal
 # PIL turns counter-clockwise; the grip end goes from `angle` to straight down
 relic = relic.rotate(angle - 90, resample=Image.BICUBIC, expand=True)
 relic = relic.crop(relic.getbbox())
-scale = HEIGHT / relic.height
-relic = relic.resize((round(relic.width * scale), HEIGHT), Image.LANCZOS)
-relic = relic.filter(ImageFilter.UnsharpMask(1.0, 50, 2))
+width = round(relic.width * HEIGHT / (relic.height * SQUASH))
+relic = relic.resize((width, HEIGHT), Image.LANCZOS)
+relic = relic.filter(ImageFilter.UnsharpMask(0.8, 40, 2))
 
 # 4. Canvas: the grip's tip on the bottom centre, a contact shadow under it
 #    (to the right, as Twin City's shadows fall) and a faint warm glow.
-W = max(relic.width, 120) + 80
+W = max(relic.width, 100) + 60
 H = relic.height + MARGIN + 30
 canvas = Image.new("RGBA", (W, H))
 ground = (W // 2, H - MARGIN)
@@ -84,7 +89,7 @@ tip_x = int(tip_xs.mean()) if len(tip_xs) else relic.width // 2
 pos = (ground[0] - tip_x, ground[1] - relic.height)
 
 yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
-shadow = np.exp(-(((xx - ground[0] - 10) / 30) ** 2 + ((yy - ground[1] - 2) / 9) ** 2))
+shadow = np.exp(-(((xx - ground[0] - 8) / 22) ** 2 + ((yy - ground[1] - 2) / 7) ** 2))
 glow = np.exp(-(((xx - ground[0]) / (relic.width * 0.6)) ** 2 + ((yy - (ground[1] - relic.height * 0.55)) / (relic.height * 0.5)) ** 2))
 layer = np.zeros((H, W, 4), np.float32)
 layer[..., :3] = np.array([255, 205, 110])
