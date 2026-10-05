@@ -392,6 +392,22 @@ mod tests {
 
     #[test]
     #[ignore = "Requires a local 5065 installation"]
+    fn the_praying_effects_load() {
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let status = status_effects(&mut assets);
+        for (bit, name) in [(1_u64 << 30, "LuckDiffuse"), (1 << 31, "LuckAbsorb")] {
+            assert!(status.iter().any(|(b, n)| *b == bit && n == name), "{name} is listed");
+            let effect = effect(&mut assets, name).expect("in 3DEffect.ini");
+            for layer in &effect.layers {
+                assert!(assets.read(&layer.mesh).is_ok(), "{}", layer.mesh);
+                assert!(assets.image(&layer.texture).is_ok(), "{}", layer.texture);
+            }
+            assert!(!effect.layers.is_empty(), "{name} has layers");
+        }
+    }
+
+    #[test]
+    #[ignore = "Requires a local 5065 installation"]
     fn the_monster_born_effect_loads() {
         let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
         let effect = effect(&mut assets, "born").expect("born in 3DEffect.ini");

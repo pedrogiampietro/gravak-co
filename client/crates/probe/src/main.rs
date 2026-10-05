@@ -519,6 +519,13 @@ async fn main() {
         eprintln!("Superman smoke failed: {error}");
         std::process::exit(1);
     }
+    if args.iter().any(|argument| argument == "--bless")
+        && let Err(error) =
+            run_bless_smoke(&mut session, character_id, &loaded_character_name).await
+    {
+        eprintln!("Bless smoke failed: {error}");
+        std::process::exit(1);
+    }
     if args.iter().any(|argument| argument == "--stigma")
         && let Err(error) =
             run_stigma_smoke(&mut session, character_id, &loaded_character_name).await
@@ -3546,6 +3553,53 @@ async fn run_cyclone_smoke(
     Ok(())
 }
 
+/// Bless: two rebirths, cast where you stand, and the praying flag
+/// (CASTING_PRAY, 1 << 30) shows with lucky time counting up.
+async fn run_bless_smoke(
+    session: &mut GameSession,
+    character_id: u32,
+    character_name: &str,
+) -> Result<(), gravak_protocol::ProtocolError> {
+    for command in ["$rebirths 2", "$learn-skill 9876 1"] {
+        session
+            .send(&TalkPacket::public(character_id, character_name, command))
+            .await?;
+        sleep(Duration::from_millis(300)).await;
+    }
+    session
+        .send(&InteractionPacket::magic_attack(
+            character_id,
+            character_id,
+            0,
+            0,
+            9_876,
+        ))
+        .await?;
+    let praying_flag = 1_i64 << 30;
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut praying = false;
+    while let Ok(event_result) = timeout_at(deadline, session.next_event()).await {
+        let Some(event) = event_result? else { break };
+        match event {
+            GameEvent::Player(player)
+                if player.character_id == character_id as i32 && (player.status_flags & praying_flag) != 0 =>
+            {
+                praying = true;
+                break;
+            }
+            GameEvent::Talk(talk) => println!("Bless talk: {}", talk.message),
+            _ => {}
+        }
+    }
+    if !praying {
+        return Err(gravak_protocol::ProtocolError::MalformedResponse(
+            "the praying flag was not broadcast",
+        ));
+    }
+    println!("Bless smoke OK: praying=true");
+    Ok(())
+}
+
 async fn run_superman_smoke(
     session: &mut GameSession,
     character_id: u32,
@@ -3584,6 +3638,27 @@ async fn run_superman_smoke(
         ))
         .await?;
     sleep(Duration::from_millis(100)).await;
+    // Superman is an XP skill: fill the circle and wait for it to light.
+    session
+        .send(&TalkPacket::public(character_id, character_name, "$xp"))
+        .await?;
+    let xp_flag = 1_i64 << 4;
+    let lit_deadline = Instant::now() + Duration::from_secs(4);
+    let mut lit = false;
+    while let Ok(event_result) = timeout_at(lit_deadline, session.next_event()).await {
+        let Some(event) = event_result? else { break };
+        match event {
+            GameEvent::Player(player)
+                if player.character_id == character_id as i32 && (player.status_flags & xp_flag) != 0 =>
+            {
+                lit = true;
+                break;
+            }
+            GameEvent::Talk(talk) => println!("Superman XP talk: {}", talk.message),
+            _ => {}
+        }
+    }
+    println!("Superman XP circle lit: {lit}");
     session
         .send(&InteractionPacket::magic_attack(
             character_id,
