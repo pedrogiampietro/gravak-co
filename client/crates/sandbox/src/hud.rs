@@ -677,18 +677,19 @@ pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Resu
     Ok(image)
 }
 
-/// The Store button: beside the round buttons over the orb, above the chat
-/// strip. Left, top, width and height in window pixels.
+/// The Store button: round, after the client's round buttons over the orb
+/// (`Run`, `NpcEquip`, `ScreenMove`, `Map`), a little larger than they.
+/// Left, top, width and height in window pixels, its glow's room included.
 pub fn store_button_rect(viewport: [f32; 2]) -> [f32; 4] {
     let [x, y] = layout::main_hud_position(viewport);
-    let [width, height] = crate::store_panel::BUTTON_SIZE;
-    [x + 96.0, y + 30.0, width as f32, height as f32]
+    let [width, height] = crate::emblems::ROUND_BUTTON;
+    [x + 96.0, y + 14.0, width as f32, height as f32]
 }
 
 /// The Ranking button, beside the Store's.
 pub fn ranking_button_rect(viewport: [f32; 2]) -> [f32; 4] {
     let [left, top, width, height] = store_button_rect(viewport);
-    [left + width + 4.0, top, width, height]
+    [left + width - 2.0, top, width, height]
 }
 
 fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {

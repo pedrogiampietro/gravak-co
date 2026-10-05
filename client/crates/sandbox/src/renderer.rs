@@ -3567,11 +3567,7 @@ impl Renderer {
         if !self.textures.contains_key(ranking_key) {
             self.upload(
                 ranking_key,
-                crate::emblems::feature_button(
-                    crate::emblems::Feature::Ranking,
-                    crate::store_panel::BUTTON_SIZE,
-                    ranking_hovered,
-                )?,
+                crate::emblems::round_button(crate::emblems::Feature::Ranking, ranking_hovered),
             );
         }
         if self.textures.contains_key(ranking_key) {

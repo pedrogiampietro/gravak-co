@@ -221,12 +221,9 @@ fn icon(assets: &mut Assets, product: &StoreProduct, size: u32) -> Option<RgbaIm
     Some(badge)
 }
 
-/// Size of the Store button by the HUD.
-pub const BUTTON_SIZE: [u32; 2] = crate::ornate::SIZE;
-
-/// The Store button: a blue pill in gold with a medallion of coins.
+/// The Store button: round, in the look of the client's own, with coins.
 pub fn button_image(_assets: &mut Assets, hovered: bool) -> crate::assets::Result<RgbaImage> {
-    crate::emblems::feature_button(crate::emblems::Feature::Store, BUTTON_SIZE, hovered)
+    Ok(crate::emblems::round_button(crate::emblems::Feature::Store, hovered))
 }
 
 /// Draws the Store onto the quick panel's contents.
