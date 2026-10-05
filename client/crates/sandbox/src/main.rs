@@ -2134,18 +2134,16 @@ impl App {
 
     /// The top-left information lines, as in the original client: the map
     /// and the hero's cell, then the frame rate and the ping.
-    fn info_lines(&self) -> Vec<String> {
+    fn info_lines(&self) -> Option<hud::InfoBar> {
         if !self.hud_config.show_info {
-            return Vec::new();
+            return None;
         }
-        let [x, y] = self.player.cell();
-        let ping = self
-            .ping_ms
-            .map_or_else(|| "-".to_owned(), |ping| format!("{ping} ms"));
-        vec![
-            format!("{} ({x},{y})", map_name(self.map.id)),
-            format!("FPS: {}   Ping: {ping}", self.fps),
-        ]
+        Some(hud::InfoBar {
+            map: map_name(self.map.id).to_string(),
+            cell: self.player.cell(),
+            fps: u32::try_from(self.fps).unwrap_or(u32::MAX),
+            ping: self.ping_ms.map(|ping| u32::try_from(ping).unwrap_or(u32::MAX)),
+        })
     }
 
     /// Asks the server once a second where the teammates are, so their

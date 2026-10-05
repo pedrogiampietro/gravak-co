@@ -102,7 +102,7 @@ pub struct SkillHud {
     /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
     pub kill_mode: u8,
     /// The top-left information lines: map and position, FPS and ping.
-    pub info: Vec<String>,
+    pub info: Option<InfoBar>,
     /// Skill under the cursor in the bar; filled in by the renderer.
     pub hovered: Option<u32>,
     /// Timed statuses: their flag and the seconds left.
@@ -122,6 +122,156 @@ pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The top-left plate: where the hero is and how the game runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct InfoBar {
+    pub map: String,
+    pub cell: [i32; 2],
+    pub fps: u32,
+    /// Round trip to the server, once known.
+    pub ping: Option<u32>,
+}
+
+// The top-left corner: the plate, then the statuses' slots under it.
+const CORNER: [i32; 2] = [8, 8];
+const PLATE_HEIGHT: i32 = 46;
+const STATUS_SLOT: i32 = 34;
+const STATUS_STEP: i32 = 40;
+
+/// Where the statuses' row starts: under the plate, or in the corner.
+fn status_row_top(skills: &SkillHud) -> i32 {
+    CORNER[1] + if skills.info.is_some() { PLATE_HEIGHT + 8 } else { 0 }
+}
+
+fn status_slot_rect(column: usize, top: i32) -> crate::ui::UiRect {
+    crate::ui::UiRect::new(CORNER[0] + column as i32 * STATUS_STEP, top, STATUS_SLOT, STATUS_SLOT)
+}
+
+/// The plate: a compass badge, the map's name, and under it the cell, the
+/// frames a second and the ping with its signal bars. Its bottom.
+fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
+    use crate::daily_rewards_panel::{glow_in, paint_in, rounded, say, width_of, GOLD, GOLD_DARK, GOLD_LIGHT};
+    use crate::paint;
+    let (Ok(ui), Ok(cinzel)) = (crate::labels::font(), crate::labels::decorative_font()) else {
+        return;
+    };
+    let ping_text = info.ping.map_or_else(|| "-".to_owned(), |ping| format!("{ping} ms"));
+    let detail = format!("{}, {}   ·   {} FPS   ·   {ping_text}", info.cell[0], info.cell[1], info.fps);
+    let text_width = width_of(&cinzel, &info.map, 14.0).max(width_of(&ui, &detail, 11.0) + 20.0).round() as i32;
+    let plate = crate::ui::UiRect::new(CORNER[0], CORNER[1], 52 + text_width + 14, PLATE_HEIGHT);
+    let shape = rounded(plate, 10.0);
+    glow_in(img, plate, &shape, 6.0, paint::hex(0x000000), 0.35);
+    let (y0, height) = (plate.y as f32, plate.height as f32);
+    paint_in(
+        img,
+        plate,
+        1,
+        &shape,
+        |_, y| paint::mix(paint::hex(0x123247), paint::hex(0x050e14), (y - y0) / height),
+        0.82,
+    );
+    paint_in(img, plate, 1, |x, y| shape(x, y).abs() - 0.6, |_, _| GOLD_DARK, 1.0);
+    // A thin light along the top edge.
+    let shine = crate::ui::UiRect::new(plate.x + 12, plate.y + 1, plate.width - 24, 2);
+    paint_in(img, shine, 0, |_, y| (y - shine.y as f32 - 1.0).abs() - 0.5, |x, _| paint::mix(GOLD_LIGHT, paint::hex(0x123247), ((x - (plate.x + plate.width / 2) as f32).abs() / (plate.width as f32 / 2.0)).powf(1.5)), 0.6);
+
+    // The compass badge.
+    let centre = [(plate.x + 25) as f32, (plate.y + plate.height / 2) as f32];
+    let badge = crate::ui::UiRect::new(plate.x + 8, plate.y + 6, 34, 34);
+    paint_in(
+        img,
+        badge,
+        1,
+        |x, y| paint::circle(x, y, centre, 16.0),
+        |_, y| paint::gradient(&[(0.0, GOLD_LIGHT), (0.5, GOLD), (1.0, GOLD_DARK)], (y - centre[1] + 16.0) / 32.0),
+        1.0,
+    );
+    paint_in(img, badge, 1, |x, y| paint::circle(x, y, centre, 12.5), |_, _| paint::hex(0x0d2a3c), 1.0);
+    // Its needle: north in gold, south in steel.
+    let north = |x: f32, y: f32| {
+        let (dx, dy) = (x - centre[0], centre[1] - y);
+        (dx.abs() * 2.3 + dy - 9.5).max(-dy)
+    };
+    let south = |x: f32, y: f32| {
+        let (dx, dy) = (x - centre[0], y - centre[1]);
+        (dx.abs() * 2.3 + dy - 9.5).max(-dy)
+    };
+    paint_in(img, badge, 0, north, |_, _| paint::hex(0xffd36b), 1.0);
+    paint_in(img, badge, 0, south, |_, _| paint::hex(0xc9d3da), 1.0);
+    paint_in(img, badge, 0, |x, y| paint::circle(x, y, centre, 1.8), |_, _| paint::hex(0x0d2a3c), 1.0);
+
+    // The map, and the details under it.
+    let left = plate.x + 52;
+    say(img, &cinzel, &info.map, [255, 226, 143], left, plate.y + 6, 14.0);
+    say(img, &ui, &detail, [196, 204, 200], left, plate.y + 27, 11.0);
+    // The signal bars, coloured by the ping.
+    let colour = match info.ping {
+        Some(ping) if ping < 80 => paint::hex(0x6fd36f),
+        Some(ping) if ping < 160 => paint::hex(0xf0c040),
+        Some(_) => paint::hex(0xe05a4a),
+        None => paint::hex(0x5c6a70),
+    };
+    let lit = match info.ping {
+        Some(ping) if ping < 80 => 3,
+        Some(ping) if ping < 160 => 2,
+        Some(_) => 1,
+        None => 0,
+    };
+    let bars_left = left + width_of(&ui, &detail, 11.0).round() as i32 + 6;
+    for bar in 0..3 {
+        let bar_height = 4 + bar * 3;
+        let rect = crate::ui::UiRect::new(bars_left + bar * 4, plate.y + 38 - bar_height, 3, bar_height);
+        let fill = if bar < lit { colour } else { paint::hex(0x2a3a42) };
+        paint_in(img, rect, 0, |x, y| {
+            let dx = (x - rect.x as f32 - 1.5).abs() - 1.5;
+            let dy = (y - rect.y as f32 - rect.height as f32 / 2.0).abs() - rect.height as f32 / 2.0;
+            dx.max(dy)
+        }, |_, _| fill, 1.0);
+    }
+}
+
+/// A status's slot: a dark well in a gold frame, red when nearly out, and
+/// its time on a small pill under it.
+fn draw_status_slot(img: &mut RgbaImage, rect: crate::ui::UiRect, seconds: u32) {
+    use crate::daily_rewards_panel::{centred, glow_in, paint_in, rounded, width_of, GOLD, GOLD_DARK};
+    use crate::paint;
+    let Ok(ui) = crate::labels::font() else {
+        return;
+    };
+    let ending = seconds <= 10;
+    let shape = rounded(rect, 6.0);
+    glow_in(img, rect, &shape, 5.0, if ending { paint::hex(0xff5a40) } else { paint::hex(0x000000) }, if ending { 0.45 } else { 0.35 });
+    let (y0, height) = (rect.y as f32, rect.height as f32);
+    paint_in(img, rect, 1, &shape, |_, y| paint::mix(paint::hex(0x163a52), paint::hex(0x061420), (y - y0) / height), 0.88);
+    let frame = if ending { paint::hex(0xff7a5a) } else { GOLD };
+    paint_in(img, rect, 1, |x, y| shape(x, y).abs() - 0.7, |_, _| frame, 1.0);
+    let label = short_time(seconds);
+    let width = width_of(&ui, &label, 10.0).round() as i32 + 10;
+    let pill = crate::ui::UiRect::new(rect.x + (rect.width - width) / 2, rect.y + rect.height - 6, width, 14);
+    let pill_shape = rounded(pill, 7.0);
+    paint_in(img, pill, 1, &pill_shape, |_, _| paint::hex(0x07131b), 0.95);
+    paint_in(img, pill, 1, |x, y| pill_shape(x, y).abs() - 0.5, |_, _| if ending { paint::hex(0xff7a5a) } else { GOLD_DARK }, 1.0);
+    let colour = if ending { [255, 150, 120] } else { [255, 240, 200] };
+    centred(img, &ui, &label, colour, pill.x + pill.width / 2, pill.y + 1, 10.0);
+}
+
+/// A notice as a small pill (XP skills ready, poisoned...).
+fn draw_badge_pill(img: &mut RgbaImage, label: &str, colour: [u8; 4], [x, y]: [i32; 2]) -> i32 {
+    use crate::daily_rewards_panel::{paint_in, rounded, say, width_of};
+    use crate::paint;
+    let Ok(ui) = crate::labels::font() else {
+        return 0;
+    };
+    let width = width_of(&ui, label, 11.0).round() as i32 + 18;
+    let pill = crate::ui::UiRect::new(x, y, width, 18);
+    let shape = rounded(pill, 9.0);
+    paint_in(img, pill, 1, &shape, |_, _| paint::hex(0x07131b), 0.85);
+    let edge = [f32::from(colour[0]) / 255.0, f32::from(colour[1]) / 255.0, f32::from(colour[2]) / 255.0];
+    paint_in(img, pill, 1, |x, y| shape(x, y).abs() - 0.5, |_, _| edge, 0.9);
+    say(img, &ui, label, [colour[0], colour[1], colour[2]], x + 9, y + 3, 11.0);
+    width
 }
 
 /// What a status's icon shows: a skill's icon, an item's, or the VIP title.
@@ -186,13 +336,14 @@ fn flag_effect(flag: u64) -> Option<&'static str> {
 /// Where the renderer draws the animated status flags: their effect and
 /// the centre of their slot, in window pixels.
 pub fn status_flag_slots(skills: &SkillHud) -> Vec<(&'static str, [f32; 2])> {
-    let top = 6 + skills.info.len().max(2) as i32 * 15;
+    let top = status_row_top(skills);
     sorted_timers(skills)
         .iter()
         .enumerate()
         .filter_map(|(column, (flag, _))| {
             let effect = flag_effect(*flag)?;
-            Some((effect, [(4 + column as i32 * 34 + 15) as f32, (top + 13) as f32]))
+            let rect = status_slot_rect(column, top);
+            Some((effect, [(rect.x + rect.width / 2) as f32, (rect.y + rect.height / 2 - 2) as f32]))
         })
         .collect()
 }
@@ -1139,52 +1290,33 @@ pub fn image(
     if skills.xp_ready {
         badges.insert(0, ("XP Skills Ready", [255, 220, 90, 255]));
     }
-    for (row, line) in skills.info.iter().enumerate() {
-        main_hud::text(
-            &mut img,
-            font,
-            line,
-            12.0,
-            [4, 4 + row as i32 * 15],
-            [255, 255, 255, 255],
-            None,
-        );
+    if let Some(info) = &skills.info {
+        draw_info_plate(&mut img, info);
     }
-    let mut badges_top = 6 + skills.info.len().max(2) as i32 * 15;
-    // Timed statuses as icons with the time left under each; their text
-    // badges give way.
+    let mut badges_top = status_row_top(skills);
+    // Timed statuses in framed slots with the time left on a pill under
+    // each; their text badges give way.
     let timed = sorted_timers(skills);
     let mut column = 0;
     for (flag, seconds) in &timed {
-        let x = 4 + column * 34;
+        let rect = status_slot_rect(column, badges_top);
+        draw_status_slot(&mut img, rect, *seconds);
         // The animated flags are left for the renderer to draw here.
-        if flag_effect(*flag).is_none() {
-            let Some(icon) = status_icon(assets, *flag, 30) else {
-                continue;
-            };
+        if flag_effect(*flag).is_none()
+            && let Some(icon) = status_icon(assets, *flag, 26)
+        {
             let (icon_width, icon_height) = icon.dimensions();
             image::imageops::overlay(
                 &mut img,
                 &icon,
-                i64::from(x + (30 - icon_width as i32) / 2),
-                i64::from(badges_top + (26 - icon_height as i32) / 2),
+                i64::from(rect.x + (rect.width - icon_width as i32) / 2),
+                i64::from(rect.y + (rect.height - 4 - icon_height as i32) / 2),
             );
         }
-        let label = short_time(*seconds);
-        let width = crate::main_hud::text_width(font, &label, 11.0);
-        main_hud::text(
-            &mut img,
-            font,
-            &label,
-            11.0,
-            [x + (30 - width) / 2, badges_top + 27],
-            if *seconds <= 10 { [255, 140, 110, 255] } else { [255, 240, 200, 255] },
-            None,
-        );
         column += 1;
     }
     if column > 0 {
-        badges_top += 44;
+        badges_top += STATUS_SLOT + 16;
         let shown = |label: &str| {
             let flag = match label {
                 "2X XP" => 1 << 48,
@@ -1202,15 +1334,7 @@ pub fn image(
         badges.retain(|(label, _)| !shown(label));
     }
     for (row, (label, color)) in badges.into_iter().enumerate() {
-        main_hud::text(
-            &mut img,
-            font,
-            label,
-            12.0,
-            [4, badges_top + row as i32 * 15],
-            color,
-            None,
-        );
+        draw_badge_pill(&mut img, label, color, [CORNER[0], badges_top + row as i32 * 22]);
     }
 
     if hover == Some(HOVER_ORB) {
@@ -1412,7 +1536,7 @@ mod tests {
                     ko_count: 37,
                     xp_fire_until: None,
                     hovered: Some(1_000),
-                    info: vec!["Twin City (430, 380)".into(), "FPS 144  ping 12 ms".into()],
+                    info: Some(InfoBar { map: "Twin City".into(), cell: [430, 380], fps: 144, ping: Some(12) }),
                     xp_ready: true,
                     xp_points: 65,
                     timers: vec![(1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
