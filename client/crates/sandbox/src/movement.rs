@@ -22,6 +22,9 @@ pub struct Player {
     /// A ghost only walks, whatever `running` says.
     pub ghost: bool,
     pub height: f32,
+    /// How much faster than usual steps and jumps go: 2 in Cyclone, as
+    /// `Conquer.exe` halves their frame interval.
+    pub haste: f32,
     pub action: Action,
     pub action_instance: u64,
     right_foot: bool,
@@ -83,6 +86,7 @@ impl Player {
             running: true,
             ghost: false,
             height: 0.0,
+            haste: 1.0,
             action: Action::Idle,
             action_instance: 0,
             right_foot: false,
@@ -140,7 +144,7 @@ impl Player {
             return None;
         };
         let target = target.map(|v| v as f32);
-        let motion = jump_motion(self.position, target, animation);
+        let motion = jump_motion(self.position, target, animation.div_f32(self.haste.max(1.0)));
         self.facing = jump_facing(self.position, target).unwrap_or(self.facing);
         self.route.clear();
         self.action = Action::Jump;
@@ -183,7 +187,7 @@ impl Player {
                         start: self.position,
                         target,
                         elapsed: 0.0,
-                        duration: step_duration(running).as_secs_f32(),
+                        duration: step_duration(running).as_secs_f32() / self.haste.max(1.0),
                         peak: 0.0,
                         jump: false,
                     });

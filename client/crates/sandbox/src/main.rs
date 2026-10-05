@@ -3799,12 +3799,14 @@ impl App {
                         actor.position[1] + delta[1] as f32,
                     ];
                     actor.movement_started = now;
+                    // Cyclone moves twice as fast (`Conquer.exe`).
+                    let haste = if actor.status_flags & network::CYCLONE_FLAG != 0 { 2.0 } else { 1.0 };
                     actor.movement_until = now
                         + if movement_type == 1 {
                             1.0 / 6.0
                         } else {
                             1.0 / 3.0
-                        };
+                        } / haste;
                     actor.direction = direction;
                     actor.action = if movement_type == 1 {
                         if actor.step_right { 121 } else { 120 }
@@ -3853,10 +3855,11 @@ impl App {
                             + (actor.movement_to[1] - actor.movement_from[1]) * t;
                     }
                     let target = position.map(|value| value as f32);
+                    let haste = if actor.status_flags & network::CYCLONE_FLAG != 0 { 2.0 } else { 1.0 };
                     let motion = motion_math::jump_motion(
                         actor.position,
                         target,
-                        self.character.duration(Action::Jump),
+                        self.character.duration(Action::Jump).div_f32(haste),
                     );
                     // Face the way the jump goes; the packet's direction is
                     // only a fallback for a jump in place (older servers
@@ -4163,6 +4166,8 @@ impl App {
                         self.xp_lit_at = None;
                     }
                     self.status_flags = actor.status_flags;
+                    // Cyclone steps and jumps twice as fast.
+                    self.player.haste = if self.status_flags & network::CYCLONE_FLAG != 0 { 2.0 } else { 1.0 };
                     // A new Cyclone or Superman counts its KOs afresh.
                     if self.status_flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG) == 0 {
                         self.ko_count = 0;

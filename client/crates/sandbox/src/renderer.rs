@@ -2551,21 +2551,7 @@ impl Renderer {
             };
             let projected = map.project(actor.position);
             let mut origin = [projected[0] - camera[0], projected[1] - camera[1]];
-            // A remote jump (action 130) follows the local player's arc.
-            if actor.action == 130
-                && actor.movement_until > actor.movement_started
-                && time < actor.movement_until
-            {
-                let progress = (time - actor.movement_started)
-                    / (actor.movement_until - actor.movement_started);
-                let peak = crate::motion_math::jump_motion(
-                    actor.movement_from,
-                    actor.movement_to,
-                    std::time::Duration::ZERO,
-                )
-                .peak_screen_pixels;
-                origin[1] -= crate::motion_math::jump_screen_height(peak, progress);
-            }
+            origin[1] -= remote_jump_lift(actor, time);
             let visibility_margin = if monster {
                 384.0
             } else if actor.npc {
@@ -3067,14 +3053,20 @@ impl Renderer {
         }
         // Status effects (`ini/statuseffect.ini`) around the player and the
         // other actors: shield, Superman, Cyclone, Stigma, accuracy...
-        let mut status_effects = vec![(0_u32, player.position, status_flags)];
-        status_effects.extend(remote_actors.iter().map(|(id, actor)| (*id, actor.position, actor.status_flags)));
+        // In the air the effects rise with whoever jumps.
+        let mut status_effects = vec![(0_u32, player.position, status_flags, player.height)];
+        status_effects.extend(
+            remote_actors
+                .iter()
+                .map(|(id, actor)| (*id, actor.position, actor.status_flags, remote_jump_lift(actor, time))),
+        );
         let mut trailing = std::collections::HashSet::new();
-        for (id, position, flags) in status_effects {
+        for (id, position, flags, lift) in status_effects {
             if flags == 0 {
                 continue;
             }
-            let projected = map.project(position);
+            let ground = map.project(position);
+            let projected = [ground[0], ground[1] - lift];
             let history = self.trail_history.entry(id).or_default();
             trailing.insert(id);
             if history.front().is_none_or(|(_, last)| *last != projected) {
@@ -5218,6 +5210,19 @@ fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Te
             view_formats: &[],
         })
         .create_view(&Default::default())
+}
+
+/// How high a remote actor's jump (action 130) lifts them now, along the
+/// local player's arc.
+fn remote_jump_lift(actor: &RemoteActor, time: f32) -> f32 {
+    if actor.action != 130 || actor.movement_until <= actor.movement_started || time >= actor.movement_until {
+        return 0.0;
+    }
+    let progress = (time - actor.movement_started) / (actor.movement_until - actor.movement_started);
+    let peak =
+        crate::motion_math::jump_motion(actor.movement_from, actor.movement_to, std::time::Duration::ZERO)
+            .peak_screen_pixels;
+    crate::motion_math::jump_screen_height(peak, progress)
 }
 
 /// The sprite-sheet cell a mesh shows at `frame`, as a UV offset: its
