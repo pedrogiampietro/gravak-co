@@ -325,6 +325,7 @@ impl Map {
         }
         tracing::trace!("Loading into memory");
         self.floor.load().await?;
+        self.close_gravak_cells();
         let map_size = self.floor.boundaries();
         let region_size = MapRegion::SIZE;
         // ceil division to get the number of regions
@@ -370,6 +371,27 @@ impl Map {
         self.insert_batch(monsters.into_iter()).await?;
         tracing::trace!("Map Loaded into memory");
         Ok(())
+    }
+
+    /// The cells Gravak's own objects stand on (`gravak/maps/<id>.txt` of
+    /// the built content in `GRAVAK_CONTENT`, the same file the client
+    /// draws them from) are closed to walking.
+    fn close_gravak_cells(&self) {
+        let Some(content) = std::env::var_os("GRAVAK_CONTENT") else {
+            return;
+        };
+        let path = std::path::Path::new(&content)
+            .join("gravak")
+            .join("maps")
+            .join(format!("{}.txt", self.map_id()));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let cells = gravak_blocked_cells(&text);
+        for &(x, y) in &cells {
+            self.floor.close(x, y);
+        }
+        tracing::info!(map_id = self.map_id(), cells = cells.len(), path = %path.display(), "Gravak objects close cells");
     }
 
     #[tracing::instrument(skip_all, fields(map_id = self.id()))]
@@ -790,11 +812,32 @@ pub enum Maps {
     IcecryptLev1 = 1762,
 }
 
+/// The `block <x> <y>` lines of a Gravak objects file.
+fn gravak_blocked_cells(text: &str) -> Vec<(u16, u16)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            if fields.next() != Some("block") {
+                return None;
+            }
+            let x = fields.next()?.parse().ok()?;
+            let y = fields.next()?.parse().ok()?;
+            Some((x, y))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use futures::FutureExt;
 
     use super::*;
+
+    #[test]
+    fn gravak_objects_close_their_block_lines() {
+        let text = "# Gravak objects\nobject 430 380 -60 -120 gravak/objects/statue.png\nblock 430 380\nblock 431 380\nblock x 1\n";
+        assert_eq!(gravak_blocked_cells(text), [(430, 380), (431, 380)]);
+    }
     use crate::test_utils::*;
 
     #[test]

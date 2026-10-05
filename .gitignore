@@ -28,3 +28,6 @@ docs/ui-preview*/
 # Editor / OS files
 .DS_Store
 Thumbs.db
+
+# Built content (gravak-content build / the editor)
+content/build/

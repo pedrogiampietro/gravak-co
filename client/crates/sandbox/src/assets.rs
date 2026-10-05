@@ -14,6 +14,9 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub struct Assets {
     root: PathBuf,
+    /// Our built content (`GRAVAK_CONTENT`, e.g. `content/build/client`),
+    /// read before the installation.
+    overlay: Option<PathBuf>,
     archives: Vec<(File, WdfDirectory)>,
     resolved: HashMap<String, PathBuf>,
 }
@@ -181,8 +184,13 @@ impl Assets {
         if !root.is_dir() {
             return Err("--assets must name an installation directory".into());
         }
+        let overlay = std::env::var_os("GRAVAK_CONTENT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .and_then(|path| path.canonicalize().ok());
         let mut assets = Self {
             root,
+            overlay,
             archives: Vec::new(),
             resolved: HashMap::new(),
         };
@@ -210,35 +218,25 @@ impl Assets {
     pub fn root_path(&self) -> &Path {
         &self.root
     }
+    /// The built content read before the installation, when there is one.
+    pub fn overlay_path(&self) -> Option<&Path> {
+        self.overlay.as_deref()
+    }
     fn loose(&mut self, name: &str) -> Result<Option<PathBuf>> {
         let virtual_path = VirtualPath::try_from(name)?;
         let name = virtual_path.as_str();
         if let Some(path) = self.resolved.get(name) {
             return Ok(Some(path.clone()));
         }
-        let mut path = self.root.clone();
-        for component in name.split('/') {
-            let exact = path.join(component);
-            path = if exact.exists() {
-                exact
-            } else {
-                let Some(entry) = std::fs::read_dir(&path)?.filter_map(|e| e.ok()).find(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .eq_ignore_ascii_case(component)
-                }) else {
-                    return Ok(None);
-                };
-                entry.path()
-            };
-            path = path.canonicalize()?;
-            if !path.starts_with(&self.root) {
-                return Err("asset symlink leaves installation".into());
-            }
+        if let Some(overlay) = &self.overlay
+            && let Some(path) = find_under(overlay, name)?
+        {
+            self.resolved.insert(name.to_owned(), path.clone());
+            return Ok(Some(path));
         }
-        if !path.is_file() {
+        let Some(path) = find_under(&self.root, name)? else {
             return Ok(None);
-        }
+        };
         self.resolved.insert(name.to_owned(), path.clone());
         Ok(Some(path))
     }
@@ -277,4 +275,30 @@ impl Assets {
         }
         Ok(reader.decode()?.into_rgba8())
     }
+}
+
+/// `name` (a virtual `a/b/c` path) under `root`, each component matched
+/// without case as Windows does; a symlink may not lead out of `root`.
+fn find_under(root: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let mut path = root.to_path_buf();
+    for component in name.split('/') {
+        let exact = path.join(component);
+        path = if exact.exists() {
+            exact
+        } else {
+            let Some(entry) = std::fs::read_dir(&path)?.filter_map(|e| e.ok()).find(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(component)
+            }) else {
+                return Ok(None);
+            };
+            entry.path()
+        };
+        path = path.canonicalize()?;
+        if !path.starts_with(root) {
+            return Err("asset symlink leaves installation".into());
+        }
+    }
+    Ok(path.is_file().then_some(path))
 }

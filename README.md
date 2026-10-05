@@ -6,6 +6,7 @@ Monorepo para o desenvolvimento do cliente e do servidor de um projeto inspirado
 
 - `client/` — cliente Preservation CO 5065, escrito em Rust.
 - `server/` — servidor Gravak baseado no projeto [CoEmu](https://github.com/shekohex/coemu).
+- `content/` — o nosso conteúdo (itens novos, ícones…), juntado aos arquivos 5065 pelo build.
 
 O cliente e o servidor ainda não são totalmente compatíveis: o cliente trabalha com assets/protocolo 5065, enquanto a base atual do servidor CoEmu é voltada ao protocolo 5017. A integração de protocolo será uma etapa de desenvolvimento.
 
@@ -104,6 +105,21 @@ O `run-server.bat` guarda um backup do banco por dia em `server/backups/` (os 14
 Os terminais do auth e do game mostram uma linha por evento — hora, nível, categoria (`login`, `trade`, `pk`, `net`, `db`, `status`...) e campos — e gravam as mesmas linhas em `server/logs/<auth|game>.log.<data>`. `LOG_VERBOSITY` (0 a 4) escolhe o nível e `RUST_LOG` o refina por módulo.
 
 Os servidores usam, por padrão, as portas `9958` (auth) e `5816` (game). Logs, builds e fixtures locais são ignorados pelo Git. As regras das skills ficam em `server/server/game/data/skills.dat`; é possível apontar outro catálogo com a variável `SKILLS_DATA`. Os comandos `$test-health` e `$test-mana` restauram recursos apenas em memória para testes; `$test-skill-book` cria o livro `723100`, que ensina Whirlwind (`1002`) pelo fluxo transacional de uso de item. `$test-durability` cria uma arma com 10/100 de durabilidade para validação manual de combate/reparo; `$test-quality` cria uma arma normal `410005` e um DragonBall para testar qualidade; `$test-refinery` cria um helmet e o material compatível para testar a refinaria; `$test-artifact` cria um helmet, um FlameHat (`820001`) e um Meteor para testar o artefato. O treinamento pelo NPC exige nível 10 e 500 silver para Whirlwind. Armas perdem durabilidade ao atacar e podem ser reparadas pelo ferreiro. O comando `$add-stat vitality 2` (também aceita strength/agility/spirit) gasta pontos disponíveis de forma autoritativa; cada level-up concede 3 pontos. `$upgrade-item <uid>` aumenta em um nível o `plus` de um item próprio; a ação clássica `1009/19` melhora a qualidade com DragonBall, consumindo o catalisador e penalizando a durabilidade em caso de falha. Sockets/gems, composição, refinaria, artefatos e social possuem fluxos equivalentes no menu/NPC/probe. O comando `$quest-status` lista o progresso persistido das quests, e o probe aceita `--skill-book`, `--combat`, `--quest`, `--quest-status`, `--team <usuário> <senha>`, `--friends <usuário> <senha>` e `--pvp <usuário> <senha>` para validar os fluxos ponta a ponta. O mapa de gaps e prioridades está em `docs/reference-gap-matrix.md`.
+
+## Editor de conteúdo
+
+`run-editor.bat` abre o **Gravak Editor** (`client/crates/editor`), com duas
+abas:
+
+- **🎒 Itens:** cria e altera itens e ícones.
+- **🗺 Mapas:** mostra qualquer mapa como no cliente e coloca objetos nossos,
+  como estátuas e decoração, com as células que eles bloqueiam.
+
+Nada é gravado em `R:\5065`: o que você edita vai para `content/`. O botão
+**Build** gera `content/build/`, que o `run-client.bat` e o `run-server.bat`
+passam a usar. O passo a passo está em
+[`content/README.md`](content/README.md), e os próximos passos em
+[`docs/editor-roadmap.md`](docs/editor-roadmap.md).
 
 ## Acompanhamento do projeto
 

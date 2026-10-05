@@ -18,6 +18,15 @@ tasklist /FI "IMAGENAME eq conquer-sandbox.exe" 2>nul | find /I "conquer-sandbox
         exit /b 1
     )
 )
+
+rem Our content (items, icons, map objects) built over the installation;
+rem the client reads it before R:\5065. A failed build leaves the game
+rem without it, but still starts.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-content.ps1" || (
+    echo [WARNING] content\ could not be built; the client starts without it.
+)
+if exist "%~dp0content\build\client\.gravak-build" set "GRAVAK_CONTENT=%~dp0content\build\client"
+
 if not exist "%CLIENT_EXE%" (
     echo Client build not found: %CLIENT_EXE%
     pause

@@ -33,6 +33,18 @@ if /I not "%~1"=="stop" if /I not "%~1"=="status" (
     echo.
 )
 
+rem -- Content -----------------------------------------------------
+rem content\ (items, icons, map objects) built over the installation: the
+rem server takes its itemtype.dat over the one named in server\.env and
+rem closes the cells our map objects stand on. Not for stop/status.
+if /I not "%~1"=="stop" if /I not "%~1"=="status" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-content.ps1" || (
+        echo [AVISO] content\ nao foi gerado; os servidores sobem sem ele.
+    )
+)
+if exist "%~dp0content\build\client\ini\itemtype.dat" set "ITEMTYPE_DATA=%~dp0content\build\client\ini\itemtype.dat"
+if exist "%~dp0content\build\client\.gravak-build" set "GRAVAK_CONTENT=%~dp0content\build\client"
+
 rem -- Check binaries ----------------------------------------------
 if not exist "%AUTH_EXE%" (
     echo [ERRO] Auth server nao encontrado em:

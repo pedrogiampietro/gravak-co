@@ -59,6 +59,19 @@ impl Floor {
         self.with_coordinates(|c| c.get(i as usize).cloned())
     }
 
+    /// Closes a cell to walking (a Gravak object stands there); a cell
+    /// outside the map is ignored.
+    pub fn close(&self, x: u16, y: u16) {
+        let boundaries = self.boundaries();
+        if i32::from(x) >= boundaries.width || i32::from(y) >= boundaries.height {
+            return;
+        }
+        let i = (x as i32 * boundaries.width) + y as i32;
+        if let Some(tile) = self.coordinates.write().get_mut(i as usize) {
+            tile.access = TileType::Terrain;
+        }
+    }
+
     /// This method loads a compressed map from the server's flat file database.
     /// If the file does not exist, the server will make an attempt to find
     /// and convert a dmap version of the map into a compressed map file.
