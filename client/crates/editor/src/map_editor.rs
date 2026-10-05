@@ -17,6 +17,7 @@ const MAX_OVERLAY_CELLS: i64 = 60_000;
 
 const BLOCKED: Color32 = Color32::from_rgba_premultiplied(120, 20, 20, 90);
 const OURS_BLOCKED: Color32 = Color32::from_rgba_premultiplied(140, 90, 0, 120);
+const OURS_OUTLINE: Color32 = Color32::from_rgb(255, 150, 30);
 const SELECTED: Color32 = Color32::from_rgb(255, 210, 60);
 
 struct OpenMap {
@@ -288,6 +289,7 @@ impl MapEditor {
         ui.checkbox(&mut self.show_scenery, "Cenário (objetos do mapa)");
         ui.checkbox(&mut self.show_cells, "Células bloqueadas");
         ui.checkbox(&mut self.show_portals, "Portais");
+        ui.small("Setas ou WASD andam pelo mapa (Shift: mais rápido); + e - dão zoom; botão direito arrasta.");
         ui.horizontal(|ui| {
             ui.label("Ir para");
             ui.add(egui::DragValue::new(&mut self.goto[0]).prefix("x "));
@@ -444,6 +446,7 @@ impl MapEditor {
         {
             self.camera -= response.drag_delta() / self.zoom;
         }
+        self.keyboard(ui);
 
         let Some(open) = self.open.as_ref() else {
             return;
@@ -595,6 +598,15 @@ impl MapEditor {
             }
             object_rects.push((index, screen));
         }
+        // The selected object's blocked cells, outlined over its image.
+        if let Some(object) = self
+            .selected
+            .and_then(|index| open.objects.objects.get(index))
+        {
+            for cell in object.blocked_cells() {
+                self.cell_outline(&painter, rect, open, cell, Stroke::new(1.5, OURS_OUTLINE));
+            }
+        }
 
         // Pointer: hover, select, move, place, block cells.
         self.hover = response.hover_pos().map(|pos| cell_at(self, pos));
@@ -744,6 +756,70 @@ impl MapEditor {
         if self.placing.is_some() && ui.input(|input| input.key_pressed(Key::Escape)) {
             self.placing = None;
         }
+    }
+
+    /// Arrows (or WASD) walk the map, Shift faster; `+`/`-` zoom on the
+    /// centre. Not while a text field takes the keys.
+    fn keyboard(&mut self, ui: &egui::Ui) {
+        if ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
+        let (direction, fast, zoom_in, zoom_out, dt) = ui.input(|input| {
+            let held = |keys: &[Key]| keys.iter().any(|key| input.key_down(*key));
+            let mut direction = Vec2::ZERO;
+            if held(&[Key::ArrowLeft, Key::A]) {
+                direction.x -= 1.0;
+            }
+            if held(&[Key::ArrowRight, Key::D]) {
+                direction.x += 1.0;
+            }
+            if held(&[Key::ArrowUp, Key::W]) {
+                direction.y -= 1.0;
+            }
+            if held(&[Key::ArrowDown, Key::S]) {
+                direction.y += 1.0;
+            }
+            (
+                direction,
+                input.modifiers.shift,
+                input.key_pressed(Key::Plus) || input.key_pressed(Key::Equals),
+                input.key_pressed(Key::Minus),
+                input.stable_dt.min(0.1),
+            )
+        });
+        if direction != Vec2::ZERO {
+            // Screen pixels per second, whatever the zoom.
+            let speed = if fast { 2400.0 } else { 800.0 };
+            self.camera += direction.normalized() * speed * dt / self.zoom;
+            ui.ctx().request_repaint();
+        }
+        if zoom_in || zoom_out {
+            let factor = if zoom_in { 1.25 } else { 0.8 };
+            self.zoom = (self.zoom * factor).clamp(0.05, 4.0);
+        }
+    }
+
+    fn cell_outline(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        open: &OpenMap,
+        cell: [i32; 2],
+        stroke: Stroke,
+    ) {
+        let corner = |dx: f32, dy: f32| {
+            self.to_screen(
+                rect,
+                open.map.project([cell[0] as f32 + dx, cell[1] as f32 + dy]),
+            )
+        };
+        let points = vec![
+            corner(-0.5, -0.5),
+            corner(0.5, -0.5),
+            corner(0.5, 0.5),
+            corner(-0.5, 0.5),
+        ];
+        painter.add(egui::Shape::closed_line(points, stroke));
     }
 
     fn cell_shape(

@@ -85,9 +85,11 @@ Na aba **🗺 Mapas** do editor:
 1. Escolha o mapa na lista. Twin City é o **1002**. O mapa aparece como no
    cliente, com fundo, cenário e portais (em azul).
 2. **Navegar:**
-   - roda do mouse dá zoom;
+   - **setas ou WASD** andam pelo mapa (com Shift, mais rápido);
+   - roda do mouse, ou **+** e **-**, dá zoom;
    - botão direito ou do meio arrasta o mapa;
-   - "Ir para" centraliza numa célula.
+   - "Ir para" centraliza numa célula, e duplo clique num objeto da lista vai
+     até ele.
    A célula sob o mouse aparece no canto, com o acesso e a altura dela.
 3. **Novo objeto:** arraste uma imagem para o mapa, ou informe o caminho e
    clique em **Importar**. Depois clique no mapa onde ele deve ficar. O pé da
@@ -110,6 +112,11 @@ No jogo:
   escondido, quem está na frente passa por cima;
 - o cliente e o servidor fecham as células bloqueadas;
 - todo jogador que passar por ali vê o objeto.
+
+Já existe uma: a **Estátua de Gravak** em Twin City (`maps/1002.toml`, célula
+440, 372, a leste do ponto de renascer). O sprite (`objects/gravak-statue.png`)
+é gerado por `objects/src/make-gravak-statue.py` a partir de
+`objects/src/gravak-relic.png`.
 
 O formato, para editar à mão:
 

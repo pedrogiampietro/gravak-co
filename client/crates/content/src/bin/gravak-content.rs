@@ -82,10 +82,22 @@ fn run() -> gravak_content::Result<()> {
                     problems += 1;
                 }
             }
+            let maps = gravak_content::maps::all(&content)?;
+            let mut objects = 0;
+            for (map_id, map) in &maps {
+                for object in &map.objects {
+                    objects += 1;
+                    if image::open(content.join(&object.image)).is_err() {
+                        println!("mapa {map_id}: imagem {} não abre", object.image);
+                        problems += 1;
+                    }
+                }
+            }
             println!(
-                "{} definições, {} itens no resultado, {problems} problemas",
+                "{} definições, {} itens no resultado, {objects} objetos em {} mapas, {problems} problemas",
                 merged.items.defs().count(),
-                merged.merged.item_count()
+                merged.merged.item_count(),
+                maps.len()
             );
             if problems > 0 {
                 return Err("content/ tem problemas".into());

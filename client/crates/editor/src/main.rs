@@ -48,12 +48,16 @@ impl EditorApp {
             .storage
             .and_then(|storage| eframe::get_value(storage, "settings"))
             .unwrap_or_default();
+        let settings_maps = context
+            .storage
+            .and_then(|storage| eframe::get_value::<bool>(storage, "maps_tab"))
+            .unwrap_or(false);
         let mut app = Self {
             settings,
             project: None,
             items: ItemEditor::new(),
             maps: MapEditor::new(),
-            tab: Tab::Items,
+            tab: if settings_maps { Tab::Maps } else { Tab::Items },
             status: String::new(),
         };
         app.open();
@@ -153,6 +157,7 @@ impl eframe::App for EditorApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "settings", &self.settings);
+        eframe::set_value(storage, "maps_tab", &(self.tab == Tab::Maps));
     }
 }
 
