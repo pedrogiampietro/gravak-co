@@ -119,12 +119,14 @@ No jogo:
 - todo jogador que passar por ali vê o objeto.
 
 Já existe uma: a **Estátua de Gravak** em Twin City (`maps/1002.toml`), a
-relíquia em pé no centro do tablado da praça (célula 438, 377). O sprite
+relíquia apoiada no centro do tablado da praça (célula 438, 377). O sprite
 (`objects/gravak-statue.png`) é gerado por `objects/src/make-gravak-statue.py`
-a partir de `objects/src/gravak-relic.png`: o fundo sai, o escudo é girado
-pelo eixo do disco de aço para ficar em pé sobre o cabo, e fica com 140 px de
-altura, pouco acima de um personagem (`HEIGHT` e `SQUASH` no script ajustam o
-tamanho e o quanto ele é arredondado).
+a partir de `objects/src/gravak-relic.png`: só o fundo sai, e a arte fica pixel
+por pixel como foi desenhada, sem girar nem redimensionar, para continuar
+nítida. Para uma peça maior, passe uma escala inteira
+(`python make-gravak-statue.py gravak-relic.png ../gravak-statue.png 2`); para
+mais nitidez ou outro ângulo, o caminho é uma arte de origem maior ou já
+desenhada naquele ângulo.
 
 O formato, para editar à mão:
 
