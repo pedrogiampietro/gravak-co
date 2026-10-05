@@ -83,6 +83,9 @@ pub struct C3Document {
     pub version: String,
     pub meshes: Vec<C3Mesh>,
     pub motions: Vec<C3Motion>,
+    /// Lines that sweep a ribbon behind them (`SHAP`, moved by the `SMOT`
+    /// after each).
+    pub shapes: Vec<C3Shape>,
     pub unknown_chunks: Vec<UnknownChunk>,
 }
 
@@ -114,6 +117,12 @@ impl C3Document {
                     document.meshes.push(C3Mesh::parse(tag, chunk)?)
                 }
                 b"MOTI" => document.motions.push(C3Motion::parse(chunk)?),
+                b"SHAP" => document.shapes.push(C3Shape::parse(chunk)?),
+                b"SMOT" => {
+                    if let Some(shape) = document.shapes.last_mut() {
+                        shape.frames = C3Shape::parse_motion(chunk)?;
+                    }
+                }
                 _ => document.unknown_chunks.push(UnknownChunk {
                     tag,
                     length: chunk_length,
@@ -129,6 +138,74 @@ impl C3Document {
         }
 
         Ok(document)
+    }
+}
+
+/// A `SHAP`: lines whose last `segments` places, frame after frame, are
+/// joined into a ribbon (the original's sword-trail like sweeps).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct C3Shape {
+    pub name: String,
+    pub lines: Vec<Vec<Vector3>>,
+    pub texture: String,
+    /// How many past places the ribbon spans.
+    pub segments: u32,
+    /// The shape's matrix at each frame (`SMOT`).
+    pub frames: Vec<Matrix4>,
+}
+
+impl C3Shape {
+    fn parse(bytes: &[u8]) -> Result<Self, ContentError> {
+        let mut reader = SliceReader::new("C3 shape", bytes);
+        let name = read_sized_string(&mut reader)?;
+        let line_count = reader.read_u32_le()?;
+        let line_count = checked_count(line_count, 4, reader.remaining())?;
+        let mut lines = Vec::with_capacity(line_count);
+        for _ in 0..line_count {
+            let count = reader.read_u32_le()?;
+            let count = checked_count(count, 12, reader.remaining())?;
+            lines.push((0..count).map(|_| read_vector3(&mut reader)).collect::<Result<Vec<_>, _>>()?);
+        }
+        let texture = read_sized_string(&mut reader)?;
+        let segments = if reader.remaining() >= 4 { reader.read_u32_le()? } else { 0 };
+        Ok(Self {
+            name,
+            lines,
+            texture,
+            segments,
+            frames: Vec::new(),
+        })
+    }
+
+    fn parse_motion(bytes: &[u8]) -> Result<Vec<Matrix4>, ContentError> {
+        let mut reader = SliceReader::new("C3 shape motion", bytes);
+        let count = reader.read_u32_le()?;
+        let count = checked_count(count, 64, reader.remaining())?;
+        (0..count).map(|_| read_matrix(&mut reader)).collect()
+    }
+
+    /// Where a line's points are at `frame` (wrapping, between frames
+    /// blended).
+    pub fn line_at(&self, line: &[Vector3], frame: f32) -> Vec<Vector3> {
+        let count = self.frames.len();
+        if count == 0 {
+            return line.to_vec();
+        }
+        let frame = frame.rem_euclid(count as f32);
+        let first = frame.floor() as usize % count;
+        let second = (first + 1) % count;
+        let blend = frame.fract();
+        line.iter()
+            .map(|point| {
+                let a = self.frames[first].transform_point(*point);
+                let b = self.frames[second].transform_point(*point);
+                Vector3 {
+                    x: a.x + (b.x - a.x) * blend,
+                    y: a.y + (b.y - a.y) * blend,
+                    z: a.z + (b.z - a.z) * blend,
+                }
+            })
+            .collect()
     }
 }
 

@@ -61,6 +61,8 @@ pub struct Character {
     xp_sent: std::sync::atomic::AtomicU8,
     /// Lucky time left, in seconds (`lucky.rs`).
     lucky_time: AtomicU32,
+    /// Monsters slain in the current Cyclone or Superman (the KO counter).
+    ko_count: AtomicU32,
     /// Where the character started praying (map, x, y).
     prayer_origin: Mutex<Option<(u32, u16, u16)>>,
     /// The blue flashing name after killing someone.
@@ -499,6 +501,7 @@ impl Character {
             booth_name: Mutex::new(None),
             timers_sent: Mutex::new(Vec::new()),
             lucky_time: AtomicU32::new(lucky_time),
+            ko_count: AtomicU32::new(0),
             prayer_origin: Mutex::new(None),
             xp_sent: std::sync::atomic::AtomicU8::new(u8::MAX),
             flashing_until: Mutex::new(None),
@@ -831,6 +834,26 @@ impl Character {
     /// Lucky time left, in seconds.
     pub fn lucky_time(&self) -> u32 {
         self.lucky_time.load(Ordering::Relaxed)
+    }
+
+    /// Whether Cyclone or Superman is under way.
+    pub fn in_xp_skill(&self) -> bool {
+        self.has_status(StatusEffect::Cyclone) || self.has_status(StatusEffect::Superman)
+    }
+
+    /// A fresh Cyclone or Superman counts its KOs from nought.
+    pub fn reset_ko_count(&self) {
+        self.ko_count.store(0, Ordering::Relaxed);
+    }
+
+    /// A monster slain in Cyclone or Superman: one more KO and 0.7 s more of
+    /// it (Redux `KOCount`); the count, or `None` outside them.
+    pub fn count_ko(&self) -> Option<u32> {
+        let more = std::time::Duration::from_millis(700);
+        let extended = [StatusEffect::Cyclone, StatusEffect::Superman]
+            .into_iter()
+            .any(|effect| self.statuses.extend(effect, more));
+        extended.then(|| self.ko_count.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
     pub fn add_lucky_time(&self, seconds: u32) {

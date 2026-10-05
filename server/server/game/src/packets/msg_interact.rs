@@ -430,6 +430,9 @@ impl MsgInteract {
             let Some(effect) = skill.status.map(|status| status.effect()) else {
                 return Ok(());
             };
+            if skill.xp && !character.in_xp_skill() {
+                character.reset_ko_count();
+            }
             character.apply_status(effect, skill.status_duration);
             actor.send(MsgUserInfo::from(character)).await?;
             actor.send(MsgPlayer::from(character)).await?;
@@ -873,9 +876,16 @@ impl MsgInteract {
                 .saturating_add(skill.flat_power)
                 .saturating_mul(100 + character.gem_bonus(crate::entities::GemFamily::Phoenix))
                 / 100;
+            // Superman strengthens every physical blow, skills too (Redux
+            // `CalculatePhysicalDamage`): 10x on monsters, 2x on players.
+            let superman = if character.has_status(crate::entities::StatusEffect::Superman) {
+                crate::combat::superman_damage_percent(target.as_monster().is_some())
+            } else {
+                100
+            };
             let mut outcome = if skill.physical {
                 resolve_physical_hit(
-                    scale_skill_power(physical_stats, physical_power),
+                    scale_skill_power(scale_skill_power(physical_stats, physical_power), superman),
                     target_stats,
                     u32::from(health_before.current),
                     next_roll(),
@@ -1246,6 +1256,10 @@ pub(crate) async fn reward_monster_defeat(
         }
     }
     let location = monster.entity().location();
+    // In Cyclone or Superman each kill counts and lengthens it; the death
+    // carries the count as the original's (`65541 * KOCount`, the client
+    // reads the high word).
+    let ko = (killer_id == character.id()).then(|| character.count_ko()).flatten();
     let kill = MsgInteract {
         timestamp: 0,
         character_id: killer_id,
@@ -1253,7 +1267,7 @@ pub(crate) async fn reward_monster_defeat(
         x: location.x,
         y: location.y,
         action: InteractAction::Kill as u32,
-        value: silver_drop.unwrap_or_default(),
+        value: ko.map_or(silver_drop.unwrap_or_default(), |ko| ko.saturating_mul(65_541)),
         reserved: [0; 12],
     };
     character.owner().send(kill.clone()).await?;

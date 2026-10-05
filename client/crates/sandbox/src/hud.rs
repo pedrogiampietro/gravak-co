@@ -94,6 +94,8 @@ pub struct SkillHud {
     pub bar_open: bool,
     pub active_skill: Option<u32>,
     pub kill_count: u32,
+    /// KOs of the current Cyclone or Superman.
+    pub ko_count: u32,
     /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
     pub kill_mode: u8,
     /// The top-left information lines: map and position, FPS and ping.
@@ -355,8 +357,39 @@ fn draw_skill_bar(
     }
 }
 
+/// Cyclone (1 << 23) and Superman (1 << 18).
+const XP_SKILL_FLAGS: u64 = (1 << 23) | (1 << 18);
+
+/// The seconds an XP skill has left, one of the original's `XpBlock`s
+/// each, above the counter: green, then blue, then red as it runs out.
+fn draw_xp_blocks(img: &mut RgbaImage, assets: &mut Assets, viewport: [f32; 2], left: u32) {
+    const BLOCK: u32 = 12;
+    const PER_ROW: u32 = 20;
+    let colour = match left {
+        11.. => "data/pic/xpBlockG.tga",
+        6..=10 => "data/pic/xpBlockB.tga",
+        _ => "data/pic/xpBlockR.tga",
+    };
+    let Ok(block) = assets.image(colour) else {
+        return;
+    };
+    let block = imageops::resize(&block, BLOCK, BLOCK, imageops::FilterType::Triangle);
+    let [_, hud_y] = hud_origin(viewport);
+    let right = viewport[0] as i32 - 10;
+    for index in 0..left.min(PER_ROW * 2) {
+        let (row, column) = (index / PER_ROW, index % PER_ROW);
+        let x = right - ((column + 1) * (BLOCK + 2)) as i32;
+        let y = hud_y - 24 - (row * (BLOCK + 2)) as i32;
+        imageops::overlay(img, &block, i64::from(x), i64::from(y));
+    }
+}
+
 /// The KO counter ("<n> 斩") at the right edge above the bar.
 fn draw_kill_counter(img: &mut RgbaImage, viewport: [f32; 2], kills: u32) {
+    draw_counter(img, viewport, kills, [150, 110, 255]);
+}
+
+fn draw_counter(img: &mut RgbaImage, viewport: [f32; 2], kills: u32, glow: [u8; 3]) {
     let (Ok(digits), Ok(glyph)) = (crate::main_hud::italic_font(), crate::main_hud::client_font())
     else {
         return;
@@ -372,9 +405,9 @@ fn draw_kill_counter(img: &mut RgbaImage, viewport: [f32; 2], kills: u32) {
         &number,
         40.0,
         [glyph_x - 6 - number_width, hud_y - 4],
-        [150, 110, 255],
+        glow,
     );
-    crate::main_hud::glow_text(img, glyph, "斩", 34.0, [glyph_x, hud_y], [150, 110, 255]);
+    crate::main_hud::glow_text(img, glyph, "斩", 34.0, [glyph_x, hud_y], glow);
 }
 
 /// The revive countdown and button sit above the KO counter, against the
@@ -1045,7 +1078,18 @@ pub fn image(
         font,
     );
     draw_skill_bar(&mut img, assets, font, viewport, skills);
-    if hud_config.kill_counter {
+    // Cyclone or Superman: the seconds left as blocks and the KOs in red
+    // ("<n> 斩"), in place of the kill counter.
+    let xp_skill_left = skills
+        .timers
+        .iter()
+        .filter(|(flag, _)| *flag & (XP_SKILL_FLAGS) != 0)
+        .map(|(_, left)| *left)
+        .max();
+    if let Some(left) = xp_skill_left {
+        draw_xp_blocks(&mut img, assets, viewport, left);
+        draw_counter(&mut img, viewport, skills.ko_count, [255, 60, 40]);
+    } else if hud_config.kill_counter {
         draw_kill_counter(&mut img, viewport, skills.kill_count);
     }
     draw_hotkeys(&mut img, assets, font, viewport, action_bar, hover)?;
@@ -1334,6 +1378,7 @@ mod tests {
                     bar_open: true,
                     active_skill: Some(1_001),
                     kill_count: 7,
+                    ko_count: 37,
                     hovered: Some(1_000),
                     info: vec!["Twin City (430, 380)".into(), "FPS 144  ping 12 ms".into()],
                     xp_ready: false,

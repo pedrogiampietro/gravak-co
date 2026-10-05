@@ -723,6 +723,12 @@ pub struct Renderer {
     level_up_layers: Option<Vec<LevelUpLayer>>,
     /// Original 3D effects by name; `None` when the effect is unavailable.
     effects: HashMap<String, Option<std::rc::Rc<LoadedEffect>>>,
+    /// Where each actor with a status effect stood lately (time, world
+    /// pixel): the ribbons of shape effects stream along it.
+    trail_history: HashMap<u32, std::collections::VecDeque<(f32, [f32; 2])>>,
+    /// The trail of the actor whose status effects are being drawn, in
+    /// screen pixels, newest first, and the time it is drawn at.
+    current_trail: (f32, Vec<(f32, [f32; 2])>),
     last_hud_key: Option<String>,
 }
 impl Renderer {
@@ -925,6 +931,8 @@ impl Renderer {
             role_effects: Vec::new(),
             level_up_layers: None,
             effects: HashMap::new(),
+            trail_history: HashMap::new(),
+            current_trail: (0.0, Vec::new()),
             last_hud_key: None,
         })
     }
@@ -1031,6 +1039,7 @@ impl Renderer {
                                     .into_iter()
                                     .chain(mesh.draw_keys.last().map(|key| key.frame as f32))
                             }))
+                            .chain(layer.document.shapes.iter().map(|shape| shape.frames.len() as f32))
                     })
                     .fold(1.0_f32, f32::max);
                 (!layers.is_empty()).then(|| {
@@ -1138,6 +1147,57 @@ impl Renderer {
                     depth_test: false,
                     sort_depth,
                 });
+            }
+            // Shapes sweep a ribbon through their last places, fading
+            // towards the oldest.
+            for shape in &layer.document.shapes {
+                let segments = shape.segments.max(2) as usize;
+                // Each step back is a frame back: on the actor's trail
+                // where they stood then, or here when they stood still.
+                let step_origin = |step: usize| {
+                    let (now, trail) = &self.current_trail;
+                    let when = now - step as f32 * effect.frame_interval / 1000.0;
+                    trail_point(trail, when).unwrap_or(origin)
+                };
+                let project = |p: sandbox_data::c3::Vector3, origin: [f32; 2]| {
+                    let screen_y = (p.y * sin + p.z * cos) * scale;
+                    let depth = (p.y * cos - p.z * sin) * scale;
+                    ([origin[0] + p.x * scale, origin[1] + screen_y], (0.5 + depth * 0.0005).clamp(0.001, 0.999))
+                };
+                let origins: Vec<[f32; 2]> = (0..segments).map(step_origin).collect();
+                let mut vertices = Vec::new();
+                for line in &shape.lines {
+                    if line.len() < 2 {
+                        continue;
+                    }
+                    let places: Vec<Vec<sandbox_data::c3::Vector3>> =
+                        (0..segments).map(|step| shape.line_at(line, frame - step as f32)).collect();
+                    let last = (line.len() - 1) as f32;
+                    for step in 0..segments - 1 {
+                        let fade = |step: usize| 1.0 - step as f32 / (segments - 1) as f32;
+                        for point in 0..line.len() - 1 {
+                            let corner = |step: usize, point: usize| {
+                                let (screen, depth) = project(places[step][point], origins[step]);
+                                Vertex {
+                                    position: clip(screen, depth, viewport),
+                                    uv: [step as f32 / (segments - 1) as f32, point as f32 / last],
+                                    alpha: fade(step),
+                                }
+                            };
+                            let (a, b) = (corner(step, point), corner(step, point + 1));
+                            let (c, d) = (corner(step + 1, point + 1), corner(step + 1, point));
+                            vertices.extend([a, b, c, a, c, d]);
+                        }
+                    }
+                }
+                if !vertices.is_empty() {
+                    draws.push(Draw {
+                        texture: layer.texture.clone(),
+                        vertices,
+                        depth_test: false,
+                        sort_depth,
+                    });
+                }
             }
         }
         true
@@ -2898,23 +2958,38 @@ impl Renderer {
         }
         // Status effects (`ini/statuseffect.ini`) around the player and the
         // other actors: shield, Superman, Cyclone, Stigma, accuracy...
-        let mut status_effects = vec![(player.position, status_flags)];
-        status_effects.extend(remote_actors.values().map(|actor| (actor.position, actor.status_flags)));
-        for (position, flags) in status_effects {
+        let mut status_effects = vec![(0_u32, player.position, status_flags)];
+        status_effects.extend(remote_actors.iter().map(|(id, actor)| (*id, actor.position, actor.status_flags)));
+        let mut trailing = std::collections::HashSet::new();
+        for (id, position, flags) in status_effects {
             if flags == 0 {
                 continue;
             }
             let projected = map.project(position);
+            let history = self.trail_history.entry(id).or_default();
+            trailing.insert(id);
+            if history.front().is_none_or(|(_, last)| *last != projected) {
+                history.push_front((time, projected));
+            }
+            while history.len() > 2 && history.back().is_some_and(|(when, _)| time - when > 2.0) {
+                history.pop_back();
+            }
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             if !world_point_visible(origin, viewport, 256.0) {
                 continue;
             }
+            self.current_trail = (
+                time,
+                history.iter().map(|(when, at)| (*when, [at[0] - camera[0], at[1] - camera[1]])).collect(),
+            );
             for (bit, name) in crate::magic::status_effects(assets) {
                 if flags & bit != 0 {
                     self.push_looping_effect(assets, name, origin, time, position[0] + position[1] + 0.04, viewport, &mut draws);
                 }
             }
+            self.current_trail.1.clear();
         }
+        self.trail_history.retain(|id, _| trailing.contains(id));
         for (loot_id, position, item_id, _) in ground_loot {
             let projected = map.project(*position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
@@ -5031,6 +5106,27 @@ fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Te
             view_formats: &[],
         })
         .create_view(&Default::default())
+}
+
+/// Where a trail (newest first) passed at `when`, between its samples;
+/// `None` when it holds nothing that old or new.
+fn trail_point(trail: &[(f32, [f32; 2])], when: f32) -> Option<[f32; 2]> {
+    let (newest_time, newest) = *trail.first()?;
+    if when >= newest_time {
+        return Some(newest);
+    }
+    for pair in trail.windows(2) {
+        let ((later_time, later), (earlier_time, earlier)) = (pair[0], pair[1]);
+        if when >= earlier_time {
+            let span = (later_time - earlier_time).max(f32::EPSILON);
+            let blend = (when - earlier_time) / span;
+            return Some([
+                earlier[0] + (later[0] - earlier[0]) * blend,
+                earlier[1] + (later[1] - earlier[1]) * blend,
+            ]);
+        }
+    }
+    trail.last().map(|(_, oldest)| *oldest)
 }
 
 #[cfg(test)]

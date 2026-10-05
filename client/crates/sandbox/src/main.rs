@@ -383,6 +383,9 @@ struct App {
     weapon_skills: std::collections::BTreeMap<u32, (u32, u32)>,
     /// Monsters killed by this character in the session (the KO counter).
     kill_count: u32,
+    /// Monsters slain in the current Cyclone or Superman, as the server
+    /// counts them.
+    ko_count: u32,
     skill_bar_open: bool,
     /// Skill chosen in the skill bar; shown on the "Skill" button and cast
     /// with the right mouse button.
@@ -3885,6 +3888,11 @@ impl App {
                     }
                     if self.network_character_id == Some(id) {
                         self.kill_count = self.kill_count.saturating_add(1);
+                        // In Cyclone or Superman the death carries the KO
+                        // count in its high word (`65541 * KOCount`).
+                        if value >= 0x1_0000 {
+                            self.ko_count = value >> 16;
+                        }
                     }
                     let now = self.started.elapsed().as_secs_f32();
                     let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
@@ -3930,8 +3938,9 @@ impl App {
                 self.network_status =
                     format!("online: combat {id} -> {target_id}, hit {value} (action {action})");
                 let now = self.started.elapsed().as_secs_f32();
-                // A physical blow of 0 missed: it shows "Miss".
-                if value > 0 || action == 2 {
+                // A physical blow of 0 missed: it shows "Miss". A death
+                // carries no damage.
+                if action != 14 && (value > 0 || action == 2) {
                     self.combat_numbers.push((target_id, value, now + 1.0));
                 }
                 if self.network_character_id == Some(target_id) {
@@ -4119,6 +4128,10 @@ impl App {
                 let id = actor.id;
                 if !actor.npc && self.network_character_id == Some(id) {
                     self.status_flags = actor.status_flags;
+                    // A new Cyclone or Superman counts its KOs afresh.
+                    if self.status_flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG) == 0 {
+                        self.ko_count = 0;
+                    }
                     self.renderer
                         .as_mut()
                         .map(|renderer| renderer.invalidate_hud());
@@ -4567,8 +4580,11 @@ impl App {
                 self.face_towards(target_cell);
                 // Keep the local request cadence aligned with the equipped
                 // weapon while the server remains authoritative.
+                // Cyclone ("+Attack frequency") strikes three times as often,
+                // as the server allows.
+                let cyclone = if self.status_flags & network::CYCLONE_FLAG != 0 { 3.0 } else { 1.0 };
                 self.next_attack_at =
-                    now + shop::attack_cooldown_seconds(&mut self.assets, &self.equipment);
+                    now + shop::attack_cooldown_seconds(&mut self.assets, &self.equipment) / cyclone;
                 self.network_status = format!("online: attacking monster {target_id}");
             }
             return;
@@ -4620,6 +4636,7 @@ impl App {
             bar_open: self.skill_bar_open,
             active_skill: self.active_skill,
             kill_count: self.kill_count,
+            ko_count: self.ko_count,
             kill_mode: self.kill_mode,
             info: self.info_lines(),
             hovered: None,
@@ -7438,6 +7455,7 @@ fn run() -> Result<()> {
         known_skills: HashMap::new(),
         weapon_skills: Default::default(),
         kill_count: 0,
+        ko_count: 0,
         skill_bar_open: false,
         active_skill: None,
         team_members: Vec::new(),

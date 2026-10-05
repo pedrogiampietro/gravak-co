@@ -535,3 +535,20 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod shape_tests {
+    #[test]
+    #[ignore = "Requires a local 5065 installation"]
+    fn the_tornado_ribbons_parse() {
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let effect = super::effect(&mut assets, "Tornado").expect("Tornado");
+        let document = sandbox_data::c3::C3Document::parse(&assets.read(&effect.layers[0].mesh).unwrap()).unwrap();
+        assert_eq!(document.shapes.len(), 4);
+        for shape in &document.shapes {
+            assert_eq!(shape.segments, 20);
+            assert_eq!(shape.frames.len(), 31);
+            assert_eq!(shape.lines.len(), 1);
+        }
+    }
+}

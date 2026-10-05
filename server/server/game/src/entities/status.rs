@@ -95,6 +95,19 @@ impl StatusEffects {
             .collect()
     }
 
+    /// Lengthens an effect under way; false when it is not.
+    pub fn extend(&self, effect: StatusEffect, by: Duration) -> bool {
+        let now = Instant::now();
+        let mut active = self.active.lock();
+        match active.get_mut(&effect) {
+            Some(status) if status.expires_at > now => {
+                status.expires_at += by;
+                true
+            },
+            _ => false,
+        }
+    }
+
     pub fn contains(&self, effect: StatusEffect) -> bool {
         self.active
             .lock()
@@ -118,6 +131,16 @@ impl StatusEffects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_effects_under_way_are_lengthened() {
+        let effects = StatusEffects::default();
+        assert!(!effects.extend(StatusEffect::Cyclone, Duration::from_millis(700)));
+        effects.apply(StatusEffect::Cyclone, Duration::from_secs(10));
+        let before = effects.active()[0].1;
+        assert!(effects.extend(StatusEffect::Cyclone, Duration::from_millis(700)));
+        assert_eq!(effects.active()[0].1 - before, Duration::from_millis(700));
+    }
 
     #[test]
     fn burning_ticks_once_per_second_until_expiration() {
