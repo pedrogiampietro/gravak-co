@@ -67,6 +67,11 @@ impl PacketProcess for MsgWalk {
                 .await?;
             return Ok(());
         }
+        // Faster than a client runs: back to where the server has them.
+        if !me.keeps_pace(crate::movement_pace::STEP, "step") {
+            me.kick_back().await?;
+            return Ok(());
+        }
         me.set_active_shop_id(0);
         me.set_active_storage_id(0);
         let current_location = me.entity().location();

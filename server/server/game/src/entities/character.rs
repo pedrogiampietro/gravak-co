@@ -63,6 +63,8 @@ pub struct Character {
     lucky_time: AtomicU32,
     /// Monsters slain in the current Cyclone or Superman (the KO counter).
     ko_count: AtomicU32,
+    /// How fast the character has been moving (`movement_pace.rs`).
+    pace: crate::movement_pace::Pace,
     /// Where the character started praying (map, x, y).
     prayer_origin: Mutex<Option<(u32, u16, u16)>>,
     /// The blue flashing name after killing someone.
@@ -502,6 +504,7 @@ impl Character {
             timers_sent: Mutex::new(Vec::new()),
             lucky_time: AtomicU32::new(lucky_time),
             ko_count: AtomicU32::new(0),
+            pace: Default::default(),
             prayer_origin: Mutex::new(None),
             xp_sent: std::sync::atomic::AtomicU8::new(u8::MAX),
             flashing_until: Mutex::new(None),
@@ -834,6 +837,26 @@ impl Character {
     /// Lucky time left, in seconds.
     pub fn lucky_time(&self) -> u32 {
         self.lucky_time.load(Ordering::Relaxed)
+    }
+
+    /// Whether a move costing `cost` keeps to a client's pace (Cyclone
+    /// moves twice as fast). A move out of pace is refused, and the first
+    /// and every tenth is logged as a speed hack.
+    pub fn keeps_pace(&self, cost: std::time::Duration, what: &str) -> bool {
+        let haste = if self.has_status(StatusEffect::Cyclone) { 2 } else { 1 };
+        if self.pace.admit(cost, haste, std::time::Instant::now()) {
+            return true;
+        }
+        if self.pace.refuse() {
+            tracing::warn!(
+                target: "pk",
+                character = %self.entity.name(),
+                id = self.entity.id(),
+                what,
+                "Moving faster than the client can: a speed hack?"
+            );
+        }
+        false
     }
 
     /// Whether Cyclone or Superman is under way.
@@ -5609,6 +5632,7 @@ impl Character {
 
     #[tracing::instrument(skip(self, state), fields(me = self.entity.id()))]
     pub async fn teleport(&self, state: &crate::State, map_id: u32, (x, y): (u16, u16)) -> Result<(), Error> {
+        self.pace.reset();
         let mut location = self.entity.location();
         let xy = u32::constract(y, x);
         let new_map = state.try_map(map_id)?;
