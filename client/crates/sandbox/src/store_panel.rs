@@ -224,9 +224,9 @@ fn icon(assets: &mut Assets, product: &StoreProduct, size: u32) -> Option<RgbaIm
 /// Size of the Store button by the HUD.
 pub const BUTTON_SIZE: [u32; 2] = crate::ornate::SIZE;
 
-/// The Store button: an ornate gold-framed plate with the Gravak medallion.
-pub fn button_image(assets: &mut Assets, hovered: bool) -> crate::assets::Result<RgbaImage> {
-    crate::ornate::button(assets, "Store", crate::ornate::GRAVAK, hovered, Some("G"))
+/// The Store button: a blue pill in gold with a medallion of coins.
+pub fn button_image(_assets: &mut Assets, hovered: bool) -> crate::assets::Result<RgbaImage> {
+    crate::emblems::feature_button(crate::emblems::Feature::Store, BUTTON_SIZE, hovered)
 }
 
 /// Draws the Store onto the quick panel's contents.

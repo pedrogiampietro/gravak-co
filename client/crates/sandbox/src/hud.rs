@@ -152,7 +152,7 @@ fn status_slot_rect(column: usize, top: i32) -> crate::ui::UiRect {
 /// The plate: a compass badge, the map's name, and under it the cell, the
 /// frames a second and the ping with its signal bars. Its bottom.
 fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
-    use crate::daily_rewards_panel::{glow_in, paint_in, rounded, say, width_of, GOLD, GOLD_DARK, GOLD_LIGHT};
+    use crate::daily_rewards_panel::{glow_in, paint_in, rounded, say, width_of, GOLD_DARK, GOLD_LIGHT};
     use crate::paint;
     let (Ok(ui), Ok(cinzel)) = (crate::labels::font(), crate::labels::decorative_font()) else {
         return;
@@ -177,30 +177,8 @@ fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
     let shine = crate::ui::UiRect::new(plate.x + 12, plate.y + 1, plate.width - 24, 2);
     paint_in(img, shine, 0, |_, y| (y - shine.y as f32 - 1.0).abs() - 0.5, |x, _| paint::mix(GOLD_LIGHT, paint::hex(0x123247), ((x - (plate.x + plate.width / 2) as f32).abs() / (plate.width as f32 / 2.0)).powf(1.5)), 0.6);
 
-    // The compass badge.
-    let centre = [(plate.x + 25) as f32, (plate.y + plate.height / 2) as f32];
-    let badge = crate::ui::UiRect::new(plate.x + 8, plate.y + 6, 34, 34);
-    paint_in(
-        img,
-        badge,
-        1,
-        |x, y| paint::circle(x, y, centre, 16.0),
-        |_, y| paint::gradient(&[(0.0, GOLD_LIGHT), (0.5, GOLD), (1.0, GOLD_DARK)], (y - centre[1] + 16.0) / 32.0),
-        1.0,
-    );
-    paint_in(img, badge, 1, |x, y| paint::circle(x, y, centre, 12.5), |_, _| paint::hex(0x0d2a3c), 1.0);
-    // Its needle: north in gold, south in steel.
-    let north = |x: f32, y: f32| {
-        let (dx, dy) = (x - centre[0], centre[1] - y);
-        (dx.abs() * 2.3 + dy - 9.5).max(-dy)
-    };
-    let south = |x: f32, y: f32| {
-        let (dx, dy) = (x - centre[0], y - centre[1]);
-        (dx.abs() * 2.3 + dy - 9.5).max(-dy)
-    };
-    paint_in(img, badge, 0, north, |_, _| paint::hex(0xffd36b), 1.0);
-    paint_in(img, badge, 0, south, |_, _| paint::hex(0xc9d3da), 1.0);
-    paint_in(img, badge, 0, |x, y| paint::circle(x, y, centre, 1.8), |_, _| paint::hex(0x0d2a3c), 1.0);
+    // The compass rose.
+    crate::emblems::compass(img, [(plate.x + 25) as f32, (plate.y + plate.height / 2) as f32], 17.0);
 
     // The map, and the details under it.
     let left = plate.x + 52;

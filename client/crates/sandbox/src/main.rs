@@ -36,6 +36,7 @@ mod shop;
 mod store_panel;
 mod daily_rewards_panel;
 mod highscores_panel;
+mod emblems;
 mod showcase;
 mod ui;
 mod ui_theme;

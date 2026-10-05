@@ -3567,7 +3567,11 @@ impl Renderer {
         if !self.textures.contains_key(ranking_key) {
             self.upload(
                 ranking_key,
-                crate::ornate::button(assets, "Ranking", crate::ornate::GRAVAK, ranking_hovered, Some("R"))?,
+                crate::emblems::feature_button(
+                    crate::emblems::Feature::Ranking,
+                    crate::store_panel::BUTTON_SIZE,
+                    ranking_hovered,
+                )?,
             );
         }
         if self.textures.contains_key(ranking_key) {
