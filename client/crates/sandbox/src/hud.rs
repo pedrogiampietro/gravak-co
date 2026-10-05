@@ -87,6 +87,8 @@ pub struct SkillHud {
     pub max_stamina: u8,
     /// The XP circle is lit: XP skills can be cast.
     pub xp_ready: bool,
+    /// The XP circle's points, 0-100.
+    pub xp_points: u8,
     /// The page selected in the status Weapon tab.
     pub weapon_filter: crate::shop::WeaponFilter,
     pub bar_open: bool,
@@ -1028,6 +1030,8 @@ pub fn image(
             max_mana,
             stamina: u32::from(skills.stamina),
             max_stamina: u32::from(skills.max_stamina),
+            xp: u32::from(skills.xp_points),
+            xp_ready: skills.xp_ready,
             experience: experience_fraction(level, experience),
             hovered_button,
             hovered_chat,
@@ -1332,7 +1336,8 @@ mod tests {
                     kill_count: 7,
                     hovered: Some(1_000),
                     info: vec!["Twin City (430, 380)".into(), "FPS 144  ping 12 ms".into()],
-                    xp_ready: true,
+                    xp_ready: false,
+                    xp_points: 65,
                     timers: vec![(1 << 18, 25), (1 << 23, 8), (1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
                     ..SkillHud::default()
                 },

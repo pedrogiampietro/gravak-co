@@ -57,6 +57,8 @@ pub struct Character {
     booth_name: Mutex<Option<String>>,
     /// The status timers last sent to the client.
     timers_sent: Mutex<Vec<(u64, u64)>>,
+    /// The XP points the client last heard of.
+    xp_sent: std::sync::atomic::AtomicU8,
     /// Lucky time left, in seconds (`lucky.rs`).
     lucky_time: AtomicU32,
     /// Where the character started praying (map, x, y).
@@ -498,6 +500,7 @@ impl Character {
             timers_sent: Mutex::new(Vec::new()),
             lucky_time: AtomicU32::new(lucky_time),
             prayer_origin: Mutex::new(None),
+            xp_sent: std::sync::atomic::AtomicU8::new(u8::MAX),
             flashing_until: Mutex::new(None),
             next_pk_decay: Mutex::new((kill_points > 0).then(|| std::time::Instant::now() + crate::death::PK_DECAY)),
             stamina: std::sync::atomic::AtomicU8::new(crate::vitals::MAX_STAMINA),
@@ -817,6 +820,12 @@ impl Character {
         }
         *sent = timers.to_vec();
         true
+    }
+
+    /// The XP points when the client has not heard them yet.
+    pub fn xp_to_send(&self) -> Option<u8> {
+        let xp = self.xp_points();
+        (self.xp_sent.swap(xp, Ordering::Relaxed) != xp).then_some(xp)
     }
 
     /// Lucky time left, in seconds.

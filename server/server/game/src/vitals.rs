@@ -50,6 +50,11 @@ pub async fn tick(state: &State) {
                 tracing::debug!(character = character.id(), ?error, "Failed to send stamina");
             }
         }
+        // The yellow ring around the orb fills with the XP points.
+        if let Some(xp) = character.xp_to_send() {
+            let update = MsgUserAttrib::new(character.id(), UserAttribute::Xp, u64::from(xp));
+            let _ = character.owner().send(update).await;
+        }
         // The HUD counts statuses down; it hears when they change.
         let mut timers = character.status_timers();
         if character.lucky_time() > 0 {

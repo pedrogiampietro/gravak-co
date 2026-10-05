@@ -187,6 +187,8 @@ pub enum NetworkEvent {
     Silver(u32),
     Cps(u32),
     Stamina(u8),
+    /// The XP circle's points.
+    XpPoints(u8),
     /// MsgUserAttrib life (0) or maximum life (1) of another entity: the
     /// Guild War pole and gates, whose life does not fit the spawn packet.
     ActorLife {
@@ -675,6 +677,7 @@ impl NetworkHandle {
                 | NetworkEvent::Skill { .. }
                 | NetworkEvent::WeaponSkill { .. }
                 | NetworkEvent::Stamina(_)
+                | NetworkEvent::XpPoints(_)
                 | NetworkEvent::ActorLife { .. }
                 | NetworkEvent::EquipmentItem(_)
                 | NetworkEvent::EquipmentItemRemoved { .. }
@@ -1786,6 +1789,12 @@ pub(crate) async fn play(
                         && packet.attribute == gravak_protocol::UserAttribPacket::STAMINA =>
                 {
                     let _ = events.send(NetworkEvent::Stamina(packet.value.min(255) as u8));
+                }
+                Some(GameEvent::UserAttrib(packet))
+                    if packet.character_id == local_character_id
+                        && packet.attribute == gravak_protocol::UserAttribPacket::XP =>
+                {
+                    let _ = events.send(NetworkEvent::XpPoints(packet.value.min(100) as u8));
                 }
                 Some(GameEvent::UserAttrib(packet))
                     if packet.character_id != local_character_id && packet.attribute <= 1 =>

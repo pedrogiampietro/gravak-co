@@ -287,6 +287,8 @@ struct App {
     queued_jump: Option<[i32; 2]>,
     local_action: Option<(Action, f32, f32)>,
     stamina: u8,
+    /// The XP circle's points, 0-100.
+    xp_points: u8,
     /// When the player died; `None` while alive.
     dead_since: Option<f32>,
     /// Sitting (MsgAction 250): stamina comes back faster.
@@ -3337,6 +3339,7 @@ impl App {
                 self.network_status = format!("online: skill {skill_id} level {level}");
             }
             NetworkEvent::Stamina(stamina) => self.stamina = stamina,
+            NetworkEvent::XpPoints(points) => self.xp_points = points,
             NetworkEvent::ActorLife { id, maximum, value } => {
                 let entry = self.structure_lives.entry(id).or_insert((value, value));
                 if maximum {
@@ -4606,6 +4609,7 @@ impl App {
                 100
             },
             xp_ready: self.status_flags & network::XP_CIRCLE_FLAG != 0,
+            xp_points: self.xp_points,
             bar_open: self.skill_bar_open,
             active_skill: self.active_skill,
             kill_count: self.kill_count,
@@ -7329,6 +7333,7 @@ fn run() -> Result<()> {
         queued_jump: None,
         local_action: None,
         stamina: 100,
+        xp_points: 0,
         dead_since: None,
         sitting: false,
         portal_armed: false,

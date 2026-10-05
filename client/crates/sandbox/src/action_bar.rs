@@ -81,6 +81,15 @@ pub fn skill_action(skill_id: u32) -> Option<SkillAction> {
             cooldown_seconds: 1.0,
             requires_target: false,
         },
+        // Bless (second rebirth): pray where you stand for lucky time.
+        9_876 => SkillAction {
+            id: 9_876,
+            name: "Bless",
+            label: "BLESS",
+            range: 0.0,
+            cooldown_seconds: 1.0,
+            requires_target: false,
+        },
         1_025 => SkillAction {
             id: 1_025,
             name: "Superman",

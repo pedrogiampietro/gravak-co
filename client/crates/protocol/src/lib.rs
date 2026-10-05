@@ -578,6 +578,8 @@ pub struct UserAttribPacket {
 
 impl UserAttribPacket {
     pub const STAMINA: u32 = 9;
+    /// The XP circle's points (0-100).
+    pub const XP: u32 = 28;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
