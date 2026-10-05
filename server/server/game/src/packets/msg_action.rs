@@ -300,6 +300,13 @@ impl MsgAction {
             return Ok(());
         }
 
+        // Jumping faster than a client can: back to where the server has them.
+        let cells = f32::from(loc.x.abs_diff(new_x)).hypot(f32::from(loc.y.abs_diff(new_y)));
+        if !me.keeps_pace(crate::movement_pace::jump_cost(cells), "jump") {
+            me.kick_back().await?;
+            return Ok(());
+        }
+
         let mymap = state.try_map(mymap_id)?;
         let within_elevation = mymap.sample_elevation((loc.x, loc.y), (new_x, new_y), me.elevation());
         if !within_elevation {

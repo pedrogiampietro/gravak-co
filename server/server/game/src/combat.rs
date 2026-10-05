@@ -64,16 +64,24 @@ pub fn level_advantage_percent(attacker_level: u16, defender_level: u16) -> u16 
 }
 
 /// Returns the classic PvE physical-damage multiplier for the character
-/// family. Archer attacks against monsters use the ranged half-damage path;
-/// promoted classes keep their family because their profession remains in the
-/// 40..49 range. Other families use the normal melee multiplier.
+/// family. Archers shoot for two thirds of their attack (Redux
+/// `CalculateBowDamage` divides by 150 where melee divides by 100);
+/// promoted classes keep their family because their profession remains in
+/// the 40..49 range. Other families use the normal melee multiplier.
 pub fn pve_physical_class_percent(current_class: u8) -> u16 {
     if (40..50).contains(&current_class) {
-        50
+        BOW_PERCENT
     } else {
         100
     }
 }
+
+/// A bow's share of the attack (`/ 150` against melee's `/ 100`).
+pub const BOW_PERCENT: u16 = 67;
+
+/// A bow's share of the attack on another player: a third of that again
+/// (Redux `CalculateBowDamage`, `dmg /= 3` on players).
+pub const BOW_PVP_PERCENT: u16 = 22;
 
 /// Classic Superman increases physical damage by 10x against monsters and 2x
 /// against other characters.
@@ -450,8 +458,8 @@ mod tests {
     fn pve_physical_class_modifier_keeps_archer_family_distinct() {
         assert_eq!(pve_physical_class_percent(10), 100);
         assert_eq!(pve_physical_class_percent(20), 100);
-        assert_eq!(pve_physical_class_percent(40), 50);
-        assert_eq!(pve_physical_class_percent(45), 50);
+        assert_eq!(pve_physical_class_percent(40), 67);
+        assert_eq!(pve_physical_class_percent(45), 67);
         assert_eq!(pve_physical_class_percent(100), 100);
     }
 

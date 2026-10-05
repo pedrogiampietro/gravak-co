@@ -6,40 +6,40 @@
 
 [Skill]
 ID=1000
-Name=Basic Fire
+Name=Thunder
 Mana=20
 Range=9.0
 CooldownMs=800
 Radius=0.0
-Power=110
+FlatPower=7
+Power=100
 Starter=true
 
 [Skill]
 ID=1001
-Name=Flame Burst
+Name=Fire
 Mana=35
 Range=12.0
 CooldownMs=800
 Radius=0.0
-Power=125
-Status=Burning
-StatusDurationMs=5000
-Starter=true
+FlatPower=130
+Power=100
+Starter=false
+RequiredLevel=40
 
 [Skill]
 ID=1002
-Name=Whirlwind
+Name=Tornado
 Mana=45
 Range=15.0
 CooldownMs=800
 Radius=0.0
-Power=145
-Status=Stunned
-StatusDurationMs=1500
+FlatPower=505
+Power=100
 Starter=false
 LearnItem=723100
 TrainingCost=500
-RequiredLevel=10
+RequiredLevel=90
 
 [Skill]
 ID=1110

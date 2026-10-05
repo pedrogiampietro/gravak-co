@@ -101,6 +101,58 @@ pub struct SkillDefinition {
     pub chance: u8,
 }
 
+impl SkillDefinition {
+    /// The skill as the original has it at the server's `level`
+    /// (`magictype.rs`): its mana and stamina, its power, how far it is
+    /// cast and what it covers, its status's time and its chance. A skill
+    /// the original lacks stays as `skills.dat` has it.
+    pub fn at_level(&self, level: u16) -> SkillDefinition {
+        let mut skill = self.clone();
+        let Some(magic) = crate::magictype::level(self.id, level) else {
+            return skill;
+        };
+        skill.mana_cost = u16::try_from(magic.mana).unwrap_or(u16::MAX);
+        skill.stamina_cost = u8::try_from(magic.stamina).unwrap_or(u8::MAX);
+        match magic.power {
+            // A share of the physical attack (Hercules, Scatter, Phoenix...).
+            power if power >= 30_000 => {
+                if skill.physical && power % 1_000 > 0 {
+                    skill.power_percent = u16::try_from(power % 1_000).unwrap_or(100);
+                }
+            },
+            // Life given (Cure, Nectar...) or magic added (Thunder, Fire...).
+            power if power > 0 => {
+                let power = power.unsigned_abs();
+                if skill.heal > 0 {
+                    skill.heal = power;
+                } else if !skill.physical && skill.status.is_none_or(|_| skill.flat_power > 0) {
+                    skill.flat_power = power;
+                }
+            },
+            _ => {},
+        }
+        if magic.distance > 0 {
+            skill.range = magic.distance as f32;
+        }
+        if magic.range > 0 {
+            if skill.line > 0 {
+                skill.line = u16::try_from(magic.range).unwrap_or(skill.line);
+            } else if skill.sector > 0 {
+                skill.sector = u16::try_from(magic.range).unwrap_or(skill.sector);
+            } else if skill.radius > 0.0 {
+                skill.radius = magic.range as f32;
+            }
+        }
+        if skill.status.is_some() && magic.step_secs > 0 {
+            skill.status_duration = Duration::from_secs(u64::from(magic.step_secs));
+        }
+        if !skill.weapon.is_empty() && magic.percent > 0 {
+            skill.chance = u8::try_from(magic.percent.min(100)).unwrap_or(100);
+        }
+        skill
+    }
+}
+
 /// Skill experience per level, from the client's MagicType (`NeedExp`):
 /// MagicType levels start at 0, the server's at 1.
 fn level_table() -> &'static HashMap<(u32, u16), u32> {
@@ -506,7 +558,7 @@ impl Default for SkillCatalog {
             BASIC_FIRE_ID,
             SkillDefinition {
                 id: BASIC_FIRE_ID,
-                name: "Basic Fire".to_owned(),
+                name: "Thunder".to_owned(),
                 mana_cost: 20,
                 range: 9.0,
                 cooldown: Duration::from_millis(800),
@@ -539,7 +591,7 @@ impl Default for SkillCatalog {
             FLAME_BURST_ID,
             SkillDefinition {
                 id: FLAME_BURST_ID,
-                name: "Flame Burst".to_owned(),
+                name: "Fire".to_owned(),
                 mana_cost: 35,
                 range: 12.0,
                 cooldown: Duration::from_millis(800),
@@ -547,7 +599,7 @@ impl Default for SkillCatalog {
                 power_percent: 125,
                 status: Some(SkillStatus::Burning),
                 status_duration: Duration::from_secs(5),
-                starter: true,
+                starter: false,
                 learn_item: None,
                 training_cost: 0,
                 required_level: 1,
@@ -572,7 +624,7 @@ impl Default for SkillCatalog {
             WHIRLWIND_ID,
             SkillDefinition {
                 id: WHIRLWIND_ID,
-                name: "Whirlwind".to_owned(),
+                name: "Tornado".to_owned(),
                 mana_cost: 45,
                 range: 15.0,
                 cooldown: Duration::from_millis(800),
@@ -752,6 +804,25 @@ mod tests {
         assert!(super::in_sector((10, 10), (20, 10), (14, 12), 8));
         assert!(!super::in_sector((10, 10), (20, 10), (6, 10), 8));
         assert!(!super::in_sector((10, 10), (20, 10), (19, 10), 8));
+    }
+
+    #[test]
+    fn a_skill_at_a_level_costs_and_does_what_the_original_says() {
+        let catalog = super::SkillCatalog::parse(include_str!("../data/skills.dat")).expect("skills.dat");
+        let thunder = catalog.get(1_000).expect("Thunder").at_level(5);
+        assert_eq!((thunder.mana_cost, thunder.flat_power, thunder.range), (17, 86, 11.0));
+        let fire = catalog.get(1_001).expect("Fire").at_level(1);
+        assert_eq!((fire.flat_power, fire.status), (130, None));
+        let cure = catalog.get(1_005).expect("Cure").at_level(5);
+        assert_eq!((cure.mana_cost, cure.heal), (130, 400));
+        let scatter = catalog.get(8_001).expect("Scatter").at_level(6);
+        assert_eq!((scatter.power_percent, scatter.sector), (72, 13));
+        let fast_blade = catalog.get(1_045).expect("FastBlade").at_level(3);
+        assert_eq!((fast_blade.line, fast_blade.stamina_cost), (6, 20));
+        let phoenix = catalog.get(5_030).expect("Phoenix").at_level(10);
+        assert_eq!((phoenix.chance, phoenix.power_percent), (78, 124));
+        let stigma = catalog.get(1_095).expect("Stigma").at_level(5);
+        assert_eq!(stigma.status_duration, std::time::Duration::from_secs(80));
     }
 
     #[test]

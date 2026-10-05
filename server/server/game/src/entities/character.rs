@@ -63,6 +63,8 @@ pub struct Character {
     lucky_time: AtomicU32,
     /// Monsters slain in the current Cyclone or Superman (the KO counter).
     ko_count: AtomicU32,
+    /// How fast the character has been moving (`movement_pace.rs`).
+    pace: crate::movement_pace::Pace,
     /// Where the character started praying (map, x, y).
     prayer_origin: Mutex<Option<(u32, u16, u16)>>,
     /// The blue flashing name after killing someone.
@@ -502,6 +504,7 @@ impl Character {
             timers_sent: Mutex::new(Vec::new()),
             lucky_time: AtomicU32::new(lucky_time),
             ko_count: AtomicU32::new(0),
+            pace: Default::default(),
             prayer_origin: Mutex::new(None),
             xp_sent: std::sync::atomic::AtomicU8::new(u8::MAX),
             flashing_until: Mutex::new(None),
@@ -836,6 +839,26 @@ impl Character {
         self.lucky_time.load(Ordering::Relaxed)
     }
 
+    /// Whether a move costing `cost` keeps to a client's pace (Cyclone
+    /// moves twice as fast). A move out of pace is refused, and the first
+    /// and every tenth is logged as a speed hack.
+    pub fn keeps_pace(&self, cost: std::time::Duration, what: &str) -> bool {
+        let haste = if self.has_status(StatusEffect::Cyclone) { 2 } else { 1 };
+        if self.pace.admit(cost, haste, std::time::Instant::now()) {
+            return true;
+        }
+        if self.pace.refuse() {
+            tracing::warn!(
+                target: "pk",
+                character = %self.entity.name(),
+                id = self.entity.id(),
+                what,
+                "Moving faster than the client can: a speed hack?"
+            );
+        }
+        false
+    }
+
     /// Whether Cyclone or Superman is under way.
     pub fn in_xp_skill(&self) -> bool {
         self.has_status(StatusEffect::Cyclone) || self.has_status(StatusEffect::Superman)
@@ -1032,7 +1055,9 @@ impl Character {
             }
         }
 
-        for skill_id in catalog.starter_ids() {
+        // Only Taoists start with magic (Thunder), as the original.
+        let taoist = (100..=145).contains(&self.current_class());
+        for skill_id in catalog.starter_ids().filter(|_| taoist) {
             if self.has_skill(skill_id) {
                 continue;
             }
@@ -1493,6 +1518,12 @@ impl Character {
         if threshold == 0 {
             // The top level: experience no longer fills.
             next.proficiency = 0;
+        } else if next.proficiency >= threshold
+            && !crate::magictype::may_raise(skill_id, next.level, self.entity.level())
+        {
+            // Full, waiting for the character level the next one needs
+            // (MagicType `NeedLevel`).
+            next.proficiency = threshold;
         } else if next.proficiency >= threshold && next.level < u16::MAX {
             next.proficiency -= threshold;
             next.level = next.level.saturating_add(1);
@@ -5609,6 +5640,7 @@ impl Character {
 
     #[tracing::instrument(skip(self, state), fields(me = self.entity.id()))]
     pub async fn teleport(&self, state: &crate::State, map_id: u32, (x, y): (u16, u16)) -> Result<(), Error> {
+        self.pace.reset();
         let mut location = self.entity.location();
         let xy = u32::constract(y, x);
         let new_map = state.try_map(map_id)?;
@@ -6672,9 +6704,13 @@ mod tests {
     async fn starter_skills_are_seeded_and_learned_levels_persist() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
         let catalog = crate::skills::SkillCatalog::default();
+        // Only Taoists start with Thunder; Fire waits for level 40.
+        character.load_skills(&pool, &catalog).await?;
+        assert!(!character.has_skill(crate::skills::BASIC_FIRE_ID), "not a Taoist");
+        character.set_class(&pool, 100).await?;
         character.load_skills(&pool, &catalog).await?;
         assert!(character.has_skill(crate::skills::BASIC_FIRE_ID));
-        assert!(character.has_skill(crate::skills::FLAME_BURST_ID));
+        assert!(!character.has_skill(crate::skills::FLAME_BURST_ID));
 
         character.learn_skill(&pool, crate::skills::BASIC_FIRE_ID, 3).await?;
         let saved_level: i64 =
@@ -6703,6 +6739,7 @@ mod tests {
     async fn practicing_a_skill_persists_experience_and_proficiency() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
         let catalog = crate::skills::SkillCatalog::default();
+        character.set_class(&pool, 100).await?;
         character.load_skills(&pool, &catalog).await?;
 
         let progress = character

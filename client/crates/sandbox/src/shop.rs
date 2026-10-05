@@ -1048,9 +1048,9 @@ pub fn quick_panel_image(
                 for (index, (skill_id, (level, experience))) in skills.iter().take(8).enumerate() {
                     let row = 84 + (index as u32) * 30;
                     let name = match **skill_id {
-                        1_000 => "Basic Fire",
-                        1_001 => "Flame Burst",
-                        1_002 => "Whirlwind",
+                        1_000 => "Thunder",
+                        1_001 => "Fire",
+                        1_002 => "Tornado",
                         _ => "Unknown skill",
                     };
                     let line = format!("{name}  Lv.{level}  EXP {experience}");
@@ -6229,21 +6229,12 @@ pub fn panel_base_image(assets: &mut Assets) -> Result<RgbaImage> {
         SHOP_CLOSE_X as i64,
         y,
     )?;
-    // The client has no texture for the page buttons and shows them as
-    // plain outlined squares.
-    for page_y in [SHOP_PAGE_UP_Y, SHOP_PAGE_DOWN_Y] {
-        shop_square(
-            &mut image,
-            SHOP_PAGE_X as u32 + 3,
-            page_y as u32 + 3,
-            [222, 205, 150, 255],
-        );
+    // The client draws the page buttons as bare squares; the round arrows
+    // of its other lists (`QuerySkillBtnU/D`) read better.
+    for (path, page_y) in [("data/main/QuerySkillBtnU.dds", SHOP_PAGE_UP_Y), ("data/main/QuerySkillBtnD.dds", SHOP_PAGE_DOWN_Y)] {
+        overlay_asset(&mut image, assets, path, (SHOP_PAGE_X - 8.0) as i64, (page_y - 8.0) as i64)?;
     }
     Ok(image)
-}
-
-fn shop_square(image: &mut RgbaImage, x: u32, y: u32, colour: [u8; 4]) {
-    outline(image, x, y, 10, Rgba(colour));
 }
 
 pub fn panel_overlay_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> {
@@ -6290,12 +6281,7 @@ pub fn panel_overlay_image(assets: &mut Assets, state: &ShopState) -> Result<Rgb
         } else {
             SHOP_PAGE_UP_Y
         };
-        shop_square(
-            &mut image,
-            SHOP_PAGE_X as u32 + 3,
-            y as u32 + 3,
-            [255, 255, 255, 255],
-        );
+        outline(&mut image, SHOP_PAGE_X as u32 - 4, y as u32 - 4, 24, Rgba([255, 236, 170, 220]));
     }
     Ok(image)
 }
@@ -6389,9 +6375,9 @@ pub fn repair_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
 
 pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
     let local = shop_local(viewport, cursor);
-    if within(local, SHOP_PAGE_X, SHOP_PAGE_UP_Y, 16.0, 16.0) {
+    if within(local, SHOP_PAGE_X - 4.0, SHOP_PAGE_UP_Y - 4.0, 24.0, 24.0) {
         Some(false)
-    } else if within(local, SHOP_PAGE_X, SHOP_PAGE_DOWN_Y, 16.0, 16.0) {
+    } else if within(local, SHOP_PAGE_X - 4.0, SHOP_PAGE_DOWN_Y - 4.0, 24.0, 24.0) {
         Some(true)
     } else {
         None
@@ -6450,15 +6436,17 @@ pub fn inventory_overlay_image(
     let _ = (filter, hovered_filter);
     let label_font = crate::main_hud::label_font()?;
     let label = "Sort";
-    let label_width = crate::main_hud::text_width(label_font, label, 13.0);
+    // As large as the "Close" the window's own art draws beside it.
+    const LABEL_SIZE: f32 = 16.0;
+    let label_width = crate::main_hud::text_width(label_font, label, LABEL_SIZE);
     crate::main_hud::crisp_text(
         &mut image,
         label_font,
         label,
-        13.0,
+        LABEL_SIZE,
         [
             INVENTORY_ORGANIZE_BUTTON.x + (INVENTORY_ORGANIZE_BUTTON.width - label_width) / 2,
-            INVENTORY_ORGANIZE_BUTTON.y + (INVENTORY_ORGANIZE_BUTTON.height - 15) / 2,
+            INVENTORY_ORGANIZE_BUTTON.y + (INVENTORY_ORGANIZE_BUTTON.height - 18) / 2,
         ],
         if organize_hovered {
             [255, 236, 170, 255]

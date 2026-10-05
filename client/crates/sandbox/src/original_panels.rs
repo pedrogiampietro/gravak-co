@@ -1103,6 +1103,25 @@ const WHITE: [u8; 4] = [255, 255, 255, 255];
 const GREY: [u8; 4] = [170, 170, 170, 255];
 const GOLD: [u8; 4] = [255, 220, 120, 255];
 
+/// `value` in at most `width` pixels: the font shrinks down to 9 points,
+/// then the end gives way to "..".
+fn fitted_text(image: &mut RgbaImage, value: &str, [x, y]: [i32; 2], colour: [u8; 4], width: i32) {
+    let Ok(font) = crate::main_hud::font() else {
+        return;
+    };
+    let fits = |value: &str, size: f32| crate::main_hud::text_width(font, value, size) <= width;
+    let size = [12.0, 11.0, 10.0, 9.0].into_iter().find(|size| fits(value, *size)).unwrap_or(9.0);
+    let mut shown = value.to_owned();
+    while !fits(&shown, size) && shown.chars().count() > 1 {
+        shown = shown.trim_end_matches("..").to_owned();
+        shown.pop();
+        shown.push_str("..");
+    }
+    // Smaller text sits a little lower, centred in the band.
+    let lower = ((12.0 - size) / 2.0).round() as i32;
+    crate::main_hud::text(image, font, &shown, size, [x, y + lower], colour, Some(width + 1));
+}
+
 fn text(image: &mut RgbaImage, value: &str, x: i32, y: i32, colour: [u8; 4], width: i32) {
     if let Ok(font) = crate::main_hud::font() {
         crate::main_hud::text(image, font, value, 12.0, [x, y], colour, Some(width));
@@ -1238,7 +1257,7 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                     member.name.clone()
                 };
                 fill(&mut image, [x + 2, 40, 43, 15], [0, 0, 0, 150]);
-                text(&mut image, &name, x + 3, 41, WHITE, 42);
+                fitted_text(&mut image, &name, [x + 3, 41], WHITE, 41);
                 let health = if member.maximum_health == 0 {
                     0.0
                 } else {

@@ -519,6 +519,12 @@ async fn main() {
         eprintln!("Superman smoke failed: {error}");
         std::process::exit(1);
     }
+    if args.iter().any(|argument| argument == "--speedhack")
+        && let Err(error) = run_speedhack_smoke(&mut session, character_id).await
+    {
+        eprintln!("Speed hack smoke failed: {error}");
+        std::process::exit(1);
+    }
     if args.iter().any(|argument| argument == "--bless")
         && let Err(error) =
             run_bless_smoke(&mut session, character_id, &loaded_character_name).await
@@ -3555,6 +3561,38 @@ async fn run_cyclone_smoke(
 
 /// Bless: two rebirths, cast where you stand, and the praying flag
 /// (CASTING_PRAY, 1 << 30) shows with lucky time counting up.
+/// A speed hack: forty steps at once, far faster than a client runs. The
+/// server lets the first through and pulls the rest back (a Teleport,
+/// action 86, to where it has the character).
+async fn run_speedhack_smoke(
+    session: &mut GameSession,
+    character_id: u32,
+) -> Result<(), gravak_protocol::ProtocolError> {
+    for step in 0..40_u8 {
+        // Back and forth, so the steps stay on walkable ground.
+        let direction = if step % 2 == 0 { 0 } else { 4 };
+        session.send(&WalkPacket::new(character_id, direction)).await?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (mut walked, mut pulled_back) = (0, 0);
+    while let Ok(event_result) = timeout_at(deadline, session.next_event()).await {
+        let Some(event) = event_result? else { break };
+        match event {
+            GameEvent::Walk(walk) if walk.character_id == character_id => walked += 1,
+            GameEvent::Action(action) if action.action_type == 86 => pulled_back += 1,
+            _ => {}
+        }
+    }
+    println!("Speed hack: {walked} steps let through, {pulled_back} pulled back");
+    if pulled_back == 0 {
+        return Err(gravak_protocol::ProtocolError::MalformedResponse(
+            "forty steps at once all went through",
+        ));
+    }
+    println!("Speed hack smoke OK");
+    Ok(())
+}
+
 async fn run_bless_smoke(
     session: &mut GameSession,
     character_id: u32,
