@@ -277,25 +277,41 @@ const SKILL_ROW_CAPACITY: usize = 10;
 /// Skill bar slots: XP skills on the row just above the bar, other skills
 /// on the row above it (or on the lower row when there are no XP skills).
 /// Rows end at the right edge of the "Skill" button, like the original.
+///
+/// A lit XP circle brings its skills up on their own at the right edge,
+/// as `Conquer.exe` places its XP dialog (189): `W - n * 50` across,
+/// `H - 173` down, 50 pixels each, ten at most. A click picks one for the
+/// right button.
 fn skill_bar_slots(assets: &mut Assets, viewport: [f32; 2], hud: &SkillHud) -> Vec<(u32, Rect)> {
-    if !hud.bar_open {
-        return Vec::new();
-    }
-    let [x, y] = hud_origin(viewport);
-    let skill = MainHudButton::Skill.local_rect();
-    let right = x + (skill.x + skill.width).round() as i32;
+    const XP_SLOT: i32 = 50;
+    const XP_SHOWN: usize = 10;
     let (xp, magic): (Vec<u32>, Vec<u32>) = hud
         .skills
         .iter()
         .map(|(id, _, _)| *id)
         .partition(|id| crate::main_hud::is_xp_skill(assets, *id));
+    let mut slots = Vec::new();
+    if hud.xp_ready {
+        let shown = xp.len().min(XP_SHOWN) as i32;
+        let left = viewport[0] as i32 - shown * XP_SLOT;
+        let top = viewport[1] as i32 - 173;
+        for (index, id) in xp.iter().take(XP_SHOWN).enumerate() {
+            slots.push((*id, Rect(left + index as i32 * XP_SLOT, top, XP_SLOT, XP_SLOT)));
+        }
+    }
+    if !hud.bar_open {
+        return slots;
+    }
+    let [x, y] = hud_origin(viewport);
+    let skill = MainHudButton::Skill.local_rect();
+    let right = x + (skill.x + skill.width).round() as i32;
     let lower = y + 16;
-    let rows = if xp.is_empty() {
+    // Lit, the XP skills are in their own row at the right edge.
+    let rows = if xp.is_empty() || hud.xp_ready {
         vec![(magic, lower)]
     } else {
         vec![(xp, lower), (magic, lower - SKILL_SLOT)]
     };
-    let mut slots = Vec::new();
     for (ids, top) in rows {
         let count = ids.len().min(SKILL_ROW_CAPACITY) as i32;
         for (index, id) in ids.into_iter().take(SKILL_ROW_CAPACITY).enumerate() {
@@ -390,10 +406,11 @@ impl Count {
     }
 
     /// Each glyph's drawn size: the effect's quad (93 x 123) at the
-    /// original's scale, 0.6 and 1.2.
+    /// original's scale, 1.2 for the KOs; the kills a little smaller than
+    /// its 0.6, under the XP skills as the original shows them.
     fn glyph_size(self) -> [u32; 2] {
         match self {
-            Self::Kills => [56, 74],
+            Self::Kills => [40, 52],
             Self::Ko => [112, 148],
         }
     }
@@ -1382,7 +1399,7 @@ mod tests {
                 false,
                 HudConfig::default(),
                 &SkillHud {
-                    skills: vec![(1_000, 3, 120), (1_001, 1, 15), (1_110, 1, 0)],
+                    skills: vec![(1_000, 3, 120), (1_001, 1, 15), (1_025, 1, 0), (1_110, 1, 0)],
                     bar_open: true,
                     active_skill: Some(1_001),
                     kill_count: 7,
@@ -1390,9 +1407,9 @@ mod tests {
                     xp_fire_until: None,
                     hovered: Some(1_000),
                     info: vec!["Twin City (430, 380)".into(), "FPS 144  ping 12 ms".into()],
-                    xp_ready: false,
+                    xp_ready: true,
                     xp_points: 65,
-                    timers: vec![(1 << 18, 25), (1 << 23, 8), (1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
+                    timers: vec![(1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
                     ..SkillHud::default()
                 },
             )?
