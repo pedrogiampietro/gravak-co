@@ -1997,8 +1997,56 @@ impl Renderer {
         }
     }
 
-    /// The fire along the bottom (`KOfire01`): a lit XP circle's 20
-    /// seconds, then Cyclone's or Superman's time, burning from the left
+    /// A lit XP circle's 20 seconds as `Conquer.exe` shows them
+    /// (`CMyBitmap::ShowBlock`): a bar 10 pixels high at `H - 85`, from
+    /// `(W - 110) * (20000 - ms) / 20000 + 100` to `W - 10`, green when
+    /// full, yellow at half, red at the end.
+    fn push_xp_bar(&mut self, until: Option<u64>, viewport: [f32; 2], draws: &mut Vec<Draw>) {
+        const FULL_MS: f32 = 20_000.0;
+        const GRADIENT: &str = "@xp-bar-gradient";
+        let Some(until) = until else {
+            return;
+        };
+        let now = crate::hud::unix_now_ms();
+        if until <= now {
+            return;
+        }
+        if !self.textures.contains_key(GRADIENT) {
+            // Left to right: none of the time left (red) to all of it
+            // (green), as the original works the colour out.
+            let gradient = image::RgbaImage::from_fn(256, 1, |x, _| {
+                let left = x as f32 / 255.0;
+                let (red, green) = if left > 0.5 {
+                    ((1.0 - left) / 0.5 * 255.0, 255.0)
+                } else {
+                    (255.0, 255.0 - (0.5 - left) / 0.5 * 255.0)
+                };
+                image::Rgba([red as u8, green as u8, 0, 255])
+            });
+            self.upload(GRADIENT, gradient);
+        }
+        let left_ms = ((until - now) as f32).clamp(50.0, FULL_MS);
+        let left = (viewport[0] - 110.0) * (FULL_MS - left_ms) / FULL_MS + 100.0;
+        let right = viewport[0] - 10.0;
+        if right <= left {
+            return;
+        }
+        let top = viewport[1] - 85.0;
+        let mut vertices = quad([left, top], [right - left, 10.0], viewport);
+        let u = (left_ms / FULL_MS * 255.0 + 0.5) / 256.0;
+        for vertex in &mut vertices {
+            vertex.uv = [u, 0.5];
+        }
+        draws.push(Draw {
+            texture: GRADIENT.to_owned(),
+            vertices,
+            depth_test: false,
+            sort_depth: WORLD_OVERLAY_SORT,
+        });
+    }
+
+    /// The fire along the bottom (`KOfire01`): Cyclone's or Superman's
+    /// time, burning from the left
     /// (all of it left) to the right edge (none), as `Conquer.exe` moves
     /// it: `x = (W - 100) * (20000 - ms) / 20000 + 100` at `H - 85`.
     fn push_xp_fire(&mut self, assets: &mut Assets, until: Option<u64>, time: f32, viewport: [f32; 2], draws: &mut Vec<Draw>) {
@@ -3234,7 +3282,13 @@ impl Renderer {
                 }
             }
         }
-        self.push_xp_fire(assets, skill_hud.xp_fire_until, time, viewport, &mut draws);
+        // A lit XP circle's 20 seconds run out as a bar; the XP skill's
+        // time burns as fire.
+        if status_flags & (crate::network::CYCLONE_FLAG | crate::network::SUPERMAN_FLAG) != 0 {
+            self.push_xp_fire(assets, skill_hud.xp_fire_until, time, viewport, &mut draws);
+        } else {
+            self.push_xp_bar(skill_hud.xp_fire_until, viewport, &mut draws);
+        }
         let hud_hover = crate::hud::hovered_button(viewport, cursor);
         let action_context_hover = action_context_slot
             .and_then(|slot| crate::hud::action_context_option_at(viewport, cursor, slot));
