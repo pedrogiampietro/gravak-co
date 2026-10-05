@@ -1012,7 +1012,7 @@ impl Renderer {
                     .filter_map(|layer| {
                         Some(LevelUpLayer {
                             document: C3Document::parse(&assets.read(&layer.mesh).ok()?).ok()?,
-                            texture: layer.texture.clone(),
+                            texture: layer.texture_key(),
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1491,7 +1491,11 @@ impl Renderer {
                     }
                 };
                 while let Ok(path) = request_rx.recv() {
-                    let image = assets.image(&path).map_err(|error| error.to_string());
+                    let image = match path.strip_suffix(crate::magic::ADDITIVE_SUFFIX) {
+                        Some(texture) => assets.image(texture).map(crate::magic::additive_image),
+                        None => assets.image(&path),
+                    }
+                    .map_err(|error| error.to_string());
                     if result_tx
                         .send(LoadedTexture {
                             path,

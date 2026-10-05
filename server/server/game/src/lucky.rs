@@ -71,6 +71,12 @@ fn close(a: &Character, b: &Character) -> bool {
 /// One second of lucky time for every character: praying, absorbing or
 /// wearing off.
 pub async fn tick(state: &State) {
+    // The world ticks twice a second; lucky time moves once.
+    static LAST_SECOND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = crate::store::now_secs();
+    if LAST_SECOND.swap(now, std::sync::atomic::Ordering::Relaxed) == now {
+        return;
+    }
     let entities: Vec<std::sync::Arc<GameEntity>> = state.entities();
     let all: Vec<&Character> = entities.iter().filter_map(|entity| entity.as_character()).collect();
     for &me in &all {

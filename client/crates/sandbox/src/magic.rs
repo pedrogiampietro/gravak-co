@@ -185,6 +185,41 @@ pub fn skill_name(assets: &mut Assets, skill_id: u32) -> String {
 pub struct EffectLayer {
     pub mesh: String,
     pub texture: String,
+    /// Added onto what is behind (`ADB`=2, D3DBLEND_ONE): the texture's
+    /// black is see-through.
+    pub additive: bool,
+}
+
+/// A texture key the renderer loads glowing: see [`additive_image`].
+pub const ADDITIVE_SUFFIX: &str = "#additive";
+
+impl EffectLayer {
+    /// The texture as the renderer loads it.
+    pub fn texture_key(&self) -> String {
+        if self.additive {
+            format!("{}{ADDITIVE_SUFFIX}", self.texture)
+        } else {
+            self.texture.clone()
+        }
+    }
+}
+
+/// An additive texture made to be drawn with alpha blending: what it adds
+/// (colour times alpha) becomes its alpha, so black disappears and bright
+/// parts glow.
+pub fn additive_image(mut image: image::RgbaImage) -> image::RgbaImage {
+    for pixel in image.pixels_mut() {
+        let [r, g, b, a] = pixel.0;
+        let added = [r, g, b].map(|channel| u32::from(channel) * u32::from(a) / 255);
+        let alpha = added.into_iter().max().unwrap_or(0);
+        pixel.0 = if alpha == 0 {
+            [0, 0, 0, 0]
+        } else {
+            let [r, g, b] = added.map(|channel| (channel * 255 / alpha) as u8);
+            [r, g, b, alpha as u8]
+        };
+    }
+    image
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -294,9 +329,11 @@ pub fn effect(assets: &mut Assets, name: &str) -> Option<EffectDefinition> {
         .filter_map(|index| {
             let mesh = section.get(&format!("effectid{index}"))?.parse::<u32>().ok()?;
             let texture = section.get(&format!("textureid{index}"))?.parse::<u32>().ok()?;
+            let additive = section.get(&format!("adb{index}")).is_some_and(|value| value.trim() == "2");
             Some(EffectLayer {
                 mesh: tables.meshes.get(&mesh)?.clone(),
                 texture: tables.textures.get(&texture)?.clone(),
+                additive,
             })
         })
         .collect::<Vec<_>>();
@@ -388,6 +425,15 @@ mod tests {
         let sections = ini_sections("[Thunder]\nAmount=1\nEffectId0=35\nTextureId0=44\nFrameInterval=66\n");
         assert_eq!(sections["thunder"]["effectid0"], "35");
         assert_eq!(id_table("35=C3/Effect/Thunder/1.C3")[&35], "C3/Effect/Thunder/1.C3");
+    }
+
+    #[test]
+    fn additive_black_is_see_through_and_light_glows() {
+        let image = image::RgbaImage::from_raw(3, 1, vec![0, 0, 0, 255, 255, 128, 0, 255, 100, 50, 0, 128]).unwrap();
+        let image = additive_image(image);
+        assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(image.get_pixel(1, 0).0, [255, 128, 0, 255]);
+        assert_eq!(image.get_pixel(2, 0).0[3], 50);
     }
 
     #[test]
