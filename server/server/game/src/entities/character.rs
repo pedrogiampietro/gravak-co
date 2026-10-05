@@ -846,13 +846,17 @@ impl Character {
         self.ko_count.store(0, Ordering::Relaxed);
     }
 
-    /// A monster slain in Cyclone or Superman: one more KO and 0.7 s more of
-    /// it (Redux `KOCount`); the count, or `None` outside them.
+    /// A monster slain in Cyclone or Superman: one more KO and more of it,
+    /// as `Conquer.exe` counts it (a second for Cyclone, 0.8 s for
+    /// Superman); the count, or `None` outside them.
     pub fn count_ko(&self) -> Option<u32> {
-        let more = std::time::Duration::from_millis(700);
-        let extended = [StatusEffect::Cyclone, StatusEffect::Superman]
-            .into_iter()
-            .any(|effect| self.statuses.extend(effect, more));
+        use std::time::Duration;
+        let extended = [
+            (StatusEffect::Cyclone, Duration::from_millis(1_000)),
+            (StatusEffect::Superman, Duration::from_millis(800)),
+        ]
+        .into_iter()
+        .any(|(effect, more)| self.statuses.extend(effect, more));
         extended.then(|| self.ko_count.fetch_add(1, Ordering::Relaxed) + 1)
     }
 

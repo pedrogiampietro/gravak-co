@@ -726,6 +726,8 @@ pub struct Renderer {
     /// Where each actor with a status effect stood lately (time, world
     /// pixel): the ribbons of shape effects stream along it.
     trail_history: HashMap<u32, std::collections::VecDeque<(f32, [f32; 2])>>,
+    /// How large world effects are drawn (0.75); the XP fire is drawn 1:1.
+    effect_scale: f32,
     /// The trail of the actor whose status effects are being drawn, in
     /// screen pixels, newest first, and the time it is drawn at.
     current_trail: (f32, Vec<(f32, [f32; 2])>),
@@ -932,6 +934,7 @@ impl Renderer {
             level_up_layers: None,
             effects: HashMap::new(),
             trail_history: HashMap::new(),
+            effect_scale: 0.75,
             current_trail: (0.0, Vec::new()),
             last_hud_key: None,
         })
@@ -1063,7 +1066,7 @@ impl Renderer {
             self.texture(assets, &layer.texture);
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
-        let scale = 0.75;
+        let scale = self.effect_scale;
         // A flat effect (a status flag) is moved by its own animation far
         // from its origin: centre it on its slot by the box it fills.
         let centre = flat.map(|_| {
@@ -1104,6 +1107,7 @@ impl Renderer {
                     continue;
                 };
                 let alpha = transparency_at(&mesh.transparency_keys, frame);
+                let cell = sheet_cell(mesh, frame);
                 let vertices: Vec<Vertex> = mesh
                     .vertices
                     .iter()
@@ -1131,7 +1135,7 @@ impl Renderer {
                         };
                         Vertex {
                             position: clip(screen, depth, viewport),
-                            uv: [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
+                            uv: [vertex.texture_coordinate.x + cell[0], vertex.texture_coordinate.y + cell[1]],
                             alpha,
                         }
                     })
@@ -1921,6 +1925,107 @@ impl Renderer {
             });
         }
         Ok(())
+    }
+
+    /// Cyclone's and Superman's KOs over the head, as the original draws
+    /// them: the `Ko` mark and the count in two digits, green for
+    /// Cyclone and red for Superman.
+    fn push_ko_tag(
+        &mut self,
+        assets: &mut Assets,
+        ko: u32,
+        flags: u64,
+        name_top: [f32; 2],
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        const KO_MARK: &str = "@ko-mark";
+        let colour = if flags & crate::network::SUPERMAN_FLAG != 0 {
+            [255_u8, 0, 0]
+        } else if flags & crate::network::CYCLONE_FLAG != 0 {
+            [0, 255, 0]
+        } else {
+            return;
+        };
+        if !self.textures.contains_key(KO_MARK) {
+            let Ok(mark) = assets.image("data/pic/ko/ko.dds") else {
+                return;
+            };
+            self.upload(KO_MARK, mark);
+        }
+        let digits = format!("{:02}", ko.min(99_999));
+        let mut keys = Vec::with_capacity(digits.len());
+        for digit in digits.chars() {
+            let key = format!("@ko-digit-{digit}-{colour:?}");
+            if !self.textures.contains_key(&key) {
+                let Ok(mut image) = assets.image(&format!("data/pic/Num/{digit}.dds")) else {
+                    return;
+                };
+                for pixel in image.pixels_mut() {
+                    for channel in 0..3 {
+                        pixel[channel] = (u16::from(pixel[channel]) * u16::from(colour[channel]) / 255) as u8;
+                    }
+                }
+                self.upload(&key, image);
+            }
+            keys.push(key);
+        }
+        // The mark at two thirds of its 64 pixels, the digits 18 apart.
+        const MARK: f32 = 43.0;
+        const DIGIT: f32 = 32.0;
+        const STEP: f32 = 18.0;
+        let width = MARK + keys.len() as f32 * STEP;
+        let left = (name_top[0] - width * 0.5).round();
+        let top = (name_top[1] - MARK).round();
+        draws.push(Draw {
+            texture: KO_MARK.to_owned(),
+            vertices: quad([left, top], [MARK, MARK], viewport),
+            depth_test: false,
+            sort_depth: WORLD_OVERLAY_SORT,
+        });
+        for (index, key) in keys.into_iter().enumerate() {
+            draws.push(Draw {
+                texture: key,
+                vertices: quad(
+                    [left + MARK + index as f32 * STEP - 2.0, top + (MARK - DIGIT) * 0.5],
+                    [DIGIT, DIGIT],
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+    }
+
+    /// The fire along the bottom (`KOfire01`): a lit XP circle's 20
+    /// seconds, then Cyclone's or Superman's time, burning from the left
+    /// (all of it left) to the right edge (none), as `Conquer.exe` moves
+    /// it: `x = (W - 100) * (20000 - ms) / 20000 + 100` at `H - 85`.
+    fn push_xp_fire(&mut self, assets: &mut Assets, until: Option<u64>, time: f32, viewport: [f32; 2], draws: &mut Vec<Draw>) {
+        const FULL_MS: f32 = 20_000.0;
+        // The effect's `OffsetX`/`OffsetY` and how wide its strip is.
+        const OFFSET: [f32; 2] = [460.0, -35.0];
+        const STRIP: f32 = 956.0;
+        let Some(until) = until else {
+            return;
+        };
+        let now = crate::hud::unix_now_ms();
+        if until <= now {
+            return;
+        }
+        let left = ((until - now) as f32).clamp(50.0, FULL_MS);
+        let x = (viewport[0] - 100.0) * (FULL_MS - left) / FULL_MS + 100.0;
+        let y = viewport[1] - 85.0 + OFFSET[1];
+        self.effect_scale = 1.0;
+        let mut origin = x + OFFSET[0];
+        // The strip repeats until it reaches the right edge.
+        while origin - STRIP * 0.5 < viewport[0] {
+            let mut fire = Vec::new();
+            self.push_looping_effect(assets, "KOfire01", [origin, y], time, WORLD_OVERLAY_SORT, viewport, &mut fire);
+            draws.extend(fire);
+            origin += STRIP;
+        }
+        self.effect_scale = 0.75;
     }
 
     /// A booth's name on a small ornate plate, above `name_top`.
@@ -2786,6 +2891,10 @@ impl Renderer {
                 if vip {
                     self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
                 }
+                if !actor.npc && !monster {
+                    let over_name = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
+                    self.push_ko_tag(assets, actor.ko_count, actor.status_flags, [origin[0], over_name], viewport, &mut draws);
+                }
                 if let Some(booth) = actor.booth.as_deref().filter(|_| !actor.npc && !monster) {
                     let top = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
                     self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
@@ -3070,6 +3179,8 @@ impl Renderer {
         if status_flags & VIP_FLAG != 0 {
             self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
         }
+        let over_name = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
+        self.push_ko_tag(assets, skill_hud.ko_count, status_flags, [origin[0], over_name], viewport, &mut draws);
         if let Some(booth) = character.booth.as_deref() {
             let top = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
             self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
@@ -3131,6 +3242,7 @@ impl Renderer {
                 }
             }
         }
+        self.push_xp_fire(assets, skill_hud.xp_fire_until, time, viewport, &mut draws);
         let hud_hover = crate::hud::hovered_button(viewport, cursor);
         let action_context_hover = action_context_slot
             .and_then(|slot| crate::hud::action_context_option_at(viewport, cursor, slot));
@@ -5106,6 +5218,29 @@ fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Te
             view_formats: &[],
         })
         .create_view(&Default::default())
+}
+
+/// The sprite-sheet cell a mesh shows at `frame`, as a UV offset: its
+/// texture keys pick cells of a grid the size of its UVs.
+fn sheet_cell(mesh: &sandbox_data::c3::C3Mesh, frame: f32) -> [f32; 2] {
+    let Some(key) = mesh
+        .texture_keys
+        .iter()
+        .rev()
+        .find(|key| key.frame as f32 <= frame)
+        .or(mesh.texture_keys.first())
+    else {
+        return [0.0, 0.0];
+    };
+    let span = mesh.vertices.iter().fold([0.0_f32; 2], |span, vertex| {
+        [span[0].max(vertex.texture_coordinate.x), span[1].max(vertex.texture_coordinate.y)]
+    });
+    if span[0] <= 0.0 || span[0] >= 1.0 || span[1] <= 0.0 {
+        return [0.0, 0.0];
+    }
+    let columns = (1.0 / span[0]).round().max(1.0) as i32;
+    let cell = key.texture.max(0);
+    [(cell % columns) as f32 * span[0], (cell / columns) as f32 * span[1]]
 }
 
 /// Where a trail (newest first) passed at `when`, between its samples;

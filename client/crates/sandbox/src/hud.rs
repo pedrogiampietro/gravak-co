@@ -96,6 +96,9 @@ pub struct SkillHud {
     pub kill_count: u32,
     /// KOs of the current Cyclone or Superman.
     pub ko_count: u32,
+    /// When the fire along the bottom burns out (unix ms): a lit XP
+    /// circle's 20 seconds, then the XP skill's time.
+    pub xp_fire_until: Option<u64>,
     /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
     pub kill_mode: u8,
     /// The top-left information lines: map and position, FPS and ping.
@@ -109,6 +112,12 @@ pub struct SkillHud {
 }
 
 /// Seconds since 1970 on this machine.
+pub fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -360,54 +369,59 @@ fn draw_skill_bar(
 /// Cyclone (1 << 23) and Superman (1 << 18).
 const XP_SKILL_FLAGS: u64 = (1 << 23) | (1 << 18);
 
-/// The seconds an XP skill has left, one of the original's `XpBlock`s
-/// each, above the counter: green, then blue, then red as it runs out.
-fn draw_xp_blocks(img: &mut RgbaImage, assets: &mut Assets, viewport: [f32; 2], left: u32) {
-    const BLOCK: u32 = 12;
-    const PER_ROW: u32 = 20;
-    let colour = match left {
-        11.. => "data/pic/xpBlockG.tga",
-        6..=10 => "data/pic/xpBlockB.tga",
-        _ => "data/pic/xpBlockR.tga",
-    };
-    let Ok(block) = assets.image(colour) else {
-        return;
-    };
-    let block = imageops::resize(&block, BLOCK, BLOCK, imageops::FilterType::Triangle);
-    let [_, hud_y] = hud_origin(viewport);
-    let right = viewport[0] as i32 - 10;
-    for index in 0..left.min(PER_ROW * 2) {
-        let (row, column) = (index / PER_ROW, index % PER_ROW);
-        let x = right - ((column + 1) * (BLOCK + 2)) as i32;
-        let y = hud_y - 24 - (row * (BLOCK + 2)) as i32;
-        imageops::overlay(img, &block, i64::from(x), i64::from(y));
+/// The counts at the bottom right, drawn with the original's
+/// `CountB`/`CountK` effects (`3DEffect.ini`): the kills, small and blue,
+/// and an XP skill's KOs, big and red.
+#[derive(Clone, Copy)]
+enum Count {
+    Kills,
+    Ko,
+}
+
+impl Count {
+    /// The effect prefix, the 斩's centre from the bottom right and the
+    /// digits' spacing, as the original places them (`W - 30, H - 111`
+    /// and `W - 57, H - 138`).
+    fn layout(self) -> (&'static str, [i32; 2], i32) {
+        match self {
+            Self::Kills => ("CountB", [30, 111], 26),
+            Self::Ko => ("CountK", [57, 138], 53),
+        }
+    }
+
+    /// Each glyph's drawn size: the effect's quad (93 x 123) at the
+    /// original's scale, 0.6 and 1.2.
+    fn glyph_size(self) -> [u32; 2] {
+        match self {
+            Self::Kills => [56, 74],
+            Self::Ko => [112, 148],
+        }
     }
 }
 
-/// The KO counter ("<n> 斩") at the right edge above the bar.
-fn draw_kill_counter(img: &mut RgbaImage, viewport: [f32; 2], kills: u32) {
-    draw_counter(img, viewport, kills, [150, 110, 255]);
-}
-
-fn draw_counter(img: &mut RgbaImage, viewport: [f32; 2], kills: u32, glow: [u8; 3]) {
-    let (Ok(digits), Ok(glyph)) = (crate::main_hud::italic_font(), crate::main_hud::client_font())
-    else {
-        return;
+fn draw_count(img: &mut RgbaImage, assets: &mut Assets, viewport: [f32; 2], count: u32, kind: Count) {
+    let (prefix, [from_right, from_bottom], spacing) = kind.layout();
+    let [width, height] = kind.glyph_size();
+    let mut glyph = |assets: &mut Assets, name: String, centre: [i32; 2]| {
+        let Some(texture) = crate::magic::effect(assets, &name).and_then(|effect| effect.layers.first().cloned())
+        else {
+            return;
+        };
+        let Ok(image) = assets.image(&texture.texture) else {
+            return;
+        };
+        let image = imageops::resize(&image, width, height, imageops::FilterType::Triangle);
+        let left = centre[0] - width as i32 / 2;
+        let top = centre[1] - height as i32 / 2;
+        imageops::overlay(img, &image, i64::from(left), i64::from(top));
     };
-    let [_, hud_y] = hud_origin(viewport);
-    let right = viewport[0] as i32 - 10;
-    let number = kills.to_string();
-    let glyph_x = right - 34;
-    let number_width = crate::main_hud::text_width(digits, &number, 40.0);
-    crate::main_hud::glow_text(
-        img,
-        digits,
-        &number,
-        40.0,
-        [glyph_x - 6 - number_width, hud_y - 4],
-        glow,
-    );
-    crate::main_hud::glow_text(img, glyph, "斩", 34.0, [glyph_x, hud_y], glow);
+    let mark = [viewport[0] as i32 - from_right, viewport[1] as i32 - from_bottom];
+    glyph(assets, format!("{prefix}Z"), mark);
+    let digits = count.to_string();
+    let first = mark[0] - 10 - digits.len() as i32 * spacing;
+    for (index, digit) in digits.chars().enumerate() {
+        glyph(assets, format!("{prefix}{digit}"), [first + index as i32 * spacing, mark[1]]);
+    }
 }
 
 /// The revive countdown and button sit above the KO counter, against the
@@ -1078,19 +1092,13 @@ pub fn image(
         font,
     );
     draw_skill_bar(&mut img, assets, font, viewport, skills);
-    // Cyclone or Superman: the seconds left as blocks and the KOs in red
-    // ("<n> 斩"), in place of the kill counter.
-    let xp_skill_left = skills
-        .timers
-        .iter()
-        .filter(|(flag, _)| *flag & (XP_SKILL_FLAGS) != 0)
-        .map(|(_, left)| *left)
-        .max();
-    if let Some(left) = xp_skill_left {
-        draw_xp_blocks(&mut img, assets, viewport, left);
-        draw_counter(&mut img, viewport, skills.ko_count, [255, 60, 40]);
+    // Cyclone or Superman: their KOs in the big red count ("<n> 斩"),
+    // otherwise the kills of the last kind of monster in the small blue one.
+    let in_xp_skill = skills.timers.iter().any(|(flag, _)| *flag & XP_SKILL_FLAGS != 0);
+    if in_xp_skill {
+        draw_count(&mut img, assets, viewport, skills.ko_count, Count::Ko);
     } else if hud_config.kill_counter {
-        draw_kill_counter(&mut img, viewport, skills.kill_count);
+        draw_count(&mut img, assets, viewport, skills.kill_count, Count::Kills);
     }
     draw_hotkeys(&mut img, assets, font, viewport, action_bar, hover)?;
 
@@ -1379,6 +1387,7 @@ mod tests {
                     active_skill: Some(1_001),
                     kill_count: 7,
                     ko_count: 37,
+                    xp_fire_until: None,
                     hovered: Some(1_000),
                     info: vec!["Twin City (430, 380)".into(), "FPS 144  ping 12 ms".into()],
                     xp_ready: false,

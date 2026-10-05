@@ -386,6 +386,13 @@ struct App {
     /// Monsters slain in the current Cyclone or Superman, as the server
     /// counts them.
     ko_count: u32,
+    /// Everyone's Cyclone or Superman KOs (the deaths they deal carry them).
+    actor_kos: HashMap<u32, u32>,
+    /// Kills of each kind of monster: the counter shows the last kind's.
+    kills_by_kind: HashMap<String, u32>,
+    last_kill_kind: Option<String>,
+    /// When the XP circle lit up (unix ms): 20 seconds to use it.
+    xp_lit_at: Option<u64>,
     skill_bar_open: bool,
     /// Skill chosen in the skill bar; shown on the "Skill" button and cast
     /// with the right mouse button.
@@ -1113,6 +1120,15 @@ impl ApplicationHandler for App {
                     .retain(|seller, _| *seller == own_name || actors.values().any(|actor| actor.name == *seller));
                 for actor in self.remote_actors.values_mut() {
                     actor.booth = self.booths.get(&actor.name).cloned();
+                }
+                // KOs show while Cyclone or Superman lasts; a new one
+                // counts afresh.
+                let in_xp = |flags: u64| flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG) != 0;
+                let actors = &self.remote_actors;
+                self.actor_kos
+                    .retain(|id, _| actors.get(id).is_some_and(|actor| in_xp(actor.status_flags)));
+                for actor in self.remote_actors.values_mut() {
+                    actor.ko_count = self.actor_kos.get(&actor.id).copied().unwrap_or(0);
                 }
                 self.character.booth = self.booths.get(&own_name).cloned();
                 if let Some(renderer) = &mut self.renderer
@@ -3886,12 +3902,25 @@ impl App {
                     if self.network_character_id == Some(target_id) {
                         self.on_own_death();
                     }
+                    // In Cyclone or Superman the death carries the slayer's
+                    // KO count in its high word (`65541 * KOCount`).
+                    if value >= 0x1_0000 {
+                        self.actor_kos.insert(id, value >> 16);
+                    }
                     if self.network_character_id == Some(id) {
                         self.kill_count = self.kill_count.saturating_add(1);
-                        // In Cyclone or Superman the death carries the KO
-                        // count in its high word (`65541 * KOCount`).
                         if value >= 0x1_0000 {
                             self.ko_count = value >> 16;
+                        }
+                        // The counter counts each kind of monster apart.
+                        if let Some(monster) = self
+                            .remote_actors
+                            .get(&target_id)
+                            .filter(|_| (400001..=499999).contains(&target_id))
+                        {
+                            let kind = monster.name.clone();
+                            *self.kills_by_kind.entry(kind.clone()).or_default() += 1;
+                            self.last_kill_kind = Some(kind);
                         }
                     }
                     let now = self.started.elapsed().as_secs_f32();
@@ -4127,6 +4156,12 @@ impl App {
                 };
                 let id = actor.id;
                 if !actor.npc && self.network_character_id == Some(id) {
+                    let lit = actor.status_flags & network::XP_CIRCLE_FLAG != 0;
+                    if lit && self.status_flags & network::XP_CIRCLE_FLAG == 0 {
+                        self.xp_lit_at = Some(hud::unix_now_ms());
+                    } else if !lit {
+                        self.xp_lit_at = None;
+                    }
                     self.status_flags = actor.status_flags;
                     // A new Cyclone or Superman counts its KOs afresh.
                     if self.status_flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG) == 0 {
@@ -4635,8 +4670,14 @@ impl App {
             xp_points: self.xp_points,
             bar_open: self.skill_bar_open,
             active_skill: self.active_skill,
-            kill_count: self.kill_count,
+            kill_count: self
+                .last_kill_kind
+                .as_ref()
+                .and_then(|kind| self.kills_by_kind.get(kind))
+                .copied()
+                .unwrap_or(0),
             ko_count: self.ko_count,
+            xp_fire_until: self.xp_fire_until(),
             kill_mode: self.kill_mode,
             info: self.info_lines(),
             hovered: None,
@@ -4649,6 +4690,23 @@ impl App {
                     .collect()
             },
         }
+    }
+
+    /// When the fire along the bottom burns out (unix ms): the 20 seconds
+    /// a lit XP circle waits, then Cyclone's or Superman's own time.
+    fn xp_fire_until(&self) -> Option<u64> {
+        let skill = self.status_flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG);
+        if skill != 0 {
+            let end = self
+                .status_timers
+                .iter()
+                .filter(|(flag, _)| flag & skill != 0)
+                .map(|(_, end)| *end)
+                .max()?;
+            // The server's clock in seconds, ours in milliseconds.
+            return Some(((end as i64 - self.server_clock_offset).max(0) as u64) * 1_000);
+        }
+        self.xp_lit_at.map(|lit| lit + 20_000)
     }
 
     /// Right click in the world casts the skill selected in the skill bar,
@@ -7456,6 +7514,10 @@ fn run() -> Result<()> {
         weapon_skills: Default::default(),
         kill_count: 0,
         ko_count: 0,
+        actor_kos: HashMap::new(),
+        kills_by_kind: HashMap::new(),
+        last_kill_kind: None,
+        xp_lit_at: None,
         skill_bar_open: false,
         active_skill: None,
         team_members: Vec::new(),

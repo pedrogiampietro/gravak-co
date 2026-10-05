@@ -422,6 +422,8 @@ pub struct RemoteActor {
     pub level: u16,
     /// The name over the player's booth while it is open.
     pub booth: Option<String>,
+    /// KOs of their Cyclone or Superman, shown over their head.
+    pub ko_count: u32,
 }
 
 pub(crate) enum NetworkCommand {
@@ -2179,6 +2181,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         npc: false,
         level: player.level.max(0) as u16,
         booth: None,
+        ko_count: 0,
     }
 }
 
@@ -2221,6 +2224,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         npc: true,
         level: 0,
         booth: None,
+        ko_count: 0,
     }
 }
 
