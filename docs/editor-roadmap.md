@@ -18,6 +18,12 @@ OTEditor têm no OTServ.
 - **Mesma saída para cliente e servidor.** O cliente lê `content/build/client`
   antes da instalação (`GRAVAK_CONTENT`). O servidor usa o `itemtype.dat`
   gerado (`ITEMTYPE_DATA`). Os dois mudam juntos.
+- **Objetos de mapa ficam fora do `.DMap`.** Ficam em `content/maps/<id>.toml`;
+  o build gera `gravak/maps/<id>.txt`, que o cliente desenha (montado em
+  `sandbox_data::map::ComposedMap`, o mesmo código que o editor usa) e com o
+  qual o cliente e o servidor fecham as células bloqueadas. Assim os mapas
+  originais continuam intactos, e a escrita de `.DMap` só será necessária
+  para mudar o próprio terreno.
 - **Arquivos originais reescritos byte a byte.** Linhas que não mudamos saem
   idênticas, inclusive nomes na codificação original. Só os itens que
   alteramos são regravados.
@@ -39,24 +45,28 @@ OTEditor têm no OTServ.
    - importar ícone (arrastar ou caminho), tirando o fundo (branco ou xadrez),
      recortando e salvando com 64×64; item novo herda o ícone da base;
    - Build pelo editor.
-3. [ ] **Map Viewer**:
-   - abrir qualquer mapa (`GameMap.dat` → `.DMap` → `.pul`/`.pux`, cenas e
-     objetos) com o renderer do cliente, com pan e zoom;
-   - camadas que ligam e desligam: células andáveis, altura, objetos,
-     portais, efeitos e sons;
-   - NPCs, spawns e portais do servidor por cima.
+3. [x] **Map Viewer** (aba 🗺 Mapas):
+   - qualquer mapa de `GameMap.dat` montado como o cliente monta
+     (`ComposedMap`: fundo `.pul`, objetos de terreno e de cena);
+   - pan e zoom, "Ir para" uma célula, célula sob o mouse com acesso e
+     altura;
+   - camadas: cenário, células bloqueadas e portais.
+   - [ ] NPCs, spawns e portais do servidor por cima.
+   - [ ] Mapas em camadas (`.pux`), que o cliente também ainda não desenha.
 4. [ ] **Map Editor, parte 1 (dados do servidor)**:
    - colocar, mover e editar NPCs (`npcs`), spawns (`monster_spawns`) e
      portais;
    - salvar como migration/CSV versionado.
-5. [ ] **Map Editor, parte 2 (cenário)**:
-   - escrita de `.DMap`;
-   - colocar e mover objetos de cena e de terreno;
-   - **objetos 2D importados de PNG**, como estátuas e decoração;
-   - pintar células andáveis e altura;
-   - desfazer e refazer.
-   O mapa editado é usado pelo cliente e pelo servidor
-   (`server/data/GameMaps`).
+5. [~] **Map Editor, parte 2 (cenário)**:
+   - [x] **objetos 2D importados de PNG** (estátuas, decoração): colocar,
+     arrastar, ajuste fino e células bloqueadas (presets e Shift + clique),
+     tudo em `content/maps/<id>.toml`;
+   - [x] o cliente desenha os objetos na ordem de profundidade; o cliente e o
+     servidor (`GRAVAK_CONTENT`) fecham as células;
+   - [ ] desfazer e refazer;
+   - [ ] pintar células andáveis e altura do próprio mapa (escrita de
+     `.DMap`);
+   - [ ] mover ou remover objetos originais do mapa.
 6. [ ] **Extras**:
    - NPC desenhado como sprite 2D (a estátua clicável);
    - aparência de itens equipados (`weapon.ini`/`armor.ini`, reaproveitando

@@ -108,12 +108,18 @@ Os servidores usam, por padrão, as portas `9958` (auth) e `5816` (game). Logs, 
 
 ## Editor de conteúdo
 
-`run-editor.bat` abre o **Gravak Editor** (`client/crates/editor`). Com ele dá
-para criar e alterar itens e ícones sem mexer nos arquivos de `R:\5065`. O que
-você edita vai para `content/`. O botão **Build** gera `content/build/`, que o
-`run-client.bat` e o `run-server.bat` passam a usar. O passo a passo está em
-[`content/README.md`](content/README.md); os próximos editores (mapa, NPCs,
-spawns) estão em [`docs/editor-roadmap.md`](docs/editor-roadmap.md).
+`run-editor.bat` abre o **Gravak Editor** (`client/crates/editor`), com duas
+abas:
+
+- **🎒 Itens:** cria e altera itens e ícones.
+- **🗺 Mapas:** mostra qualquer mapa como no cliente e coloca objetos nossos,
+  como estátuas e decoração, com as células que eles bloqueiam.
+
+Nada é gravado em `R:\5065`: o que você edita vai para `content/`. O botão
+**Build** gera `content/build/`, que o `run-client.bat` e o `run-server.bat`
+passam a usar. O passo a passo está em
+[`content/README.md`](content/README.md), e os próximos passos em
+[`docs/editor-roadmap.md`](docs/editor-roadmap.md).
 
 ## Acompanhamento do projeto
 

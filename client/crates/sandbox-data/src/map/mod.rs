@@ -1,6 +1,7 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 mod catalog;
 mod collision;
+mod compose;
 mod dmap;
 mod pul;
 mod pux;
@@ -8,6 +9,10 @@ mod scene;
 
 pub use catalog::{GameMapCatalog, GameMapRecord};
 pub use collision::apply_fixed_scene_layers;
+pub use compose::{
+    ComposedMap, GravakObject, GravakObjects, MapSprite, Read, gravak_objects_path, project,
+    unproject,
+};
 pub use dmap::{
     DMap, MapAdditionalPuzzleLayer, MapCell, MapEffectObject, MapEffectTransform, MapPortal,
     MapSceneObject, MapSoundObject, MapTransformedEffectObject, TerrainObject,

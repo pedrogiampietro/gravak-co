@@ -66,6 +66,9 @@ pub struct Report {
     pub added: usize,
     pub changed: usize,
     pub icons: usize,
+    /// Maps with objects of ours, and how many objects.
+    pub maps: usize,
+    pub objects: usize,
     pub output: PathBuf,
 }
 
@@ -119,6 +122,7 @@ pub fn build(installation: &mut Installation, content: &Path) -> Result<Report> 
         }
         report.icons += 1;
     }
+    (report.maps, report.objects) = crate::maps::build(content, &report.output)?;
     Ok(report)
 }
 
@@ -309,6 +313,22 @@ mod tests {
             std::fs::read(icons.join("723027.dds")).unwrap(),
             b"original icon"
         );
+
+        // A statue on map 1002.
+        std::fs::create_dir_all(content.join("maps")).unwrap();
+        std::fs::write(
+            content.join("maps/1002.toml"),
+            "[[object]]\nimage = \"icons/statue.png\"\nx = 10\ny = 20\nblock = [[0, 0]]\n",
+        )
+        .unwrap();
+        let report = build(&mut installation, &content).unwrap();
+        assert_eq!((report.maps, report.objects), (1, 1));
+        let objects = std::fs::read_to_string(report.output.join("gravak/maps/1002.txt")).unwrap();
+        let objects = sandbox_data::map::GravakObjects::parse(&objects).unwrap();
+        assert_eq!(objects.objects[0].image, "gravak/icons/statue.png");
+        assert_eq!(objects.objects[0].offset, [-60, -80]);
+        assert_eq!(objects.blocked, [[10, 20]]);
+        assert!(report.output.join("gravak/icons/statue.png").is_file());
 
         // Again over its own output, and never over a folder it did not make.
         build(&mut installation, &content).unwrap();

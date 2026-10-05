@@ -1,12 +1,14 @@
-//! Gravak Editor: the content of the game (items now, maps next) edited as
+//! Gravak Editor: the content of the game (items and map objects) edited as
 //! files in `content/`, built over the 5065 installation.
 
 mod item_editor;
+mod map_editor;
 mod project;
 
 use eframe::egui;
 use gravak_content::build::{build, default_content_dir, default_installation};
 use item_editor::ItemEditor;
+use map_editor::MapEditor;
 use project::Project;
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +31,15 @@ struct EditorApp {
     settings: Settings,
     project: Option<Project>,
     items: ItemEditor,
+    maps: MapEditor,
+    tab: Tab,
     status: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Items,
+    Maps,
 }
 
 impl EditorApp {
@@ -42,6 +52,8 @@ impl EditorApp {
             settings,
             project: None,
             items: ItemEditor::new(),
+            maps: MapEditor::new(),
+            tab: Tab::Items,
             status: String::new(),
         };
         app.open();
@@ -61,6 +73,9 @@ impl EditorApp {
                 );
                 self.items.refresh(&project);
                 self.project = Some(project);
+                if let Some(project) = self.project.as_mut() {
+                    self.maps.refresh(project);
+                }
             }
             Err(error) => {
                 self.project = None;
@@ -75,10 +90,12 @@ impl EditorApp {
         };
         self.status = match build(&mut project.installation, &project.content) {
             Ok(report) => format!(
-                "Build: {} itens novos, {} alterados, {} ícones em {}. Reinicie cliente e servidor.",
+                "Build: {} itens novos, {} alterados, {} ícones, {} objetos em {} mapas, em {}. Reinicie cliente e servidor.",
                 report.added,
                 report.changed,
                 report.icons,
+                report.objects,
+                report.maps,
                 report.output.display()
             ),
             Err(error) => format!("Build falhou: {error}"),
@@ -105,11 +122,14 @@ impl eframe::App for EditorApp {
                 let can_build = self.project.is_some();
                 if ui
                     .add_enabled(can_build, egui::Button::new("🔨 Build"))
-                    .on_hover_text("Gera content/build: o itemtype.dat e os ícones que o cliente e o servidor usam")
+                    .on_hover_text("Gera content/build: itens, ícones e objetos dos mapas que o cliente e o servidor usam")
                     .clicked()
                 {
                     self.build();
                 }
+                ui.separator();
+                ui.selectable_value(&mut self.tab, Tab::Items, "🎒 Itens");
+                ui.selectable_value(&mut self.tab, Tab::Maps, "🗺 Mapas");
             });
             ui.add_space(4.0);
         });
@@ -117,7 +137,10 @@ impl eframe::App for EditorApp {
             ui.label(&self.status);
         });
         match self.project.as_mut() {
-            Some(project) => self.items.ui(ui, project, &mut self.status),
+            Some(project) => match self.tab {
+                Tab::Items => self.items.ui(ui, project, &mut self.status),
+                Tab::Maps => self.maps.ui(ui, project, &mut self.status),
+            },
             None => {
                 egui::CentralPanel::default_margins().show(ui, |ui| {
                     ui.centered_and_justified(|ui| {

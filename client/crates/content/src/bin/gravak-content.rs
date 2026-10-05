@@ -61,10 +61,12 @@ fn run() -> gravak_content::Result<()> {
             let mut installation = Installation::open(&assets)?;
             let report = build(&mut installation, &content)?;
             println!(
-                "{} itens novos, {} alterados, {} ícones -> {}",
+                "{} itens novos, {} alterados, {} ícones, {} objetos em {} mapas -> {}",
                 report.added,
                 report.changed,
                 report.icons,
+                report.objects,
+                report.maps,
                 report.output.display()
             );
         }

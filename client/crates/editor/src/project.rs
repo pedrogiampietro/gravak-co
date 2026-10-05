@@ -99,6 +99,49 @@ pub fn import_icon(content: &Path, id: u32, source: &Path, clear: bool) -> Resul
     Ok(relative)
 }
 
+/// Copies `source` into `content/objects/<name>.png` for a map object: the
+/// background taken out (when `clear`) and cropped to the drawing, at its own
+/// size. A different image already under that name gets a number. Returns
+/// the path relative to `content`.
+pub fn import_object_image(content: &Path, source: &Path, clear: bool) -> Result<String> {
+    let mut image = image::open(source)?.to_rgba8();
+    if clear {
+        clear_background(&mut image);
+    }
+    let image = crop_to_drawing(&image);
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "object".to_owned())
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    std::fs::create_dir_all(content.join("objects"))?;
+    for number in 1.. {
+        let name = if number == 1 {
+            format!("objects/{stem}.png")
+        } else {
+            format!("objects/{stem}-{number}.png")
+        };
+        let target = content.join(&name);
+        let same = image::open(&target).is_ok_and(|existing| existing.to_rgba8() == image);
+        if same {
+            return Ok(name);
+        }
+        if !target.exists() {
+            image.save(&target)?;
+            return Ok(name);
+        }
+    }
+    unreachable!("some name is free")
+}
+
 /// The smallest rectangle holding every visible pixel.
 fn crop_to_drawing(image: &RgbaImage) -> RgbaImage {
     let visible = image
@@ -220,6 +263,31 @@ mod tests {
         assert_eq!(image.get_pixel(17, 17)[3], 0);
         assert_eq!(image.get_pixel(9, 9)[3], 255);
         assert_eq!(image.get_pixel(6, 6)[3], 255);
+    }
+
+    #[test]
+    fn object_images_keep_their_size_and_never_overwrite() {
+        let root =
+            std::env::temp_dir().join(format!("gravak-editor-object-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut source = RgbaImage::from_pixel(100, 60, Rgba([255, 255, 255, 255]));
+        for x in 40..70 {
+            for y in 10..50 {
+                source.put_pixel(x, y, Rgba([0, 0, 200, 255]));
+            }
+        }
+        source.save(root.join("my statue.png")).unwrap();
+        let first = super::import_object_image(&root, &root.join("my statue.png"), true).unwrap();
+        assert_eq!(first, "objects/my-statue.png");
+        assert_eq!(image::open(root.join(&first)).unwrap().width(), 30);
+        // The same image again is the same file; another one gets a number.
+        assert_eq!(
+            super::import_object_image(&root, &root.join("my statue.png"), true).unwrap(),
+            first
+        );
+        let second = super::import_object_image(&root, &root.join("my statue.png"), false).unwrap();
+        assert_eq!(second, "objects/my-statue-2.png");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

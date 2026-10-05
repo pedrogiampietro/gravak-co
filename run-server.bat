@@ -19,8 +19,10 @@ set "AUTH_EXE=%SERVER_DIR%\target\debug\auth-server.exe"
 set "GAME_EXE=%SERVER_DIR%\target\release\game-server.exe"
 
 rem Built content (gravak-content build / the editor): the server takes its
-rem itemtype.dat over the one named in server\.env.
+rem itemtype.dat over the one named in server\.env, and closes the cells our
+rem map objects stand on.
 if exist "%~dp0content\build\client\ini\itemtype.dat" set "ITEMTYPE_DATA=%~dp0content\build\client\ini\itemtype.dat"
+if exist "%~dp0content\build\client\.gravak-build" set "GRAVAK_CONTENT=%~dp0content\build\client"
 
 rem -- Build -------------------------------------------------------
 rem Rebuild before every start (not for stop/status) so a git pull takes

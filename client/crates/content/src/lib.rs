@@ -12,6 +12,7 @@ pub mod build;
 pub mod dds;
 pub mod items;
 pub mod itemtype;
+pub mod maps;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;

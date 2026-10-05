@@ -9,6 +9,8 @@ servidor leem antes da instalação.
 content/
   items/      um .toml por item (novo, ou original alterado)
   icons/      ícones dos itens (PNG; o build gera os .dds)
+  maps/       objetos nossos em cada mapa: <id do mapa>.toml
+  objects/    imagens desses objetos (PNG)
   build/      gerado pelo build; não editar, não versionar
 ```
 
@@ -75,6 +77,51 @@ O ID diz ao jogo que tipo de item ele é:
 O botão **Sugerir** do editor procura o primeiro ID livre na mesma família e
 qualidade da base. Não use um ID que já existe na instalação para um item novo:
 isso substitui o item original.
+
+## Objetos nos mapas (estátuas, decoração)
+
+Na aba **🗺 Mapas** do editor:
+
+1. Escolha o mapa na lista. Twin City é o **1002**. O mapa aparece como no
+   cliente, com fundo, cenário e portais (em azul).
+2. **Navegar:**
+   - roda do mouse dá zoom;
+   - botão direito ou do meio arrasta o mapa;
+   - "Ir para" centraliza numa célula.
+   A célula sob o mouse aparece no canto, com o acesso e a altura dela.
+3. **Novo objeto:** arraste uma imagem para o mapa, ou informe o caminho e
+   clique em **Importar**. Depois clique no mapa onde ele deve ficar. O pé da
+   imagem (o centro de baixo) fica na célula clicada.
+4. **Editar um objeto:**
+   - arraste com o botão esquerdo para mover, célula a célula;
+   - "Ajuste (px)" faz o ajuste fino da imagem;
+   - **Bloqueia** define quais células ninguém atravessa: Nenhuma, Só a base,
+     3×3 ou 5×5;
+   - **Shift + clique** liga ou desliga uma célula;
+   - **Delete** remove o objeto.
+   "Células bloqueadas" mostra em vermelho as células bloqueadas do mapa e em
+   laranja as que os nossos objetos bloqueiam.
+5. Clique em **💾 Salvar mapa**, que grava `content/maps/<id>.toml`. Depois
+   clique em **🔨 Build** e reinicie o servidor e o cliente.
+
+No jogo:
+
+- o cliente desenha o objeto na ordem certa: quem está atrás dele fica
+  escondido, quem está na frente passa por cima;
+- o cliente e o servidor fecham as células bloqueadas;
+- todo jogador que passar por ali vê o objeto.
+
+O formato, para editar à mão:
+
+```toml
+[[object]]
+name = "Estátua de Gravak"
+image = "objects/gravak-statue.png"
+x = 430
+y = 380
+offset = [0, -10]             # opcional, em pixels
+block = [[0, 0], [1, 0]]      # células, relativas a x/y
+```
 
 ### O que um item novo ainda não faz sozinho
 
