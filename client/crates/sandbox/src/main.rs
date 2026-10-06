@@ -1188,6 +1188,44 @@ impl ApplicationHandler for App {
                             .renderer
                             .as_mut()
                             .is_some_and(renderer::Renderer::collapse_minimap) => {}
+                    // The NPC dialog: Esc closes it, 1 to 9 pick its answers.
+                    PhysicalKey::Code(KeyCode::Escape) if self.dialog.is_some() => {
+                        self.dialog = None;
+                        self.network_status = "online: NPC dialog closed".into();
+                    }
+                    PhysicalKey::Code(
+                        code @ (KeyCode::Digit1
+                        | KeyCode::Digit2
+                        | KeyCode::Digit3
+                        | KeyCode::Digit4
+                        | KeyCode::Digit5
+                        | KeyCode::Digit6
+                        | KeyCode::Digit7
+                        | KeyCode::Digit8
+                        | KeyCode::Digit9
+                        | KeyCode::Numpad1
+                        | KeyCode::Numpad2
+                        | KeyCode::Numpad3
+                        | KeyCode::Numpad4
+                        | KeyCode::Numpad5
+                        | KeyCode::Numpad6
+                        | KeyCode::Numpad7
+                        | KeyCode::Numpad8
+                        | KeyCode::Numpad9),
+                    ) if self.dialog.is_some() => {
+                        let index = match code {
+                            KeyCode::Digit1 | KeyCode::Numpad1 => 0,
+                            KeyCode::Digit2 | KeyCode::Numpad2 => 1,
+                            KeyCode::Digit3 | KeyCode::Numpad3 => 2,
+                            KeyCode::Digit4 | KeyCode::Numpad4 => 3,
+                            KeyCode::Digit5 | KeyCode::Numpad5 => 4,
+                            KeyCode::Digit6 | KeyCode::Numpad6 => 5,
+                            KeyCode::Digit7 | KeyCode::Numpad7 => 6,
+                            KeyCode::Digit8 | KeyCode::Numpad8 => 7,
+                            _ => 8,
+                        };
+                        self.choose_dialog_option(index);
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.hotkey_popup.is_some() => {
                         self.hotkey_popup = None;
                     }
@@ -6415,42 +6453,46 @@ impl App {
                 self.network_status = "online: NPC dialog closed".into();
                 true
             }
-            npc_dialog::DialogHit::Option(index) => {
-                let Some(dialog) = self.dialog.as_ref() else {
-                    return true;
-                };
-                let Some((option_id, _)) = dialog.options.get(index).cloned() else {
-                    return true;
-                };
-                if dialog.edit.as_ref().is_some_and(|(edit_id, _)| *edit_id == option_id) {
-                    if let Some(dialog) = self.dialog.as_mut() {
-                        if dialog.input_focused && !dialog.input.trim().is_empty() {
-                            self.submit_dialog_text();
-                        } else {
-                            dialog.input_focused = true;
-                            dialog.refresh_edit_row();
-                        }
-                    }
-                    return true;
-                }
-                if dialog.task_id == REVIVE_TASK_ID {
-                    if let (Some(network), Some(character_id)) =
-                        (&self.network, self.network_character_id)
-                    {
-                        network.revive(character_id, false);
-                        self.network_status = "online: reviving".into();
-                    }
-                    self.dialog = None;
-                    return true;
-                }
-                if let Some(network) = &self.network {
-                    network.send_npc_dialog_answer(dialog.task_id, option_id);
-                    self.dialog = None;
-                    self.network_status = format!("online: NPC option {option_id}");
-                }
-                true
-            }
+            npc_dialog::DialogHit::Option(index) => self.choose_dialog_option(index),
         }
+    }
+
+    /// Answers the NPC dialog with its `index`th option (a text box takes
+    /// the keys first, then sends what was typed).
+    fn choose_dialog_option(&mut self, index: usize) -> bool {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return true;
+        };
+        let Some((option_id, _)) = dialog.options.get(index).cloned() else {
+            return true;
+        };
+        if dialog.edit.as_ref().is_some_and(|(edit_id, _)| *edit_id == option_id) {
+            if let Some(dialog) = self.dialog.as_mut() {
+                if dialog.input_focused && !dialog.input.trim().is_empty() {
+                    self.submit_dialog_text();
+                } else {
+                    dialog.input_focused = true;
+                    dialog.refresh_edit_row();
+                }
+            }
+            return true;
+        }
+        if dialog.task_id == REVIVE_TASK_ID {
+            if let (Some(network), Some(character_id)) =
+                (&self.network, self.network_character_id)
+            {
+                network.revive(character_id, false);
+                self.network_status = "online: reviving".into();
+            }
+            self.dialog = None;
+            return true;
+        }
+        if let Some(network) = &self.network {
+            network.send_npc_dialog_answer(dialog.task_id, option_id);
+            self.dialog = None;
+            self.network_status = format!("online: NPC option {option_id}");
+        }
+        true
     }
 
     fn select_shop(&mut self) -> bool {
