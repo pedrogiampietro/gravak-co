@@ -11,8 +11,9 @@ use image::{imageops, RgbaImage};
 /// [0-286] and [0-287], beside the Character window ([0-131] at 0, 65).
 pub const EVALUATION_SIZE: [u32; 2] = [257, 408];
 pub const DETAILS_SIZE: [u32; 2] = [292, 440];
-const EVALUATION_OFFSET: [f32; 2] = [262.0, -35.0];
-const DETAILS_OFFSET: [f32; 2] = [519.0, -35.0];
+/// Measured on the original: the windows' tops a little under the orb's.
+const EVALUATION_OFFSET: [f32; 2] = [262.0, 26.0];
+const DETAILS_OFFSET: [f32; 2] = [519.0, 26.0];
 
 /// [286-1466..1470]: Details for quality, sockets, super gems, plus and the
 /// other bonus.
@@ -165,7 +166,7 @@ mod tests {
     fn the_windows_sit_beside_the_character_window() {
         let viewport = [1024.0, 768.0];
         let [left, top] = crate::shop::status_position(viewport);
-        assert_eq!(evaluation_position(viewport), [left + 262.0, (top - 35.0).max(0.0)]);
+        assert_eq!(evaluation_position(viewport), [left + 262.0, (top + 26.0).max(0.0)]);
         let [x, y] = evaluation_position(viewport);
         let details = [x + 180.0 + 5.0, y + 156.0 + 5.0];
         assert_eq!(evaluation_action_at(viewport, details), Some(Some(BattlePowerAction::Details(1))));

@@ -2641,20 +2641,24 @@ pub fn status_dynamic_image(
     // The orb beside "Battle Power" shows the battle power (potency), in
     // white italic with a soft blue glow, spilling over the orb like the
     // original.
-    // White on a dark outline, inside the orb as the original sets it.
+    // White italic with a soft blue glow, inside the orb, as the original
+    // sets it: the digits about half the orb's height.
     let power = battle_power(level, character.rebirths, equipment, nobility_rank).to_string();
     let power_font = crate::main_hud::italic_font().unwrap_or(font);
     let size = match power.len() {
-        0..=2 => 24.0,
-        3 => 19.0,
-        _ => 15.0,
+        0..=2 => 25.0,
+        3 => 20.0,
+        _ => 16.0,
     };
     let power_width = crate::main_hud::text_width(power_font, &power, size);
-    let at = [28 - power_width / 2, 28 - (size * 0.62) as i32];
-    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1), (2, 2)] {
-        crate::main_hud::text(&mut image, power_font, &power, size, [at[0] + dx, at[1] + dy], [12, 20, 46, 255], None);
-    }
-    crate::main_hud::text(&mut image, power_font, &power, size, at, [255, 255, 255, 255], None);
+    crate::main_hud::glow_text(
+        &mut image,
+        power_font,
+        &power,
+        size,
+        [28 - power_width / 2, 28 - (size * 0.64) as i32],
+        [90, 104, 234],
+    );
 
     let or_none = |text: &str| {
         if text.is_empty() {
@@ -2794,10 +2798,6 @@ pub fn status_dynamic_image(
             let shown = rows.iter().skip(usize::from(skill_page.scroll)).take(STATUS_LIST_ROWS);
             for (row, &(skill_id, skill_level, experience)) in shown.enumerate() {
                 let y = paper[1] + 67 + row as i32 * 38;
-                if Some(skill_id) == selected.map(|(id, _, _)| id) {
-                    let rect = skill_row_rect(row);
-                    crate::ui_theme::outline(&mut image, rect, [255, 214, 102, 255]);
-                }
                 if let Some(icon) = crate::main_hud::skill_icon(assets, skill_id) {
                     draw_list_icon(&mut image, &icon, [paper[0] + 17, y]);
                 }
