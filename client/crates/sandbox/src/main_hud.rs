@@ -143,8 +143,9 @@ const STAMINA_ORIGIN: [i64; 2] = [44, 57];
 /// that fills with the XP points and lights up full.
 const XP_FILL: &str = "data/main/ProgressPower.dds";
 const XP_FULL: &str = "data/main/ProgressPowerH.dds";
-/// Where the ring's texture goes so its centre meets the orb's.
-const XP_ORIGIN: [i64; 2] = [3, 40];
+/// Where the ring's texture goes so it lies in the frame's dark band: the
+/// ring's centre (47, 45 in the texture) on the orb's (47, 93).
+const XP_ORIGIN: [i64; 2] = [0, 48];
 
 /// Decoded artwork, cropped and cached for the life of the process.
 pub struct MainHudArt {
