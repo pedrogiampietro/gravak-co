@@ -295,11 +295,10 @@ fn draw_badge_pill(img: &mut RgbaImage, label: &str, colour: [u8; 4], [x, y]: [i
     width
 }
 
-/// What a status's icon shows: a skill's icon, an item's, or the VIP title.
+/// What a status's icon shows: a skill's icon or the VIP title.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatusIcon {
     Skill(u32),
-    Item(u32),
     Vip,
     /// One of the original's animated status flags (`3DEffect.ini`), drawn
     /// by the renderer over the HUD.
@@ -374,7 +373,6 @@ fn status_icon(assets: &mut Assets, flag: u64, size: u32) -> Option<RgbaImage> {
     let icon = STATUS_ICONS.iter().find(|(bit, _)| *bit == flag).map(|(_, icon)| *icon)?;
     let image = match icon {
         StatusIcon::Skill(skill) => crate::main_hud::skill_icon(assets, skill)?,
-        StatusIcon::Item(item) => crate::shop::item_icon_image(assets, item).ok()?,
         StatusIcon::Vip => crate::ornate::vip_tag(1.0).ok()?,
         StatusIcon::Flag(_) => return None,
     };
@@ -414,25 +412,10 @@ impl From<layout::Rect> for Rect {
     }
 }
 
-/// Chat log filter tabs: label and channel (0 shows every channel).
-const CHAT_TABS: [(&str, u16); 7] = [
-    ("All", 0),
-    ("Local", 2000),
-    ("World", 2021),
-    ("Team", 2003),
-    ("Guild", 2004),
-    ("Whisper", 2001),
-    ("System", 2007),
-];
-const CHAT_LOG_WIDTH: i32 = 590;
-const CHAT_LOG_LINES: usize = 12;
-const CHAT_LINE_HEIGHT: i32 = 16;
-const CHAT_TAB_HEIGHT: i32 = 20;
 
 // Hover codes shared between hit testing and painting.
 const HOVER_SLOT: u8 = 20;
 const HOVER_CHAT: u8 = 40;
-const HOVER_TAB: u8 = 60;
 const HOVER_ORB: u8 = 80;
 
 const SKILL_SLOT: i32 = 50;
@@ -694,6 +677,7 @@ pub fn revive_button(assets: &mut Assets, label: &str) -> crate::assets::Result<
     crate::ornate::plate(Some(assets), REVIVE_BUTTON, label, crate::ornate::GRAVAK, crate::ornate::Look::Normal, None)
 }
 
+#[cfg(test)]
 pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
     let [width, height] = REVIVE_BUTTON;
     let mut image = hud_style_panel(assets, width, height, [176, 158, 104]);

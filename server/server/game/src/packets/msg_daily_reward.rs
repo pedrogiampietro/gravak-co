@@ -11,9 +11,8 @@ use tq_network::{Actor, PacketID, PacketProcess};
 
 use super::{MsgItemInfo, MsgTalk, TalkChannel};
 
-/// Client: open the Reward Wall (a click on the shrine).
-pub const OPEN: u32 = 0;
-/// Client: claim choice `param` of today's.
+/// Client: claim choice `param` of today's. Any other action (0, a click
+/// on the shrine) opens the Reward Wall.
 pub const CLAIM: u32 = 1;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PacketID)]

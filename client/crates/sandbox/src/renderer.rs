@@ -1029,7 +1029,7 @@ impl Renderer {
 
     /// A flat 2D effect (the original's status flags, 25 units square)
     /// drawn `size` pixels wide over the interface, looping.
-    pub(crate) fn push_ui_effect(
+    fn push_ui_effect(
         &mut self,
         assets: &mut Assets,
         name: &str,

@@ -24,7 +24,6 @@ const SLOT_STEP_X: u32 = 43;
 const SLOT_STEP_Y: u32 = 43;
 const SLOT_SIZE: u32 = 40;
 const ICON_SIZE: u32 = 32;
-const ICON_OFFSET: u32 = 6;
 // DialogMpcGoods.dds uses the original 5065 slot grid.
 const INVENTORY_SLOT_X: u32 = original_ui_layout::INVENTORY_GRID[0] as u32;
 const INVENTORY_SLOT_Y: u32 = original_ui_layout::INVENTORY_GRID[1] as u32;
@@ -82,10 +81,8 @@ const STATUS_WIDTH: u32 = original_ui_layout::CHARACTER_WIDTH as u32;
 // GUI.ini [0-131] centers the Character window using its dialog height
 // (406px). Some native DDS variants extend below that logical frame, so the
 // drawn surface can be 435px without moving the window anchor.
-const STATUS_HEIGHT: u32 = original_ui_layout::CHARACTER_DIALOG_HEIGHT as u32;
 const STATUS_STANDARD_WIDTH: u32 = original_ui_layout::CHARACTER_WIDTH as u32;
 const STATUS_STANDARD_HEIGHT: u32 = original_ui_layout::CHARACTER_CANVAS_HEIGHT as u32;
-const STATUS_TAB_WIDTH: u32 = 96;
 const QUICK_PANEL_WIDTH: u32 = 520;
 const QUICK_PANEL_HEIGHT: u32 = 420;
 
@@ -136,14 +133,7 @@ impl StatusLayout {
     const INFO_X: i32 = 40;
     const INFO_WIDTH: i32 = 206;
     const BASIC_Y: i32 = 55;
-    const BASIC_HEIGHT: i32 = 150;
-    const COMBAT_Y: i32 = 205;
-    const COMBAT_HEIGHT: i32 = 170;
 
-    const FOOTER_X: i32 = 40;
-    const FOOTER_Y: i32 = 400;
-    const FOOTER_WIDTH: i32 = 206;
-    const FOOTER_HEIGHT: i32 = 55;
 
     // GUI.ini [131-1027] (top-right X) and [131-1029] (bottom Close).
     const CLOSE_ORIGIN: [i32; 2] = [239, 38];
@@ -165,11 +155,6 @@ impl StatusLayout {
             Self::INFO_WIDTH - 14,
             24,
         )
-    }
-
-    fn slot_xy(slot: usize) -> (i32, i32) {
-        let (x, y, _, _) = Self::SLOT_RECTS[slot];
-        (x, y)
     }
 
     fn slot_rect(slot: usize) -> UiRect {
@@ -230,20 +215,6 @@ impl ItemRarity {
             3 => Self::Legendary,
             4 => Self::Mythic,
             _ => Self::Common,
-        }
-    }
-
-    fn native_quality(item_type: u32) -> &'static str {
-        if item_type >= 1_000_000 {
-            return "Standard";
-        }
-        match item_type % 10 {
-            5 => "Normal",
-            6 => "Refined",
-            7 => "Unique",
-            8 => "Elite",
-            9 => "Super",
-            _ => "Standard",
         }
     }
 
@@ -334,7 +305,6 @@ pub fn upgrade_cost_and_chance(plus: u8) -> Option<(u8, u8)> {
 #[derive(Debug, Clone)]
 pub struct ShopState {
     pub npc_id: u32,
-    pub name: String,
     pub items: Vec<u32>,
     icons: Vec<RgbaImage>,
     infos: HashMap<u32, ItemInfo>,
@@ -367,16 +337,6 @@ impl InventoryFilter {
         Self::Materials,
         Self::Quest,
     ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::All => "All",
-            Self::Equipment => "Equip",
-            Self::Consumables => "Use",
-            Self::Materials => "Mat",
-            Self::Quest => "Quest",
-        }
-    }
 
     pub fn accepts(self, item_type: u32) -> bool {
         match self {
@@ -438,7 +398,7 @@ impl ShopState {
         {
             found = Some((id, name, items));
         }
-        let Some((npc_id, name, items)) = found else {
+        let Some((npc_id, _name, items)) = found else {
             return Ok(None);
         };
         let animation = assets
@@ -471,7 +431,6 @@ impl ShopState {
         let infos = load_item_infos(assets, &items);
         Ok(Some(Self {
             npc_id,
-            name,
             items,
             icons,
             infos,
@@ -586,7 +545,6 @@ pub enum QuickPanel {
     Mail,
     Market,
     Team,
-    System,
     Settings,
     Store,
     /// The VIP Rights window.
@@ -694,7 +652,6 @@ impl QuickPanel {
             Self::Mail => "MAIL",
             Self::Market => "MARKET",
             Self::Team => "TEAM",
-            Self::System => "SYSTEM",
             Self::Store => "STORE",
             Self::Vip => "VIP",
             Self::DailyRewards => "DAILY REWARDS",
@@ -1693,32 +1650,6 @@ pub fn quick_panel_image(
         QuickPanel::Highscores => crate::highscores_panel::draw(&mut image, assets, highscores),
         // Drawn over its original art by `original_panels`.
         QuickPanel::Vip => {}
-        QuickPanel::System => {
-            labels::text(
-                &mut image,
-                &font,
-                &[("System information", [255, 224, 146])],
-                [24.0, 64.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[
-                    ("ESC", [255, 224, 146]),
-                    (" closes the active panel", [220, 210, 175]),
-                ],
-                [24.0, 98.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[
-                    ("F1-F10", [255, 224, 146]),
-                    (" activate the action bar", [220, 210, 175]),
-                ],
-                [24.0, 128.0],
-            );
-        }
         QuickPanel::Settings => {
             labels::text(
                 &mut image,
@@ -1810,7 +1741,6 @@ pub enum StatusTab {
     // are not part of the native 5065 Character button strip.
     Title,
     Reputation,
-    Fashion,
 }
 
 impl StatusTab {
@@ -1821,17 +1751,6 @@ impl StatusTab {
         StatusTab::Skills,
     ];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            StatusTab::Equipment => "Equipamentos",
-            StatusTab::Attributes => "Atributos",
-            StatusTab::Weapon => "Armas",
-            StatusTab::Skills => "Skills",
-            StatusTab::Title => "Título",
-            StatusTab::Reputation => "Reputação",
-            StatusTab::Fashion => "Fashion",
-        }
-    }
 }
 
 /// The Weapon tab's three pages: one-handed (4xx), two-handed (5xx) and
@@ -2073,390 +1992,6 @@ pub fn status_title_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u32> {
         }
     }
     None
-}
-
-fn generated_panel_surface(name: &str, width: u32, height: u32) -> Result<RgbaImage> {
-    let bytes: &[u8] = match name {
-        "inventory" => include_bytes!("hud_assets/inventory_panel_generated.png"),
-        "character" => include_bytes!("hud_assets/character_panel_generated.png"),
-        _ => return Err(format!("unknown generated panel asset: {name}").into()),
-    };
-    let source = image::load_from_memory(bytes)?.into_rgba8();
-    Ok(imageops::resize(
-        &source,
-        width.max(1),
-        height.max(1),
-        imageops::FilterType::Lanczos3,
-    ))
-}
-
-/// Composes the Character window from the installed 5065 components. The
-/// frame and slot art come from the client; only live character values are
-/// painted by the game.
-fn original_character_image(
-    assets: &mut Assets,
-    level: u8,
-    nobility_rank: u32,
-    character: &crate::character::Character,
-    equipment: &[crate::network::OwnedItem],
-    hidden_default_slots: &[bool; 10],
-    active_tab: StatusTab,
-    close_hovered: bool,
-) -> Result<RgbaImage> {
-    let (surface_width, surface_height) = status_surface_size(active_tab);
-    let mut image = RgbaImage::from_pixel(surface_width, surface_height, Rgba([0, 0, 0, 0]));
-    let shell =
-        crate::original_ui::component(assets, crate::original_ui::CharacterComponent::Shell)?;
-    // The player Character window is the shell plus the native Mission
-    // paper-doll panel. DialogNpcEquip is a separate inspect-NPC dialog;
-    // using it here removes the Character tabs and shifts every slot.
-    let source = shell.clone();
-    imageops::overlay(&mut image, &source, 0, 0);
-
-    match active_tab {
-        StatusTab::Attributes => {
-            let role = crate::original_ui::component(
-                assets,
-                crate::original_ui::CharacterComponent::Role,
-            )?;
-            imageops::overlay(&mut image, &role, 40, 55);
-            // GUI.ini [132-1150] and [132-1151]. Keep the native Base/Details
-            // buttons visible below the original role panel.
-            imageops::overlay(
-                &mut image,
-                &crate::original_ui::role_button(assets, false)?,
-                64,
-                337,
-            );
-            imageops::overlay(
-                &mut image,
-                &crate::original_ui::role_button(assets, true)?,
-                159,
-                337,
-            );
-        }
-        StatusTab::Weapon => {
-            let weapon = crate::original_ui::component(
-                assets,
-                crate::original_ui::CharacterComponent::Weapon,
-            )?;
-            imageops::overlay(&mut image, &weapon, 40, 55);
-            // GUI.ini [134-1522..1527] reserves six native weapon rows.
-            // Keep the original row artwork and add only live item icons.
-            for (index, item) in equipment
-                .iter()
-                .filter(|item| item.position == 4 || item.position == 5)
-                .take(6)
-                .enumerate()
-            {
-                if let Ok(icon) = item_icon_image(assets, item.item_type) {
-                    imageops::overlay(
-                        &mut image,
-                        &icon,
-                        59_i64,
-                        124_i64 + i64::from(index as i32 * 38),
-                    );
-                }
-            }
-        }
-        StatusTab::Skills => {
-            let mission = crate::original_ui::component(
-                assets,
-                crate::original_ui::CharacterComponent::Mission,
-            )?;
-            imageops::overlay(&mut image, &mission, 40, 55);
-        }
-        StatusTab::Equipment => {
-            let equipment_panel = crate::original_ui::component(
-                assets,
-                crate::original_ui::CharacterComponent::Mission,
-            )?;
-            imageops::overlay(
-                &mut image,
-                &equipment_panel,
-                i64::from(StatusLayout::PAPER_X),
-                i64::from(StatusLayout::PAPER_Y),
-            );
-        }
-        StatusTab::Title | StatusTab::Reputation | StatusTab::Fashion => {}
-    }
-    imageops::overlay(
-        &mut image,
-        &crate::original_ui::close_button(assets, close_hovered)?,
-        239,
-        38,
-    );
-
-    let font = labels::font()?;
-    let value_colour = [235, 225, 193];
-    let name = if character.name.is_empty() {
-        "Character"
-    } else {
-        character.name.as_str()
-    };
-    let guild = if character.guild.is_empty() {
-        "None"
-    } else {
-        character.guild.as_str()
-    };
-    match active_tab {
-        StatusTab::Equipment => {
-            // Equipment.dds belongs to the inspect-NPC dialog and contains
-            // Name/Spouse controls. The player Character equipment view uses
-            // the shell header and the native Mission slot panel instead.
-            let rank = nobility_rank_label(nobility_rank);
-            labels::text(
-                &mut image,
-                &font,
-                &[(rank, [255, 224, 146])],
-                [centered_text_x(&font, rank, 128.0), 43.0],
-            );
-            let _ = (name, equipment, hidden_default_slots);
-        }
-        StatusTab::Attributes => {
-            let identity = [
-                name.to_owned(),
-                level.to_string(),
-                class_name(character.current_class).to_owned(),
-                "0".to_owned(),
-                "None".to_owned(),
-                guild.to_owned(),
-                if character.guild_rank.is_empty() {
-                    "None".to_owned()
-                } else {
-                    character.guild_rank.clone()
-                },
-            ];
-            // GUI.ini [132-1130..1136] positions the value controls relative
-            // to DialogQuery_Role, which is composited at (40, 55).
-            for (text, y) in identity
-                .iter()
-                .zip([63.0, 91.0, 117.0, 143.0, 169.0, 195.0, 221.0])
-            {
-                labels::text_sized(
-                    &mut image,
-                    &font,
-                    &[(text.as_str(), value_colour)],
-                    [112.0, y],
-                    8.5,
-                );
-            }
-            for (text, x, y) in [
-                (character.strength.to_string(), 128.0, 257.0),
-                (character.agility.to_string(), 188.0, 254.0),
-                (character.vitality.to_string(), 128.0, 276.0),
-                (character.spirit.to_string(), 188.0, 284.0),
-                (character.attribute_points.to_string(), 142.0, 314.0),
-            ] {
-                labels::text_sized(
-                    &mut image,
-                    &font,
-                    &[(text.as_str(), value_colour)],
-                    [x, y],
-                    8.5,
-                );
-            }
-        }
-        StatusTab::Weapon | StatusTab::Skills => {}
-        StatusTab::Title => {
-            labels::text(
-                &mut image,
-                &font,
-                &[("Titles", [255, 224, 146])],
-                [58.0, 78.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[("Use the original title controls", value_colour)],
-                [58.0, 110.0],
-            );
-        }
-        StatusTab::Reputation => {
-            labels::text(
-                &mut image,
-                &font,
-                &[("Reputation", [255, 224, 146])],
-                [58.0, 78.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[("Donation and ranking", value_colour)],
-                [58.0, 110.0],
-            );
-        }
-        StatusTab::Fashion => {
-            labels::text(
-                &mut image,
-                &font,
-                &[("Fashion", [255, 224, 146])],
-                [58.0, 78.0],
-            );
-        }
-    }
-    Ok(image)
-}
-
-fn new_panel_surface(width: u32, height: u32) -> RgbaImage {
-    let mut image = RgbaImage::from_pixel(width, height, Rgba([8, 20, 29, 248]));
-    for x in 0..width {
-        image.put_pixel(x, 0, Rgba([225, 179, 82, 255]));
-        image.put_pixel(x, height - 1, Rgba([102, 66, 25, 255]));
-    }
-    for y in 0..height {
-        image.put_pixel(0, y, Rgba([225, 179, 82, 255]));
-        image.put_pixel(width - 1, y, Rgba([102, 66, 25, 255]));
-    }
-    for x in 3..width.saturating_sub(3) {
-        image.put_pixel(x, 3, Rgba([72, 48, 24, 255]));
-        image.put_pixel(x, height.saturating_sub(4), Rgba([231, 187, 91, 220]));
-    }
-    for y in 3..height.saturating_sub(3) {
-        image.put_pixel(3, y, Rgba([72, 48, 24, 255]));
-        image.put_pixel(width.saturating_sub(4), y, Rgba([231, 187, 91, 220]));
-    }
-    for x in 10..width.saturating_sub(10) {
-        image.put_pixel(x, 43, Rgba([76, 52, 26, 255]));
-    }
-    image
-}
-
-pub fn status_image(
-    assets: &mut Assets,
-    level: u8,
-    experience: u64,
-    character: &crate::character::Character,
-    equipment: &[crate::network::OwnedItem],
-    hidden_default_slots: &[bool; 10],
-    active_tab: StatusTab,
-    mana: u32,
-    maximum_mana: u32,
-    close_hovered: bool,
-    nobility_donation: u64,
-    nobility_rank: u32,
-    nobility_remaining: u64,
-    equipped_title: u32,
-    nobility_ranking: &[crate::network::NobilityEntry],
-    reputation_donate_hovered: bool,
-    title_hovered: Option<u32>,
-) -> Result<RgbaImage> {
-    return original_character_image(
-        assets,
-        level,
-        nobility_rank,
-        character,
-        equipment,
-        hidden_default_slots,
-        active_tab,
-        close_hovered,
-    );
-
-    #[allow(unreachable_code)]
-    let mut image = generated_panel_surface("character", STATUS_WIDTH, STATUS_HEIGHT)?;
-    // The generated frame has transparent cut-outs in the content area. Fill
-    // the paper-doll interior first so the world cannot bleed through below
-    // the character while preserving the ornamental frame around it.
-    status_fill(
-        &mut image,
-        StatusLayout::PAPER_X + 4,
-        StatusLayout::PAPER_Y + 4,
-        StatusLayout::PAPER_WIDTH - 8,
-        StatusLayout::PAPER_HEIGHT - 8,
-        [8, 20, 29, 255],
-    );
-    let font = labels::font()?;
-    let decorative_font = labels::decorative_font()?;
-    labels::text_sized(
-        &mut image,
-        &decorative_font,
-        &[("CHARACTER", [255, 224, 146])],
-        [
-            centered_text_x(&decorative_font, "CHARACTER", STATUS_WIDTH as f32 * 0.5),
-            43.0,
-        ],
-        13.0,
-    );
-    draw_close_button(&mut image, &font, close_hovered);
-    for (i, tab) in StatusTab::ALL.iter().enumerate() {
-        let is_active = *tab == active_tab;
-        let rect = StatusLayout::tab_rect(i);
-        draw_sidebar_tab(
-            &mut image,
-            &decorative_font,
-            rect.x as u32,
-            rect.y as u32,
-            tab.label(),
-            is_active,
-        );
-    }
-    let content_top = StatusLayout::PAPER_Y;
-    let display_equipment = status_equipment_items(character, equipment, hidden_default_slots);
-    let equipment_stats = equipment_bonuses(assets, &display_equipment);
-    let battle_power = derived_battle_power(
-        level,
-        character,
-        (equipment_stats.0, equipment_stats.1, equipment_stats.2),
-    );
-    match active_tab {
-        StatusTab::Equipment => {
-            draw_equipment_tab(
-                &mut image,
-                &font,
-                &decorative_font,
-                assets,
-                level,
-                character,
-                equipment,
-                hidden_default_slots,
-                mana,
-                maximum_mana,
-                battle_power,
-            )?;
-        }
-        StatusTab::Attributes => draw_attributes_tab(
-            &mut image,
-            &font,
-            &decorative_font,
-            level,
-            experience,
-            character,
-            mana,
-            maximum_mana,
-            content_top,
-            battle_power,
-        ),
-        StatusTab::Weapon | StatusTab::Skills => {}
-        StatusTab::Title => {
-            draw_title_tab(
-                &mut image,
-                &font,
-                &decorative_font,
-                equipped_title,
-                nobility_rank,
-                title_hovered,
-            );
-        }
-        StatusTab::Reputation => {
-            draw_reputation_tab(
-                &mut image,
-                &font,
-                &decorative_font,
-                nobility_donation,
-                nobility_remaining,
-                nobility_ranking,
-                reputation_donate_hovered,
-            );
-        }
-        StatusTab::Fashion => draw_simple_status_tab(
-            &mut image,
-            &font,
-            &decorative_font,
-            "Fashion",
-            "Nenhum visual equipado",
-        ),
-    }
-    Ok(image)
 }
 
 /// Static layer for the original Character window. The atlas components and
@@ -3011,463 +2546,6 @@ pub fn combat_figures(
     (attack, defense, magic_attack, magic_defense)
 }
 
-fn draw_reputation_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    title_font: &fontdue::Font,
-    donation: u64,
-    remaining: u64,
-    ranking: &[crate::network::NobilityEntry],
-    donate_hovered: bool,
-) {
-    let x = StatusLayout::INFO_X;
-    let y = StatusLayout::BASIC_Y;
-    let width = StatusLayout::INFO_WIDTH;
-    let height = StatusLayout::BASIC_HEIGHT + StatusLayout::COMBAT_HEIGHT + 5;
-    draw_info_card(image, font, title_font, x, y, width, height, "Reputação");
-    labels::text_sized(
-        image,
-        font,
-        &[(format!("Doação: {donation}").as_str(), [235, 225, 193])],
-        [x as f32 + 7.0, (y + 43) as f32],
-        10.0,
-    );
-    labels::text_sized(
-        image,
-        font,
-        &[(format!("Próximo: {remaining}").as_str(), [235, 225, 193])],
-        [x as f32 + 7.0, (y + 61) as f32],
-        10.0,
-    );
-    labels::text_sized(
-        image,
-        title_font,
-        &[("Ranking", [255, 224, 146])],
-        [x as f32 + 7.0, (y + 84) as f32],
-        10.0,
-    );
-    if ranking.is_empty() {
-        labels::text_sized(
-            image,
-            font,
-            &[("Sem registros", [170, 164, 143])],
-            [x as f32 + 7.0, (y + 104) as f32],
-            9.0,
-        );
-    } else {
-        for entry in ranking.iter().take(4) {
-            let name: String = entry.name.chars().take(11).collect();
-            let line = format!("#{} {} {}", entry.position, name, entry.donation);
-            let line_y = y + 104 + ((entry.position.saturating_sub(1).min(3)) as i32 * 18);
-            labels::text_sized(
-                image,
-                font,
-                &[(line.as_str(), [190, 184, 162])],
-                [x as f32 + 7.0, line_y as f32],
-                8.5,
-            );
-        }
-    }
-    draw_status_action_button(
-        image,
-        font,
-        StatusLayout::reputation_button_rect(),
-        "DOAR 3M",
-        donate_hovered,
-    );
-}
-
-fn draw_status_action_button(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    rect: UiRect,
-    label: &str,
-    hovered: bool,
-) {
-    ui::draw_text_button(image, font, rect, label, hovered, false);
-}
-
-fn draw_sidebar_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    x: u32,
-    y: u32,
-    label: &str,
-    active: bool,
-) {
-    // The frame's corners and side ornaments reduce the usable area. Fit the
-    // actual rendered label inside that inner area, rather than centering it
-    // against the nominal tab width.
-    let inner_left = 14.0;
-    let inner_right = 14.0;
-    let max_label_width = STATUS_TAB_WIDTH as f32 - inner_left - inner_right;
-    let label_width = |size: f32| {
-        label
-            .chars()
-            .map(|character| font.metrics(character, size).advance_width)
-            .sum::<f32>()
-    };
-    let mut label_size = 12.0;
-    while label_size > 7.5 && label_width(label_size) > max_label_width {
-        label_size -= 0.25;
-    }
-    let rendered_width = label_width(label_size);
-    let label_x = x as f32 + inner_left + (max_label_width - rendered_width) * 0.5;
-    labels::text_sized(
-        image,
-        font,
-        &[(
-            label,
-            if active {
-                [255, 232, 160]
-            } else {
-                [204, 190, 153]
-            },
-        )],
-        [label_x, y as f32 + 15.0],
-        label_size,
-    );
-}
-
-fn draw_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    x: u32,
-    y: u32,
-    label: &str,
-    active: bool,
-) {
-    let bg_color = if active {
-        [92, 65, 29, 255]
-    } else {
-        [12, 28, 38, 255]
-    };
-    let border_color = if active {
-        [246, 211, 132, 255]
-    } else {
-        [113, 82, 38, 255]
-    };
-    let text_color = if active {
-        [255, 232, 160]
-    } else {
-        [204, 190, 153]
-    };
-    for tx in x..x + StatusLayout::TAB_WIDTH as u32 {
-        for ty in y..y + StatusLayout::TAB_HEIGHT as u32 {
-            image.put_pixel(tx, ty, Rgba(bg_color));
-        }
-    }
-    for tx in x..x + StatusLayout::TAB_WIDTH as u32 {
-        image.put_pixel(tx, y, Rgba(border_color));
-        image.put_pixel(
-            tx,
-            y + StatusLayout::TAB_HEIGHT as u32 - 1,
-            Rgba(border_color),
-        );
-    }
-    for ty in y..y + StatusLayout::TAB_HEIGHT as u32 {
-        image.put_pixel(x, ty, Rgba(border_color));
-        image.put_pixel(
-            x + StatusLayout::TAB_WIDTH as u32 - 1,
-            ty,
-            Rgba(border_color),
-        );
-    }
-    if active {
-        for tx in x + 2..x + StatusLayout::TAB_WIDTH as u32 - 2 {
-            image.put_pixel(
-                tx,
-                y + StatusLayout::TAB_HEIGHT as u32 - 1,
-                Rgba([8, 20, 29, 248]),
-            );
-        }
-    }
-    // The ornamental corners and side jewels occupy part of the nominal tab
-    // width, so center labels inside the quiet inner panel instead of using
-    // the full 96 px rectangle.
-    let inner_left = 13.0;
-    let inner_right = 13.0;
-    let max_label_width = StatusLayout::TAB_WIDTH as f32 - inner_left - inner_right;
-    let label_width = |size: f32| {
-        label
-            .chars()
-            .map(|character| font.metrics(character, size).advance_width)
-            .sum::<f32>()
-    };
-    let mut label_size = 11.0;
-    while label_size > 8.0 && label_width(label_size) > max_label_width {
-        label_size -= 0.25;
-    }
-    let label_width = label_width(label_size);
-    let label_x = x as f32 + inner_left + (max_label_width - label_width) * 0.5;
-    labels::text_sized(
-        image,
-        font,
-        &[(label, text_color)],
-        [label_x, y as f32 + 6.0],
-        label_size,
-    );
-}
-
-fn draw_close_button(image: &mut RgbaImage, font: &fontdue::Font, hovered: bool) {
-    // The generated Character frame already contains the large red close
-    // medallion.  Do not paint a second rectangular X over it: that was the
-    // small stray button visible above the panel in the previous layout.
-    // The generated frame owns the red medallion and its hover-safe artwork.
-    // Do not add a second circle on top of it.
-    let _ = (font, hovered, image);
-}
-
-fn draw_info_card(
-    image: &mut RgbaImage,
-    _font: &fontdue::Font,
-    title_font: &fontdue::Font,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    title: &str,
-) {
-    // Keep content on a quiet, translucent surface. The generated frame is
-    // deliberately ornate, so a controlled inner card makes text readable
-    // without fighting the decorative gold separators underneath it.
-    status_fill(image, x, y, width, height, [5, 14, 21, 255]);
-    status_line(image, [x, y], [x + width - 1, y], [205, 160, 70, 230]);
-    status_line(
-        image,
-        [x, y + height - 1],
-        [x + width - 1, y + height - 1],
-        [102, 66, 28, 220],
-    );
-    status_line(image, [x, y], [x, y + height - 1], [154, 111, 48, 210]);
-    status_line(
-        image,
-        [x + width - 1, y],
-        [x + width - 1, y + height - 1],
-        [154, 111, 48, 210],
-    );
-    labels::text_sized(
-        image,
-        title_font,
-        &[(title, [255, 224, 146])],
-        [x as f32 + 7.0, y as f32 + 8.0],
-        11.5,
-    );
-    status_line(
-        image,
-        [x + 7, y + 27],
-        [x + width - 8, y + 27],
-        [111, 77, 33, 210],
-    );
-}
-
-fn draw_attributes_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    title_font: &fontdue::Font,
-    level: u8,
-    experience: u64,
-    character: &crate::character::Character,
-    mana: u32,
-    maximum_mana: u32,
-    _content_top: i32,
-    battle_power: u32,
-) {
-    let x = StatusLayout::INFO_X;
-    let y = StatusLayout::BASIC_Y;
-    let width = StatusLayout::INFO_WIDTH;
-    draw_info_card(image, font, title_font, x, y, width, 333, "Attributes");
-    let name = if character.name.is_empty() {
-        "Character"
-    } else {
-        character.name.as_str()
-    };
-    let identity = [
-        format!("Name: {name}"),
-        format!("Level: {level}"),
-        format!("HP: {} / {}", character.health, character.maximum_health),
-        format!("MP: {mana} / {maximum_mana}"),
-    ];
-    for (index, line) in identity.iter().enumerate() {
-        labels::text(
-            image,
-            font,
-            &[(line.as_str(), [235, 225, 193])],
-            [x as f32 + 7.0, (y + 41 + index as i32 * 20) as f32],
-        );
-    }
-    labels::text(
-        image,
-        font,
-        &[("Core attributes", [255, 224, 146])],
-        [x as f32 + 7.0, (y + 128) as f32],
-    );
-    let attribute_lines = [
-        format!("Strength: {}", character.strength),
-        format!("Agility: {}", character.agility),
-        format!("Vitality: {}", character.vitality),
-        format!("Spirit: {}", character.spirit),
-        format!("Points: {}", character.attribute_points),
-    ];
-    for (index, line) in attribute_lines.iter().enumerate() {
-        let line_y = y + 151 + index as i32 * 20;
-        labels::text(
-            image,
-            font,
-            &[(line.as_str(), [220, 210, 175])],
-            [x as f32 + 7.0, line_y as f32],
-        );
-        if index < 4 {
-            draw_attribute_plus_button(
-                image,
-                font,
-                x + 112,
-                line_y - 11,
-                character.attribute_points > 0,
-            );
-        }
-    }
-    /*
-    labels::text(
-        image,
-        font,
-        &[
-            ("Nome:", [220, 210, 175]),
-            (&character.name, [255, 255, 255]),
-        ],
-        [x as f32, y as f32],
-    );
-    y += 28;
-    labels::text(
-        image,
-        font,
-        &[
-            ("Nível:", [220, 210, 175]),
-            (&level.to_string(), [255, 255, 255]),
-        ],
-        [x as f32, y as f32],
-    );
-    y += 28;
-    labels::text(
-        image,
-        font,
-        &[
-            ("HP:", [220, 210, 175]),
-            (
-                &format!("{} / {}", character.health, character.maximum_health),
-                [255, 255, 255],
-            ),
-        ],
-        [x as f32, y as f32],
-    );
-    y += 28;
-    labels::text(
-        image,
-        font,
-        &[
-            ("MP:", [220, 210, 175]),
-            (&format!("{} / {}", mana, maximum_mana), [255, 255, 255]),
-        ],
-        [x as f32, y as f32],
-    );
-    y += 36;
-    let attribute_lines = [
-        format!("Força: {}", character.strength),
-        format!("Agilidade: {}", character.agility),
-        format!("Vitalidade: {}", character.vitality),
-        format!("Espírito: {}", character.spirit),
-        format!("Pontos: {}", character.attribute_points),
-    ];
-    for line in &attribute_lines {
-        labels::text(
-            image,
-            font,
-            &[(line.as_str(), [220, 210, 175])],
-            [x as f32, y as f32],
-        );
-        y += 23;
-    }
-    y += 13;*/
-    let next = u64::from(level.max(1)) * 100;
-    let previous = u64::from(level.saturating_sub(1)) * 100;
-    let pct = if next > previous {
-        ((experience.saturating_sub(previous)) as f32 / (next - previous) as f32).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    labels::text(
-        image,
-        font,
-        &[("Experiência", [255, 224, 146])],
-        [x as f32 + 7.0, (y + 262) as f32],
-    );
-    let bar_x = x + 7;
-    let bar_y = y + 284;
-    let experience_width = (width - 14).max(1) as u32;
-    let experience_fill = ((experience_width.saturating_sub(2) as f32) * pct) as u32;
-    status_fill(
-        image,
-        bar_x,
-        bar_y,
-        experience_width as i32,
-        12,
-        [4, 12, 18, 255],
-    );
-    status_fill(
-        image,
-        bar_x + 1,
-        bar_y + 2,
-        experience_fill as i32,
-        8,
-        [235, 190, 52, 255],
-    );
-    labels::text(
-        image,
-        font,
-        &[(
-            format!("{:.1}% próximo nível", pct * 100.0).as_str(),
-            [255, 255, 220],
-        )],
-        [x as f32 + 7.0, (y + 300) as f32],
-    );
-    draw_footer(image, font, character, battle_power);
-}
-
-fn draw_attribute_plus_button(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    x: i32,
-    y: i32,
-    enabled: bool,
-) {
-    let fill = if enabled {
-        [31, 73, 77, 245]
-    } else {
-        [14, 28, 34, 220]
-    };
-    let border = if enabled {
-        [213, 163, 58, 255]
-    } else {
-        [82, 69, 44, 210]
-    };
-    status_fill(image, x, y, 20, 18, fill);
-    rect_outline(image, x as u32, y as u32, 20, 18, Rgba(border));
-    labels::text_sized(
-        image,
-        font,
-        &[(
-            "+",
-            if enabled {
-                [255, 224, 146]
-            } else {
-                [104, 97, 77]
-            },
-        )],
-        [x as f32 + 6.0, y as f32 + 2.0],
-        12.0,
-    );
-}
-
 /// Profession names from the original `ini/ProfessionalName.ini`.
 pub(crate) fn class_name(class_id: u8) -> String {
     match class_id {
@@ -3559,53 +2637,6 @@ fn status_fill(image: &mut RgbaImage, x: i32, y: i32, width: i32, height: i32, c
     }
 }
 
-fn status_ellipse(image: &mut RgbaImage, cx: i32, cy: i32, rx: i32, ry: i32, color: [u8; 4]) {
-    for y in -ry..=ry {
-        let ratio = 1.0 - (y * y) as f32 / (ry * ry).max(1) as f32;
-        let half = (rx as f32 * ratio.max(0.0).sqrt()) as i32;
-        for x in -half..=half {
-            status_pixel(image, cx + x, cy + y, color);
-        }
-    }
-}
-
-fn status_slot(image: &mut RgbaImage, x: i32, y: i32, position: u8, occupied: bool, hovered: bool) {
-    status_fill(image, x, y, 38, 38, [5, 13, 19, 232]);
-    status_line(image, [x + 3, y], [x + 34, y], [224, 174, 73, 255]);
-    status_line(image, [x + 3, y + 37], [x + 34, y + 37], [114, 70, 26, 255]);
-    status_line(image, [x, y + 3], [x, y + 34], [224, 174, 73, 255]);
-    status_line(image, [x + 37, y + 3], [x + 37, y + 34], [114, 70, 26, 255]);
-    status_line(image, [x + 5, y + 5], [x + 32, y + 5], [74, 53, 29, 255]);
-    if !occupied {
-        if let Some(mut icon) = equipment_slot_placeholder_image(position) {
-            // Keep the category readable while making it unmistakably an
-            // empty slot. Real equipment icons are drawn later at full
-            // opacity and are therefore visually distinct.
-            for pixel in icon.pixels_mut() {
-                pixel.0[0] = (u16::from(pixel.0[0]) * 60 / 100) as u8;
-                pixel.0[1] = (u16::from(pixel.0[1]) * 65 / 100) as u8;
-                pixel.0[2] = (u16::from(pixel.0[2]) * 70 / 100) as u8;
-                pixel.0[3] = (u16::from(pixel.0[3]) * 72 / 100) as u8;
-            }
-            imageops::overlay(image, &icon, i64::from(x + 3), i64::from(y + 3));
-        } else {
-            let color = [93, 108, 112, 190];
-            status_line(image, [x + 11, y + 19], [x + 27, y + 19], color);
-            status_line(image, [x + 19, y + 11], [x + 19, y + 27], color);
-        }
-    }
-    if hovered {
-        rect_outline(
-            image,
-            (x - 1).max(0) as u32,
-            (y - 1).max(0) as u32,
-            40,
-            40,
-            Rgba([255, 236, 154, 255]),
-        );
-    }
-}
-
 fn quality_outline(image: &mut RgbaImage, rect: UiRect, rarity_code: u8) {
     // Common items keep the plain slot of the original client; only the
     // custom rarity tiers are called out.
@@ -3623,480 +2654,6 @@ fn quality_outline(image: &mut RgbaImage, rect: UiRect, rarity_code: u8) {
             [colour[0], colour[1], colour[2], 150],
         );
     }
-}
-
-fn equipment_slot_placeholder_image(position: u8) -> Option<RgbaImage> {
-    let bytes: &[u8] = match position {
-        1 => include_bytes!("ui_assets/equipment_placeholders/slot_1.png"),
-        2 => include_bytes!("ui_assets/equipment_placeholders/slot_2.png"),
-        3 => include_bytes!("ui_assets/equipment_placeholders/slot_3.png"),
-        4 => include_bytes!("ui_assets/equipment_placeholders/slot_4.png"),
-        5 => include_bytes!("ui_assets/equipment_placeholders/slot_5.png"),
-        6 => include_bytes!("ui_assets/equipment_placeholders/slot_6.png"),
-        7 => include_bytes!("ui_assets/equipment_placeholders/slot_7.png"),
-        8 => include_bytes!("ui_assets/equipment_placeholders/slot_8.png"),
-        9 => include_bytes!("ui_assets/equipment_placeholders/slot_9.png"),
-        _ => return None,
-    };
-    image::load_from_memory(bytes)
-        .ok()
-        .map(|image| image.into_rgba8())
-}
-
-fn draw_character_preview(
-    image: &mut RgbaImage,
-    _font: &fontdue::Font,
-    _character: &crate::character::Character,
-) -> Result<()> {
-    status_ellipse(image, 224, 446, 61, 10, [22, 28, 31, 255]);
-    Ok(())
-}
-
-fn draw_equipment_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    title_font: &fontdue::Font,
-    assets: &mut Assets,
-    level: u8,
-    character: &crate::character::Character,
-    equipment: &[crate::network::OwnedItem],
-    hidden_default_slots: &[bool; 10],
-    mana: u32,
-    maximum_mana: u32,
-    battle_power: u32,
-) -> Result<()> {
-    /* legacy coordinate-heavy implementation retained below while the new
-       layout is defined in one place.
-    let display_equipment = status_equipment_items(character, equipment, hidden_default_slots);
-    let slot_y = [128, 179, 230, 281, 332];
-    let slot_positions = [1_u8, 2, 3, 6, 8, 4, 5, 7, 9, 0];
-    for (index, y) in slot_y.into_iter().enumerate() {
-        let left_position = slot_positions[index];
-        let right_position = slot_positions[index + 5];
-        status_slot(
-            image,
-            font,
-            119,
-            y,
-            display_equipment
-                .iter()
-                .any(|item| item.position == left_position),
-            false,
-        );
-        status_slot(
-            image,
-            font,
-            291,
-            y,
-            display_equipment
-                .iter()
-                .any(|item| item.position == right_position),
-            false,
-        );
-    }
-    for (slot, position) in slot_positions.into_iter().enumerate() {
-        let item_id = display_equipment
-            .iter()
-            .find(|item| item.position == position)
-            .map(|item| item.item_type)
-            .unwrap_or_default();
-        if item_id == 0 {
-            continue;
-        }
-        let (x, y) = if slot < 5 {
-            (119, slot_y[slot])
-        } else {
-            (291, slot_y[slot - 5])
-        };
-        if let Ok(icon) = item_icon_image(assets, item_id) {
-            imageops::overlay(image, &icon, i64::from(x + 3), i64::from(y + 3));
-        }
-    }
-    draw_character_preview(image, font, character)?;
-
-    labels::text(
-        image,
-        font,
-        &[("Basic Attributes", [255, 224, 146])],
-        [360.0, 112.0],
-    );
-    let name = if character.name.is_empty() {
-        "Character"
-    } else {
-        &character.name
-    };
-    let guild = if character.guild.is_empty() {
-        "None"
-    } else {
-        &character.guild
-    };
-    let name_line = format!("Name: {name}");
-    let class_line = format!("Class: {}", class_name(character.current_class));
-    let level_line = format!("Level: {level}");
-    let guild_line = format!("Guild: {guild}");
-    labels::text(
-        image,
-        font,
-        &[(name_line.as_str(), [235, 225, 193])],
-        [360.0, 138.0],
-    );
-    labels::text(
-        image,
-        font,
-        &[(class_line.as_str(), [235, 225, 193])],
-        [360.0, 157.0],
-    );
-    labels::text(
-        image,
-        font,
-        &[(level_line.as_str(), [235, 225, 193])],
-        [360.0, 176.0],
-    );
-    labels::text(
-        image,
-        font,
-        &[(guild_line.as_str(), [235, 225, 193])],
-        [360.0, 195.0],
-    );
-    let hp_line = format!("HP: {} / {}", character.health, character.maximum_health);
-    labels::text(
-        image,
-        font,
-        &[(hp_line.as_str(), [220, 210, 175])],
-        [360.0, 225.0],
-    );
-    status_fill(image, 398, 219, 102, 10, [10, 18, 23, 255]);
-    let hp = (102.0 * character.health as f32 / character.maximum_health.max(1) as f32) as i32;
-    status_fill(image, 399, 220, hp.max(1), 8, [186, 46, 53, 255]);
-    let mp_line = format!("MP: {mana} / {maximum_mana}");
-    labels::text(
-        image,
-        font,
-        &[(mp_line.as_str(), [220, 210, 175])],
-        [360.0, 243.0],
-    );
-    status_fill(image, 398, 237, 102, 10, [10, 18, 23, 255]);
-    let mp = (102.0 * mana as f32 / maximum_mana.max(mana).max(1) as f32) as i32;
-    status_fill(image, 399, 238, mp.max(1), 8, [49, 121, 208, 255]);
-    labels::text(image, font, &[("Stamina", [220, 210, 175])], [360.0, 261.0]);
-    status_fill(image, 398, 255, 102, 10, [10, 18, 23, 255]);
-    status_fill(image, 399, 256, 102, 8, [44, 162, 104, 255]);
-    let strength = u32::from(character.strength);
-    let agility = u32::from(character.agility);
-    let vitality = u32::from(character.vitality);
-    // The server's rule: a point of Strength is a point of attack.
-    let attack_min = strength;
-    let attack_max = strength;
-    let defense = vitality + agility / 2;
-    let stat_lines = [
-        format!("Attack: {attack_min} - {attack_max}"),
-        format!("Defense: {defense}"),
-        format!("Strength: {}", character.strength),
-        format!("Agility: {}", character.agility),
-        format!("Vitality: {}", character.vitality),
-        format!("Spirit: {}", character.spirit),
-    ];
-    // These are the centers of the actual decorative cards in the generated
-    // frame: [278..312], [312..335], [335..359], [359..382],
-    // [382..406] and [406..429]. Keep each label in its own card.
-    for (y, line) in [295.0, 324.0, 347.0, 371.0, 394.0, 418.0]
-        .into_iter()
-        .zip(stat_lines.iter())
-    {
-        labels::text(image, font, &[(line.as_str(), [230, 220, 188])], [360.0, y]);
-    }
-    labels::text(
-        image,
-        font,
-        &[("Battle Power 356,820", [255, 224, 146])],
-        [164.0, 527.0],
-    );
-    labels::text(image, font, &[("Details", [255, 224, 146])], [237.0, 548.0]);
-    */
-
-    let display_equipment = status_equipment_items(character, equipment, hidden_default_slots);
-    for slot in 0..StatusLayout::SLOT_POSITIONS.len() {
-        let position = StatusLayout::slot_position(slot);
-        let rect = StatusLayout::slot_rect(slot);
-        let occupied = display_equipment
-            .iter()
-            .any(|item| item.position == position);
-        status_slot(image, rect.x, rect.y, position, occupied, false);
-        if let Some(item) = display_equipment
-            .iter()
-            .find(|item| item.position == position)
-            && item.item_type != 0
-        {
-            quality_outline(image, rect, item.rarity);
-            if let Ok(icon) = item_icon_image(assets, item.item_type) {
-                imageops::overlay(image, &icon, i64::from(rect.x + 3), i64::from(rect.y + 3));
-            }
-        }
-    }
-    draw_character_preview(image, font, character)?;
-
-    let info_x = StatusLayout::INFO_X;
-    draw_info_card(
-        image,
-        font,
-        title_font,
-        info_x,
-        StatusLayout::BASIC_Y,
-        StatusLayout::INFO_WIDTH,
-        StatusLayout::BASIC_HEIGHT,
-        "Basic Attributes",
-    );
-    let name = if character.name.is_empty() {
-        "Character"
-    } else {
-        character.name.as_str()
-    };
-    let guild = if character.guild.is_empty() {
-        "None"
-    } else {
-        character.guild.as_str()
-    };
-    let identity = [
-        format!("Name: {name}"),
-        format!("Class: {}", class_name(character.current_class)),
-        format!("Level: {level}"),
-        format!("Guild: {guild}"),
-    ];
-    for (index, line) in identity.iter().enumerate() {
-        labels::text(
-            image,
-            font,
-            &[(line.as_str(), [235, 225, 193])],
-            [
-                info_x as f32 + 7.0,
-                (StatusLayout::BASIC_Y + 35 + index as i32 * 18) as f32,
-            ],
-        );
-    }
-    let hp_line = format!("HP: {} / {}", character.health, character.maximum_health);
-    labels::text(
-        image,
-        font,
-        &[(hp_line.as_str(), [220, 210, 175])],
-        [info_x as f32 + 7.0, 208.0],
-    );
-    draw_resource_bar(
-        image,
-        info_x + 7,
-        220,
-        128,
-        character.health,
-        character.maximum_health,
-        [186, 46, 53, 255],
-    );
-    let mp_line = format!("MP: {mana} / {maximum_mana}");
-    labels::text(
-        image,
-        font,
-        &[(mp_line.as_str(), [220, 210, 175])],
-        [info_x as f32 + 7.0, 226.0],
-    );
-    draw_resource_bar(
-        image,
-        info_x + 7,
-        238,
-        128,
-        mana,
-        maximum_mana,
-        [49, 121, 208, 255],
-    );
-    labels::text(
-        image,
-        font,
-        &[("Stamina", [220, 210, 175])],
-        [info_x as f32 + 7.0, 244.0],
-    );
-    draw_resource_bar(image, info_x + 7, 256, 128, 100, 100, [44, 162, 104, 255]);
-
-    draw_info_card(
-        image,
-        font,
-        title_font,
-        info_x,
-        StatusLayout::COMBAT_Y,
-        StatusLayout::INFO_WIDTH,
-        StatusLayout::COMBAT_HEIGHT,
-        "Combat Attributes",
-    );
-    let strength = u32::from(character.strength);
-    let agility = u32::from(character.agility);
-    let vitality = u32::from(character.vitality);
-    let (equipment_attack_min, equipment_attack_max, equipment_defense, _, _) =
-        equipment_bonuses(assets, &display_equipment);
-    let stat_lines = [
-        format!(
-            "Attack: {} - {}",
-            strength + equipment_attack_min,
-            strength + equipment_attack_max
-        ),
-        format!("Defense: {}", vitality + agility / 2 + equipment_defense),
-        format!("Strength: {}", character.strength),
-        format!("Agility: {}", character.agility),
-        format!("Vitality: {}", character.vitality),
-        format!("Spirit: {}", character.spirit),
-    ];
-    for (index, line) in stat_lines.iter().enumerate() {
-        labels::text(
-            image,
-            font,
-            &[(line.as_str(), [230, 220, 188])],
-            [
-                info_x as f32 + 7.0,
-                (StatusLayout::COMBAT_Y + 39 + index as i32 * 21) as f32,
-            ],
-        );
-    }
-    draw_footer(image, font, character, battle_power);
-    Ok(())
-}
-
-fn draw_resource_bar(
-    image: &mut RgbaImage,
-    x: i32,
-    y: i32,
-    width: i32,
-    value: u32,
-    maximum: u32,
-    color: [u8; 4],
-) {
-    let width = width.max(4);
-    status_fill(image, x, y, width, 10, [8, 16, 22, 255]);
-    let fraction = value as f32 / maximum.max(1) as f32;
-    let fill = ((width - 2) as f32 * fraction.clamp(0.0, 1.0)).round() as i32;
-    if fill > 0 {
-        status_fill(image, x + 1, y + 1, fill, 8, color);
-    }
-}
-
-fn equipment_bonuses(
-    assets: &mut Assets,
-    equipment: &[crate::network::OwnedItem],
-) -> (u32, u32, u32, u32, u32) {
-    let item_ids = equipment
-        .iter()
-        .filter(|item| item.max_durability > 0 && item.durability > 0)
-        .map(|item| item.item_type)
-        .collect::<Vec<_>>();
-    let infos = load_item_infos(assets, &item_ids);
-    equipment
-        .iter()
-        .filter(|item| item.max_durability > 0 && item.durability > 0)
-        .fold(
-            (0, 0, 0, 0, 0),
-            |(min_attack, max_attack, defense, health, mana), item| {
-                let Some(info) = infos.get(&item.item_type) else {
-                    return (min_attack, max_attack, defense, health, mana);
-                };
-                let scale = item_stat_scale(item.plus, item.rarity);
-                let scaled = |value: u32| value.saturating_mul(scale) / 100;
-                (
-                    min_attack.saturating_add(scaled(info.attack_min)),
-                    max_attack.saturating_add(scaled(info.attack_max)),
-                    defense.saturating_add(scaled(info.defense)),
-                    health.saturating_add(scaled(info.health_add)),
-                    mana.saturating_add(scaled(info.mana_add)),
-                )
-            },
-        )
-}
-
-fn derived_battle_power(
-    level: u8,
-    character: &crate::character::Character,
-    bonuses: (u32, u32, u32),
-) -> u32 {
-    let strength = u32::from(character.strength);
-    let agility = u32::from(character.agility);
-    let vitality = u32::from(character.vitality);
-    let spirit = u32::from(character.spirit);
-    let base_min_attack = strength;
-    let base_max_attack = strength;
-    let attack_min = base_min_attack.saturating_add(bonuses.0);
-    let attack_max = base_max_attack.saturating_add(bonuses.1);
-    let defense = vitality + agility / 2 + bonuses.2;
-    level.max(1) as u32 * 10
-        + strength * 2
-        + agility * 2
-        + vitality * 2
-        + spirit * 2
-        + attack_min
-        + attack_max
-        + defense
-}
-
-fn draw_footer(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    character: &crate::character::Character,
-    battle_power: u32,
-) {
-    let x = StatusLayout::FOOTER_X;
-    let y = StatusLayout::FOOTER_Y;
-    status_fill(
-        image,
-        x,
-        y,
-        StatusLayout::FOOTER_WIDTH,
-        StatusLayout::FOOTER_HEIGHT,
-        [5, 14, 21, 255],
-    );
-    status_line(
-        image,
-        [x, y],
-        [x + StatusLayout::FOOTER_WIDTH - 1, y],
-        [205, 160, 70, 230],
-    );
-    status_line(
-        image,
-        [x, y + StatusLayout::FOOTER_HEIGHT - 1],
-        [
-            x + StatusLayout::FOOTER_WIDTH - 1,
-            y + StatusLayout::FOOTER_HEIGHT - 1,
-        ],
-        [102, 66, 28, 220],
-    );
-    let name = if character.name.is_empty() {
-        "Character"
-    } else {
-        character.name.as_str()
-    };
-    labels::text(
-        image,
-        font,
-        &[(name, [248, 211, 124])],
-        [
-            centered_text_x(font, name, (x + StatusLayout::FOOTER_WIDTH / 2) as f32),
-            (y + 7) as f32,
-        ],
-    );
-    let battle_power = format!("Battle Power {battle_power}");
-    labels::text(
-        image,
-        font,
-        &[(battle_power.as_str(), [255, 224, 146])],
-        [
-            centered_text_x(
-                font,
-                battle_power.as_str(),
-                (x + StatusLayout::FOOTER_WIDTH / 2) as f32,
-            ),
-            (y + 32) as f32,
-        ],
-    );
-    labels::text(
-        image,
-        font,
-        &[("Details", [255, 224, 146])],
-        [
-            centered_text_x(font, "Details", (x + StatusLayout::FOOTER_WIDTH / 2) as f32),
-            (y + 51) as f32,
-        ],
-    );
 }
 
 pub fn status_equipment_overlay_image(
@@ -4208,9 +2765,6 @@ pub enum ItemContextAction {
     ApplyRefinery,
     ApplyArtifact,
     GemSocket,
-    OpenSocket,
-    InsertGem,
-    RemoveGem,
 }
 
 impl ItemContextAction {
@@ -4225,9 +2779,6 @@ impl ItemContextAction {
             Self::ApplyRefinery => "REFINERY",
             Self::ApplyArtifact => "ARTIFACT",
             Self::GemSocket => "GEM SOCKET",
-            Self::OpenSocket => "OPEN SOCKET",
-            Self::InsertGem => "INSERT GEM",
-            Self::RemoveGem => "REMOVE GEM",
         }
     }
 }
@@ -4744,22 +3295,6 @@ pub fn item_action_panel_confirm_enabled(
                     .iter()
                     .any(|item| item.position < 40 && item.item_type == 1_088_000)
         }
-        ItemContextAction::OpenSocket => {
-            let first_open = panel.item.gem_one != 0 || panel.item.gem_one == 255;
-            let second_open = panel.item.gem_two != 0 || panel.item.gem_two == 255;
-            let cost = if !first_open {
-                1
-            } else if !second_open {
-                5
-            } else {
-                return false;
-            };
-            inventory
-                .iter()
-                .filter(|item| item.position < 40 && item.item_type == 1_088_000)
-                .count()
-                >= cost
-        }
         ItemContextAction::Rarity => {
             let Some((cost, _chance)) = rarity_upgrade_cost_and_chance(panel.item.rarity) else {
                 return false;
@@ -4770,16 +3305,6 @@ pub fn item_action_panel_confirm_enabled(
                     .filter(|item| item.position < 40 && item.item_type == 1_088_000)
                     .count()
                     >= usize::from(cost)
-        }
-        ItemContextAction::InsertGem => {
-            (panel.item.gem_one == 255 || panel.item.gem_two == 255)
-                && inventory
-                    .iter()
-                    .any(|item| item.position < 40 && (700_000..800_000).contains(&item.item_type))
-        }
-        ItemContextAction::RemoveGem => {
-            (panel.item.gem_one > 0 && panel.item.gem_one != 255)
-                || (panel.item.gem_two > 0 && panel.item.gem_two != 255)
         }
         ItemContextAction::ApplyRefinery | ItemContextAction::ApplyArtifact => true,
         _ => true,
@@ -4965,18 +3490,6 @@ fn item_action_panel_content(
         ),
         ItemContextAction::ApplyRefinery => ("Uses a compatible refinery.", true),
         ItemContextAction::ApplyArtifact => ("Uses a compatible artifact.", true),
-        ItemContextAction::OpenSocket => (
-            "Uses 1 or 5 DragonBalls.",
-            item_action_panel_confirm_enabled(panel, inventory),
-        ),
-        ItemContextAction::InsertGem => (
-            "Uses the next open socket.",
-            item_action_panel_confirm_enabled(panel, inventory),
-        ),
-        ItemContextAction::RemoveGem => (
-            "Removes the selected gem.",
-            item_action_panel_confirm_enabled(panel, inventory),
-        ),
         _ => ("Confirm this item action.", true),
     };
     if !matches!(panel.action, ItemContextAction::Upgrade) {
@@ -5906,59 +4419,6 @@ pub fn is_consumable(item_type: u32) -> bool {
         || temporary_effect_for_item(item_type)
 }
 
-fn draw_simple_status_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    title_font: &fontdue::Font,
-    title: &str,
-    body: &str,
-) {
-    let x = StatusLayout::INFO_X;
-    let y = StatusLayout::BASIC_Y;
-    let width = StatusLayout::INFO_WIDTH;
-    let height = StatusLayout::BASIC_HEIGHT + StatusLayout::COMBAT_HEIGHT + 5;
-    draw_info_card(image, font, title_font, x, y, width, height, title);
-
-    // Keep descriptive text inside the same right-hand card used by the
-    // attributes/equipment tabs. Long messages are split at a word boundary
-    // so they cannot cross the frame or overlap the paper-doll area.
-    let mut line = String::new();
-    let mut row = 0;
-    for word in body.split_whitespace() {
-        let candidate = if line.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{line} {word}")
-        };
-        let candidate_width = candidate
-            .chars()
-            .map(|character| font.metrics(character, 10.0).advance_width)
-            .sum::<f32>();
-        if candidate_width > (width - 14) as f32 && !line.is_empty() {
-            labels::text_sized(
-                image,
-                font,
-                &[(line.as_str(), [170, 164, 143])],
-                [x as f32 + 7.0, (y + 43 + row * 20) as f32],
-                10.0,
-            );
-            row += 1;
-            line = word.to_owned();
-        } else {
-            line = candidate;
-        }
-    }
-    if !line.is_empty() {
-        labels::text_sized(
-            image,
-            font,
-            &[(line.as_str(), [170, 164, 143])],
-            [x as f32 + 7.0, (y + 43 + row * 20) as f32],
-            10.0,
-        );
-    }
-}
-
 fn nobility_rank_label(rank: u32) -> &'static str {
     match rank {
         1 => "Knight",
@@ -5969,138 +4429,6 @@ fn nobility_rank_label(rank: u32) -> &'static str {
         12 => "King",
         _ => "Serf",
     }
-}
-
-fn title_label(title_id: u32) -> &'static str {
-    match title_id {
-        1 => "Novice",
-        2 => "Veteran",
-        3 => "Knight",
-        4 => "Baron",
-        5 => "Duke",
-        _ => "Nenhum",
-    }
-}
-
-fn draw_title_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    title_font: &fontdue::Font,
-    equipped_title: u32,
-    nobility_rank: u32,
-    hovered: Option<u32>,
-) {
-    let x = StatusLayout::INFO_X;
-    let y = StatusLayout::BASIC_Y;
-    let width = StatusLayout::INFO_WIDTH;
-    let height = StatusLayout::BASIC_HEIGHT + StatusLayout::COMBAT_HEIGHT + 5;
-    draw_info_card(image, font, title_font, x, y, width, height, "Títulos");
-    labels::text_sized(
-        image,
-        font,
-        &[(
-            format!("Equipado: {}", title_label(equipped_title)).as_str(),
-            [235, 225, 193],
-        )],
-        [x as f32 + 7.0, (y + 43) as f32],
-        9.5,
-    );
-    labels::text_sized(
-        image,
-        font,
-        &[(
-            format!("Patente: {}", nobility_rank_label(nobility_rank)).as_str(),
-            [190, 184, 162],
-        )],
-        [x as f32 + 7.0, (y + 56) as f32],
-        9.0,
-    );
-    for (index, title_id) in [0_u32, 1, 2, 3, 4, 5].into_iter().enumerate() {
-        draw_status_action_button(
-            image,
-            font,
-            StatusLayout::title_button_rect(index),
-            title_label(title_id),
-            hovered == Some(title_id),
-        );
-    }
-}
-
-fn draw_skills_tab(image: &mut RgbaImage, font: &fontdue::Font, content_top: i32) {
-    let x = 124;
-    let y = content_top;
-    labels::text(
-        image,
-        font,
-        &[("Habilidades", [255, 224, 146])],
-        [x as f32, y as f32],
-    );
-    labels::text(
-        image,
-        font,
-        &[("Nenhuma habilidade aprendida", [150, 150, 150])],
-        [x as f32, (y + 30) as f32],
-    );
-}
-
-fn draw_magic_tab(image: &mut RgbaImage, font: &fontdue::Font, content_top: i32) {
-    let x = 124;
-    let y = content_top;
-    labels::text(
-        image,
-        font,
-        &[("Magias", [255, 224, 146])],
-        [x as f32, y as f32],
-    );
-    labels::text(
-        image,
-        font,
-        &[("Nenhuma magia aprendida", [150, 150, 150])],
-        [x as f32, (y + 30) as f32],
-    );
-}
-
-fn draw_status_tab(
-    image: &mut RgbaImage,
-    font: &fontdue::Font,
-    character: &crate::character::Character,
-    content_top: i32,
-) {
-    let x = 124;
-    let mut y = content_top;
-    labels::text(
-        image,
-        font,
-        &[("Status Geral", [255, 224, 146])],
-        [x as f32, y as f32],
-    );
-    y += 30;
-    labels::text(
-        image,
-        font,
-        &[
-            ("Guilda:", [220, 210, 175]),
-            (&character.guild, [255, 255, 255]),
-        ],
-        [x as f32, y as f32],
-    );
-    y += 26;
-    labels::text(
-        image,
-        font,
-        &[
-            ("Cargo:", [220, 210, 175]),
-            (&character.guild_rank, [255, 255, 255]),
-        ],
-        [x as f32, y as f32],
-    );
-    y += 26;
-    labels::text(
-        image,
-        font,
-        &[("PK Points:", [220, 210, 175]), ("0", [255, 255, 255])],
-        [x as f32, y as f32],
-    );
 }
 
 pub fn inventory_slot_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
@@ -6349,6 +4677,7 @@ fn gem_item_name(item_id: u32) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 pub fn panel_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> {
     let mut image = RgbaImage::from_pixel(PANEL_WIDTH, SHOP_HEIGHT, Rgba([0, 0, 0, 0]));
     imageops::overlay(&mut image, &panel_base_image(assets)?, 0, 0);
@@ -6466,31 +4795,6 @@ pub fn panel_overlay_image(assets: &mut Assets, state: &ShopState) -> Result<Rgb
     Ok(image)
 }
 
-fn rounded_rect(
-    image: &mut RgbaImage,
-    left: u32,
-    top: u32,
-    width: u32,
-    height: u32,
-    radius: u32,
-    colour: Rgba<u8>,
-) {
-    let right = left + width - 1;
-    let bottom = top + height - 1;
-    let radius = radius.min(width / 2).min(height / 2);
-    for y in top..=bottom {
-        for x in left..=right {
-            let nearest_x = x.clamp(left + radius, right.saturating_sub(radius));
-            let nearest_y = y.clamp(top + radius, bottom.saturating_sub(radius));
-            let dx = x.abs_diff(nearest_x);
-            let dy = y.abs_diff(nearest_y);
-            if dx * dx + dy * dy <= radius * radius {
-                image.put_pixel(x, y, colour);
-            }
-        }
-    }
-}
-
 pub fn item_info(assets: &mut Assets, item_id: u32) -> Option<ItemInfo> {
     load_item_infos(assets, &[item_id]).remove(&item_id)
 }
@@ -6587,6 +4891,7 @@ pub fn scroll_direction_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool>
     }
 }
 
+#[cfg(test)]
 pub fn inventory_image(
     assets: &mut Assets,
     inventory: &[crate::network::OwnedItem],
@@ -6770,88 +5075,10 @@ fn draw_durability_indicator(
     }
 }
 
-fn centered_text_x(font: &fontdue::Font, text: &str, center: f32) -> f32 {
-    center - text_width(font, text) * 0.5
-}
-
-fn draw_inventory_close_button(image: &mut RgbaImage, hovered: bool) {
-    const LEFT: u32 = 236;
-    const TOP: u32 = 14;
-    let outer = if hovered {
-        [255, 224, 121, 255]
-    } else {
-        [239, 187, 71, 255]
-    };
-    let inner = if hovered {
-        [139, 51, 28, 255]
-    } else {
-        [105, 37, 24, 255]
-    };
-    rounded_rect(image, LEFT, TOP, 25, 25, 4, Rgba([48, 24, 19, 255]));
-    rounded_rect(image, LEFT + 2, TOP + 2, 21, 21, 3, Rgba(inner));
-    rounded_rect(image, LEFT + 3, TOP + 3, 19, 19, 2, Rgba(inner));
-    rect_outline(image, LEFT + 2, TOP + 2, 21, 21, Rgba(outer));
-
-    for offset in 0..13 {
-        for thickness in 0..3 {
-            let points = [
-                (LEFT + 6 + offset, TOP + 6 + offset + thickness),
-                (LEFT + 6 + offset + thickness, TOP + 6 + offset),
-                (LEFT + 18 - offset, TOP + 6 + offset + thickness),
-                (LEFT + 18 - offset - thickness, TOP + 6 + offset),
-            ];
-            for (x, y) in points {
-                if x < image.width() && y < image.height() {
-                    image.put_pixel(x, y, Rgba(outer));
-                }
-            }
-        }
-    }
-}
-
-fn right_aligned_text_x(font: &fontdue::Font, text: &str, right: f32) -> f32 {
-    right - text_width(font, text)
-}
-
 fn text_width(font: &fontdue::Font, text: &str) -> f32 {
     text.chars()
         .map(|character| font.metrics(character, 12.0).advance_width)
         .sum::<f32>()
-}
-
-pub fn warehouse_image(
-    assets: &mut Assets,
-    items: &[crate::network::OwnedItem],
-    page: usize,
-    selected_uid: Option<u32>,
-    saved_silver: u32,
-    amount_text: &str,
-    amount_focused: bool,
-    guild_warehouse: bool,
-) -> Result<RgbaImage> {
-    let mut image = RgbaImage::from_pixel(WAREHOUSE_WIDTH, WAREHOUSE_HEIGHT, Rgba([0, 0, 0, 0]));
-    imageops::overlay(
-        &mut image,
-        &warehouse_base_image(assets, guild_warehouse)?,
-        0,
-        0,
-    );
-    imageops::overlay(
-        &mut image,
-        &warehouse_overlay_image(
-            assets,
-            items,
-            page,
-            selected_uid,
-            saved_silver,
-            amount_text,
-            amount_focused,
-            guild_warehouse,
-        )?,
-        0,
-        0,
-    );
-    Ok(image)
 }
 
 /// Static Warehouse window: `DialogDepot` with its native buttons.
@@ -7594,7 +5821,8 @@ mod icon_tests {
             let clip = status_character_clip(viewport);
             assert_eq!(clip[2], StatusLayout::PAPER_WIDTH as u32);
             assert_eq!(clip[3], StatusLayout::PAPER_HEIGHT as u32);
-            assert!(clip[1] + clip[3] <= (top + StatusLayout::FOOTER_Y as f32) as u32);
+            // Above the Close row at the window's foot.
+            assert!(clip[1] + clip[3] <= (top + 400.0) as u32);
 
             for slot in 0..StatusLayout::SLOT_POSITIONS.len() {
                 let position = StatusLayout::slot_position(slot);
@@ -7760,9 +5988,6 @@ mod icon_tests {
             super::ItemContextAction::ImproveQuality,
             super::ItemContextAction::ApplyRefinery,
             super::ItemContextAction::ApplyArtifact,
-            super::ItemContextAction::OpenSocket,
-            super::ItemContextAction::InsertGem,
-            super::ItemContextAction::RemoveGem,
         ];
         let item = crate::network::OwnedItem {
             uid: 1,

@@ -5,13 +5,8 @@
 //! anchors only the panels that belong to an edge. Keeping that contract in a
 //! small module prevents rendering and hit-testing from drifting apart.
 
-pub const LOGICAL_WIDTH: f32 = 1024.0;
-pub const LOGICAL_HEIGHT: f32 = 768.0;
 pub const MAIN_HUD_WIDTH: f32 = 1024.0;
 pub const MAIN_HUD_HEIGHT: f32 = 141.0;
-
-/// Logical y of the main HUD in the 1024x768 canvas (`GUI.ini` `[0-130]`).
-pub const MAIN_HUD_ORIGIN_Y: f32 = 627.0;
 
 /// Clickable controls of the original bottom HUD.
 ///
@@ -175,7 +170,6 @@ pub const CHARACTER_CANVAS_HEIGHT: f32 = CHARACTER_DIALOG_HEIGHT;
 pub const INVENTORY_WIDTH: f32 = 270.0;
 pub const INVENTORY_HEIGHT: f32 = 502.0;
 
-pub const CHARACTER_PAPER: [f32; 4] = [40.0, 55.0, 206.0, 332.0];
 pub const INVENTORY_GRID: [f32; 4] = [26.0, 28.0, 40.0, 40.0];
 pub const INVENTORY_GRID_STEP: [f32; 2] = [42.0, 42.0];
 pub const INVENTORY_ICON_SIZE: f32 = 38.0;
@@ -220,21 +214,7 @@ pub fn inventory_position(viewport: [f32; 2]) -> [f32; 2] {
     ]
 }
 
-pub fn character_rect(viewport: [f32; 2]) -> Rect {
-    let [x, y] = character_position(viewport);
-    Rect::new(x, y, CHARACTER_WIDTH, CHARACTER_DIALOG_HEIGHT)
-}
-
-pub fn character_canvas_rect(viewport: [f32; 2]) -> Rect {
-    let [x, y] = character_position(viewport);
-    Rect::new(x, y, CHARACTER_WIDTH, CHARACTER_CANVAS_HEIGHT)
-}
-
-pub fn inventory_rect(viewport: [f32; 2]) -> Rect {
-    let [x, y] = inventory_position(viewport);
-    Rect::new(x, y, INVENTORY_WIDTH, INVENTORY_HEIGHT)
-}
-
+#[cfg(test)]
 pub fn inventory_slot_rect(viewport: [f32; 2], slot: u8) -> Rect {
     let [left, top] = inventory_position(viewport);
     let column = f32::from(slot % 5);
@@ -254,6 +234,7 @@ pub fn main_hud_position(viewport: [f32; 2]) -> [f32; 2] {
     ]
 }
 
+#[cfg(test)]
 pub fn main_hud_rect(viewport: [f32; 2]) -> Rect {
     let [x, y] = main_hud_position(viewport);
     Rect::new(x, y, MAIN_HUD_WIDTH, MAIN_HUD_HEIGHT)

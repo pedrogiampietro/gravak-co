@@ -7,7 +7,10 @@ use std::{env, fs};
 #[derive(Debug, serde::Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 struct MapCsv {
+    // Columns of the CSV the decoder reads but does not need.
+    #[allow(dead_code)]
     uid: u32,
+    #[allow(dead_code)]
     name: String,
     id: u32,
     flags: u32,
@@ -34,6 +37,7 @@ struct Portal {
 struct MapEntry {
     map_id: u32,
     path: String,
+    #[allow(dead_code)]
     name: String,
     flags: u32,
     weather: u8,

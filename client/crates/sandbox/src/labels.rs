@@ -621,11 +621,6 @@ fn triangle_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 
 /// Where the bubble's tail ends, from the image's bottom right.
 pub const SPEECH_TIP: [u32; 2] = [3, 2];
 
-/// How wide a name is drawn over a head.
-pub fn name_width(name: &str) -> f32 {
-    font().map_or(name.len() as f32 * 6.0, |font| width(&font, name))
-}
-
 #[cfg(test)]
 mod speech_preview {
     /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox speech_bubble_preview`

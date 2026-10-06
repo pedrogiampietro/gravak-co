@@ -7512,23 +7512,6 @@ impl App {
                         self.item_action_panel = None;
                         self.queue_apply_artifact(panel.item)
                     }
-                    shop::ItemContextAction::OpenSocket => {
-                        self.item_action_panel = None;
-                        self.queue_open_socket(panel.item)
-                    }
-                    shop::ItemContextAction::InsertGem => {
-                        self.item_action_panel = None;
-                        false
-                    }
-                    shop::ItemContextAction::RemoveGem => {
-                        self.item_action_panel = None;
-                        let socket = if panel.item.gem_one > 0 && panel.item.gem_one != 255 {
-                            1
-                        } else {
-                            2
-                        };
-                        self.queue_remove_gem(panel.item, socket)
-                    }
                     _ => false,
                 };
             }
@@ -7560,11 +7543,8 @@ impl App {
                 | shop::ItemContextAction::Rarity
                 | shop::ItemContextAction::ImproveQuality
                 | shop::ItemContextAction::GemSocket
-                | shop::ItemContextAction::OpenSocket
                 | shop::ItemContextAction::ApplyRefinery
-                | shop::ItemContextAction::ApplyArtifact
-                | shop::ItemContextAction::InsertGem
-                | shop::ItemContextAction::RemoveGem => {
+                | shop::ItemContextAction::ApplyArtifact => {
                     self.open_item_action_panel(context.item, context.actions[index]);
                     false
                 }

@@ -1,5 +1,4 @@
 [workspace.package]
-authors = ["Pedro Giampietro"]
 edition = "2021"
 repository = "https://github.com/pedrogiampietro/gravak-co.git"
 license = "GPL-3.0-only"
@@ -38,7 +37,6 @@ derive-packethandler = { path = "macros/derive-packethandler" }
 derive-packetprocessor = { path = "macros/derive-packetprocessor" }
 
 # Servers & Libs
-auth = { path = "server/auth" }
 game = { path = "server/game" }
 
 # Packets
@@ -58,7 +56,6 @@ tracing-core = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }
 dotenvy = "0.15"
 bitflags = { version = "2.4", default-features = false }
-argh = "0.1"
 tokio-stream = { version = "0.1.8", default-features = false }
 parking_lot = { version = "0.12.1", default-features = false, features = [] }
 rand = "0.8"

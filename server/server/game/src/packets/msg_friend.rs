@@ -8,8 +8,12 @@ use tq_network::{Actor, PacketID, PacketProcess};
 use tq_serde::String16;
 
 pub const APPLY: u8 = 10;
+// The 5065 client's other codes, not sent by this server (yet).
+#[allow(dead_code)]
 pub const ACCEPT: u8 = 11;
+#[allow(dead_code)]
 pub const ONLINE: u8 = 12;
+#[allow(dead_code)]
 pub const OFFLINE: u8 = 13;
 pub const BREAK: u8 = 14;
 pub const GET_INFO: u8 = 15;

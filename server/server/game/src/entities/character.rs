@@ -5239,7 +5239,7 @@ impl Character {
     /// Uses `amount` stamina; `false` (and nothing used) when short.
     pub fn spend_stamina(&self, amount: u8) -> bool {
         self.stamina
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |stamina| stamina.checked_sub(amount))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |stamina| stamina.checked_sub(amount))
             .is_ok()
     }
 
@@ -5262,7 +5262,7 @@ impl Character {
         if self.xp_ready_until.lock().is_none() {
             let _ = self
                 .xp_points
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |xp| Some(xp.saturating_add(1).min(crate::vitals::MAX_XP)));
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |xp| Some(xp.saturating_add(1).min(crate::vitals::MAX_XP)));
             *self.last_xp_up.lock() = std::time::Instant::now();
         }
     }
@@ -5465,7 +5465,7 @@ impl Character {
     /// Spends `amount` virtue; `false` (nothing spent) when short.
     pub fn spend_virtue(&self, amount: u32) -> bool {
         self.virtue
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |virtue| virtue.checked_sub(amount))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |virtue| virtue.checked_sub(amount))
             .is_ok()
     }
 
