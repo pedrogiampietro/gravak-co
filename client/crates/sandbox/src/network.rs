@@ -240,6 +240,7 @@ pub enum NetworkEvent {
     DailyRewardState(gravak_protocol::DailyRewardState),
     /// One ranked character of the Highscores.
     HighscoreRow(gravak_protocol::HighscoreRow),
+    WhisperCard(gravak_protocol::WhisperCard),
     /// The Highscores page shown: the window opens on it.
     HighscoreState(gravak_protocol::HighscoreState),
     /// When each of the hero's statuses ends.
@@ -730,6 +731,7 @@ impl NetworkHandle {
                 | NetworkEvent::DailyRewardChoice(_)
                 | NetworkEvent::DailyRewardState(_)
                 | NetworkEvent::HighscoreRow(_)
+                | NetworkEvent::WhisperCard(_)
                 | NetworkEvent::HighscoreState(_)
                 | NetworkEvent::StatusTimers(_)
                 | NetworkEvent::RoleEffect { .. }
@@ -1499,6 +1501,9 @@ pub(crate) async fn play(
                 }
                 Some(GameEvent::DailyRewardState(state)) => {
                     let _ = events.send(NetworkEvent::DailyRewardState(state));
+                }
+                Some(GameEvent::WhisperCard(card)) => {
+                    let _ = events.send(NetworkEvent::WhisperCard(card));
                 }
                 Some(GameEvent::HighscoreRow(row)) => {
                     let _ = events.send(NetworkEvent::HighscoreRow(row));

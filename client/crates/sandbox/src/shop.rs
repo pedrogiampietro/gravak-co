@@ -3459,7 +3459,7 @@ fn draw_attribute_plus_button(
 }
 
 /// Profession names from the original `ini/ProfessionalName.ini`.
-fn class_name(class_id: u8) -> String {
+pub(crate) fn class_name(class_id: u8) -> String {
     match class_id {
         10 => "InternTrojan",
         11 => "Trojan",

@@ -532,3 +532,65 @@ mod tests {
         assert_eq!(short.height(), 34);
     }
 }
+
+/// The bubble over someone who speaks on the Talk channel: the line in
+/// yellow inside a thin light frame, wrapped, its tail running down to
+/// the right. The tail's tip is the image's bottom-right corner.
+pub fn speech_bubble_image(message: &str) -> Result<RgbaImage> {
+    const MAX_WIDTH: f32 = 170.0;
+    const LINE: u32 = 15;
+    const TAIL: u32 = 18;
+    let font = font()?;
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in message.split_whitespace() {
+        let candidate = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+        if width(&font, &candidate) > MAX_WIDTH && !line.is_empty() {
+            lines.push(std::mem::replace(&mut line, word.to_owned()));
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines.truncate(4);
+    let text_width = lines.iter().map(|line| width(&font, line)).fold(0.0_f32, f32::max).min(MAX_WIDTH + 40.0);
+    let box_w = text_width.max(110.0).ceil() as u32 + 14;
+    let box_h = lines.len() as u32 * LINE + 8;
+    let mut image = RgbaImage::new(box_w + TAIL, box_h + TAIL);
+    let border = Rgba([228, 228, 220, 210]);
+    for y in 0..box_h {
+        for x in 0..box_w {
+            let edge = x == 0 || y == 0 || x == box_w - 1 || y == box_h - 1;
+            image.put_pixel(x, y, if edge { border } else { Rgba([0, 0, 0, 96]) });
+        }
+    }
+    // The tail: from the box's bottom edge down to the corner.
+    for step in 0..=TAIL {
+        let x = box_w - 12 + step;
+        let y = box_h - 1 + step;
+        if x < image.width() && y < image.height() {
+            image.put_pixel(x, y, border);
+        }
+    }
+    for (index, line) in lines.iter().enumerate() {
+        text(&mut image, &font, &[(line.as_str(), [255, 255, 64])], [7.0, 4.0 + (index as u32 * LINE) as f32]);
+    }
+    Ok(image)
+}
+
+#[cfg(test)]
+mod speech_preview {
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox speech_bubble_preview`
+    #[test]
+    fn speech_bubble_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let mut sheet = image::RgbaImage::from_pixel(460, 120, image::Rgba([110, 120, 100, 255]));
+        let short = super::speech_bubble_image("teste").expect("bubble");
+        let long = super::speech_bubble_image("alguém vende uma Super Dragon Ball? pago bem, chama no whisper").expect("bubble");
+        image::imageops::overlay(&mut sheet, &short, 10, 10);
+        image::imageops::overlay(&mut sheet, &long, 140, 10);
+        sheet.save(format!("{dir}/speech.png")).expect("png");
+    }
+}

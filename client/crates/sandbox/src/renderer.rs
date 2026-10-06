@@ -1492,6 +1492,41 @@ impl Renderer {
 
     /// Frees the textures named `prefix...` except `keep`: versions of a
     /// redrawn image that are no longer shown.
+    /// The bubble over `name` while they speak: its tail ends over their
+    /// head, the bubble up to the left.
+    fn push_speech(
+        &mut self,
+        speech: &[(String, String)],
+        name: &str,
+        origin: [f32; 2],
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) -> Result<()> {
+        let Some((_, line)) = speech.iter().find(|(speaker, _)| speaker.eq_ignore_ascii_case(name)) else {
+            return Ok(());
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(line, &mut hasher);
+        let key = format!("@speech-{}", std::hash::Hasher::finish(&hasher));
+        if !self.textures.contains_key(&key) {
+            self.upload(&key, crate::labels::speech_bubble_image(line)?);
+        }
+        if let Some(texture) = self.textures.get(&key) {
+            let tip = [origin[0] - 8.0, origin[1] - 146.0];
+            draws.push(Draw {
+                texture: key,
+                vertices: quad(
+                    [(tip[0] - texture.size[0]).round(), (tip[1] - texture.size[1]).round()],
+                    texture.size,
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+        Ok(())
+    }
+
     fn prune_textures(&mut self, prefix: &str, keep: &[Option<&str>]) {
         self.textures
             .retain(|key, _| !key.starts_with(prefix) || keep.contains(&Some(key.as_str())));
@@ -2854,6 +2889,9 @@ impl Renderer {
                     });
                 }
             }
+            if !actor.npc && !monster && !actor.name.is_empty() {
+                self.push_speech(&skill_hud.speech, &actor.name, origin, viewport, &mut draws)?;
+            }
             // A hovered player shows their face, name and health instead
             // of the plain name.
             if hovered_player == Some(actor.id) && !actor.npc && !monster && !actor.name.is_empty() {
@@ -3238,6 +3276,7 @@ impl Renderer {
         if status_flags & VIP_FLAG != 0 {
             self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
         }
+        self.push_speech(&skill_hud.speech, &character.name, origin, viewport, &mut draws)?;
         let over_name = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
         self.push_ko_tag(assets, skill_hud.ko_count, status_flags, [origin[0], over_name], viewport, &mut draws);
         if let Some(booth) = character.booth.as_deref() {
@@ -4885,6 +4924,50 @@ impl Renderer {
                 });
             }
         }
+        // Private chats: the faces waiting over the bar and the window.
+        for (index, (conversation, seen_mesh, hovered)) in skill_hud.whisper_faces.iter().enumerate() {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&(&conversation.name, &conversation.card, seen_mesh, hovered), &mut hasher);
+            let key = format!("@whisper-face-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::whisper::face_icon(assets, conversation, *seen_mesh, *hovered)?;
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let rect = crate::whisper::face_rect(viewport, index);
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad([rect.x as f32, rect.y as f32], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(view) = &skill_hud.whisper_window {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(view, &mut hasher);
+            let key = format!("@whisper-window-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::whisper::window_image(
+                    assets,
+                    &view.conversation,
+                    &view.own_name,
+                    view.seen_mesh,
+                    &view.input,
+                    view.input_focused,
+                    view.hovered,
+                )?;
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::whisper::window_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         // The F keys' popup and a dragged emote go over every window.
         if let Some((view, hover)) = &skill_hud.hotkey_popup {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -4899,6 +4982,30 @@ impl Renderer {
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(crate::hotkey_menu::position(view), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(slot) = skill_hud.dragging_hotkey.and_then(|slot| action_bar.slots.get(slot)) {
+            let key = format!("@hotkey-drag-{}", slot.action_id.as_deref().unwrap_or_default());
+            if !self.textures.contains_key(&key) {
+                let art = match slot.binding() {
+                    Some(crate::action_bar::Binding::Item(item_type)) => crate::shop::item_icon_image(assets, item_type).ok(),
+                    _ => slot
+                        .icon_path()
+                        .and_then(|path| assets.image(&path).ok())
+                        .and_then(|art| crate::original_ui::visible_part(&art).ok()),
+                };
+                let art = art.map(|art| image::imageops::resize(&art, 34, 34, image::imageops::FilterType::Triangle));
+                let art = art.unwrap_or_else(|| crate::labels::tooltip_image(&slot.hotkey).unwrap_or_default());
+                self.upload(&key, art);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
@@ -5178,7 +5285,9 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 14] = [
+const TRANSIENT_PREFIXES: [&str; 16] = [
+    "@speech-",
+    "@whisper-",
     "@actor-label-",
     "@monster-label-",
     "@label-",

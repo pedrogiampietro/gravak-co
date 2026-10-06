@@ -121,8 +121,27 @@ pub struct SkillHud {
     pub action_panel_hover: Option<usize>,
     /// The Action panel's emote being dragged (its index there).
     pub dragging_emote: Option<usize>,
+    /// The F key being dragged to another.
+    pub dragging_hotkey: Option<usize>,
     /// The F keys' open popup and the cell under the cursor.
     pub hotkey_popup: Option<(crate::hotkey_menu::HotkeyPopupView, Option<usize>)>,
+    /// Who is saying what on the Talk channel, for the bubbles.
+    pub speech: Vec<(String, String)>,
+    /// The private chat window and the faces waiting over the bar.
+    pub whisper_window: Option<WhisperWindowView>,
+    pub whisper_faces: Vec<(crate::whisper::Conversation, Option<u32>, bool)>,
+}
+
+/// What the private chat window shows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WhisperWindowView {
+    pub conversation: crate::whisper::Conversation,
+    pub own_name: String,
+    /// How the other end looks, when on screen.
+    pub seen_mesh: Option<u32>,
+    pub input: String,
+    pub input_focused: bool,
+    pub hovered: Option<crate::whisper::WhisperClick>,
 }
 
 /// Seconds since 1970 on this machine.

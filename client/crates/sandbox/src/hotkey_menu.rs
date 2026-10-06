@@ -314,3 +314,4 @@ mod tests {
         sheet.save(format!("{dir}/hotkey-popups.png")).expect("png");
     }
 }
+

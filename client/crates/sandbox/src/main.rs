@@ -39,6 +39,7 @@ mod highscores_panel;
 mod emblems;
 mod action_panel;
 mod hotkey_menu;
+mod whisper;
 mod battle_power_panel;
 mod showcase;
 mod ui;
@@ -258,6 +259,11 @@ struct App {
     action_bar: action_bar::ActionBar,
     /// The F keys' right-click menu, or what it opened.
     hotkey_popup: Option<hotkey_menu::HotkeyPopup>,
+    /// Private chats, their faces over the bar and the open window.
+    whispers: whisper::Whispers,
+    /// What each speaker said on the Talk channel and until when it shows
+    /// over their head, by lower-case name.
+    speech: HashMap<String, (String, f32)>,
     item_context: Option<shop::ItemContext>,
     /// A Friend/Trade button waiting for the player to click its target.
     target_pick: Option<TargetPick>,
@@ -329,6 +335,8 @@ struct App {
     action_panel_open: bool,
     /// An emote pressed on the Action panel, until the button comes up.
     dragging_emote: Option<Action>,
+    /// An F key pressed and where, until the button comes up.
+    dragging_hotkey: Option<(usize, [f32; 2])>,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -707,6 +715,42 @@ impl ApplicationHandler for App {
                 return;
             }
             WindowEvent::KeyboardInput { event, .. }
+                if self.whispers.input_focused && self.whispers.open.is_some() =>
+            {
+                if event.state == ElementState::Pressed {
+                    let paste = self.modifiers.control_key()
+                        && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV));
+                    match event.physical_key {
+                        _ if paste => {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new()
+                                && let Ok(text) = clipboard.get_text()
+                            {
+                                for character in text.chars().filter(|character| !character.is_control()) {
+                                    if self.whispers.input.chars().count() < 120 {
+                                        self.whispers.input.push(character);
+                                    }
+                                }
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Escape) => self.whispers.close(),
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.send_whisper_input(),
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            self.whispers.input.pop();
+                        }
+                        _ => {
+                            if let Some(typed) = event.text.as_ref() {
+                                for character in typed.chars().filter(|character| !character.is_control()) {
+                                    if self.whispers.input.chars().count() < 120 {
+                                        self.whispers.input.push(character);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. }
                 if matches!(self.hotkey_popup, Some(hotkey_menu::HotkeyPopup::Text { .. })) =>
             {
                 if event.state == ElementState::Pressed {
@@ -875,6 +919,12 @@ impl ApplicationHandler for App {
                 }
                 if button == MouseButton::Left
                     && state == ElementState::Pressed
+                    && self.handle_whisper_click()
+                {
+                    return;
+                }
+                if button == MouseButton::Left
+                    && state == ElementState::Pressed
                     && self.hotkey_popup.is_some()
                 {
                     self.handle_hotkey_popup_click();
@@ -907,6 +957,9 @@ impl ApplicationHandler for App {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.select_shop() => return,
+                    (MouseButton::Left, ElementState::Released) if self.finish_hotkey_drag() => {
+                        return;
+                    }
                     (MouseButton::Left, ElementState::Released) if self.finish_emote_drag() => {
                         return;
                     }
@@ -1341,6 +1394,7 @@ impl ApplicationHandler for App {
         // look like they teleport or freeze between updates.
         let now = self.started.elapsed().as_secs_f32();
         self.combat_numbers.retain(|(_, _, expires)| *expires > now);
+        self.speech.retain(|_, (_, until)| *until > now);
         self.skill_effects.retain(|effect| effect.expires > now);
         for slot in &mut self.action_bar.slots {
             let skill_id = slot
@@ -1589,8 +1643,10 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        // An F key: a click uses it, a drag takes it to another key (see
+        // `finish_hotkey_drag`).
         if let Some(slot) = hud::action_slot_at(viewport, self.cursor) {
-            self.cast_action_slot(slot);
+            self.dragging_hotkey = Some((slot, self.cursor));
             self.held = false;
             return true;
         }
@@ -3615,6 +3671,7 @@ impl App {
                     format!("friend {name} ({friend_id}) action {action} {state}");
             }
             // A booth's name (the Vendor channel); empty when it closes.
+            NetworkEvent::WhisperCard(card) => self.whispers.card(card),
             NetworkEvent::ChatMessage(message) if message.channel == 2104 => {
                 if message.message.is_empty() {
                     self.booths.remove(&message.sender_name);
@@ -3636,6 +3693,22 @@ impl App {
                     2500 => Some(format!("[Broadcast] {}: {}", message.sender_name, message.message)),
                     _ => None,
                 };
+                if message.channel == 2001 {
+                    self.whispers.line(
+                        &self.character.name,
+                        &message.sender_name,
+                        &message.recipient_name,
+                        &message.message,
+                    );
+                }
+                // Said on the Talk channel: a bubble over the speaker a few
+                // seconds, longer for longer lines.
+                if message.channel == 2000 && !message.message.trim().is_empty() {
+                    let now = self.started.elapsed().as_secs_f32();
+                    let seconds = (4.0 + message.message.chars().count() as f32 * 0.08).min(10.0);
+                    self.speech
+                        .insert(message.sender_name.to_lowercase(), (message.message.clone(), now + seconds));
+                }
                 self.chat_history.push_back(message);
                 while self.chat_history.len() > 40 {
                     self.chat_history.pop_front();
@@ -4957,9 +5030,17 @@ impl App {
             battle_power_open: self.battle_power_open,
             battle_power_detail: self.battle_power_detail,
             action_panel_open: self.action_panel_open,
+            dragging_hotkey: self.moved_hotkey(),
             dragging_emote: self
                 .dragging_emote
                 .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
+            speech: self
+                .speech
+                .iter()
+                .map(|(name, (line, _))| (name.clone(), line.clone()))
+                .collect(),
+            whisper_window: self.whisper_window_view(),
+            whisper_faces: self.whisper_faces(),
             hotkey_popup: self.window.as_ref().and_then(|window| {
                 let size = window.inner_size();
                 let viewport = [size.width as f32, size.height as f32];
@@ -5339,6 +5420,90 @@ impl App {
         self.network_status = format!("online: portal at ({}, {})", portal.x, portal.y);
     }
 
+    /// How a player on screen looks, by name.
+    fn seen_mesh(&self, name: &str) -> Option<u32> {
+        self.remote_actors
+            .values()
+            .find(|actor| !actor.npc && actor.name.eq_ignore_ascii_case(name))
+            .map(|actor| actor.mesh)
+    }
+
+    fn viewport(&self) -> Option<[f32; 2]> {
+        let size = self.window.as_ref()?.inner_size();
+        Some([size.width as f32, size.height as f32])
+    }
+
+    fn whisper_window_view(&self) -> Option<hud::WhisperWindowView> {
+        let name = self.whispers.open.as_deref()?;
+        let conversation = self.whispers.conversation(name)?.clone();
+        let hovered = self.viewport().and_then(|viewport| whisper::window_click_at(viewport, self.cursor));
+        Some(hud::WhisperWindowView {
+            seen_mesh: self.seen_mesh(name),
+            conversation,
+            own_name: self.character.name.clone(),
+            input: self.whispers.input.clone(),
+            input_focused: self.whispers.input_focused,
+            hovered: hovered.filter(|click| *click != whisper::WhisperClick::Window),
+        })
+    }
+
+    fn whisper_faces(&self) -> Vec<(whisper::Conversation, Option<u32>, bool)> {
+        let hovered = self.viewport().and_then(|viewport| whisper::face_at(&self.whispers, viewport, self.cursor));
+        self.whispers
+            .waiting()
+            .into_iter()
+            .map(|conversation| {
+                let lit = hovered.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(&conversation.name));
+                (conversation.clone(), self.seen_mesh(&conversation.name), lit)
+            })
+            .collect()
+    }
+
+    /// A left click on the private chat window or a waiting face; off the
+    /// window, its line stops taking the keys.
+    fn handle_whisper_click(&mut self) -> bool {
+        let Some(viewport) = self.viewport() else {
+            return false;
+        };
+        if self.whispers.open.is_some() {
+            match whisper::window_click_at(viewport, self.cursor) {
+                Some(whisper::WhisperClick::Close) => self.whispers.close(),
+                Some(whisper::WhisperClick::Send) => self.send_whisper_input(),
+                Some(whisper::WhisperClick::Input | whisper::WhisperClick::Window) => {
+                    self.whispers.input_focused = true;
+                    self.chat_focused = false;
+                }
+                None => self.whispers.input_focused = false,
+            }
+            if whisper::window_click_at(viewport, self.cursor).is_some() {
+                self.held = false;
+                return true;
+            }
+        }
+        if let Some(name) = whisper::face_at(&self.whispers, viewport, self.cursor) {
+            self.whispers.open(&name);
+            self.chat_focused = false;
+            self.held = false;
+            return true;
+        }
+        false
+    }
+
+    /// The window's line goes to its conversation's other end.
+    fn send_whisper_input(&mut self) {
+        let text = self.whispers.input.trim().to_owned();
+        let Some(peer) = self.whispers.open.clone() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.send_whisper(character_id, &self.character.name, &peer, &text);
+            self.whispers.input.clear();
+        }
+    }
+
     /// The open hotkey popup with what it lists.
     fn hotkey_view(&self, viewport: [f32; 2]) -> Option<hotkey_menu::HotkeyPopupView> {
         let popup = self.hotkey_popup.clone()?;
@@ -5448,6 +5613,30 @@ impl App {
         } else {
             self.queue_use_item(item);
         }
+    }
+
+    /// The F key being dragged, once it has moved off the click.
+    fn moved_hotkey(&self) -> Option<usize> {
+        let (slot, [x, y]) = self.dragging_hotkey?;
+        let (dx, dy) = (self.cursor[0] - x, self.cursor[1] - y);
+        (dx * dx + dy * dy > 36.0 && self.action_bar.slots[slot].action_id.is_some()).then_some(slot)
+    }
+
+    /// An F key let go: unmoved it is used; dropped on another key the two
+    /// swap.
+    fn finish_hotkey_drag(&mut self) -> bool {
+        let moved = self.moved_hotkey();
+        let Some((slot, _)) = self.dragging_hotkey.take() else {
+            return false;
+        };
+        if moved.is_none() {
+            self.cast_action_slot(slot);
+            return true;
+        }
+        if let Some(target) = self.viewport().and_then(|viewport| hud::action_slot_at(viewport, self.cursor)) {
+            self.action_bar.swap(slot, target);
+        }
+        true
     }
 
     /// An emote let go: on an F key it goes there, on its own button it is
@@ -7874,6 +8063,8 @@ fn run() -> Result<()> {
         character,
         action_bar: action_bar::ActionBar::default(),
         hotkey_popup: None,
+        whispers: whisper::Whispers::default(),
+        speech: HashMap::new(),
         item_context: None,
         target_pick: None,
         pending_friend_request: None,
@@ -7935,6 +8126,7 @@ fn run() -> Result<()> {
         battle_power_detail: None,
         action_panel_open: false,
         dragging_emote: None,
+        dragging_hotkey: None,
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,

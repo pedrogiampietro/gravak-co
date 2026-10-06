@@ -149,6 +149,8 @@ pub use msg_bounty::{add_kills as add_bounty_kills, send_board, MsgBounty, MsgBo
 
 mod msg_status_timers;
 pub use msg_status_timers::MsgStatusTimers;
+mod msg_whisper_card;
+pub use msg_whisper_card::MsgWhisperCard;
 mod msg_highscores;
 pub use msg_highscores::{MsgHighscoreRow, MsgHighscoreState, MsgHighscores};
 mod msg_daily_reward;
