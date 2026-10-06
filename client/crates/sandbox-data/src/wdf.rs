@@ -102,6 +102,11 @@ impl WdfDirectory {
         self.entries.get(&id).copied()
     }
 
+    /// Every entry, in no particular order.
+    pub fn entries(&self) -> impl Iterator<Item = WdfEntry> + '_ {
+        self.entries.values().copied()
+    }
+
     #[must_use]
     pub fn contains_id(&self, id: u32) -> bool {
         self.entries.contains_key(&id)

@@ -11,6 +11,10 @@ pub struct Part {
     pub mesh: C3Mesh,
     pub texture: String,
     local: Option<C3Motion>,
+    /// A weapon's own motion in some actions, by `Action::index`
+    /// (`ini/WeaponMotion.ini`): the bow's string drawn while shooting.
+    /// Empty, or `None` in an action, keeps `local`.
+    actions_local: Vec<Option<C3Motion>>,
     track: usize,
 }
 #[derive(Clone)]
@@ -199,7 +203,10 @@ impl Character {
             (right != 0).then_some(right),
             (left != 0).then_some(left),
         );
-        let mut motion = |action: Action| -> Result<C3Document> {
+        // Each action's motion, and the number its file is named by
+        // (`c3/0003/500/401.c3` is 401): `ini/WeaponMotion.ini` keys a
+        // weapon's own motions by it.
+        let mut motion = |action: Action| -> Result<(C3Document, Option<u32>)> {
             let path = std::iter::once(action)
                 .chain(action.paired_action())
                 .flat_map(|action| {
@@ -213,7 +220,10 @@ impl Character {
                 })
                 .find_map(|key| motions.get(key))
                 .ok_or("Body action missing")?;
-            Ok(C3Document::parse(&assets.read(path.as_str())?)?)
+            let code = std::path::Path::new(path.as_str())
+                .file_stem()
+                .and_then(|stem| stem.to_str()?.parse().ok());
+            Ok((C3Document::parse(&assets.read(path.as_str())?)?, code))
         };
         // A body without a death motion falls back to standing.
         let actions = Action::ALL
@@ -223,6 +233,7 @@ impl Character {
                 _ => motion(action),
             })
             .collect::<Result<Vec<_>>>()?;
+        let (actions, action_codes): (Vec<C3Document>, Vec<Option<u32>>) = actions.into_iter().unzip();
         let mut parts = vec![Part {
             mesh,
             texture: textures
@@ -231,6 +242,7 @@ impl Character {
                 .as_str()
                 .to_owned(),
             local: None,
+            actions_local: Vec::new(),
             track: index,
         }];
 
@@ -262,7 +274,9 @@ impl Character {
             }
         }
         for (weapon, attachment, color) in [(right, "v_r_weapon", 0), (left, "v_l_weapon", left_color)] {
-            if weapon == 0 {
+            // Arrows are not drawn on the archer, as in the original: they
+            // only make the bow shoot (and choose its stance above).
+            if weapon == 0 || is_arrow(weapon) {
                 continue;
             }
             if let Ok(part) = load_dyed_attachment(
@@ -275,6 +289,8 @@ impl Character {
                 attachment,
                 color,
             ) {
+                let mut part = part;
+                part.actions_local = weapon_action_motions(assets, weapon, &action_codes);
                 parts.push(part);
             }
         }
@@ -343,6 +359,28 @@ impl Character {
         })
     }
 
+    /// Takes over what `previous` knew that a model rebuilt for new gear
+    /// does not: the profile from MsgUserInfo (attributes, profession,
+    /// PK points, spouse), the guild, the booth and life.
+    pub fn keep_profile_from(&mut self, previous: &Character) {
+        self.guild = previous.guild.clone();
+        self.guild_rank = previous.guild_rank.clone();
+        self.guild_fund = previous.guild_fund;
+        self.booth = previous.booth.clone();
+        self.health = previous.health;
+        self.maximum_health = previous.maximum_health.max(self.maximum_health);
+        self.strength = previous.strength;
+        self.agility = previous.agility;
+        self.vitality = previous.vitality;
+        self.spirit = previous.spirit;
+        self.attribute_points = previous.attribute_points;
+        self.current_class = previous.current_class;
+        self.previous_class = previous.previous_class;
+        self.rebirths = previous.rebirths;
+        self.kill_points = previous.kill_points;
+        self.spouse = previous.spouse.clone();
+    }
+
     pub fn duration(&self, action: Action) -> std::time::Duration {
         let action = action.index();
         std::time::Duration::from_secs_f32(
@@ -361,6 +399,12 @@ impl Character {
         facing: f32,
         progress: Option<f32>,
     ) -> Vec<([f32; 3], [f32; 2])> {
+        let palette = self.palette(part, seconds, action, progress);
+        Self::project(part, &palette, facing)
+    }
+
+    /// Each bone's transform of `part` in `action`.
+    fn palette(&self, part: &Part, seconds: f32, action: Action, progress: Option<f32>) -> Vec<Matrix4> {
         let action = action.index();
         let track = &self.actions[action].motions[part.track];
         let frame = progress.map_or_else(
@@ -370,20 +414,31 @@ impl Character {
                     .min(track.frame_count.max(1) as f32 - f32::EPSILON)
             },
         );
-        let motion = part.local.as_ref().unwrap_or(track);
+        // A weapon's motion for this action runs over the body's: the
+        // bow's string is drawn and let go within the shot.
+        let action_local = part.actions_local.get(action).and_then(Option::as_ref);
+        let motion = action_local.or(part.local.as_ref()).unwrap_or(track);
+        let local_frame = action_local.map_or(frame, |local| {
+            frame / track.frame_count.max(1) as f32 * local.frame_count.max(1) as f32
+        });
         let attachment = if part.local.is_some() {
             track.matrix_at(0, frame)
         } else {
             Matrix4::IDENTITY
         };
-        let palette: Vec<Matrix4> = (0..motion.bone_count)
+        (0..motion.bone_count)
             .map(|b| {
                 part.mesh
                     .initial_matrix
-                    .multiply(motion.matrix_at(b, frame))
+                    .multiply(motion.matrix_at(b, local_frame))
                     .multiply(attachment)
             })
-            .collect();
+            .collect()
+    }
+
+    /// `part` posed by `palette`, turned to `facing` and seen from the
+    /// game's camera.
+    fn project(part: &Part, palette: &[Matrix4], facing: f32) -> Vec<([f32; 3], [f32; 2])> {
         let (s, c) = facing.sin_cos();
         let (ts, tc) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         part.mesh
@@ -734,6 +789,11 @@ pub fn dyed(item_id: u32, color: u8) -> u32 {
 
 const DYE_UNIT: u32 = 10_000_000;
 
+/// Whether `item` is a pack of arrows (`1050xxx`).
+pub fn is_arrow(item: u32) -> bool {
+    item % DYE_UNIT / 1_000 == 1_050
+}
+
 /// The item id and dye folded by [`dyed`].
 fn undyed(item_id: u32) -> (u32, u8) {
     (item_id % DYE_UNIT, (item_id / DYE_UNIT) as u8)
@@ -797,7 +857,61 @@ fn load_dyed_attachment(
             .ok_or("Part texture missing")?
             .as_str()
             .to_owned(),
-        local: Some(part.motions.first().ok_or("Part motion missing")?.clone()),
+        actions_local: Vec::new(),
+        local: Some(
+            (catalog == "ini/weapon.ini")
+                .then(|| weapon_motion(assets, key))
+                .flatten()
+                .map_or_else(|| part.motions.first().cloned().ok_or("Part motion missing"), Ok)?,
+        ),
         track,
     })
+}
+
+/// The pose `ini/WeaponMotion.ini` gives weapon `weapon` in every action
+/// (`<item>999999`), as the original client uses it: arrows hang down the
+/// archer's side from it instead of pointing out of the hand as their own
+/// model holds them. Bows keep their own pose there; the per-action entries
+/// (the drawn string while shooting) are not used yet.
+fn weapon_motion(assets: &mut Assets, weapon: u32) -> Option<C3Motion> {
+    weapon_motions(assets, weapon, &[Some(999)]).pop().flatten()
+}
+
+/// Weapon `weapon`'s own motion in each action, from its body motion's
+/// number `codes[i]` (`<item>999<code>` in `ini/WeaponMotion.ini`): the
+/// bow's 401 draws its string. `None` where the file has none.
+fn weapon_action_motions(assets: &mut Assets, weapon: u32, codes: &[Option<u32>]) -> Vec<Option<C3Motion>> {
+    let motions = weapon_motions(assets, weapon, codes);
+    if motions.iter().all(Option::is_none) { Vec::new() } else { motions }
+}
+
+fn weapon_motions(assets: &mut Assets, weapon: u32, codes: &[Option<u32>]) -> Vec<Option<C3Motion>> {
+    let Ok(text) = assets.read("ini/WeaponMotion.ini") else {
+        return vec![None; codes.len()];
+    };
+    let text = String::from_utf8_lossy(&text);
+    let prefix = format!("{weapon}999");
+    // This weapon's entries, by motion number.
+    let entries: std::collections::HashMap<u32, String> = text
+        .lines()
+        .filter_map(|line| {
+            let (id, path) = line.trim().split_once('=')?;
+            let code = id.trim().strip_prefix(prefix.as_str())?;
+            (code.len() == 3).then_some(())?;
+            Some((code.parse().ok()?, path.trim().to_owned()))
+        })
+        .collect();
+    let mut loaded: std::collections::HashMap<String, Option<C3Motion>> = std::collections::HashMap::new();
+    codes
+        .iter()
+        .map(|code| {
+            let path = entries.get(&(*code)?)?;
+            loaded
+                .entry(path.clone())
+                .or_insert_with(|| {
+                    C3Document::parse(&assets.read(path).ok()?).ok()?.motions.into_iter().next()
+                })
+                .clone()
+        })
+        .collect()
 }

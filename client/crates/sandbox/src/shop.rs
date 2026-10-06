@@ -52,6 +52,8 @@ const ITEMS_PER_PAGE: usize = 20;
 const FOOTER_BUTTON_Y: f32 = 224.0;
 const SHOP_REPAIR_X: f32 = 33.0;
 const SHOP_HELP_X: f32 = 143.0;
+/// Sell All, where the Help button was, a plate like Repair's.
+const SHOP_SELL_ALL: UiRect = UiRect::new(SHOP_HELP_X as i32 - 26, FOOTER_BUTTON_Y as i32, 64, 22);
 const SHOP_CLOSE_X: f32 = 200.0;
 // [152-1550]/[152-1551] page buttons.
 const SHOP_PAGE_X: f32 = 243.0;
@@ -201,6 +203,8 @@ pub struct ItemInfo {
     pub magic_attack: u32,
     pub magic_defense: u32,
     pub attack_speed: u32,
+    /// How far the weapon reaches, in cells (bows 14, melee 1-2).
+    pub attack_range: u32,
     pub price: u32,
     pub item_type: String,
 }
@@ -338,6 +342,7 @@ pub struct ShopState {
     pub hover: Option<usize>,
     pub selected: Option<usize>,
     pub repair_hover: bool,
+    pub sell_all_hover: bool,
     pub scroll_hover: Option<bool>,
 }
 
@@ -471,6 +476,7 @@ impl ShopState {
             hover: None,
             selected: None,
             repair_hover: false,
+            sell_all_hover: false,
             scroll_hover: None,
         }))
     }
@@ -3774,8 +3780,9 @@ fn draw_equipment_tab(
     let strength = u32::from(character.strength);
     let agility = u32::from(character.agility);
     let vitality = u32::from(character.vitality);
-    let attack_min = u32::from(level.max(1)) + strength * 2 + agility / 2;
-    let attack_max = u32::from(level.max(1)) * 2 + strength * 3 + agility;
+    // The server's rule: a point of Strength is a point of attack.
+    let attack_min = strength;
+    let attack_max = strength;
     let defense = vitality + agility / 2;
     let stat_lines = [
         format!("Attack: {attack_min} - {attack_max}"),
@@ -3920,8 +3927,8 @@ fn draw_equipment_tab(
     let stat_lines = [
         format!(
             "Attack: {} - {}",
-            u32::from(level.max(1)) + strength * 2 + agility / 2 + equipment_attack_min,
-            u32::from(level.max(1)) * 2 + strength * 3 + agility + equipment_attack_max
+            strength + equipment_attack_min,
+            strength + equipment_attack_max
         ),
         format!("Defense: {}", vitality + agility / 2 + equipment_defense),
         format!("Strength: {}", character.strength),
@@ -4003,8 +4010,8 @@ fn derived_battle_power(
     let agility = u32::from(character.agility);
     let vitality = u32::from(character.vitality);
     let spirit = u32::from(character.spirit);
-    let base_min_attack = u32::from(level.max(1)) + strength * 2 + agility / 2;
-    let base_max_attack = u32::from(level.max(1)) * 2 + strength * 3 + agility;
+    let base_min_attack = strength;
+    let base_max_attack = strength;
     let attack_min = base_min_attack.saturating_add(bonuses.0);
     let attack_max = base_max_attack.saturating_add(bonuses.1);
     let defense = vitality + agility / 2 + bonuses.2;
@@ -4790,7 +4797,7 @@ pub fn item_action_panel_reroll_enabled(
 /// team and prompt windows: the frame at the panel's size, the contents
 /// over it with their dark boxes let slightly through, the title in the
 /// panels' gold and the original close button.
-fn framed(assets: &mut Assets, mut content: RgbaImage, title: &str, close_hovered: bool) -> Result<RgbaImage> {
+pub(crate) fn framed(assets: &mut Assets, mut content: RgbaImage, title: &str, close_hovered: bool) -> Result<RgbaImage> {
     use crate::original_panels::{LABEL_GOLD, label_centered};
     let (width, height) = content.dimensions();
     let mut image = crate::original_panels::framed_window(assets, width, height)?;
@@ -6354,13 +6361,6 @@ pub fn panel_base_image(assets: &mut Assets) -> Result<RgbaImage> {
     overlay_asset(
         &mut image,
         assets,
-        "data/main/HelpBtn2.dds",
-        SHOP_HELP_X as i64,
-        y,
-    )?;
-    overlay_asset(
-        &mut image,
-        assets,
         "data/main/CloseBtn2.dds",
         SHOP_CLOSE_X as i64,
         y,
@@ -6371,6 +6371,43 @@ pub fn panel_base_image(assets: &mut Assets) -> Result<RgbaImage> {
         overlay_asset(&mut image, assets, path, (SHOP_PAGE_X - 8.0) as i64, (page_y - 8.0) as i64)?;
     }
     Ok(image)
+}
+
+/// A footer button in the look of the shop's own Repair button
+/// (`NpcBuyBtnFix`, lit `NpcBuyBtnFixClick`): its plate with "Repair"
+/// wiped and `label` on it in the client's Times, beige with a dark edge.
+pub fn plate_button(assets: &mut Assets, label: &str, lit: bool) -> Result<RgbaImage> {
+    let path = if lit { "data/main/NpcBuyBtnFixClick.dds" } else { "data/main/NpcBuyBtnFix.dds" };
+    let source = assets.image(path)?;
+    let (width, height) = (64u32.min(source.width()), 22u32.min(source.height()));
+    let mut button = imageops::crop_imm(&source, 0, 0, width, height).to_image();
+    // The plate's inside, row by row, from the columns either side of the
+    // text, which carry no letters.
+    let (left, right) = (5u32, width.saturating_sub(5));
+    for y in 5..height.saturating_sub(4) {
+        let samples: Vec<Rgba<u8>> = (left..left + 6).chain(right - 8..right - 2).map(|x| *source.get_pixel(x, y)).collect();
+        let mut sum = [0u32; 4];
+        for pixel in &samples {
+            for channel in 0..4 {
+                sum[channel] += u32::from(pixel[channel]);
+            }
+        }
+        let average = Rgba(sum.map(|value| (value / samples.len() as u32) as u8));
+        for x in left + 6..right - 8 {
+            button.put_pixel(x, y, average);
+        }
+    }
+    let font = crate::main_hud::label_font()?;
+    let size = 14.0;
+    let text_width = crate::main_hud::text_width(font, label, size);
+    let x = (width as i32 - text_width) / 2;
+    let y = 4;
+    let (text, edge) = ([214, 195, 156, 255], [8, 6, 0, 255]);
+    for [dx, dy] in [[-1, 0], [1, 0], [0, -1], [0, 1], [1, 1]] {
+        crate::main_hud::crisp_text(&mut button, font, label, size, [x + dx, y + dy], edge);
+    }
+    crate::main_hud::crisp_text(&mut button, font, label, size, [x, y], text);
+    Ok(button)
 }
 
 pub fn panel_overlay_image(assets: &mut Assets, state: &ShopState) -> Result<RgbaImage> {
@@ -6411,6 +6448,9 @@ pub fn panel_overlay_image(assets: &mut Assets, state: &ShopState) -> Result<Rgb
         SHOP_REPAIR_X as i64,
         FOOTER_BUTTON_Y as i64,
     )?;
+    // "Sell All" takes the place of the Help button.
+    let sell_all = plate_button(assets, "Sell All", state.sell_all_hover)?;
+    imageops::overlay(&mut image, &sell_all, SHOP_SELL_ALL.x.into(), SHOP_SELL_ALL.y.into());
     if let Some(down) = state.scroll_hover {
         let y = if down {
             SHOP_PAGE_DOWN_Y
@@ -6474,6 +6514,25 @@ pub fn attack_cooldown_seconds(
     (speed as f32 / 1_000.0).clamp(0.25, 3.0)
 }
 
+/// How far a basic attack reaches, in cells, as the server rules it: the
+/// right-hand weapon (else the left), unbroken, with its `itemtype.dat`
+/// range (at least 2); 2 without one.
+pub fn attack_range_cells(assets: &mut Assets, equipment: &[crate::network::OwnedItem]) -> f32 {
+    let weapon = equipment
+        .iter()
+        .find(|item| item.position == 4)
+        .or_else(|| equipment.iter().find(|item| item.position == 5))
+        .filter(|item| item.durability > 0);
+    let Some(weapon) = weapon else {
+        return 2.0;
+    };
+    load_item_infos(assets, &[weapon.item_type])
+        .get(&weapon.item_type)
+        .map(|info| info.attack_range)
+        .filter(|range| *range > 0)
+        .map_or(2.0, |range| range.max(2) as f32)
+}
+
 pub fn highlight_image() -> RgbaImage {
     let mut image = RgbaImage::from_pixel(39, 39, Rgba([0, 0, 0, 0]));
     outline(&mut image, 0, 0, 38, Rgba([255, 255, 255, 255]));
@@ -6497,6 +6556,10 @@ pub fn close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
         43.0,
         20.0,
     )
+}
+
+pub fn sell_all_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    SHOP_SELL_ALL.contains_local(shop_local(viewport, cursor))
 }
 
 pub fn repair_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -7207,6 +7270,7 @@ fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemIn
                 magic_attack: number(29),
                 magic_defense: number(30),
                 attack_speed: number(32),
+                attack_range: number(31),
                 price: number(12),
                 item_type: fields[37].replace('~', " "),
             },
@@ -7226,6 +7290,34 @@ fn decrypt_itemtype(bytes: &mut [u8]) {
         *byte = (*byte ^ key[index % key.len()]).rotate_right((index % 8) as u32);
     }
 }
+
+/// The inventory icons (32 px) of `item_ids`, read once each.
+pub fn item_icons(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, RgbaImage> {
+    let read = |assets: &mut Assets, path: &str| {
+        assets.read(path).ok().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    };
+    let animation = read(assets, "ani/ItemMinIcon.Ani");
+    let map_animation = read(assets, "ani/MapItemIcon.Ani");
+    item_ids
+        .iter()
+        .filter_map(|&item_id| {
+            let icon = load_icon(assets, item_id, animation.as_deref(), map_animation.as_deref()).ok()?;
+            Some((item_id, icon))
+        })
+        .collect()
+}
+
+/// The `itemtype.dat` price of each of `item_ids`.
+pub fn base_prices(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, u32> {
+    load_item_infos(assets, item_ids)
+        .into_iter()
+        .map(|(item_id, info)| (item_id, info.price))
+        .collect()
+}
+
+/// Shift + right click on a shop item: how many to buy.
+pub const BUY_AMOUNTS: [(&str, usize); 5] =
+    [("Buy 1", 1), ("Buy 5", 5), ("Buy 10", 10), ("Buy 20", 20), ("Fill inventory", 40)];
 
 fn load_icon(
     assets: &mut Assets,

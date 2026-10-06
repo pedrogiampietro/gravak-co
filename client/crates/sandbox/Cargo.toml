@@ -21,5 +21,10 @@ fontdb = "0.23"
 fontdue = "0.9"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav"] }
 
+[features]
+# The players' build (tools/package-client.ps1): game data only from the
+# encrypted pack, game/gravak.gpk, never from loose files.
+packed-only = []
+
 [build-dependencies]
 winresource = "0.1"

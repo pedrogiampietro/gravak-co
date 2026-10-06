@@ -8,3 +8,5 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
+# Compression of the encrypted game pack (pack.rs).
+miniz_oxide = "0.8"

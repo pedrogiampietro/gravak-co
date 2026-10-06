@@ -39,6 +39,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
+[InstallDelete]
+; Installs from before the encrypted pack left the game data loose; the
+; new client reads only game\gravak.gpk.
+Type: filesandordirs; Name: "{app}\game"
+
 [Files]
 Source: "..\dist\Gravak\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

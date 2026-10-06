@@ -603,6 +603,21 @@ impl MsgInteract {
             return Ok(());
         }
 
+        // The bow skills (Scatter, RapidFire) shoot arrows: without them
+        // nothing flies, as with a plain shot.
+        let bow = character
+            .equipment_item(4)
+            .is_some_and(|weapon| crate::shop::ShopCatalog::is_bow(weapon.item_type));
+        let arrows = character.equipment_item(5).filter(|item| {
+            crate::shop::ShopCatalog::is_arrow(item.item_type) && item.durability > 0
+        });
+        if skill.physical && bow && arrows.is_none() {
+            actor
+                .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, "Please equip arrows."))
+                .await?;
+            return Ok(());
+        }
+
         let map = state.try_map(character.entity().map_id())?;
         if !skill.centered {
             if let Some(npc) = map
@@ -847,6 +862,13 @@ impl MsgInteract {
             u32::from(skill_power) * u32::from(100 + character.weapon_proficiency_bonus_percent()) / 100,
         )
         .unwrap_or(u16::MAX);
+        // Skills shot from a bow hit as a bow shoots (Redux
+        // `CalculateBowDamage`): two thirds of the attack on monsters, with
+        // the level advantage, and a third of that on players.
+        let bow = skill.physical
+            && character
+                .equipment_item(4)
+                .is_some_and(|weapon| crate::shop::ShopCatalog::is_bow(weapon.item_type));
         let mut effects = Vec::with_capacity(targets.len());
         let mut defeated = Vec::new();
         let mut defeated_players = Vec::new();
@@ -913,9 +935,20 @@ impl MsgInteract {
             } else {
                 100
             };
+            let bow_share = match (bow, target.as_monster().is_some()) {
+                (false, _) => physical_stats,
+                (true, true) => scale_skill_power(
+                    scale_skill_power(
+                        physical_stats,
+                        level_advantage_percent(character.entity().level(), target_entity.level()),
+                    ),
+                    crate::combat::BOW_PERCENT,
+                ),
+                (true, false) => scale_skill_power(physical_stats, crate::combat::BOW_PVP_PERCENT),
+            };
             let mut outcome = if skill.physical {
                 resolve_physical_hit(
-                    scale_skill_power(scale_skill_power(physical_stats, physical_power), superman),
+                    scale_skill_power(scale_skill_power(bow_share, physical_power), superman),
                     target_stats,
                     u32::from(health_before.current),
                     next_roll(),

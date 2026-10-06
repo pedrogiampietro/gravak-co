@@ -34,6 +34,9 @@ pub enum LoginCommand {
         class: u16,
         /// The starter coat's dye (3..=9).
         coat_dye: u8,
+        /// The face and hair picked (0 lets the server draw them).
+        avatar: u16,
+        hair: u16,
     },
     /// Enter the world with the account's character.
     Enter,
@@ -176,7 +179,7 @@ async fn serve(
                     Err(error) => send(LoginEvent::LoginFailed(error)),
                 }
             }
-            LoginCommand::CreateCharacter { name, mesh, class, coat_dye } => {
+            LoginCommand::CreateCharacter { name, mesh, class, coat_dye, avatar, hair } => {
                 let Phase::Creating {
                     mut session,
                     username,
@@ -188,7 +191,8 @@ async fn serve(
                     continue;
                 };
                 send(LoginEvent::Status(format!("creating {name}")));
-                match create_character(&mut session, &username, &name, mesh, class, coat_dye, token).await {
+                let look = Look { mesh, class, coat_dye, avatar, hair };
+                match create_character(&mut session, &username, &name, look, token).await {
                     Ok(()) => {
                         // The server ends the registration session; log in
                         // again to load the new character.
@@ -304,17 +308,28 @@ enum CreateError {
     Closed(String),
 }
 
+/// What the creation screen picked for a new character.
+struct Look {
+    mesh: u16,
+    class: u16,
+    coat_dye: u8,
+    avatar: u16,
+    hair: u16,
+}
+
 async fn create_character(
     session: &mut GameSession,
     username: &str,
     name: &str,
-    mesh: u16,
-    class: u16,
-    coat_dye: u8,
+    look: Look,
     token: u32,
 ) -> Result<(), CreateError> {
     session
-        .send(&RegisterCharacter::with_look(username, name, mesh, class, token).with_coat_dye(coat_dye))
+        .send(
+            &RegisterCharacter::with_look(username, name, look.mesh, look.class, token)
+                .with_coat_dye(look.coat_dye)
+                .with_appearance(look.avatar, look.hair),
+        )
         .await
         .map_err(|error| CreateError::Closed(error.to_string()))?;
     loop {
@@ -370,10 +385,10 @@ mod smoke {
         client.send(LoginCommand::Login { username: account.clone(), password: "pass1234".into() });
         assert!(matches!(next(&client), LoginEvent::NeedsCharacter));
 
-        client.send(LoginCommand::CreateCharacter { name: "x".into(), mesh: 2001, class: 40, coat_dye: 3 });
+        client.send(LoginCommand::CreateCharacter { name: "x".into(), mesh: 2001, class: 40, coat_dye: 3, avatar: 205, hair: 742 });
         assert!(matches!(next(&client), LoginEvent::CharacterRejected(_)));
         let name = format!("Smoke{suffix}");
-        client.send(LoginCommand::CreateCharacter { name: name.clone(), mesh: 2001, class: 40, coat_dye: 3 });
+        client.send(LoginCommand::CreateCharacter { name: name.clone(), mesh: 2001, class: 40, coat_dye: 3, avatar: 205, hair: 742 });
         match next(&client) {
             LoginEvent::Character(summary) => {
                 assert_eq!(summary.name, name);

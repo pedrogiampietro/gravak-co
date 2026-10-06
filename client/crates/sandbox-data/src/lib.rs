@@ -2,8 +2,10 @@
 pub mod audio;
 pub mod c3;
 mod content;
+mod crypto;
 pub mod ini;
 pub mod map;
+pub mod pack;
 mod reader;
 mod tq_archive_hash;
 pub mod wdf;

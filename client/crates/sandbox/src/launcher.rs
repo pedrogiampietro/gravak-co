@@ -46,6 +46,32 @@ pub const CLASSES: [(&str, u16); 4] = [
     ("Taoist", 100),
 ];
 
+/// The faces a new character can pick, by sex: the portraits of
+/// `data/PlayerFace` (the game server accepts the same ranges).
+pub const MALE_FACES: std::ops::RangeInclusive<u16> = 1..=102;
+pub const FEMALE_FACES: std::ops::RangeInclusive<u16> = 201..=290;
+/// How large the face portrait is drawn on the creation screen.
+pub const FACE_SIZE: u32 = 48;
+/// The hair styles of 5065 (`ini/armet.ini`, entries
+/// `<body>119<colour><style>`), the same for every body.
+pub const HAIR_STYLES: [u16; 35] = [
+    10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
+    44, 45, 46, 47, 48, 49, 50, 51,
+];
+/// The hair colours: the hundreds of a hair value.
+pub const HAIR_COLOURS: [u16; 7] = [3, 4, 5, 6, 7, 8, 9];
+
+/// The faces offered for body `mesh` (1003/1004 male, 2001/2002 female).
+pub fn faces_for(mesh: u16) -> std::ops::RangeInclusive<u16> {
+    if mesh >= 2000 { FEMALE_FACES } else { MALE_FACES }
+}
+
+/// One step through `count` choices from `index`, wrapping around.
+fn step(index: usize, count: usize, next: bool) -> usize {
+    let count = count.max(1);
+    if next { (index + 1) % count } else { (index + count - 1) % count }
+}
+
 /// Name of a profession id, base or promoted.
 pub fn class_name(class: u8) -> &'static str {
     match class {
@@ -87,6 +113,19 @@ pub enum Target {
     Class(usize),
     /// A starter coat dye, an index into `showcase::DYES`.
     Dye(usize),
+    /// The face: the previous (`false`) or the next (`true`) one.
+    Face(bool),
+    /// The hair style: the previous or the next one.
+    HairStyle(bool),
+    /// A hair colour, an index into `HAIR_COLOURS`.
+    HairColour(usize),
+}
+
+impl Target {
+    /// The look controls laid over the chosen hero.
+    fn on_hero(self) -> bool {
+        matches!(self, Self::Dye(_) | Self::Face(_) | Self::HairStyle(_) | Self::HairColour(_))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +169,22 @@ pub struct LoginUi {
     coat_colours: std::collections::HashMap<(usize, usize), [u8; 3]>,
     /// The starter coat's dye, an index into `showcase::DYES`.
     pub dye: usize,
+    /// The face, an index into the body's faces (`faces_for`).
+    pub face: usize,
+    /// The hair, indices into `HAIR_STYLES` and `HAIR_COLOURS`.
+    pub hair_style: usize,
+    pub hair_colour: usize,
+    /// Face portraits by face number.
+    faces: std::collections::HashMap<u16, RgbaImage>,
+    /// Each body's hair colour swatches, in `HAIR_COLOURS` order.
+    hair_swatches: std::collections::HashMap<usize, Vec<[u8; 3]>>,
+    /// The new character in other hair than the heroes' by its look.
+    looks: std::collections::HashMap<crate::showcase::LookKey, crate::showcase::Hero>,
+    /// Asks `showcase` for a look, and the last look asked for.
+    look_requests: Option<std::sync::mpsc::Sender<crate::showcase::LookKey>>,
+    last_look_request: std::cell::Cell<Option<crate::showcase::LookKey>>,
+    /// The look drawn last, kept while the next one loads.
+    shown_look: std::cell::Cell<Option<crate::showcase::LookKey>>,
     /// The columns not chosen, painted once per (class, state, place, body,
     /// hero loaded, light tick).
     column_cache: std::cell::RefCell<
@@ -171,6 +226,15 @@ impl LoginUi {
             coats: std::collections::HashMap::new(),
             coat_colours: std::collections::HashMap::new(),
             dye: 0,
+            face: 0,
+            hair_style: 0,
+            hair_colour: 0,
+            faces: std::collections::HashMap::new(),
+            hair_swatches: std::collections::HashMap::new(),
+            looks: std::collections::HashMap::new(),
+            look_requests: None,
+            last_look_request: std::cell::Cell::new(None),
+            shown_look: std::cell::Cell::new(None),
             still_heroes: std::cell::RefCell::new(std::collections::HashMap::new()),
             column_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             chosen_hero: std::cell::RefCell::new(None),
@@ -179,6 +243,23 @@ impl LoginUi {
         };
         ui.show(Screen::Login);
         ui
+    }
+
+    /// Where looks with another hair are asked for (`showcase::start`).
+    pub fn set_look_requests(&mut self, sender: std::sync::mpsc::Sender<crate::showcase::LookKey>) {
+        self.look_requests = Some(sender);
+    }
+
+    /// The face picked for the chosen body.
+    pub fn avatar(&self) -> u16 {
+        let faces = faces_for(BODIES[self.body].1);
+        let count = usize::from(faces.end() - faces.start()) + 1;
+        faces.start() + (self.face % count) as u16
+    }
+
+    /// The hair picked: colour * 100 + style.
+    pub fn hair(&self) -> u16 {
+        HAIR_COLOURS[self.hair_colour] * 100 + HAIR_STYLES[self.hair_style]
     }
 
     fn show(&mut self, screen: Screen) {
@@ -328,6 +409,8 @@ impl LoginUi {
                     mesh: BODIES[self.body].1,
                     class: CLASSES[self.class].1,
                     coat_dye: crate::showcase::DYES[self.dye],
+                    avatar: self.avatar(),
+                    hair: self.hair(),
                 }))
             }
             Action::Enter => {
@@ -364,6 +447,9 @@ impl LoginUi {
             }
             Target::Body(index) => {
                 self.body = index;
+                // The same place in the other sex's faces.
+                let faces = faces_for(BODIES[index].1);
+                self.face %= usize::from(faces.end() - faces.start()) + 1;
                 None
             }
             Target::Class(index) => {
@@ -372,6 +458,19 @@ impl LoginUi {
             }
             Target::Dye(dye) => {
                 self.dye = dye;
+                None
+            }
+            Target::Face(next) => {
+                let faces = faces_for(BODIES[self.body].1);
+                self.face = step(self.face, usize::from(faces.end() - faces.start()) + 1, next);
+                None
+            }
+            Target::HairStyle(next) => {
+                self.hair_style = step(self.hair_style, HAIR_STYLES.len(), next);
+                None
+            }
+            Target::HairColour(colour) => {
+                self.hair_colour = colour;
                 None
             }
             Target::Button(action) => self.activate(action),
@@ -767,11 +866,15 @@ impl LoginUi {
             classes.push(rect);
             targets.push((rect, Target::Class(index)));
         }
-        // The dye swatches sit on the chosen column, so they are hit first.
+        // The dye swatches and the face and hair controls sit on the
+        // chosen column, so they are hit first.
         if let Some(&chosen) = classes.get(self.class) {
             for (dye, [cx, cy], radius) in self.swatches(chosen).into_iter().rev() {
                 let reach = radius + 3;
                 targets.insert(0, ([cx - reach, cy - reach, reach * 2, reach * 2], Target::Dye(dye)));
+            }
+            for (rect, target) in self.look_controls(chosen).targets().into_iter().rev() {
+                targets.insert(0, (rect, target));
             }
         }
         let row = bar[1] + 40;
@@ -913,6 +1016,7 @@ impl LoginUi {
                     let hovered = self.hovered == Some(Target::Dye(dye));
                     art::swatch(image, centre, radius, colour, dye == self.dye, hovered);
                 }
+                self.paint_look_controls(image, *rect);
             }
         }
 
@@ -977,8 +1081,8 @@ impl LoginUi {
             return false;
         };
         let point = [cursor[0] as i32, cursor[1] as i32];
-        // The dye swatches on the hero are clicks, not turns.
-        if !inside([x, y, w, h * 56 / 100], point) || matches!(self.target_at(size, cursor), Some(Target::Dye(_))) {
+        // The look controls on the hero are clicks, not turns.
+        if !inside([x, y, w, h * 56 / 100], point) || self.target_at(size, cursor).is_some_and(Target::on_hero) {
             return false;
         }
         self.turning = Some((cursor[0], self.turn));
@@ -1009,7 +1113,111 @@ impl LoginUi {
                 self.coats.insert((body, dye), hero);
                 self.coat_colours.insert((body, dye), colour);
             }
+            crate::showcase::Loaded::Faces(faces) => self.faces.extend(faces),
+            crate::showcase::Loaded::HairColours { body, colours } => {
+                self.hair_swatches.insert(body, colours);
+            }
+            crate::showcase::Loaded::Look { key, hero } => {
+                // A few dozen looks at most; the one on screen stays.
+                if self.looks.len() >= 32 {
+                    let shown = self.shown_look.get();
+                    self.looks.retain(|look, _| Some(*look) == shown);
+                }
+                self.looks.insert(key, hero);
+            }
         }
+    }
+
+    /// Where the face and hair controls sit on the chosen column `column`:
+    /// down its left side, facing the coat swatches on the right.
+    fn look_controls(&self, column: [i32; 4]) -> LookControls {
+        let [x, y, _, _] = column;
+        let left = x + 14;
+        let size = FACE_SIZE as i32;
+        let colours: Vec<(usize, [i32; 2], i32)> = self
+            .hair_swatches
+            .get(&self.body)
+            .map(|swatches| {
+                (0..swatches.len())
+                    .map(|colour| {
+                        let (col, row) = (colour as i32 % 2, colour as i32 / 2);
+                        (colour, [left + 11 + col * 26, y + 172 + row * 24], 8)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        LookControls {
+            centre: left + size / 2,
+            face_label: y + 12,
+            face: [left, y + 30, size, size],
+            face_previous: [left - 2, y + 30 + size + 4, 24, 18],
+            face_next: [left + size - 22, y + 30 + size + 4, 24, 18],
+            hair_label: y + 112,
+            style_previous: [left - 2, y + 130, 24, 18],
+            style_next: [left + size - 22, y + 130, 24, 18],
+            colours,
+        }
+    }
+
+    fn paint_look_controls(&self, image: &mut RgbaImage, column: [i32; 4]) {
+        use crate::launcher_art as art;
+        let controls = self.look_controls(column);
+        let hovered = |target: Target| self.hovered == Some(target);
+        art::label(image, "Face", 12.0, controls.centre, controls.face_label, art::GOLD);
+        let [fx, fy, fw, fh] = controls.face;
+        art::fill(image, controls.face, [0, 0, 0, 150]);
+        if let Some(face) = self.faces.get(&self.avatar()) {
+            image::imageops::overlay(image, face, i64::from(fx), i64::from(fy));
+        }
+        if hovered(Target::Face(true)) {
+            art::glow(image, controls.face, 4, [255, 200, 110, 90]);
+        }
+        art::outline(image, [fx - 1, fy - 1, fw + 2, fh + 2], art::GOLD_DEEP);
+        art::outline(image, [fx - 2, fy - 2, fw + 4, fh + 4], [0, 0, 0, 140]);
+        for (rect, text, target) in [
+            (controls.face_previous, "‹", Target::Face(false)),
+            (controls.face_next, "›", Target::Face(true)),
+            (controls.style_previous, "‹", Target::HairStyle(false)),
+            (controls.style_next, "›", Target::HairStyle(true)),
+        ] {
+            art::button(image, rect, text, art::ButtonStyle::Secondary, hovered(target), false);
+        }
+        let style = format!("Hair {}/{}", self.hair_style + 1, HAIR_STYLES.len());
+        art::label(image, &style, 12.0, controls.centre, controls.hair_label, art::GOLD);
+        if let Some(swatches) = self.hair_swatches.get(&self.body) {
+            for (colour, centre, radius) in controls.colours {
+                let swatch = swatches.get(colour).copied().unwrap_or([128, 128, 128]);
+                let lit = hovered(Target::HairColour(colour));
+                art::swatch(image, centre, radius, swatch, colour == self.hair_colour, lit);
+            }
+        }
+    }
+
+    /// The new character's hero in look `key`; while that look loads, the
+    /// one drawn before it (or the coat's own hair).
+    fn look_hero(&self, key: crate::showcase::LookKey) -> Option<&crate::showcase::Hero> {
+        let get = |key: crate::showcase::LookKey| {
+            if key.2 == crate::showcase::HAIR {
+                self.coats.get(&(key.0, key.1))
+            } else {
+                self.looks.get(&key)
+            }
+        };
+        if let Some(hero) = get(key) {
+            self.shown_look.set(Some(key));
+            return Some(hero);
+        }
+        if self.last_look_request.get() != Some(key) {
+            if let Some(sender) = &self.look_requests {
+                let _ = sender.send(key);
+            }
+            self.last_look_request.set(Some(key));
+        }
+        self.shown_look
+            .get()
+            .filter(|shown| shown.0 == key.0)
+            .and_then(get)
+            .or_else(|| self.coats.get(&(key.0, key.1)))
     }
 
     /// The dye swatches on the chosen column, top to bottom, once the
@@ -1029,8 +1237,7 @@ impl LoginUi {
         // The chosen profession wears the starter coat in its dye: what
         // the new character will look like. The others show their gear.
         let hero = if class == self.class {
-            self.coats
-                .get(&(self.body, self.dye))
+            self.look_hero((self.body, self.dye, self.hair()))
                 .or_else(|| self.heroes.get(&(self.body, class)))?
         } else {
             self.heroes.get(&(self.body, class))?
@@ -1042,7 +1249,8 @@ impl LoginUi {
             // Twenty poses a second are plenty for breathing and turning;
             // the player's own turn adds to the slow sway.
             let tick = (time * 20.0).floor();
-            let key = (self.body, class * 16 + self.dye, size, tick as i64, (self.turn * 100.0) as i64);
+            let look = (class * 16 + self.dye) * 10_000 + usize::from(self.hair()) * 10 + self.face % 10;
+            let key = (self.body, look, size, tick as i64, (self.turn * 100.0) as i64);
             let mut latest = self.chosen_hero.borrow_mut();
             if let Some((cached, image)) = latest.as_ref()
                 && *cached == key
@@ -1061,6 +1269,38 @@ impl LoginUi {
                 .or_insert_with(|| hero.render(size, tall, 0.0, 0.0))
                 .clone(),
         )
+    }
+}
+
+/// The face and hair controls on the chosen hero's column.
+struct LookControls {
+    /// Where the labels are centred, and their tops.
+    centre: i32,
+    face_label: i32,
+    face: [i32; 4],
+    face_previous: [i32; 4],
+    face_next: [i32; 4],
+    hair_label: i32,
+    style_previous: [i32; 4],
+    style_next: [i32; 4],
+    /// (colour, centre, radius), once the body's colours have loaded.
+    colours: Vec<(usize, [i32; 2], i32)>,
+}
+
+impl LookControls {
+    fn targets(&self) -> Vec<([i32; 4], Target)> {
+        let mut targets = vec![
+            (self.face, Target::Face(true)),
+            (self.face_previous, Target::Face(false)),
+            (self.face_next, Target::Face(true)),
+            (self.style_previous, Target::HairStyle(false)),
+            (self.style_next, Target::HairStyle(true)),
+        ];
+        for &(colour, [cx, cy], radius) in &self.colours {
+            let reach = radius + 3;
+            targets.push(([cx - reach, cy - reach, reach * 2, reach * 2], Target::HairColour(colour)));
+        }
+        targets
     }
 }
 
@@ -1370,8 +1610,11 @@ pub fn run(
         Ok(source) => crate::launcher_art::set_frame_source(source),
         Err(error) => eprintln!("Login screens without the game's window art: {error}"),
     }
+    let (heroes, look_requests) = crate::showcase::start(assets.root_path().to_path_buf());
+    let mut ui = LoginUi::new(crate::settings::load_last_account());
+    ui.set_look_requests(look_requests);
     let mut launcher = Launcher {
-        ui: LoginUi::new(crate::settings::load_last_account()),
+        ui,
         client: LoginClient::start(auth_address, realm),
         window: None,
         surface: None,
@@ -1381,7 +1624,7 @@ pub fn run(
         entered: None,
         error: None,
         scenes: crate::login_scenes::start(assets.root_path().to_path_buf()),
-        heroes: crate::showcase::start(assets.root_path().to_path_buf()),
+        heroes,
         audio: {
             let options = crate::settings::load_options();
             crate::audio::LoginAudio::start(assets, options.music_volume, options.sound_volume)
@@ -1479,8 +1722,11 @@ mod tests {
                 name: "Gravak".into(),
                 mesh: 2001,
                 class: 100,
-                // No coat colour picked: the coat's own (dye 3).
-                coat_dye: 3
+                // No coat colour picked: the coat's own (dye 3); the first
+                // female face and the heroes' hair.
+                coat_dye: 3,
+                avatar: 201,
+                hair: 310,
             }))
         );
         ui.handle_event(&LoginEvent::CharacterRejected(
@@ -1489,6 +1735,39 @@ mod tests {
         assert!(!ui.busy);
         assert_eq!(ui.screen, Screen::CreateCharacter);
         assert_eq!(ui.status(), "Character name taken");
+    }
+
+    #[test]
+    fn character_creation_sends_the_picked_face_and_hair() {
+        let mut ui = LoginUi::new(Some("hero".into()));
+        ui.handle_event(&LoginEvent::NeedsCharacter);
+        type_text(&mut ui, "Gravak");
+        ui.add_loaded(crate::showcase::Loaded::HairColours { body: 0, colours: vec![[0, 0, 0]; 7] });
+        // The first face back wraps to the last male one.
+        ui.click(SIZE, centre(&ui, Target::Face(false)));
+        assert_eq!(ui.avatar(), 102);
+        ui.click(SIZE, centre(&ui, Target::Face(true)));
+        ui.click(SIZE, centre(&ui, Target::Face(true)));
+        assert_eq!(ui.avatar(), 2);
+        ui.click(SIZE, centre(&ui, Target::HairStyle(true)));
+        ui.click(SIZE, centre(&ui, Target::HairColour(4)));
+        assert_eq!(ui.hair(), 711);
+        // The look controls are clicks, not turns of the hero.
+        assert!(!ui.press(SIZE, centre(&ui, Target::HairColour(4))));
+        assert_eq!(
+            ui.click(SIZE, centre(&ui, Target::Button(Action::Create))),
+            Some(Request::Send(LoginCommand::CreateCharacter {
+                name: "Gravak".into(),
+                mesh: 1003,
+                class: 10,
+                coat_dye: 3,
+                avatar: 2,
+                hair: 711,
+            }))
+        );
+        // A female body keeps the place among its own faces.
+        ui.click(SIZE, centre(&ui, Target::Body(2)));
+        assert_eq!(ui.avatar(), 202);
     }
 
     #[test]

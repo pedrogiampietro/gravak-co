@@ -32,6 +32,7 @@ mod ornate;
 mod paint;
 mod renderer;
 mod settings;
+mod sell_all;
 mod shop;
 mod store_panel;
 mod daily_rewards_panel;
@@ -301,6 +302,13 @@ struct App {
     modifiers: winit::keyboard::ModifiersState,
     held: bool,
     queued_jump: Option<[i32; 2]>,
+    /// The Sell All window over an NPC shop.
+    sell_all: Option<sell_all::SellAllView>,
+    /// Shift + right click on a shop item: (item, how-many menu).
+    shop_buy_menu: Option<(u32, shop::ChoiceMenu)>,
+    /// A skill asked for in the air (skill, aimed cell): as in the
+    /// original nothing is shot while jumping; it goes once the hero lands.
+    queued_cast: Option<(u32, Option<[i32; 2]>)>,
     local_action: Option<(Action, f32, f32)>,
     stamina: u8,
     /// The XP circle's points, 0-100.
@@ -403,6 +411,9 @@ struct App {
     /// The HUD settings last written to disk.
     saved_hud: Option<settings::HudSettings>,
     next_attack_at: f32,
+    /// How far the basic attack reaches with the equipped weapon, in
+    /// cells (`shop::attack_range_cells`), kept with the equipment.
+    attack_reach: f32,
     remote_actors: HashMap<u32, RemoteActor>,
     /// Life and maximum life of the Guild War structures.
     structure_lives: HashMap<u32, (u32, u32)>,
@@ -611,6 +622,7 @@ impl ApplicationHandler for App {
                     let viewport = [size.width as f32, size.height as f32];
                     shop.hover = shop.item_at(viewport, self.cursor);
                     shop.repair_hover = shop::repair_button_at(viewport, self.cursor);
+                    shop.sell_all_hover = shop::sell_all_button_at(viewport, self.cursor);
                     shop.scroll_hover = shop::scroll_direction_at(viewport, self.cursor);
                 }
             }
@@ -962,6 +974,10 @@ impl ApplicationHandler for App {
                     }
                 }
                 if button == MouseButton::Right && state == ElementState::Pressed {
+                    // Nothing under the Sell All window is bought or sold.
+                    if self.sell_all.as_ref().is_some_and(|view| view.contains(self.cursor)) {
+                        return;
+                    }
                     if self.begin_item_context_menu() {
                         return;
                     }
@@ -975,6 +991,9 @@ impl ApplicationHandler for App {
                     }
                 }
                 if button == MouseButton::Left && state == ElementState::Pressed {
+                    if self.handle_shop_windows_click() {
+                        return;
+                    }
                     if self.handle_gem_selection_panel_click() {
                         return;
                     }
@@ -1143,6 +1162,10 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) if self.item_context.is_some() => {
                         self.item_context = None;
                     }
+                    PhysicalKey::Code(KeyCode::Escape) if self.sell_all.is_some() || self.shop_buy_menu.is_some() => {
+                        self.sell_all = None;
+                        self.shop_buy_menu = None;
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.shop.is_some() => {
                         self.shop = None;
                     }
@@ -1247,7 +1270,7 @@ impl ApplicationHandler for App {
                 self.process_pending_pickup();
                 let mut local_action_progress = None;
                 if let Some((action, started_at, until)) = self.local_action {
-                    if elapsed < until && !self.player.moving() {
+                    if elapsed < until && (!self.player.moving() || self.player.jumping()) {
                         self.player.action = action;
                         local_action_progress = Some(
                             ((elapsed - started_at) / (until - started_at).max(f32::EPSILON))
@@ -1256,6 +1279,10 @@ impl ApplicationHandler for App {
                     } else if elapsed >= until {
                         self.local_action = None;
                     }
+                }
+                // A blow struck in the air is over: the jump plays on.
+                if self.player.jumping() && self.local_action.is_none() {
+                    self.player.action = Action::Jump;
                 }
                 if self.held_pose.is_some() && self.player.moving() {
                     self.held_pose = None;
@@ -1306,6 +1333,16 @@ impl ApplicationHandler for App {
                 {
                     self.refresh_cursor();
                 }
+                // Landed: the skill asked for in the air goes now.
+                if !self.in_air()
+                    && let Some((skill_id, cell)) = self.queued_cast.take()
+                    && let Some(skill) = action_bar::skill_action(skill_id)
+                {
+                    match cell {
+                        Some(cell) => self.cast_aimed_skill_at(skill, cell),
+                        None => self.cast_skill(skill),
+                    }
+                }
                 if !self.player.moving()
                     && self.pending_network_steps.is_empty()
                     && let Some(target) = self.queued_jump.take()
@@ -1319,9 +1356,16 @@ impl ApplicationHandler for App {
                     audio.update_music(&mut self.assets, self.map.id, self.player.cell());
                 }
                 let skill_hud = self.skill_hud();
+                // The shop's own windows go with it.
+                if self.shop.is_none() {
+                    self.sell_all = None;
+                    self.shop_buy_menu = None;
+                }
                 let choice_menu = self.choice_menu();
                 let notice = self.target_pick.map(TargetPick::notice);
                 let prompt = self.prompt();
+                let sell_all_hovered =
+                    self.sell_all.as_ref().and_then(|view| view.action_at(&self.inventory, self.cursor));
                 let hovered_player = self.hovered_player();
                 let team_pins = self.team_pins();
                 self.sync_ghosts(elapsed);
@@ -1449,6 +1493,7 @@ impl ApplicationHandler for App {
                         choice_menu,
                         notice,
                         prompt,
+                        self.sell_all.as_ref().map(|view| (view, self.inventory.as_slice(), sell_all_hovered)),
                         hovered_player,
                         self.item_action_panel,
                         action_animation_progress,
@@ -1588,14 +1633,10 @@ impl App {
                         Ok(model) => {
                             if self.network_character_id == Some(id) {
                                 let mut model = model;
-                                model.guild = self.character.guild.clone();
-                                model.guild_rank = self.character.guild_rank.clone();
-                                model.maximum_health =
-                                    self.character.maximum_health.max(model.maximum_health);
-                                // The model was built from an appearance packet
-                                // that may predate the latest hit; life comes
-                                // from MsgUserInfo, so the HUD orb keeps it.
-                                model.health = self.character.health;
+                                // The model was built from an appearance packet;
+                                // life, attributes and profession come from
+                                // MsgUserInfo, so they are kept.
+                                model.keep_profile_from(&self.character);
                                 self.character = model;
                                 self.renderer
                                     .as_mut()
@@ -1657,6 +1698,7 @@ impl App {
     }
 
     fn refresh_character_equipment_model(&mut self) {
+        self.attack_reach = shop::attack_range_cells(&mut self.assets, &self.equipment);
         let armor = self
             .equipment
             .iter()
@@ -1728,9 +1770,7 @@ impl App {
         ) else {
             return;
         };
-        character.guild = self.character.guild.clone();
-        character.guild_rank = self.character.guild_rank.clone();
-        character.maximum_health = self.character.maximum_health;
+        character.keep_profile_from(&self.character);
         self.character = character;
         if let Some(renderer) = &mut self.renderer {
             renderer.invalidate_status();
@@ -2608,7 +2648,93 @@ impl App {
             let viewport = [size.width as f32, size.height as f32];
             return Some(shop::ChoiceMenu::kill_modes(viewport, self.kill_mode));
         }
+        if let Some((_, menu)) = &self.shop_buy_menu {
+            return Some(menu.clone());
+        }
         self.player_menu.as_ref().map(|player_menu| player_menu.menu.clone())
+    }
+
+    /// Clicks on the shop's own windows (Sell All, the how-many menu),
+    /// handled before anything under them.
+    fn handle_shop_windows_click(&mut self) -> bool {
+        if let Some((item_id, menu)) = self.shop_buy_menu.take() {
+            if let Some(row) = menu.row_at(self.cursor) {
+                self.buy_shop_items(item_id, shop::BUY_AMOUNTS[row].1);
+                self.held = false;
+                return true;
+            }
+            if menu.contains(self.cursor) {
+                self.shop_buy_menu = Some((item_id, menu));
+                self.held = false;
+                return true;
+            }
+        }
+        let Some(view) = &self.sell_all else {
+            return false;
+        };
+        self.held = false;
+        if !view.contains(self.cursor) {
+            // A click outside closes the window.
+            self.sell_all = None;
+            return true;
+        }
+        let Some(action) = view.action_at(&self.inventory, self.cursor) else {
+            return true;
+        };
+        match action {
+            sell_all::SellAllAction::Tab(tab) => {
+                if let Some(view) = &mut self.sell_all {
+                    view.tab = tab;
+                }
+            }
+            sell_all::SellAllAction::Toggle(item_type) => {
+                if let Some(view) = &mut self.sell_all
+                    && !view.toggle(item_type)
+                {
+                    self.network_status = "Valuable items are always kept.".into();
+                }
+            }
+            sell_all::SellAllAction::Close => self.sell_all = None,
+            sell_all::SellAllAction::SellAll => {
+                let Some(shop_id) = self.shop.as_ref().map(|shop| shop.npc_id) else {
+                    self.network_status = "Open a shop to sell.".into();
+                    return true;
+                };
+                let items = view.to_sell(&self.inventory);
+                let silver = view.value(&self.inventory);
+                for item in &items {
+                    self.request_shop_sale(item.uid, shop_id);
+                }
+                self.network_status = format!("Selling {} items for about {silver} silver.", items.len());
+            }
+        }
+        true
+    }
+
+    /// Buys `amount` of shop item `item_id`, one into each free slot, as
+    /// far as the silver and the free slots go.
+    fn buy_shop_items(&mut self, item_id: u32, amount: usize) {
+        let price = self
+            .shop
+            .as_ref()
+            .and_then(|shop| shop.item_info(item_id))
+            .map_or(0, |info| info.price);
+        let occupied: std::collections::HashSet<u8> = self.inventory.iter().map(|item| item.position).collect();
+        let free: Vec<u8> = (0u8..40).filter(|slot| !occupied.contains(slot)).collect();
+        let affordable = if price == 0 { amount } else { (u64::from(self.silver) / u64::from(price)) as usize };
+        let count = amount.min(free.len()).min(affordable);
+        if count == 0 {
+            self.network_status = if free.is_empty() {
+                "Inventory is full.".into()
+            } else {
+                "Not enough silver.".into()
+            };
+            return;
+        }
+        for slot in free.into_iter().take(count) {
+            self.request_shop_purchase(item_id, slot);
+        }
+        self.network_status = format!("Buying {count} x item {item_id}.");
     }
 
     fn open_player_menu(&mut self, target_id: u32, name: String) {
@@ -4304,6 +4430,7 @@ impl App {
                         actor.position[1] + delta[1] as f32,
                     ];
                     actor.movement_started = now;
+                    actor.jumping = false;
                     // Cyclone moves twice as fast (`Conquer.exe`).
                     let haste = if actor.status_flags & network::CYCLONE_FLAG != 0 { 2.0 } else { 1.0 };
                     actor.movement_until = now
@@ -4378,6 +4505,7 @@ impl App {
                     actor.movement_to = target;
                     actor.movement_started = now;
                     actor.movement_until = now + motion.duration.as_secs_f32();
+                    actor.jumping = true;
                     actor.action = 130;
                     actor.animation_started = now;
                     actor.animation_until = actor.movement_until;
@@ -4466,30 +4594,20 @@ impl App {
                         self.pending_skill_attack = None;
                     }
                 }
-                if let Some(actor) = self.remote_actors.get_mut(&id) {
-                    // Interaction packets carry the wire combat action (2),
-                    // while the renderer uses the player's motion catalog.
-                    actor.action = 140;
-                    actor.animation_until = self.started.elapsed().as_secs_f32() + 0.45;
+                // A bow's blow flies to its target as an arrow.
+                if action == 2 {
+                    self.shoot_arrow(id, target_id);
                 }
+                let now = self.started.elapsed().as_secs_f32();
+                self.play_attack_motion(id, now);
                 self.network_status =
                     format!("online: combat {id} -> {target_id}, hit {value} (action {action})");
-                let now = self.started.elapsed().as_secs_f32();
                 // A physical blow of 0 missed: it shows "Miss". A death
                 // carries no damage.
                 if action != 14 && (value > 0 || action == 2) {
                     self.combat_numbers.push((target_id, value, now + 1.0));
                 }
-                if self.network_character_id == Some(target_id) {
-                    self.hit_until = now + 0.45;
-                    self.player.action = Action::Hit;
-                    self.player.action_instance = self.player.action_instance.wrapping_add(1);
-                    self.local_action = Some((Action::Hit, now, now + 0.45));
-                } else if self.network_character_id == Some(id) {
-                    self.player.action = Action::Attack;
-                    self.player.action_instance = self.player.action_instance.wrapping_add(1);
-                    self.local_action = Some((Action::Attack, now, now + 0.45));
-                }
+                self.play_blow_on_player(id, target_id, now);
             }
             NetworkEvent::SkillEffect {
                 attacker_id,
@@ -4519,21 +4637,20 @@ impl App {
                 if damage > 0 {
                     self.combat_numbers.push((target_id, damage, now + 1.0));
                 }
-                if let Some(actor) = self.remote_actors.get_mut(&attacker_id) {
-                    actor.action = 140;
-                    actor.animation_started = now;
-                    actor.animation_until = now + 0.45;
+                // The bow skills shoot their arrows: one at each target, or
+                // Scatter's fan toward the aimed cell when it hit nothing.
+                if action_bar::is_bow_skill(u32::from(skill_id)) {
+                    if target_id != 0 && target_id != attacker_id {
+                        self.shoot_arrow(attacker_id, target_id);
+                    } else if first && u32::from(skill_id) == 8_001 {
+                        self.shoot_arrow_fan(attacker_id, target_cell);
+                    }
                 }
-                if self.network_character_id == Some(target_id) {
-                    self.hit_until = now + 0.45;
-                    self.player.action = Action::Hit;
-                    self.player.action_instance = self.player.action_instance.wrapping_add(1);
-                    self.local_action = Some((Action::Hit, now, now + 0.45));
-                } else if self.network_character_id == Some(attacker_id) {
-                    self.player.action = Action::Attack;
-                    self.player.action_instance = self.player.action_instance.wrapping_add(1);
-                    self.local_action = Some((Action::Attack, now, now + 0.45));
+                // One motion for the cast, not one per target.
+                if first {
+                    self.play_attack_motion(attacker_id, now);
                 }
+                self.play_blow_on_player(attacker_id, target_id, now);
                 self.network_status =
                     format!("online: skill {skill_id} {attacker_id} -> {target_id}, hit {damage}");
             }
@@ -4841,7 +4958,11 @@ impl App {
         }
     }
     fn send_network_step(&mut self, previous_cell: [i32; 2]) {
-        if self.player.action == Action::Jump || self.pending_network_jump {
+        // A jump is one move: the cells it flies over are not steps, even
+        // when a shot or a hit in the air changes the motion played (the
+        // server, already at the landing, would refuse them and pull the
+        // hero back).
+        if self.player.action == Action::Jump || self.player.jumping() || self.pending_network_jump {
             return;
         }
         let Some(network) = &self.network else {
@@ -5098,10 +5219,127 @@ impl App {
             .map(|(_, uid, item_id, x, y)| (uid, item_id, x, y))
     }
 
+    /// `attacker_id` strikes: a remote actor plays its attack motion. In the
+    /// middle of a jump the jump plays on to its landing and only the
+    /// arrows show the shot (Scatter shot while jumping).
+    fn play_attack_motion(&mut self, attacker_id: u32, now: f32) {
+        if let Some(actor) = self.remote_actors.get_mut(&attacker_id) {
+            if actor.jumping && now < actor.movement_until {
+                return;
+            }
+            // Interaction packets carry the wire combat action (2),
+            // while the renderer uses the player's motion catalog.
+            actor.action = 140;
+            actor.animation_started = now;
+            actor.animation_until = now + 0.45;
+        }
+    }
+
+    /// The player is hit, or strikes; in the air the jump keeps its motion.
+    fn play_blow_on_player(&mut self, attacker_id: u32, target_id: u32, now: f32) {
+        let action = if self.network_character_id == Some(target_id) {
+            self.hit_until = now + 0.45;
+            Action::Hit
+        } else if self.network_character_id == Some(attacker_id) {
+            Action::Attack
+        } else {
+            return;
+        };
+        // In the air the jump plays on to its landing.
+        if self.player.jumping() {
+            return;
+        }
+        self.player.action = action;
+        self.player.action_instance = self.player.action_instance.wrapping_add(1);
+        self.local_action = Some((action, now, now + 0.45));
+    }
+
+    /// The bow and arrows `attacker_id` holds, when it holds both.
+    fn bow_and_arrows(&self, attacker_id: u32) -> Option<(u32, u32)> {
+        let (bow, arrows) = if self.network_character_id == Some(attacker_id) {
+            let held = |position: u8| {
+                self.equipment
+                    .iter()
+                    .find(|item| item.position == position)
+                    .map_or(0, |item| item.item_type)
+            };
+            (held(4), held(5))
+        } else {
+            let actor = self.remote_actors.get(&attacker_id)?;
+            (actor.right_weapon, actor.left_weapon % 10_000_000)
+        };
+        (bow / 1_000 == 500 && arrows / 1_000 == 1_050).then_some((bow, arrows))
+    }
+
+    /// Scatter that hit nothing: five arrows fanned out toward `cell`.
+    fn shoot_arrow_fan(&mut self, attacker_id: u32, cell: (u16, u16)) {
+        let Some((bow, arrows)) = self.bow_and_arrows(attacker_id) else {
+            return;
+        };
+        let Some(flying) = crate::magic::flying_object(&mut self.assets, bow, arrows) else {
+            return;
+        };
+        let local = self.network_character_id == Some(attacker_id);
+        let from = if local {
+            self.player.position
+        } else {
+            match self.remote_actors.get(&attacker_id) {
+                Some(actor) => actor.position,
+                None => return,
+            }
+        };
+        let toward = [f32::from(cell.0) - from[0], f32::from(cell.1) - from[1]];
+        let length = toward[0].hypot(toward[1]);
+        if length < 0.5 {
+            return;
+        }
+        let angle = toward[1].atan2(toward[0]);
+        let now = self.started.elapsed().as_secs_f32();
+        if let Some(renderer) = self.renderer.as_mut() {
+            for spread in [-0.5_f32, -0.25, 0.0, 0.25, 0.5] {
+                let (sin, cos) = (angle + spread).sin_cos();
+                let end = [from[0] + cos * SCATTER_REACH, from[1] + sin * SCATTER_REACH];
+                renderer.add_arrow_to(attacker_id, local, end, flying.clone(), now);
+            }
+        }
+    }
+
+    /// Sends an arrow from `attacker_id` to `target_id` when the attacker
+    /// holds a bow and arrows (`ini/3DFlyingObj.ini`).
+    fn shoot_arrow(&mut self, attacker_id: u32, target_id: u32) {
+        let local = self.network_character_id;
+        let Some((bow, arrows)) = self.bow_and_arrows(attacker_id) else {
+            return;
+        };
+        let Some(flying) = crate::magic::flying_object(&mut self.assets, bow, arrows) else {
+            return;
+        };
+        let now = self.started.elapsed().as_secs_f32();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.add_arrow(
+                attacker_id,
+                target_id,
+                local == Some(attacker_id),
+                local == Some(target_id),
+                flying,
+                now,
+            );
+        }
+    }
+
+    /// Jumping, or the jump not yet confirmed: as in the original, nothing
+    /// is shot until the hero is back on the ground.
+    fn in_air(&self) -> bool {
+        self.player.jumping() || self.pending_network_jump
+    }
+
     fn process_pending_attack(&mut self) {
         let Some(target_id) = self.pending_attack else {
             return;
         };
+        if self.in_air() {
+            return;
+        }
         let Some(target) = self.remote_actors.get(&target_id) else {
             self.pending_attack = None;
             return;
@@ -5113,7 +5351,12 @@ impl App {
         }
         let target_cell = target.position.map(|value| value.round() as i32);
         let distance = motion_math::cell_distance(self.player.position, target.position);
-        if distance <= 2.0 && self.pending_network_steps.is_empty() {
+        // A bow shoots from where it stands once the target is in reach;
+        // walking stops there instead of beside the target.
+        if distance <= self.attack_reach && self.player.moving() && self.attack_reach > 2.0 {
+            self.player.stop();
+        }
+        if distance <= self.attack_reach && self.pending_network_steps.is_empty() {
             let now = self.started.elapsed().as_secs_f32();
             if now < self.next_attack_at {
                 return;
@@ -5134,7 +5377,8 @@ impl App {
             }
             return;
         }
-        if self.player.moving() {
+        // In reach, waiting for the last steps to reach the server.
+        if distance <= self.attack_reach || self.player.moving() {
             return;
         }
         // Stop at a walkable cell beside the monster. Walking onto the target
@@ -5297,6 +5541,8 @@ impl App {
             && let Some(ally) = self.player_at_cursor()
         {
             self.cast_support_skill(skill, ally);
+        } else if self.in_air() {
+            self.queued_cast = Some((skill.id, None));
         } else {
             self.cast_skill(skill);
         }
@@ -5334,6 +5580,23 @@ impl App {
             .map
             .unproject([self.cursor[0] + camera[0], self.cursor[1] + camera[1]])
             .map(|value| value.round().max(0.0) as i32);
+        let _ = (network, character_id);
+        if self.in_air() {
+            self.queued_cast = Some((skill.id, Some(cell)));
+            return;
+        }
+        self.cast_aimed_skill_at(skill, cell);
+    }
+
+    /// Shoots aimed skill `skill` toward `cell` from where the hero stands.
+    fn cast_aimed_skill_at(&mut self, skill: action_bar::SkillAction, cell: [i32; 2]) {
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            return;
+        };
+        let now = self.started.elapsed().as_secs_f32();
+        if self.skill_cooldown_until.get(&skill.id).is_some_and(|until| now < *until) {
+            return;
+        }
         if cell == self.player.cell() {
             return;
         }
@@ -5370,6 +5633,9 @@ impl App {
         let Some((target_id, skill_id)) = self.pending_skill_attack else {
             return;
         };
+        if self.in_air() {
+            return;
+        }
         let Some(skill) = action_bar::skill_action(skill_id) else {
             self.pending_skill_attack = None;
             return;
@@ -6201,6 +6467,16 @@ impl App {
         if shop::close_at(viewport, self.cursor) {
             self.shop = None;
             self.network_status = "online: shop closed".into();
+            return true;
+        }
+        if shop::sell_all_button_at(viewport, self.cursor) {
+            self.shop_buy_menu = None;
+            self.sell_all = Some(sell_all::SellAllView::open(
+                &mut self.assets,
+                &self.inventory,
+                self.network_character_id,
+                viewport,
+            ));
             return true;
         }
         let scroll = shop::scroll_direction_at(viewport, self.cursor);
@@ -7842,6 +8118,18 @@ impl App {
             return false;
         };
         let item_id = current_shop.items[index];
+        // Shift: how many to buy.
+        if self.modifiers.shift_key() {
+            let name = current_shop.item_info(item_id).map_or_else(|| format!("Item {item_id}"), |info| info.name.clone());
+            let menu = shop::ChoiceMenu::at(
+                viewport,
+                self.cursor,
+                name,
+                shop::BUY_AMOUNTS.iter().map(|(label, _)| *label).collect(),
+            );
+            self.shop_buy_menu = Some((item_id, menu));
+            return true;
+        }
         let occupied: std::collections::HashSet<u8> =
             self.inventory.iter().map(|item| item.position).collect();
         let Some(slot) = (0u8..40).find(|slot| !occupied.contains(slot)) else {
@@ -8411,6 +8699,9 @@ fn run() -> Result<()> {
         modifiers: Default::default(),
         held: false,
         queued_jump: None,
+        sell_all: None,
+        shop_buy_menu: None,
+        queued_cast: None,
         local_action: None,
         stamina: 100,
         xp_points: 0,
@@ -8509,6 +8800,7 @@ fn run() -> Result<()> {
         skill_cooldown_until: HashMap::new(),
         saved_hud: None,
         next_attack_at: 0.0,
+        attack_reach: 2.0,
         remote_actors: HashMap::new(),
         structure_lives: HashMap::new(),
         remote_models: HashMap::new(),
@@ -8602,6 +8894,9 @@ fn run() -> Result<()> {
     }
     Ok(())
 }
+/// How far Scatter's fan of arrows flies when it hits nothing, in cells.
+const SCATTER_REACH: f32 = 8.0;
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("Sandbox: {error}");
