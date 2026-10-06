@@ -119,6 +119,10 @@ pub struct SkillHud {
     /// The Action panel is open, with the emote under the cursor.
     pub action_panel_open: bool,
     pub action_panel_hover: Option<usize>,
+    /// The Action panel's emote being dragged (its index there).
+    pub dragging_emote: Option<usize>,
+    /// The F keys' open popup and the cell under the cursor.
+    pub hotkey_popup: Option<(crate::hotkey_menu::HotkeyPopupView, Option<usize>)>,
 }
 
 /// Seconds since 1970 on this machine.
@@ -395,14 +399,6 @@ const CHAT_LOG_WIDTH: i32 = 590;
 const CHAT_LOG_LINES: usize = 12;
 const CHAT_LINE_HEIGHT: i32 = 16;
 const CHAT_TAB_HEIGHT: i32 = 20;
-const CONTEXT_OPTIONS: [&str; 4] = [
-    "Assign Spell",
-    "Assign Object",
-    "Assign Text",
-    "Assign Hotkey",
-];
-const CONTEXT_ROW: i32 = 22;
-const CONTEXT_WIDTH: i32 = 150;
 
 // Hover codes shared between hit testing and painting.
 const HOVER_SLOT: u8 = 20;
@@ -739,31 +735,8 @@ fn hotkey_rect(viewport: [f32; 2], index: usize) -> Rect {
     layout::hotkey_slot_rect(viewport, index).into()
 }
 
-fn action_context_menu_rect(viewport: [f32; 2], slot: usize) -> Rect {
-    let anchor = hotkey_rect(viewport, slot.min(9));
-    let height = CONTEXT_ROW * CONTEXT_OPTIONS.len() as i32 + 8;
-    let x = (anchor.0 + anchor.2 / 2 - CONTEXT_WIDTH / 2)
-        .clamp(4, (viewport[0] as i32 - CONTEXT_WIDTH - 4).max(4));
-    Rect(x, anchor.1 - height - 26, CONTEXT_WIDTH, height)
-}
-
 pub fn action_slot_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<usize> {
     layout::hotkey_slot_at(viewport, cursor)
-}
-
-pub fn action_context_option_at(
-    viewport: [f32; 2],
-    cursor: [f32; 2],
-    slot: usize,
-) -> Option<usize> {
-    let menu = action_context_menu_rect(viewport, slot);
-    if !menu.contains(cursor) {
-        return None;
-    }
-    let option = (cursor[1] as i32 - menu.1 - 4).div_euclid(CONTEXT_ROW);
-    (0..CONTEXT_OPTIONS.len() as i32)
-        .contains(&option)
-        .then_some(option as usize)
 }
 
 pub fn position(_viewport: [f32; 2]) -> [f32; 2] {
@@ -1029,13 +1002,18 @@ fn draw_hotkeys(
     for (index, slot) in action_bar.slots.iter().enumerate() {
         let frame = hotkey_rect(viewport, index);
         let inner = frame.inset(3);
-        if let Some(mut icon) = slot
-            .icon_path()
-            .and_then(|path| assets.image(&path).ok())
-        {
+        let binding = slot.binding();
+        let art = match &binding {
+            Some(crate::action_bar::Binding::Item(item_type)) => crate::shop::item_icon_image(assets, *item_type).ok(),
             // Skill textures keep their artwork in a larger transparent
             // canvas; crop it so the icon fills the slot like the original.
-            icon = crate::original_ui::visible_part(&icon)?;
+            _ => slot
+                .icon_path()
+                .and_then(|path| assets.image(&path).ok())
+                .map(|icon| crate::original_ui::visible_part(&icon))
+                .transpose()?,
+        };
+        if let Some(mut icon) = art {
             let size = (frame.2 - 4) as u32;
             if icon.dimensions() != (size, size) {
                 icon = imageops::resize(&icon, size, size, imageops::FilterType::Triangle);
@@ -1046,6 +1024,18 @@ fn draw_hotkeys(
                 }
             }
             imageops::overlay(img, &icon, i64::from(frame.0 + 2), i64::from(frame.1 + 2));
+        }
+        if let Some(crate::action_bar::Binding::Text(text)) = &binding {
+            // A line of text: its first letters on a dark plate.
+            fill(img, inner, [20, 24, 30, 230]);
+            let short: String = text.chars().take(5).collect();
+            let x = inner.0 + (inner.2 - main_hud::text_width(font, &short, 11.0)).max(0) / 2;
+            main_hud::text(img, font, &short, 11.0, [x, inner.1 + 10], [255, 236, 170, 255], Some(inner.2));
+        }
+        if let Some(count) = slot.count {
+            let label = count.to_string();
+            let x = inner.0 + inner.2 - main_hud::text_width(font, &label, 11.0) - 1;
+            main_hud::text(img, font, &label, 11.0, [x, inner.1 + inner.3 - 13], [255, 255, 255, 255], None);
         }
         if slot.cooldown_left > 0 {
             cooldown_sweep(img, inner, slot.cooldown_left);
@@ -1089,42 +1079,6 @@ fn cooldown_sweep(img: &mut RgbaImage, area: Rect, left: u8) {
                 }
             }
         }
-    }
-}
-
-fn draw_action_context_menu(
-    img: &mut RgbaImage,
-    font: &fontdue::Font,
-    viewport: [f32; 2],
-    slot: usize,
-    hover: Option<usize>,
-) {
-    let menu = action_context_menu_rect(viewport, slot);
-    fill(img, menu, [0, 0, 0, 200]);
-    outline(img, menu, [137, 115, 74, 255]);
-    for (index, label) in CONTEXT_OPTIONS.into_iter().enumerate() {
-        let row = Rect(
-            menu.0 + 3,
-            menu.1 + 4 + index as i32 * CONTEXT_ROW,
-            menu.2 - 6,
-            CONTEXT_ROW,
-        );
-        if hover == Some(index) {
-            fill(img, row, [96, 78, 44, 200]);
-        }
-        main_hud::text(
-            img,
-            font,
-            label,
-            12.0,
-            [row.0 + 8, row.1 + 4],
-            if hover == Some(index) {
-                [255, 236, 170, 255]
-            } else {
-                [235, 235, 235, 255]
-            },
-            None,
-        );
     }
 }
 
@@ -1203,7 +1157,6 @@ pub fn image(
     action_bar: &crate::action_bar::ActionBar,
     hover: Option<u8>,
     action_context_slot: Option<usize>,
-    action_context_hover: Option<usize>,
     chat_text: &str,
     chat_focused: bool,
     chat_history: &[crate::network::ChatMessage],
@@ -1349,14 +1302,13 @@ pub fn image(
         && action_context_slot.is_none()
     {
         let slot = &action_bar.slots[index];
-        let name = slot
-            .action_id
-            .as_deref()
-            .and_then(|action| action.strip_prefix("skill:"))
-            .and_then(|id| id.parse::<u32>().ok())
-            .and_then(crate::action_bar::skill_action)
-            .map(|skill| skill.name);
-        if let Some(name) = name {
+        let name = slot.binding().map(|binding| match binding {
+            crate::action_bar::Binding::Skill(id) => crate::magic::skill_name(assets, id),
+            crate::action_bar::Binding::Emote(action) => format!("{action:?}"),
+            crate::action_bar::Binding::Item(item_type) => crate::shop::item_name(assets, item_type),
+            crate::action_bar::Binding::Text(text) => text,
+        });
+        if let Some(name) = name.as_deref() {
             let frame = hotkey_rect(viewport, index);
             tooltip(
                 &mut img,
@@ -1368,9 +1320,6 @@ pub fn image(
                 [frame.0, frame.1 - 4],
             );
         }
-    }
-    if let Some(slot) = action_context_slot {
-        draw_action_context_menu(&mut img, font, viewport, slot, action_context_hover);
     }
     Ok(img)
 }
@@ -1414,20 +1363,6 @@ mod tests {
             assert!(!contains(viewport, [viewport[0] * 0.5, viewport[1] * 0.5]));
             assert!(!contains(viewport, [-1.0, viewport[1] - 1.0]));
         }
-    }
-
-    #[test]
-    fn context_menu_rows_are_hit_tested() {
-        let viewport = [1366.0, 768.0];
-        let menu = action_context_menu_rect(viewport, 3);
-        for index in 0..CONTEXT_OPTIONS.len() {
-            let y = menu.1 + 4 + index as i32 * CONTEXT_ROW + CONTEXT_ROW / 2;
-            assert_eq!(
-                action_context_option_at(viewport, [(menu.0 + 20) as f32, y as f32], 3),
-                Some(index)
-            );
-        }
-        assert_eq!(action_context_option_at(viewport, [0.0, 0.0], 3), None);
     }
 
     #[test]
@@ -1479,7 +1414,13 @@ mod tests {
                 message: "Mensagem privada de teste".into(),
             },
         ];
-        let action_bar = crate::action_bar::ActionBar::default();
+        let mut action_bar = crate::action_bar::ActionBar::default();
+        // An emote, an object and a line of text on F4 to F6.
+        use crate::action_bar::Binding;
+        action_bar.set(3, Some(Binding::Emote(crate::action::Action::Dance)));
+        action_bar.set(4, Some(Binding::Item(1_000_000)));
+        action_bar.slots[4].count = Some(12);
+        action_bar.set(5, Some(Binding::Text("Hello all".into())));
         for (name, width, height, hp, mp, hover, chat) in [
             (
                 "hud-1366.png",
@@ -1506,7 +1447,6 @@ mod tests {
                 160,
                 &action_bar,
                 hover,
-                None,
                 None,
                 chat,
                 !chat.is_empty(),

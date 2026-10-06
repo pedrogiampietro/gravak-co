@@ -38,6 +38,7 @@ mod daily_rewards_panel;
 mod highscores_panel;
 mod emblems;
 mod action_panel;
+mod hotkey_menu;
 mod battle_power_panel;
 mod showcase;
 mod ui;
@@ -255,7 +256,8 @@ struct App {
     map: map::Map,
     character: character::Character,
     action_bar: action_bar::ActionBar,
-    action_context_slot: Option<usize>,
+    /// The F keys' right-click menu, or what it opened.
+    hotkey_popup: Option<hotkey_menu::HotkeyPopup>,
     item_context: Option<shop::ItemContext>,
     /// A Friend/Trade button waiting for the player to click its target.
     target_pick: Option<TargetPick>,
@@ -325,6 +327,8 @@ struct App {
     battle_power_detail: Option<u8>,
     /// The main bar's Action panel of emotes is open.
     action_panel_open: bool,
+    /// An emote pressed on the Action panel, until the button comes up.
+    dragging_emote: Option<Action>,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -702,6 +706,33 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if matches!(self.hotkey_popup, Some(hotkey_menu::HotkeyPopup::Text { .. })) =>
+            {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => self.hotkey_popup = None,
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.save_hotkey_text(),
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            if let Some(hotkey_menu::HotkeyPopup::Text { text, .. }) = self.hotkey_popup.as_mut() {
+                                text.pop();
+                            }
+                        }
+                        _ => {
+                            if let (Some(hotkey_menu::HotkeyPopup::Text { text, .. }), Some(typed)) =
+                                (self.hotkey_popup.as_mut(), event.text.as_ref())
+                            {
+                                for character in typed.chars().filter(|character| !character.is_control()) {
+                                    if text.chars().count() < hotkey_menu::TEXT_LIMIT {
+                                        text.push(character);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
             WindowEvent::KeyboardInput { event, .. } if self.chat_focused => {
                 if event.state == ElementState::Pressed {
                     if self.modifiers.control_key()
@@ -802,9 +833,9 @@ impl ApplicationHandler for App {
                         let size = window.inner_size();
                         let viewport = [size.width as f32, size.height as f32];
                         if let Some(slot) = hud::action_slot_at(viewport, self.cursor) {
-                            self.action_context_slot = Some(slot);
+                            self.hotkey_popup = Some(hotkey_menu::HotkeyPopup::Menu { slot });
                             true
-                        } else if self.action_context_slot.take().is_some() {
+                        } else if self.hotkey_popup.take().is_some() {
                             true
                         } else {
                             false
@@ -842,29 +873,12 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
-                if button == MouseButton::Left && state == ElementState::Pressed {
-                    if let Some(slot) = self.action_context_slot {
-                        let option = self.window.as_ref().and_then(|window| {
-                            let size = window.inner_size();
-                            hud::action_context_option_at(
-                                [size.width as f32, size.height as f32],
-                                self.cursor,
-                                slot,
-                            )
-                        });
-                        self.action_context_slot = None;
-                        if let Some(option) = option {
-                            let labels = [
-                                "Assign Spell",
-                                "Assign Object",
-                                "Assign Text",
-                                "Assign Hotkey",
-                            ];
-                            self.network_status =
-                                format!("action bar slot {}: {}", slot + 1, labels[option]);
-                        }
-                        return;
-                    }
+                if button == MouseButton::Left
+                    && state == ElementState::Pressed
+                    && self.hotkey_popup.is_some()
+                {
+                    self.handle_hotkey_popup_click();
+                    return;
                 }
                 match (button, state) {
                     (MouseButton::Right, ElementState::Pressed)
@@ -893,6 +907,9 @@ impl ApplicationHandler for App {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.select_shop() => return,
+                    (MouseButton::Left, ElementState::Released) if self.finish_emote_drag() => {
+                        return;
+                    }
                     (MouseButton::Left, ElementState::Released) if self.finish_shop_drag() => {
                         return;
                     }
@@ -1017,6 +1034,9 @@ impl ApplicationHandler for App {
                             .renderer
                             .as_mut()
                             .is_some_and(renderer::Renderer::collapse_minimap) => {}
+                    PhysicalKey::Code(KeyCode::Escape) if self.hotkey_popup.is_some() => {
+                        self.hotkey_popup = None;
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.inventory_open => {
                         self.inventory_open = false;
                     }
@@ -1030,6 +1050,13 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::F1) => self.cast_action_slot(0),
                     PhysicalKey::Code(KeyCode::F2) => self.cast_action_slot(1),
                     PhysicalKey::Code(KeyCode::F3) => self.cast_action_slot(2),
+                    PhysicalKey::Code(KeyCode::F4) => self.cast_action_slot(3),
+                    PhysicalKey::Code(KeyCode::F5) => self.cast_action_slot(4),
+                    PhysicalKey::Code(KeyCode::F6) => self.cast_action_slot(5),
+                    PhysicalKey::Code(KeyCode::F7) => self.cast_action_slot(6),
+                    PhysicalKey::Code(KeyCode::F8) => self.cast_action_slot(7),
+                    PhysicalKey::Code(KeyCode::F9) => self.cast_action_slot(8),
+                    PhysicalKey::Code(KeyCode::F10) => self.cast_action_slot(9),
                     PhysicalKey::Code(KeyCode::F11) => {
                         self.performance_overlay = !self.performance_overlay;
                     }
@@ -1197,7 +1224,7 @@ impl ApplicationHandler for App {
                         &self.guild_members,
                         self.pending_guild_invite,
                         &self.trade,
-                        self.action_context_slot,
+                        self.hotkey_popup.as_ref().map(hotkey_menu::HotkeyPopup::slot),
                         &self.player,
                         &self.remote_actors,
                         self.selected_target,
@@ -1330,6 +1357,14 @@ impl ApplicationHandler for App {
             // Whole seconds only for long cooldowns; the sweep shows the rest.
             slot.cooldown = Some(remaining.ceil() as u32).filter(|seconds| *seconds > 1);
             slot.cooldown_left = action_bar::cooldown_steps(remaining, total);
+            // An object's count, greyed when the bag has none.
+            slot.count = match slot.binding() {
+                Some(action_bar::Binding::Item(item_type)) => {
+                    Some(self.inventory.iter().filter(|item| item.item_type == item_type).count() as u32)
+                }
+                _ => None,
+            };
+            slot.disabled = slot.count == Some(0);
         }
         self.ground_loot.retain(|(_, _, _, expires)| *expires > now);
         if let Some(character_id) = self.network_character_id {
@@ -1588,7 +1623,9 @@ impl App {
             && let Some(click) = action_panel::click_at(viewport, self.cursor)
         {
             match click {
-                Some(action_panel::ActionPanelClick::Emote(emote)) => self.perform_emote(emote),
+                // The release decides: on an F key it is assigned there, on
+                // the emote itself it is played.
+                Some(action_panel::ActionPanelClick::Emote(emote)) => self.dragging_emote = Some(emote),
                 Some(action_panel::ActionPanelClick::Close) => self.action_panel_open = false,
                 None => {}
             }
@@ -2083,9 +2120,9 @@ impl App {
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
         let over_action_bar = hud::action_slot_at(viewport, self.cursor).is_some();
-        let over_context = self
-            .action_context_slot
-            .is_some_and(|slot| hud::action_context_option_at(viewport, self.cursor, slot).is_some());
+        let over_context = self.hotkey_view(viewport).is_some_and(|view| {
+            !matches!(hotkey_menu::click_at(&view, self.cursor), None | Some(hotkey_menu::HotkeyChoice::Nothing))
+        });
         let over_menu = self.choice_menu().is_some_and(|menu| menu.row_at(self.cursor).is_some());
         if over_action_bar || over_context || over_menu {
             GameCursor::Interact
@@ -4920,6 +4957,17 @@ impl App {
             battle_power_open: self.battle_power_open,
             battle_power_detail: self.battle_power_detail,
             action_panel_open: self.action_panel_open,
+            dragging_emote: self
+                .dragging_emote
+                .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
+            hotkey_popup: self.window.as_ref().and_then(|window| {
+                let size = window.inner_size();
+                let viewport = [size.width as f32, size.height as f32];
+                self.hotkey_view(viewport).map(|view| {
+                    let hover = hotkey_menu::hover_index(&view, self.cursor);
+                    (view, hover)
+                })
+            }),
             action_panel_hover: self
                 .window
                 .as_ref()
@@ -5186,9 +5234,16 @@ impl App {
     }
 
     fn cast_action_slot(&mut self, slot: usize) {
-        let Some(skill_id) = self.action_bar.skill_id(slot) else {
-            self.network_status = format!("action bar slot {} is empty", slot + 1);
-            return;
+        let binding = self.action_bar.slots.get(slot).and_then(action_bar::ActionSlot::binding);
+        let skill_id = match binding {
+            None => {
+                self.network_status = format!("action bar slot {} is empty", slot + 1);
+                return;
+            }
+            Some(action_bar::Binding::Skill(skill_id)) => skill_id,
+            Some(action_bar::Binding::Emote(emote)) => return self.perform_emote(emote),
+            Some(action_bar::Binding::Item(item_type)) => return self.use_hotkey_object(item_type),
+            Some(action_bar::Binding::Text(text)) => return self.send_hotkey_text(text),
         };
         let Some(skill) = action_bar::skill_action(skill_id) else {
             self.network_status = format!("skill {skill_id} ainda não possui ação no cliente");
@@ -5282,6 +5337,138 @@ impl App {
             portal.y.clamp(0, i32::from(u16::MAX)) as u16,
         );
         self.network_status = format!("online: portal at ({}, {})", portal.x, portal.y);
+    }
+
+    /// The open hotkey popup with what it lists.
+    fn hotkey_view(&self, viewport: [f32; 2]) -> Option<hotkey_menu::HotkeyPopupView> {
+        let popup = self.hotkey_popup.clone()?;
+        let rect = original_ui_layout::hotkey_slot_rect(viewport, popup.slot());
+        let mut skills: Vec<u32> = self
+            .known_skills
+            .keys()
+            .copied()
+            .filter(|id| action_bar::skill_action(*id).is_some())
+            .collect();
+        skills.sort_unstable();
+        let mut objects: Vec<(u32, u32)> = Vec::new();
+        if matches!(popup, hotkey_menu::HotkeyPopup::Objects { .. }) {
+            for item in self.inventory.iter().filter(|item| usable_object(item.item_type)) {
+                match objects.iter_mut().find(|(item_type, _)| *item_type == item.item_type) {
+                    Some((_, count)) => *count += 1,
+                    None => objects.push((item.item_type, 1)),
+                }
+            }
+            objects.sort_unstable();
+        }
+        Some(hotkey_menu::HotkeyPopupView {
+            popup,
+            skills,
+            objects,
+            anchor: [rect.x as i32, rect.y as i32, rect.width as i32, rect.height as i32],
+            viewport: [viewport[0] as i32, viewport[1] as i32],
+        })
+    }
+
+    /// A left click while a hotkey popup is open: its choice, or off it,
+    /// closing it.
+    fn handle_hotkey_popup_click(&mut self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let size = window.inner_size();
+        let Some(view) = self.hotkey_view([size.width as f32, size.height as f32]) else {
+            return;
+        };
+        let slot = view.popup.slot();
+        let choice = hotkey_menu::click_at(&view, self.cursor);
+        self.held = false;
+        match choice {
+            None => self.hotkey_popup = None,
+            Some(hotkey_menu::HotkeyChoice::Nothing) => {}
+            Some(hotkey_menu::HotkeyChoice::Option(option)) => {
+                self.hotkey_popup = match option {
+                    0 => Some(hotkey_menu::HotkeyPopup::Skills { slot }),
+                    1 => Some(hotkey_menu::HotkeyPopup::Objects { slot }),
+                    2 => {
+                        let text = match self.action_bar.slots[slot].binding() {
+                            Some(action_bar::Binding::Text(text)) => text,
+                            _ => String::new(),
+                        };
+                        Some(hotkey_menu::HotkeyPopup::Text { slot, text })
+                    }
+                    3 => Some(hotkey_menu::HotkeyPopup::Rebind { slot }),
+                    _ => {
+                        self.action_bar.set(slot, None);
+                        None
+                    }
+                };
+            }
+            Some(hotkey_menu::HotkeyChoice::Skill(skill_id)) => {
+                self.action_bar.set(slot, Some(action_bar::Binding::Skill(skill_id)));
+                self.hotkey_popup = None;
+            }
+            Some(hotkey_menu::HotkeyChoice::Object(item_type)) => {
+                self.action_bar.set(slot, Some(action_bar::Binding::Item(item_type)));
+                self.hotkey_popup = None;
+            }
+            Some(hotkey_menu::HotkeyChoice::Key(key)) => {
+                self.action_bar.swap(slot, key);
+                self.hotkey_popup = None;
+            }
+            Some(hotkey_menu::HotkeyChoice::SaveText) => self.save_hotkey_text(),
+        }
+    }
+
+    /// The text popup's line goes on its F key (an empty one clears it).
+    fn save_hotkey_text(&mut self) {
+        if let Some(hotkey_menu::HotkeyPopup::Text { slot, text }) = self.hotkey_popup.take() {
+            let text = text.trim().to_owned();
+            let binding = (!text.is_empty()).then_some(action_bar::Binding::Text(text));
+            self.action_bar.set(slot, binding);
+        }
+    }
+
+    /// An F key's line of text, said as if typed in the chat (commands
+    /// such as /w work too); what was being typed is kept.
+    fn send_hotkey_text(&mut self, text: String) {
+        let typed = std::mem::replace(&mut self.chat_text, text);
+        self.submit_chat();
+        self.chat_text = typed;
+    }
+
+    /// An F key's object: the first of that item in the bag, used (arrows
+    /// are worn).
+    fn use_hotkey_object(&mut self, item_type: u32) {
+        let Some(item) = self.inventory.iter().find(|item| item.item_type == item_type).copied() else {
+            self.network_status = format!("No {} left", shop::item_name(&mut self.assets, item_type));
+            return;
+        };
+        if is_arrow(item_type) {
+            self.queue_equip_item(item);
+        } else {
+            self.queue_use_item(item);
+        }
+    }
+
+    /// An emote let go: on an F key it goes there, on its own button it is
+    /// played.
+    fn finish_emote_drag(&mut self) -> bool {
+        let Some(emote) = self.dragging_emote.take() else {
+            return false;
+        };
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        if let Some(slot) = hud::action_slot_at(viewport, self.cursor) {
+            self.action_bar.set(slot, Some(action_bar::Binding::Emote(emote)));
+        } else if action_panel::click_at(viewport, self.cursor)
+            == Some(Some(action_panel::ActionPanelClick::Emote(emote)))
+        {
+            self.perform_emote(emote);
+        }
+        true
     }
 
     /// X: sit down or stand up (ChangeAction 250 / 100).
@@ -6626,6 +6813,13 @@ impl App {
                 return true;
             }
         }
+        // A potion, arrows or a scroll let go on an F key goes there.
+        if let Some(slot) = hud::action_slot_at(viewport, self.cursor)
+            && usable_object(item.item_type)
+        {
+            self.action_bar.set(slot, Some(action_bar::Binding::Item(item.item_type)));
+            return true;
+        }
         debug_log::write(format_args!(
             "drag release: uid={} type={} source_position={} cursor=({:.1},{:.1}) panel_at={} slot={:?} open={} shop={} warehouse={}",
             item.uid,
@@ -7227,6 +7421,17 @@ fn wire_action(action: u32) -> Option<Action> {
     })
 }
 
+/// Arrows go on an F key to be worn.
+fn is_arrow(item_type: u32) -> bool {
+    item_type / 1_000 == 1_050
+}
+
+/// What an F key can hold from the bag: potions and other consumables,
+/// arrows and scrolls.
+fn usable_object(item_type: u32) -> bool {
+    shop::is_consumable(item_type) || is_arrow(item_type) || item_type / 1_000 == 1_060
+}
+
 fn action_duration(action: u16, character: &character::Character) -> f32 {
     match action {
         110 | 111 => 1.0 / 3.0,
@@ -7668,7 +7873,7 @@ fn run() -> Result<()> {
         map,
         character,
         action_bar: action_bar::ActionBar::default(),
-        action_context_slot: None,
+        hotkey_popup: None,
         item_context: None,
         target_pick: None,
         pending_friend_request: None,
@@ -7729,6 +7934,7 @@ fn run() -> Result<()> {
         battle_power_open: false,
         battle_power_detail: None,
         action_panel_open: false,
+        dragging_emote: None,
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,

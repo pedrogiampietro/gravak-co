@@ -245,7 +245,6 @@ enum UiTextureJob {
         action_bar: crate::action_bar::ActionBar,
         hover: Option<u8>,
         action_context_slot: Option<usize>,
-        action_context_hover: Option<usize>,
         chat_text: String,
         chat_focused: bool,
         chat_history: Vec<crate::network::ChatMessage>,
@@ -444,7 +443,6 @@ impl UiTextureJob {
                 action_bar,
                 hover,
                 action_context_slot,
-                action_context_hover,
                 chat_text,
                 chat_focused,
                 chat_history,
@@ -474,7 +472,6 @@ impl UiTextureJob {
                 &action_bar,
                 hover,
                 action_context_slot,
-                action_context_hover,
                 &chat_text,
                 chat_focused,
                 &chat_history,
@@ -3312,8 +3309,6 @@ impl Renderer {
             self.push_xp_bar(skill_hud.xp_fire_until, viewport, &mut draws);
         }
         let hud_hover = crate::hud::hovered_button(viewport, cursor);
-        let action_context_hover = action_context_slot
-            .and_then(|slot| crate::hud::action_context_option_at(viewport, cursor, slot));
         use std::hash::{Hash, Hasher};
         let mut hud_hasher = std::collections::hash_map::DefaultHasher::new();
         self.config.width.hash(&mut hud_hasher);
@@ -3327,7 +3322,6 @@ impl Renderer {
         status_flags.hash(&mut hud_hasher);
         hud_hover.hash(&mut hud_hasher);
         action_context_slot.hash(&mut hud_hasher);
-        action_context_hover.hash(&mut hud_hasher);
         chat_text.hash(&mut hud_hasher);
         chat_focused.hash(&mut hud_hasher);
         chat_history.hash(&mut hud_hasher);
@@ -3357,7 +3351,6 @@ impl Renderer {
                     action_bar: action_bar.clone(),
                     hover: hud_hover,
                     action_context_slot,
-                    action_context_hover,
                     chat_text: chat_text.to_owned(),
                     chat_focused,
                     chat_history: chat_history.to_vec(),
@@ -4887,6 +4880,41 @@ impl Renderer {
                 draws.push(Draw {
                     texture: "@perf-overlay".into(),
                     vertices: quad([8.0, 8.0], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // The F keys' popup and a dragged emote go over every window.
+        if let Some((view, hover)) = &skill_hud.hotkey_popup {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&(view, hover), &mut hasher);
+            let key = format!("@hotkey-popup-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::hotkey_menu::image(assets, view, *hover)?;
+                self.prune_textures("@hotkey-popup-", &[]);
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::hotkey_menu::position(view), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(index) = skill_hud.dragging_emote {
+            let key = format!("@emote-drag-{index}");
+            if !self.textures.contains_key(&key) {
+                let art = assets.image(&format!("data/main/Act{index}.dds"))?;
+                self.upload(&key, crate::original_ui::visible_part(&art)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
