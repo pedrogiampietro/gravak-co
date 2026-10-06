@@ -3086,7 +3086,9 @@ impl Renderer {
                     });
                 }
             } else if !actor.name.is_empty() && (hud_config.show_names || monster) {
-                let name_colour = crate::labels::name_colour(actor.status_flags);
+                // NPCs' names in green, as the original's.
+                let name_colour =
+                    if actor.npc { NPC_NAME } else { crate::labels::name_colour(actor.status_flags) };
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
                 let bounty_target = monster
@@ -3120,7 +3122,8 @@ impl Renderer {
                                 (origin[0] - label.size[0] * 0.5).round(),
                                 (origin[1]
                                     - if actor.npc {
-                                        80.0
+                                        // Over the head, not across the chest.
+                                        122.0
                                     } else if monster {
                                         68.0
                                     } else {
@@ -5607,6 +5610,8 @@ fn show_feedback(status: &str) -> bool {
 /// frame held) and a dead monster fading out. The rest are the server's
 /// ChangeAction codes; sitting, kneeling and lying hold their last frame.
 pub(crate) const REMOTE_DEAD: u16 = 1161;
+/// The colour of NPCs' names over their heads.
+const NPC_NAME: [u8; 3] = [96, 236, 96];
 pub(crate) const REMOTE_FADING: u16 = 1160;
 
 fn remote_action(value: u16) -> Action {

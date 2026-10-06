@@ -16,8 +16,11 @@ use image::{RgbaImage, imageops};
 const WIDTH: i32 = 560;
 /// The window's frame draws nothing around; its title takes the top.
 const MARGIN: i32 = 0;
-const PAD: i32 = 20;
+/// Inside the frame's borders (`GeneralBG`: 16 and 17 at the sides, 36 on
+/// top, 38 below) with room to spare.
+const PAD: i32 = 28;
 const CONTENT_TOP: i32 = 46;
+const BOTTOM: i32 = 50;
 const PORTRAIT: UiRect = UiRect::new(PAD, CONTENT_TOP, 84, 84);
 const TEXT_LEFT: i32 = PAD + 84 + 16;
 const TEXT_WIDTH: i32 = WIDTH - TEXT_LEFT - 26;
@@ -124,7 +127,7 @@ pub fn layout(messages: &[String], options: &[(u8, String)]) -> Result<DialogLay
         option_lines.push(wrapped);
         y += height + ROW_GAP;
     }
-    Ok(DialogLayout { name, lines, height: y - ROW_GAP + PAD, options: rows, option_lines })
+    Ok(DialogLayout { name, lines, height: y - ROW_GAP + BOTTOM, options: rows, option_lines })
 }
 
 fn inside(rect: [i32; 4], point: [i32; 2]) -> bool {
@@ -276,7 +279,7 @@ mod tests {
         let options = numbered(&["Phoenix Castle", "Desert City", "Ape Mountain", "Bird Island.", "Mine Cave", "Market", "Just passing by."]);
         image(&mut assets, &messages, &options, 1, Some(2), false)?.save(output.join("conductress.png"))?;
         let messages = vec!["Blacksmith: I repair and sell dependable equipment. 106 items are available.".to_owned()];
-        let options = numbered(&["Buy equipment.", "Sell equipment.", "Repair all equipment.", "Leave."]);
+        let options = numbered(&["Buy equipment.", "Repair all equipment.", "Leave."]);
         image(&mut assets, &messages, &options, 75, Some(0), true)?.save(output.join("blacksmith.png"))?;
         Ok(())
     }
