@@ -1514,7 +1514,10 @@ impl Renderer {
             self.upload(&key, crate::labels::speech_bubble_image(line)?);
         }
         if let Some(texture) = self.textures.get(&key) {
-            let tip = [origin[0] - crate::labels::name_width(name) * 0.5 + 6.0, name_top + 13.0];
+            // As the original: the tip just under the life bar, a little in
+            // from its left end.
+            let _ = name_top;
+            let tip = [origin[0] - 16.0, origin[1] - 107.0];
             let [from_right, from_bottom] = crate::labels::SPEECH_TIP.map(|value| value as f32);
             draws.push(Draw {
                 texture: key,
