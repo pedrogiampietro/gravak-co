@@ -342,6 +342,9 @@ pub struct ShopState {
     pub hover: Option<usize>,
     pub selected: Option<usize>,
     pub repair_hover: bool,
+    /// The Repair button was pressed: the cursor is a hammer and a click on
+    /// an item repairs it.
+    pub repairing: bool,
     pub sell_all_hover: bool,
     pub scroll_hover: Option<bool>,
 }
@@ -476,6 +479,7 @@ impl ShopState {
             hover: None,
             selected: None,
             repair_hover: false,
+            repairing: false,
             sell_all_hover: false,
             scroll_hover: None,
         }))
@@ -6436,7 +6440,7 @@ pub fn panel_overlay_image(assets: &mut Assets, state: &ShopState) -> Result<Rgb
             outline(&mut image, x, y, SLOT_SIZE, Rgba([255, 236, 170, 200]));
         }
     }
-    let repair = if state.repair_hover {
+    let repair = if state.repair_hover || state.repairing {
         "data/main/NpcBuyBtnFixClick.dds"
     } else {
         "data/main/NpcBuyBtnFix.dds"

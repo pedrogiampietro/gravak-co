@@ -1072,6 +1072,14 @@ impl ItemActionPacket {
         }
     }
 
+    /// The shop's Repair of one item (MsgItem 14), at shop `shop_id`.
+    pub fn repair(character_id: u32, item_uid: u32, shop_id: u32) -> Self {
+        Self {
+            action_type: 14,
+            ..Self::sell(character_id, item_uid, shop_id)
+        }
+    }
+
     pub fn drop(character_id: u32, item_uid: u32) -> Self {
         Self {
             character_id,

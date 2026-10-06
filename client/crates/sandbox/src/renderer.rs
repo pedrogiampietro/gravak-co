@@ -4159,11 +4159,13 @@ impl Renderer {
             avatar.hash(&mut hasher);
             let hovered = crate::npc_dialog::hovered_option(viewport, cursor, messages, options);
             hovered.hash(&mut hasher);
+            let close_hovered = crate::npc_dialog::close_hovered(viewport, cursor, messages, options);
+            close_hovered.hash(&mut hasher);
             let key = format!("@npc-dialog-{}", hasher.finish());
             if !self.textures.contains_key(&key) {
                 self.upload(
                     &key,
-                    crate::npc_dialog::image(assets, messages, options, avatar, hovered)?,
+                    crate::npc_dialog::image(assets, messages, options, avatar, hovered, close_hovered)?,
                 );
             }
             if let Some(texture) = self.textures.get(&key) {

@@ -1,27 +1,28 @@
-//! The NPC dialog, in Gravak's look: a teal panel in a double gold frame
-//! at the top of the screen, the NPC's face in a gold frame, their name
-//! over a gold rule, the words wrapped in parchment white, and the answers
-//! as cards numbered on gold medallions (the keys 1 to 9 pick them too); a
-//! way out ("Leave", "Just passing by") quieter than the rest. Layout,
-//! painting and hit testing share one description, so a click always picks
-//! the card that is lit.
+//! The NPC dialog in the client's own window (`shop::framed`, like the
+//! Bounty Board, the Store and the Highscores): the NPC's name for its
+//! title, their face in a gold frame, the words wrapped in parchment white,
+//! and the answers as cards numbered on gold medallions (the keys 1 to 9
+//! pick them too); a way out ("Leave", "Just passing by") quieter than the
+//! rest. Layout, painting and hit testing share one description, so a click
+//! always picks the card that is lit.
 
 use crate::assets::{Assets, Result};
-use crate::daily_rewards_panel::{GOLD, GOLD_DARK, GOLD_LIGHT, centred, glow_in, paint_in, rounded, rule, say, segment, width_of};
+use crate::daily_rewards_panel::{GOLD_DARK, GOLD_LIGHT, centred, glow_in, paint_in, rounded, say, width_of};
 use crate::paint;
 use crate::ui::UiRect;
 use image::{RgbaImage, imageops};
 
 /// The panel's width; its height follows the words and the answers.
 const WIDTH: i32 = 560;
-/// Room around the panel for its shadow.
-const MARGIN: i32 = 12;
-const PAD: i32 = 18;
-const PORTRAIT: UiRect = UiRect::new(PAD, PAD, 84, 84);
+/// The window's frame draws nothing around; its title takes the top.
+const MARGIN: i32 = 0;
+const PAD: i32 = 20;
+const CONTENT_TOP: i32 = 46;
+const PORTRAIT: UiRect = UiRect::new(PAD, CONTENT_TOP, 84, 84);
 const TEXT_LEFT: i32 = PAD + 84 + 16;
-const TEXT_WIDTH: i32 = WIDTH - TEXT_LEFT - 30;
-const CLOSE: UiRect = UiRect::new(WIDTH - 34, 12, 20, 20);
-const NAME_SIZE: f32 = 17.0;
+const TEXT_WIDTH: i32 = WIDTH - TEXT_LEFT - 26;
+/// The frame's close button (`shop::framed`).
+const CLOSE: UiRect = UiRect::new(WIDTH - 31, 6, 27, 30);
 const TEXT_SIZE: f32 = 13.0;
 const LINE: i32 = 18;
 const ROW: i32 = 30;
@@ -56,7 +57,7 @@ pub struct DialogLayout {
 
 /// Where the picture goes: centred near the top, shadow included.
 pub fn position(viewport: [f32; 2]) -> [f32; 2] {
-    [((viewport[0] - WIDTH as f32) * 0.5).max(0.0).round() - MARGIN as f32, TOP - MARGIN as f32]
+    [((viewport[0] - WIDTH as f32) * 0.5).max(0.0).round(), TOP]
 }
 
 fn wrap(font: &fontdue::Font, text: &str, width: i32, size: f32) -> Vec<String> {
@@ -111,7 +112,7 @@ pub fn layout(messages: &[String], options: &[(u8, String)]) -> Result<DialogLay
         }
         lines.extend(wrap(&font, words, TEXT_WIDTH, TEXT_SIZE));
     }
-    let text_top = if name.is_some() { PAD + 36 } else { PAD + 4 };
+    let text_top = CONTENT_TOP + 4;
     let text_bottom = text_top + lines.len() as i32 * LINE;
     let mut y = text_bottom.max(PORTRAIT.y + PORTRAIT.height) + 14;
     let mut rows = Vec::new();
@@ -143,6 +144,11 @@ pub fn hit_test(viewport: [f32; 2], cursor: [f32; 2], messages: &[String], optio
     Ok(layout.options.iter().position(|&row| inside(row, point)).map_or(DialogHit::Panel, DialogHit::Option))
 }
 
+/// Whether the cursor is on the frame's close button.
+pub fn close_hovered(viewport: [f32; 2], cursor: [f32; 2], messages: &[String], options: &[(u8, String)]) -> bool {
+    matches!(hit_test(viewport, cursor, messages, options), Ok(DialogHit::Close))
+}
+
 /// The card under the cursor, for its light.
 pub fn hovered_option(viewport: [f32; 2], cursor: [f32; 2], messages: &[String], options: &[(u8, String)]) -> Option<usize> {
     match hit_test(viewport, cursor, messages, options) {
@@ -153,37 +159,6 @@ pub fn hovered_option(viewport: [f32; 2], cursor: [f32; 2], messages: &[String],
 
 fn shifted(rect: UiRect) -> UiRect {
     UiRect::new(rect.x + MARGIN, rect.y + MARGIN, rect.width, rect.height)
-}
-
-/// The panel: a soft shadow, the teal gradient, a gold edge and a thin
-/// inner frame with diamonds at its corners.
-fn panel(image: &mut RgbaImage, height: i32) {
-    let rect = UiRect::new(MARGIN, MARGIN, WIDTH, height);
-    let shape = rounded(rect, 10.0);
-    glow_in(image, rect, &shape, MARGIN as f32, paint::hex(0x000000), 0.55);
-    let (y0, h) = (rect.y as f32, rect.height as f32);
-    paint_in(
-        image,
-        rect,
-        1,
-        &shape,
-        |_, y| paint::gradient(&[(0.0, paint::hex(0x1a4560)), (0.35, paint::hex(0x0f2c40)), (1.0, paint::hex(0x07141d))], (y - y0) / h),
-        1.0,
-    );
-    paint_in(image, rect, 1, |x, y| shape(x, y).abs() - 1.1, |_, y| paint::mix(GOLD_LIGHT, GOLD_DARK, (y - y0) / h), 1.0);
-    let inner = UiRect::new(rect.x + 5, rect.y + 5, rect.width - 10, rect.height - 10);
-    let inner_shape = rounded(inner, 7.0);
-    paint_in(image, inner, 1, |x, y| inner_shape(x, y).abs() - 0.5, |_, _| GOLD_DARK, 0.85);
-    for (cx, cy) in [
-        (inner.x as f32 + 0.5, inner.y as f32 + 0.5),
-        ((inner.x + inner.width) as f32 - 0.5, inner.y as f32 + 0.5),
-        (inner.x as f32 + 0.5, (inner.y + inner.height) as f32 - 0.5),
-        ((inner.x + inner.width) as f32 - 0.5, (inner.y + inner.height) as f32 - 0.5),
-    ] {
-        let bounds = UiRect::new(cx as i32 - 5, cy as i32 - 5, 11, 11);
-        paint_in(image, bounds, 0, |x, y| (x - cx).abs() + (y - cy).abs() - 4.0, |_, _| GOLD, 1.0);
-        paint_in(image, bounds, 0, |x, y| (x - cx).abs() + (y - cy).abs() - 1.8, |_, _| GOLD_LIGHT, 1.0);
-    }
 }
 
 /// The face in a gold frame with a dark well behind it.
@@ -202,14 +177,6 @@ fn portrait(image: &mut RgbaImage, assets: &mut Assets, avatar: u16) {
     let inner = UiRect::new(rect.x + 3, rect.y + 3, rect.width - 6, rect.height - 6);
     let inner_shape = rounded(inner, 3.0);
     paint_in(image, inner, 0, |x, y| inner_shape(x, y).abs() - 0.5, |_, _| GOLD_DARK, 0.9);
-}
-
-/// The close cross, gold.
-fn close(image: &mut RgbaImage) {
-    let rect = shifted(CLOSE);
-    let (a, b) = ([rect.x as f32 + 5.0, rect.y as f32 + 5.0], [(rect.x + rect.width) as f32 - 5.0, (rect.y + rect.height) as f32 - 5.0]);
-    let (c, d) = ([b[0], a[1]], [a[0], b[1]]);
-    paint_in(image, rect, 1, |x, y| segment(x, y, a, b).min(segment(x, y, c, d)) - 1.2, |_, _| GOLD_LIGHT, 1.0);
 }
 
 /// An answer's card: lit under the cursor, quiet for a way out.
@@ -250,22 +217,21 @@ fn option_card(image: &mut RgbaImage, cinzel: &fontdue::Font, ui: &fontdue::Font
     }
 }
 
-pub fn image(assets: &mut Assets, messages: &[String], options: &[(u8, String)], avatar: u16, hovered: Option<usize>) -> Result<RgbaImage> {
+pub fn image(
+    assets: &mut Assets,
+    messages: &[String],
+    options: &[(u8, String)],
+    avatar: u16,
+    hovered: Option<usize>,
+    close_hovered: bool,
+) -> Result<RgbaImage> {
     let layout = layout(messages, options)?;
     let ui = crate::labels::font()?;
     let cinzel = crate::labels::decorative_font()?;
-    let mut image = RgbaImage::new((WIDTH + MARGIN * 2) as u32, (layout.height + MARGIN * 2) as u32);
-    panel(&mut image, layout.height);
+    let mut image = RgbaImage::new(WIDTH as u32, layout.height as u32);
     portrait(&mut image, assets, avatar);
-    close(&mut image);
     let left = TEXT_LEFT + MARGIN;
-    let mut text_top = PAD + 4 + MARGIN;
-    if let Some(name) = &layout.name {
-        say(&mut image, &cinzel, name, [255, 226, 143], left, PAD + 2 + MARGIN, NAME_SIZE);
-        let name_width = width_of(&cinzel, name, NAME_SIZE).round() as i32;
-        rule(&mut image, left, (left + name_width + 120).min(WIDTH + MARGIN - 44), PAD + 26 + MARGIN);
-        text_top = PAD + 36 + MARGIN;
-    }
+    let text_top = CONTENT_TOP + 4;
     for (index, line) in layout.lines.iter().enumerate() {
         say(&mut image, &ui, line, PARCHMENT, left, text_top + index as i32 * LINE, TEXT_SIZE);
     }
@@ -273,7 +239,8 @@ pub fn image(assets: &mut Assets, messages: &[String], options: &[(u8, String)],
         let rect = UiRect::new(row[0] + MARGIN, row[1] + MARGIN, row[2], row[3]);
         option_card(&mut image, &cinzel, &ui, rect, index + 1, lines, hovered == Some(index), leaves(text));
     }
-    Ok(image)
+    let title = layout.name.clone().unwrap_or_else(|| "Dialog".to_owned());
+    crate::shop::framed(assets, image, &title, close_hovered)
 }
 
 #[cfg(test)]
@@ -307,10 +274,10 @@ mod tests {
         let numbered = |texts: &[&str]| texts.iter().enumerate().map(|(index, text)| (index as u8 + 1, (*text).to_owned())).collect::<Vec<_>>();
         let messages = vec!["Conductress: Where are you heading for? I can teleport you for a price of 100 silver.".to_owned()];
         let options = numbered(&["Phoenix Castle", "Desert City", "Ape Mountain", "Bird Island.", "Mine Cave", "Market", "Just passing by."]);
-        image(&mut assets, &messages, &options, 1, Some(2))?.save(output.join("conductress.png"))?;
+        image(&mut assets, &messages, &options, 1, Some(2), false)?.save(output.join("conductress.png"))?;
         let messages = vec!["Blacksmith: I repair and sell dependable equipment. 106 items are available.".to_owned()];
-        let options = numbered(&["Buy equipment.", "Sell equipment.", "Repair equipment.", "Leave."]);
-        image(&mut assets, &messages, &options, 75, Some(0))?.save(output.join("blacksmith.png"))?;
+        let options = numbered(&["Buy equipment.", "Sell equipment.", "Repair all equipment.", "Leave."]);
+        image(&mut assets, &messages, &options, 75, Some(0), true)?.save(output.join("blacksmith.png"))?;
         Ok(())
     }
 }

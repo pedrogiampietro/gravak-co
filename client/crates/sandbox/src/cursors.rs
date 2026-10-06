@@ -16,15 +16,18 @@ pub enum GameCursor {
     PickFriend,
     PickEnemy,
     PickTrade,
+    /// The shop's Repair: a hammer, until an item is struck.
+    Repair,
 }
 
 impl GameCursor {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Arrow,
         Self::Interact,
         Self::PickFriend,
         Self::PickEnemy,
         Self::PickTrade,
+        Self::Repair,
     ];
 
     /// The pixel the click lands on.
@@ -32,6 +35,7 @@ impl GameCursor {
         match self {
             Self::Arrow | Self::Interact => [2, 2],
             Self::PickFriend | Self::PickEnemy | Self::PickTrade => [RETICLE[0] as u16, RETICLE[1] as u16],
+            Self::Repair => [HAMMER_FACE[0] as u16, HAMMER_FACE[1] as u16],
         }
     }
 
@@ -43,6 +47,7 @@ impl GameCursor {
             Self::PickFriend => reticle(&mut image, Badge::Plus),
             Self::PickEnemy => reticle(&mut image, Badge::Cross),
             Self::PickTrade => reticle(&mut image, Badge::Coin),
+            Self::Repair => hammer(&mut image),
         }
         image
     }
@@ -176,6 +181,43 @@ fn arrow(image: &mut RgbaImage, glint: bool) {
     }
 }
 
+/// Where the hammer's striking face is: the click lands there.
+const HAMMER_FACE: [f32; 2] = [4.0, 13.0];
+
+/// A smith's hammer: a steel head with a gold band across the top left,
+/// its wooden handle running down to the right.
+fn hammer(image: &mut RgbaImage) {
+    const HEAD_CENTRE: [f32; 2] = [10.0, 9.0];
+    // Along the handle, and across it (the head's length).
+    let along = [std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2];
+    let across = [-std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2];
+    let point = |a: f32, b: f32| [HEAD_CENTRE[0] + across[0] * a + along[0] * b, HEAD_CENTRE[1] + across[1] * a + along[1] * b];
+    let head = [point(-8.0, -4.0), point(8.5, -4.0), point(8.5, 4.0), point(-8.0, 4.0)];
+    let handle = |x: f32, y: f32| segment_distance(point(0.0, 3.0), point(0.0, 22.0), x, y);
+    // Shadow, then dark rims, so it reads on any ground.
+    paint(image, |x, y| {
+        let d = polygon_distance(&head, x - 1.5, y - 2.0).min(handle(x - 1.5, y - 2.0) - 2.2);
+        Some((INK, coverage(d - 0.8) * 0.35))
+    });
+    paint(image, |x, y| Some((INK, coverage(handle(x, y) - 3.2))));
+    paint(image, |x, y| Some((INK, coverage(polygon_distance(&head, x, y) - 1.0))));
+    // The handle: warm wood, lighter along its middle.
+    paint(image, |x, y| {
+        let d = handle(x, y);
+        let wood = mix([186.0, 120.0, 62.0], [104.0, 60.0, 26.0], (d / 2.2).clamp(0.0, 1.0));
+        Some((wood, coverage(d - 2.1)))
+    });
+    // The head: steel, light on top, with a gold band in its middle.
+    paint(image, |x, y| {
+        let d = polygon_distance(&head, x, y);
+        let a = (x - HEAD_CENTRE[0]) * across[0] + (y - HEAD_CENTRE[1]) * across[1];
+        let b = (x - HEAD_CENTRE[0]) * along[0] + (y - HEAD_CENTRE[1]) * along[1];
+        let steel = mix([236.0, 240.0, 246.0], [112.0, 120.0, 134.0], (b + 4.0) / 8.0);
+        let colour = if a.abs() < 2.2 { mix(GOLD_LIGHT, GOLD_DARK, (b + 4.0) / 8.0) } else { steel };
+        Some((colour, coverage(d + 0.2)))
+    });
+}
+
 #[derive(Clone, Copy)]
 enum Badge {
     /// Add friend.
@@ -279,7 +321,7 @@ mod tests {
             assert_eq!(pixel(&image, SIZE - 1, 0).0[3], 0, "{cursor:?}");
         }
         if let Ok(dir) = std::env::var("CURSOR_PREVIEW_DIR") {
-            let mut sheet = RgbaImage::from_pixel(SIZE * 5 * 4 + 40, SIZE * 4 * 2 + 20, Rgba([0, 0, 0, 0]));
+            let mut sheet = RgbaImage::from_pixel(SIZE * 6 * 4 + 48, SIZE * 4 * 2 + 20, Rgba([0, 0, 0, 0]));
             for (index, cursor) in GameCursor::ALL.into_iter().enumerate() {
                 let big = image::imageops::resize(&cursor.image(), SIZE * 4, SIZE * 4, image::imageops::FilterType::Nearest);
                 for (row, bg) in [[150u8, 140, 125], [40, 70, 50]].into_iter().enumerate() {

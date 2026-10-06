@@ -131,7 +131,7 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
                 vec![
                     (1, "Buy equipment.".into()),
                     (2, "Sell equipment.".into()),
-                    (3, "Repair equipment.".into()),
+                    (3, "Repair all equipment.".into()),
                 ],
                 40,
             );

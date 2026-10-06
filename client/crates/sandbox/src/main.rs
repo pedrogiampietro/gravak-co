@@ -1014,6 +1014,17 @@ impl ApplicationHandler for App {
                 {
                     return;
                 }
+                // The hammer: a click on an item repairs it; the right button
+                // puts it away.
+                if self.repairing() && state == ElementState::Pressed {
+                    if button == MouseButton::Right {
+                        self.stop_repairing();
+                        return;
+                    }
+                    if button == MouseButton::Left && self.repair_at_cursor() {
+                        return;
+                    }
+                }
                 if button == MouseButton::Left && state == ElementState::Released && self.chat_log.grab.take().is_some() {
                     return;
                 }
@@ -1169,6 +1180,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) if self.shop.is_some() => {
                         self.shop = None;
                     }
+                    PhysicalKey::Code(KeyCode::Escape) if self.repairing() => self.stop_repairing(),
                     PhysicalKey::Code(KeyCode::Escape) if self.warehouse.is_some() => {
                         self.warehouse = None;
                         self.warehouse_npc_id = None;
@@ -1188,11 +1200,7 @@ impl ApplicationHandler for App {
                             .renderer
                             .as_mut()
                             .is_some_and(renderer::Renderer::collapse_minimap) => {}
-                    // The NPC dialog: Esc closes it, 1 to 9 pick its answers.
-                    PhysicalKey::Code(KeyCode::Escape) if self.dialog.is_some() => {
-                        self.dialog = None;
-                        self.network_status = "online: NPC dialog closed".into();
-                    }
+                    // The NPC dialog: 1 to 9 pick its answers.
                     PhysicalKey::Code(
                         code @ (KeyCode::Digit1
                         | KeyCode::Digit2
@@ -2359,6 +2367,9 @@ impl App {
     /// the arrow.
     fn wanted_cursor(&self) -> cursors::GameCursor {
         use cursors::GameCursor;
+        if self.repairing() {
+            return GameCursor::Repair;
+        }
         match self.target_pick {
             Some(TargetPick::Friend) => return GameCursor::PickFriend,
             Some(TargetPick::Ignore) => return GameCursor::PickEnemy,
@@ -6495,6 +6506,42 @@ impl App {
         true
     }
 
+    fn repairing(&self) -> bool {
+        self.shop.as_ref().is_some_and(|shop| shop.repairing)
+    }
+
+    fn stop_repairing(&mut self) {
+        if let Some(shop) = self.shop.as_mut() {
+            shop.repairing = false;
+        }
+        self.refresh_cursor();
+    }
+
+    /// With the hammer: the item under the cursor, in the bag or worn, is
+    /// repaired at the open shop. Elsewhere the click goes on as usual (the
+    /// shop's own buttons, or closing it).
+    fn repair_at_cursor(&mut self) -> bool {
+        let item = self
+            .inventory_slot_item_at_cursor()
+            .filter(|_| self.inventory_open)
+            .or_else(|| self.equipped_item_at_cursor().filter(|_| self.status_open));
+        let Some(item) = item.filter(|item| item.uid != 0) else {
+            return false;
+        };
+        let Some(shop_id) = self.shop.as_ref().map(|shop| shop.npc_id) else {
+            return false;
+        };
+        if item.max_durability == 0 || item.durability >= item.max_durability {
+            self.network_status = format!("{} does not need repairing.", shop::item_name(&mut self.assets, item.item_type));
+            return true;
+        }
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.repair_item(character_id, item.uid, shop_id);
+        }
+        self.held = false;
+        true
+    }
+
     fn select_shop(&mut self) -> bool {
         if self.shop.is_none() {
             return false;
@@ -6509,6 +6556,18 @@ impl App {
         if shop::close_at(viewport, self.cursor) {
             self.shop = None;
             self.network_status = "online: shop closed".into();
+            return true;
+        }
+        // Repair: the hammer, and the bag open to strike its items.
+        if shop::repair_button_at(viewport, self.cursor) {
+            if let Some(shop) = self.shop.as_mut() {
+                shop.repairing = !shop.repairing;
+                if shop.repairing {
+                    self.inventory_open = true;
+                    self.network_status = "Click an item to repair it (right button to stop).".into();
+                }
+            }
+            self.refresh_cursor();
             return true;
         }
         if shop::sell_all_button_at(viewport, self.cursor) {
