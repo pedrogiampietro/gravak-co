@@ -40,6 +40,7 @@ mod emblems;
 mod action_panel;
 mod hotkey_menu;
 mod whisper;
+mod chat_log;
 mod battle_power_panel;
 mod showcase;
 mod ui;
@@ -380,6 +381,8 @@ struct App {
     chat_focused: bool,
     chat_history: VecDeque<ChatMessage>,
     chat_filter: u16,
+    /// The chat log's window: place, size, tab, reading back, its menu.
+    chat_log: chat_log::ChatLogState,
     friends: Vec<SocialEntry>,
     ignores: Vec<SocialEntry>,
     dragging_shop_item: Option<u32>,
@@ -597,6 +600,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
+                if self.chat_log.grab.is_some()
+                    && let Some(viewport) = self.viewport()
+                {
+                    self.chat_log.drag(viewport, self.cursor);
+                }
                 self.refresh_cursor();
                 if let (Some(shop), Some(window)) = (&mut self.shop, &self.window) {
                     let size = window.inner_size();
@@ -611,6 +619,14 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, vertical) => vertical,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32,
                 };
+                if amount != 0.0
+                    && let Some(viewport) = self.viewport()
+                    && self.chat_log.contains(viewport, self.cursor)
+                    && !self.chat_log.minimized
+                {
+                    self.chat_log.scroll_by(amount > 0.0);
+                    return;
+                }
                 if amount != 0.0 && self.scroll_shop_page(amount < 0.0) {
                     return;
                 }
@@ -979,6 +995,12 @@ impl ApplicationHandler for App {
                 {
                     return;
                 }
+                if button == MouseButton::Left && state == ElementState::Released && self.chat_log.grab.take().is_some() {
+                    return;
+                }
+                if button == MouseButton::Right && state == ElementState::Pressed && self.open_chat_line_menu() {
+                    return;
+                }
                 if button == MouseButton::Left
                     && state == ElementState::Pressed
                     && self.hotkey_popup.is_some()
@@ -1326,6 +1348,17 @@ impl ApplicationHandler for App {
                     actor.ko_count = self.actor_kos.get(&actor.id).copied().unwrap_or(0);
                 }
                 self.character.booth = self.booths.get(&own_name).cloned();
+                let chat_log = self.chat_log_view();
+                if let Some(renderer) = &mut self.renderer {
+                    match chat_log {
+                        Some((view, rect, menu)) => {
+                            renderer.chat_log = Some(view);
+                            renderer.chat_log_rect = rect;
+                            renderer.chat_menu = menu;
+                        }
+                        None => renderer.chat_log = None,
+                    }
+                }
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1493,7 +1526,8 @@ impl ApplicationHandler for App {
                 self.skill_bar_open,
                 self.performance_overlay,
                 self.team_join_enabled,
-            );
+            )
+            .with_chat(&self.chat_log);
             if self.saved_hud.as_ref() != Some(&hud) {
                 settings::save(character_id, &hud);
                 self.saved_hud = Some(hud);
@@ -2212,10 +2246,7 @@ impl App {
             self.held = false;
             return true;
         }
-        if let Some(filter) = hud::chat_tab_at(viewport, self.cursor) {
-            self.chat_filter = filter;
-            self.chat_focused = false;
-            self.held = false;
+        if self.handle_chat_log_press() {
             return true;
         }
         // The channel button opens the list.
@@ -3821,7 +3852,8 @@ impl App {
                         .insert(message.sender_name.to_lowercase(), (message.message.clone(), now + seconds));
                 }
                 self.chat_history.push_back(message);
-                while self.chat_history.len() > 40 {
+                self.chat_log.arrived();
+                while self.chat_history.len() > chat_log::KEPT {
                     self.chat_history.pop_front();
                 }
                 self.network_status = banner.unwrap_or_else(|| format!("online: {display}"));
@@ -5539,6 +5571,163 @@ impl App {
             portal.y.clamp(0, i32::from(u16::MAX)) as u16,
         );
         self.network_status = format!("online: portal at ({}, {})", portal.x, portal.y);
+    }
+
+    /// A left press on the chat log or its line menu.
+    fn handle_chat_log_press(&mut self) -> bool {
+        let Some(viewport) = self.viewport() else {
+            return false;
+        };
+        if let Some(menu) = self.chat_log.menu.take() {
+            // Off the menu it just closes, and the click goes on.
+            let Some(option) = chat_log::menu_click_at(&menu, viewport, self.cursor) else {
+                return self.handle_chat_log_press();
+            };
+            match option {
+                Some(option) => self.chat_line_action(&menu, option),
+                None => self.chat_log.menu = Some(menu),
+            }
+            self.held = false;
+            return true;
+        }
+        let Some(click) = chat_log::click_at(
+            &self.chat_log,
+            self.chat_history.make_contiguous(),
+            &self.character.name,
+            viewport,
+            self.cursor,
+        ) else {
+            return false;
+        };
+        self.held = false;
+        match click {
+            chat_log::ChatClick::Tab(filter) => {
+                self.chat_log.filter = filter;
+                self.chat_log.scroll = 0;
+                self.chat_log.unread = 0;
+                if self.chat_log.minimized {
+                    self.chat_log.minimized = false;
+                }
+            }
+            chat_log::ChatClick::Font => {
+                self.chat_log.font = (self.chat_log.font + 1) % chat_log::FONT_SIZES.len() as u8;
+            }
+            chat_log::ChatClick::Minimize => {
+                self.chat_log.minimized = !self.chat_log.minimized;
+                if !self.chat_log.minimized && self.chat_log.scroll == 0 {
+                    self.chat_log.unread = 0;
+                }
+            }
+            chat_log::ChatClick::Grip => self.chat_log.grab = Some(chat_log::Grab::Resize),
+            chat_log::ChatClick::Header => {
+                let [x, y, _, _] = self.chat_log.shown_rect(viewport);
+                self.chat_log.grab =
+                    Some(chat_log::Grab::Move { offset: [self.cursor[0] - x as f32, self.cursor[1] - y as f32] });
+            }
+            chat_log::ChatClick::Newest => {
+                self.chat_log.scroll = 0;
+                self.chat_log.unread = 0;
+            }
+            chat_log::ChatClick::Name(name) => self.whisper_to(&name),
+            // The lines let the click through to the ground.
+            chat_log::ChatClick::Line { .. } | chat_log::ChatClick::Body => return false,
+        }
+        true
+    }
+
+    /// The right button on a chat line: its menu.
+    fn open_chat_line_menu(&mut self) -> bool {
+        let Some(viewport) = self.viewport() else {
+            return false;
+        };
+        let click = chat_log::click_at(
+            &self.chat_log,
+            self.chat_history.make_contiguous(),
+            &self.character.name,
+            viewport,
+            self.cursor,
+        );
+        let at = [self.cursor[0] as i32, self.cursor[1] as i32];
+        let menu = match click {
+            None => return false,
+            Some(chat_log::ChatClick::Name(name)) => {
+                let message = self
+                    .chat_history
+                    .iter()
+                    .rev()
+                    .find(|message| message.sender_name == name)
+                    .map(|message| message.message.clone())
+                    .unwrap_or_default();
+                chat_log::LineMenu { sender: name, message, at }
+            }
+            Some(chat_log::ChatClick::Line { sender, message }) => chat_log::LineMenu { sender, message, at },
+            Some(_) => return true,
+        };
+        self.chat_log.menu = Some(menu);
+        true
+    }
+
+    fn chat_line_action(&mut self, menu: &chat_log::LineMenu, option: usize) {
+        match chat_log::MENU_OPTIONS[option] {
+            "Whisper" => self.whisper_to(&menu.sender),
+            "Add Friend" => {
+                let target = self
+                    .remote_actors
+                    .values()
+                    .find(|actor| !actor.npc && actor.name.eq_ignore_ascii_case(&menu.sender))
+                    .map(|actor| actor.id);
+                match (target, &self.network) {
+                    (Some(target_id), Some(network)) => {
+                        network.send_friend_action(10, target_id, &menu.sender);
+                        self.network_status = format!("online: pedido de amizade enviado para {}", menu.sender);
+                    }
+                    _ => self.network_status = format!("{} precisa estar por perto para a amizade", menu.sender),
+                }
+            }
+            "Copy Name" => copy_to_clipboard(&menu.sender),
+            _ => copy_to_clipboard(&menu.message),
+        }
+    }
+
+    /// The chat strip set to whisper `name`, the keys on its line.
+    fn whisper_to(&mut self, name: &str) {
+        if name.is_empty() || name.eq_ignore_ascii_case(&self.character.name) {
+            return;
+        }
+        self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
+        self.chat_recipient = name.to_owned();
+        self.chat_name_focused = false;
+        self.chat_focused = true;
+    }
+
+    /// The chat log's picture this frame.
+    fn chat_log_view(&mut self) -> Option<(chat_log::ChatLogView, [i32; 4], Option<(chat_log::LineMenu, Option<usize>)>)> {
+        let viewport = self.viewport()?;
+        let rect = self.chat_log.shown_rect(viewport);
+        let [_, _, w, h] = self.chat_log.full_rect(viewport);
+        let history = self.chat_history.make_contiguous().to_vec();
+        let hover = chat_log::hover_at(&self.chat_log, &history, &self.character.name, viewport, self.cursor);
+        let menu = self.chat_log.menu.clone().map(|menu| {
+            let hover = chat_log::menu_click_at(&menu, viewport, self.cursor).flatten();
+            (menu, hover)
+        });
+        Some((
+            chat_log::ChatLogView {
+                history,
+                own_name: self.character.name.clone(),
+                filter: self.chat_log.filter,
+                size: [w, h],
+                font: self.chat_log.font,
+                scroll: self.chat_log.scroll,
+                minimized: self.chat_log.minimized,
+                unread: self.chat_log.unread,
+                hover,
+                hovered: self.chat_log.contains(viewport, self.cursor) || self.chat_log.grab.is_some(),
+                menu: None,
+            },
+            rect,
+            menu,
+        ))
     }
 
     /// How a player on screen looks, by name.
@@ -8303,6 +8492,7 @@ fn run() -> Result<()> {
         chat_focused: false,
         chat_history: VecDeque::new(),
         chat_filter: 0,
+        chat_log: chat_log::ChatLogState::default(),
         friends: Vec::new(),
         ignores: Vec::new(),
         dragging_shop_item: None,
@@ -8400,6 +8590,7 @@ fn run() -> Result<()> {
         app.skill_bar_open = saved.skill_bar_open;
         app.performance_overlay = saved.performance_overlay;
         app.team_join_enabled = saved.team_join_enabled;
+        saved.apply_chat(&mut app.chat_log);
         app.saved_hud = Some(saved);
     }
     match event_loop {

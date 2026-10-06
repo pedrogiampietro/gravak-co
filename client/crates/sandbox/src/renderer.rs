@@ -645,6 +645,11 @@ impl UiTextureJob {
 }
 
 pub struct Renderer {
+    /// The chat log to draw this frame, and its line menu with the option
+    /// under the cursor.
+    pub chat_log: Option<crate::chat_log::ChatLogView>,
+    pub chat_log_rect: [i32; 4],
+    pub chat_menu: Option<(crate::chat_log::LineMenu, Option<usize>)>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -947,6 +952,9 @@ impl Renderer {
             effect_scale: 0.75,
             current_trail: (0.0, Vec::new()),
             last_hud_key: None,
+            chat_log: None,
+            chat_log_rect: [0; 4],
+            chat_menu: None,
         })
     }
 
@@ -3441,6 +3449,26 @@ impl Renderer {
                 sort_depth: f32::INFINITY,
             });
         }
+        // The chat log, over the bar's corner.
+        if let Some(view) = self.chat_log.clone() {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&view, &mut hasher);
+            let key = format!("@chat-log-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::chat_log::image(&view)?;
+                self.prune_textures("@chat-log-", &[]);
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let [x, y, _, _] = self.chat_log_rect;
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad([x as f32, y as f32], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         // The original's animated status flags (double EXP, Heaven's
         // Blessing, lucky time) in their slots of the status bar.
         let hud_origin = crate::hud::position(viewport);
@@ -4928,6 +4956,23 @@ impl Renderer {
                 draws.push(Draw {
                     texture: "@perf-overlay".into(),
                     vertices: quad([8.0, 8.0], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // The chat log's line menu.
+        if let Some((menu, hover)) = self.chat_menu.clone() {
+            let key = format!("@chat-menu-{}-{}-{hover:?}", menu.sender, menu.at[0] * 10_000 + menu.at[1]);
+            if !self.textures.contains_key(&key) {
+                let image = crate::chat_log::menu_image(&menu, viewport, hover)?;
+                self.prune_textures("@chat-menu-", &[]);
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::chat_log::menu_position(&menu, viewport), texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });

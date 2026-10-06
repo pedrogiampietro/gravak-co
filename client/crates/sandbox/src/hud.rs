@@ -732,33 +732,7 @@ fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {
     [x.round() as i32, y.round() as i32]
 }
 
-/// The chat log sits at the left edge above the bar, like the original.
-fn chat_log_rect(viewport: [f32; 2]) -> Rect {
-    let [hud_x, hud_y] = hud_origin(viewport);
-    // Where the bar reaches under the log, keep clear of the orb's small
-    // buttons (their tops sit 11px into the bar).
-    let bottom = if hud_x < CHAT_LOG_WIDTH {
-        hud_y + 8
-    } else {
-        hud_y + 18
-    };
-    let height = CHAT_TAB_HEIGHT + 10 + CHAT_LOG_LINES as i32 * CHAT_LINE_HEIGHT + 6;
-    Rect(0, bottom - height, CHAT_LOG_WIDTH, height)
-}
 
-fn chat_tab_rect(viewport: [f32; 2], index: usize) -> Rect {
-    let log = chat_log_rect(viewport);
-    let font = main_hud::font().ok();
-    let mut x = log.0 + 6;
-    for (current, (label, _)) in CHAT_TABS.into_iter().enumerate() {
-        let width = font.map_or(48, |font| main_hud::text_width(font, label, 12.0) + 18);
-        if current == index {
-            return Rect(x, log.1 + 6, width, CHAT_TAB_HEIGHT);
-        }
-        x += width + 2;
-    }
-    Rect(0, 0, 0, 0)
-}
 
 fn hotkey_rect(viewport: [f32; 2], index: usize) -> Rect {
     layout::hotkey_slot_rect(viewport, index).into()
@@ -785,7 +759,7 @@ pub fn contains(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     if cursor[0] < 0.0 || cursor[1] < 0.0 || cursor[0] >= viewport[0] || cursor[1] >= viewport[1] {
         return false;
     }
-    layout::main_hud_solid_at(viewport, cursor) || chat_tab_at(viewport, cursor).is_some()
+    layout::main_hud_solid_at(viewport, cursor)
 }
 
 pub fn items_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -847,12 +821,6 @@ pub fn talk_channel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::chat_strip_control_at(viewport, cursor) == Some(ChatStripControl::Talk)
 }
 
-pub fn chat_tab_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u16> {
-    (0..CHAT_TABS.len())
-        .find(|&index| chat_tab_rect(viewport, index).contains(cursor))
-        .map(|index| CHAT_TABS[index].1)
-}
-
 pub fn hovered_button(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
     if let Some(slot) = layout::hotkey_slot_at(viewport, cursor) {
         return Some(HOVER_SLOT + slot as u8);
@@ -868,10 +836,6 @@ pub fn hovered_button(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
             .iter()
             .position(|&candidate| candidate == control)
             .map(|index| HOVER_CHAT + index as u8);
-    }
-    if let Some(index) = (0..CHAT_TABS.len()).find(|&i| chat_tab_rect(viewport, i).contains(cursor))
-    {
-        return Some(HOVER_TAB + index as u8);
     }
     layout::orb_rect(viewport)
         .contains(cursor)
@@ -930,99 +894,6 @@ fn tooltip(img: &mut RgbaImage, font: &fontdue::Font, lines: &[(&str, [u8; 4])],
     }
 }
 
-fn chat_color(channel: u16) -> ([u8; 4], Option<(&'static str, [u8; 4])>) {
-    match channel {
-        2001 => (
-            [255, 128, 255, 255],
-            Some(("[Whisper]", [255, 128, 255, 255])),
-        ),
-        2003 => ([128, 255, 255, 255], Some(("[Team]", [128, 255, 255, 255]))),
-        2004 => (
-            [128, 255, 128, 255],
-            Some(("[Guild]", [128, 255, 128, 255])),
-        ),
-        2021 => (
-            [255, 200, 120, 255],
-            Some(("[World]", [255, 200, 120, 255])),
-        ),
-        2005 | 2007 | 2011 => ([255, 255, 0, 255], Some(("[System]", [255, 64, 255, 255]))),
-        2500 => ([255, 214, 96, 255], Some(("[Broadcast]", [255, 160, 60, 255]))),
-        _ => ([255, 255, 255, 255], None),
-    }
-}
-
-fn draw_chat_log(
-    img: &mut RgbaImage,
-    font: &fontdue::Font,
-    viewport: [f32; 2],
-    history: &[crate::network::ChatMessage],
-    filter: u16,
-    hover: Option<u8>,
-) {
-    let log = chat_log_rect(viewport);
-    fill(img, log, [0, 0, 0, 70]);
-    for (index, (label, channel)) in CHAT_TABS.into_iter().enumerate() {
-        let tab = chat_tab_rect(viewport, index);
-        let active = channel == filter;
-        let hovered = hover == Some(HOVER_TAB + index as u8);
-        fill(
-            img,
-            tab,
-            if active {
-                [92, 96, 104, 235]
-            } else if hovered {
-                [70, 74, 82, 225]
-            } else {
-                [44, 47, 54, 215]
-            },
-        );
-        outline(
-            img,
-            tab,
-            if active {
-                [176, 190, 214, 255]
-            } else {
-                [74, 79, 88, 255]
-            },
-        );
-        let color = if active {
-            [255, 255, 255, 255]
-        } else {
-            [205, 208, 214, 255]
-        };
-        let text_x = tab.0 + (tab.2 - main_hud::text_width(font, label, 12.0)) / 2;
-        main_hud::text(img, font, label, 12.0, [text_x, tab.1 + 3], color, None);
-    }
-    let messages = history
-        .iter()
-        .filter(|message| filter == 0 || message.channel == filter)
-        .rev()
-        .take(CHAT_LOG_LINES)
-        .collect::<Vec<_>>();
-    let max_width = log.2 - 12;
-    for (row, message) in messages.into_iter().enumerate() {
-        let y = log.1 + log.3 - 6 - (row as i32 + 1) * CHAT_LINE_HEIGHT;
-        let (color, tag) = chat_color(message.channel);
-        let mut x = log.0 + 6;
-        if let Some((tag, tag_color)) = tag {
-            x += main_hud::text(img, font, tag, 12.0, [x, y], tag_color, None) + 4;
-        }
-        let body = if message.channel == 2007 || message.channel == 2005 {
-            message.message.clone()
-        } else {
-            format!("{}: {}", message.sender_name, message.message)
-        };
-        main_hud::text(
-            img,
-            font,
-            &body,
-            12.0,
-            [x, y],
-            color,
-            Some(max_width - (x - log.0)),
-        );
-    }
-}
 
 fn draw_hotkeys(
     img: &mut RgbaImage,
@@ -1209,7 +1080,7 @@ pub fn image(
     let viewport = [width as f32, height as f32];
     let mut img = RgbaImage::new(width.max(1), height.max(1));
 
-    draw_chat_log(&mut img, font, viewport, chat_history, chat_filter, hover);
+    let _ = (chat_history, chat_filter);
 
     let art = MainHudArt::get(assets)?;
     let [x, y] = hud_origin(viewport);
@@ -1393,11 +1264,6 @@ mod tests {
             assert!(chat_clear_at(viewport, clear));
             let input = center(layout::chat_strip_rect(viewport, ChatStripControl::Input));
             assert!(chat_input_at(viewport, input));
-            for (index, (_, channel)) in CHAT_TABS.into_iter().enumerate() {
-                let tab = chat_tab_rect(viewport, index);
-                let p = [(tab.0 + tab.2 / 2) as f32, (tab.1 + tab.3 / 2) as f32];
-                assert_eq!(chat_tab_at(viewport, p), Some(channel));
-            }
             assert!(!contains(viewport, [viewport[0] * 0.5, viewport[1] * 0.5]));
             assert!(!contains(viewport, [-1.0, viewport[1] - 1.0]));
         }
