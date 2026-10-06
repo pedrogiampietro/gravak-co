@@ -113,26 +113,32 @@ impl Whispers {
     }
 }
 
-/// The window: the original's message frame (`DialogLevWord`) cut to size.
-pub const WINDOW_SIZE: [u32; 2] = [460, 300];
-const NAME_PLATE: UiRect = UiRect::new(130, 9, 200, 22);
-const CLOSE: UiRect = UiRect::new(426, 9, 22, 22);
-const GUILD: UiRect = UiRect::new(22, 42, 160, 20);
-const CLASS: UiRect = UiRect::new(188, 42, 160, 20);
-const HISTORY: UiRect = UiRect::new(22, 68, 326, 124);
-const FACE: UiRect = UiRect::new(358, 42, 82, 82);
-const INPUT: UiRect = UiRect::new(22, 198, 326, 32);
-const SEND: UiRect = UiRect::new(290, 240, 70, 22);
-const CLOSE_BUTTON: UiRect = UiRect::new(370, 240, 70, 22);
+/// The window, laid out as the original's private chat: the other's name
+/// on top, guild and class, the conversation with their face, battle power
+/// and level beside it, the line being written with your own face, and
+/// Send and Close; in the original's message frame (`DialogLevWord`).
+pub const WINDOW_SIZE: [u32; 2] = [448, 318];
+const NAME_PLATE: UiRect = UiRect::new(88, 9, 270, 22);
+const CLOSE: UiRect = UiRect::new(404, 11, 20, 20);
+const GUILD: UiRect = UiRect::new(14, 44, 154, 20);
+const CLASS: UiRect = UiRect::new(174, 44, 164, 20);
+const HISTORY: UiRect = UiRect::new(14, 72, 324, 114);
+const FACE: UiRect = UiRect::new(352, 60, 76, 76);
+const POWER: UiRect = UiRect::new(346, 164, 88, 22);
+const LEVEL_ROW: i32 = 192;
+const INPUT: UiRect = UiRect::new(14, 210, 324, 68);
+const OWN_FACE: UiRect = UiRect::new(354, 210, 70, 70);
+const SEND: UiRect = UiRect::new(296, 288, 64, 22);
+const CLOSE_BUTTON: UiRect = UiRect::new(370, 288, 64, 22);
 /// A face waiting over the bar: the arrow and the framed face.
 pub const FACE_ICON: [i32; 2] = [62, 48];
 
-const BOX: [u8; 4] = [14, 30, 40, 235];
-const BOX_EDGE: [u8; 4] = [120, 104, 70, 255];
+const BOX: [u8; 4] = [24, 46, 58, 255];
+const BOX_EDGE: [u8; 4] = [104, 128, 136, 255];
 const GOLD: [u8; 4] = [255, 226, 143, 255];
 const WHITE: [u8; 4] = [235, 235, 235, 255];
-const OWN: [u8; 4] = [120, 220, 120, 255];
-const OTHER: [u8; 4] = [120, 190, 255, 255];
+const OWN: [u8; 4] = [110, 220, 110, 255];
+const OTHER: [u8; 4] = [110, 200, 255, 255];
 const SYSTEM: [u8; 4] = [255, 140, 120, 255];
 
 /// Where the window sits: the middle of the screen, a little high.
@@ -239,78 +245,141 @@ fn wrap(font: &fontdue::Font, text: &str, width: i32) -> Vec<String> {
     lines
 }
 
+/// A framed face: a light frame, the portrait inside, or the name's
+/// initial when the look is not known.
+fn portrait(assets: &mut Assets, image: &mut RgbaImage, rect: UiRect, mesh: Option<u32>, name: &str, gold: bool) -> Result<()> {
+    fill(image, rect, if gold { [196, 160, 90, 255] } else { [226, 222, 210, 255] });
+    let inner = UiRect::new(rect.x + 3, rect.y + 3, rect.width - 6, rect.height - 6);
+    fill(image, inner, [20, 24, 30, 255]);
+    match mesh.and_then(|mesh| crate::renderer::player_face(assets, mesh, inner.width as u32)) {
+        Some(face) => imageops::overlay(image, &face, i64::from(inner.x), i64::from(inner.y)),
+        None => {
+            let initial = name.chars().next().map(|first| first.to_uppercase().to_string()).unwrap_or_default();
+            say(image, &initial, [inner.x + inner.width / 2 - 4, inner.y + inner.height / 2 - 7], GOLD, None)?;
+        }
+    }
+    Ok(())
+}
+
+/// An original button, pressed under the cursor.
+fn button(assets: &mut Assets, image: &mut RgbaImage, rect: UiRect, art: &str, pressed: bool) -> Result<()> {
+    let path = if pressed { format!("data/main/{art}Click.dds") } else { format!("data/main/{art}.dds") };
+    let source = assets.image(&path).or_else(|_| assets.image(&format!("data/main/{art}.dds")))?;
+    let source = crate::original_ui::visible_part(&source)?;
+    imageops::overlay(image, &source, i64::from(rect.x), i64::from(rect.y));
+    Ok(())
+}
+
 /// The private chat window with `conversation`.
+#[allow(clippy::too_many_arguments)]
 pub fn window_image(
     assets: &mut Assets,
     conversation: &Conversation,
     own_name: &str,
+    own_mesh: u32,
     seen_mesh: Option<u32>,
     input: &str,
     input_focused: bool,
     hovered: Option<WhisperClick>,
 ) -> Result<RgbaImage> {
     let mut image = frame(assets, WINDOW_SIZE)?;
-    let font = crate::main_hud::font()?;
-    framed(&mut image, NAME_PLATE);
-    let width = crate::main_hud::text_width(font, &conversation.name, 12.0);
-    say(&mut image, &conversation.name, [NAME_PLATE.x + (NAME_PLATE.width - width) / 2, NAME_PLATE.y + 5], GOLD, None)?;
-    crate::ui_theme::close_button(&mut image, hovered == Some(WhisperClick::Close), CLOSE.x, CLOSE.y);
-    let card = conversation.card.as_ref();
-    framed(&mut image, GUILD);
-    let guild = card.map(|card| card.guild.as_str()).filter(|guild| !guild.is_empty()).unwrap_or("-");
-    say(&mut image, &format!("Guild: {guild}"), [GUILD.x + 5, GUILD.y + 4], WHITE, Some(GUILD.width - 10))?;
-    framed(&mut image, CLASS);
-    let class = card.map_or_else(|| "-".to_owned(), |card| crate::shop::class_name(card.class as u8));
-    say(&mut image, &format!("Class: {class}"), [CLASS.x + 5, CLASS.y + 4], WHITE, Some(CLASS.width - 10))?;
-    // The face in a light frame, the level and rebirths under it.
-    fill(&mut image, FACE, [222, 214, 190, 255]);
-    let inner = UiRect::new(FACE.x + 3, FACE.y + 3, FACE.width - 6, FACE.height - 6);
-    fill(&mut image, inner, [20, 24, 30, 255]);
-    if let Some(portrait) = face(assets, conversation, seen_mesh, inner.width as u32) {
-        imageops::overlay(&mut image, &portrait, i64::from(inner.x), i64::from(inner.y));
-    }
-    if let Some(card) = card {
-        let level = format!("Level {}", card.level);
-        let width = crate::main_hud::text_width(font, &level, 12.0);
-        say(&mut image, &level, [FACE.x + (FACE.width - width) / 2, FACE.y + FACE.height + 6], WHITE, None)?;
-        if card.rebirths > 0 {
-            let reborn = format!("Reborn {}", card.rebirths);
-            let width = crate::main_hud::text_width(font, &reborn, 12.0);
-            say(&mut image, &reborn, [FACE.x + (FACE.width - width) / 2, FACE.y + FACE.height + 22], GOLD, None)?;
+    // The original's window is solid.
+    for pixel in image.pixels_mut() {
+        if pixel[3] > 90 {
+            pixel[3] = 255;
         }
     }
-    // The conversation: its last lines that fit.
-    framed(&mut image, HISTORY);
-    let mut rows: Vec<(String, [u8; 4])> = Vec::new();
-    for line in &conversation.lines {
-        let colour = if line.system {
-            SYSTEM
-        } else if line.sender.eq_ignore_ascii_case(own_name) {
-            OWN
+    let font = crate::main_hud::font()?;
+    // The other's name on the plate, as the original: "Name:".
+    fill(&mut image, NAME_PLATE, [16, 32, 40, 255]);
+    outline(&mut image, NAME_PLATE, [196, 160, 90, 255]);
+    let inset = UiRect::new(NAME_PLATE.x + 2, NAME_PLATE.y + 2, NAME_PLATE.width - 4, NAME_PLATE.height - 4);
+    outline(&mut image, inset, [92, 74, 44, 255]);
+    say(&mut image, &format!("{}:", conversation.name), [NAME_PLATE.x + 10, NAME_PLATE.y + 5], WHITE, None)?;
+    // A gold X, lit under the cursor.
+    let x_colour = if hovered == Some(WhisperClick::Close) { [255, 244, 190, 255] } else { [214, 176, 96, 255] };
+    for step in 0..12 {
+        for thick in 0..2 {
+            for (x, y) in [(CLOSE.x + 4 + step + thick, CLOSE.y + 4 + step), (CLOSE.x + 15 - step + thick, CLOSE.y + 4 + step)] {
+                if x >= 0 && y >= 0 && (x as u32) < image.width() && (y as u32) < image.height() {
+                    image.put_pixel(x as u32, y as u32, image::Rgba(x_colour));
+                }
+            }
+        }
+    }
+    let card = conversation.card.as_ref();
+    framed(&mut image, GUILD);
+    let guild = card.map(|card| card.guild.as_str()).unwrap_or_default();
+    say(&mut image, &format!("Guild: {guild}"), [GUILD.x + 5, GUILD.y + 4], WHITE, Some(GUILD.width - 10))?;
+    framed(&mut image, CLASS);
+    let class = card.map(|card| crate::shop::class_name(card.class as u8)).unwrap_or_default();
+    say(&mut image, &format!("Class: {class}"), [CLASS.x + 5, CLASS.y + 4], WHITE, Some(CLASS.width - 10))?;
+    // Their face, battle power and level.
+    let their_mesh = card.map(|card| card.mesh).or(seen_mesh);
+    portrait(assets, &mut image, FACE, their_mesh, &conversation.name, false)?;
+    let label = "Max Battle Power";
+    let width = crate::main_hud::text_width(font, label, 11.0);
+    crate::main_hud::text(&mut image, font, label, 11.0, [POWER.x + (POWER.width - width) / 2, POWER.y - 16], GOLD, None);
+    framed(&mut image, POWER);
+    let power = card.map_or_else(|| "-".to_owned(), |card| card.battle_power.to_string());
+    let width = crate::main_hud::text_width(font, &power, 12.0);
+    say(&mut image, &power, [POWER.x + (POWER.width - width) / 2, POWER.y + 4], WHITE, None)?;
+    let level = card.map_or_else(|| "Level -".to_owned(), |card| {
+        if card.rebirths > 0 {
+            format!("Level {}  (Reborn {})", card.level, card.rebirths)
         } else {
-            OTHER
-        };
-        let text = if line.system { line.text.clone() } else { format!("{}: {}", line.sender, line.text) };
-        for (index, row) in wrap(font, &text, HISTORY.width - 12).into_iter().enumerate() {
-            rows.push((row, if index == 0 { colour } else { WHITE }));
+            format!("Level {}", card.level)
+        }
+    });
+    let width = crate::main_hud::text_width(font, &level, 12.0);
+    say(&mut image, &level, [HISTORY.x + (HISTORY.width - width) / 2, LEVEL_ROW], WHITE, None)?;
+    // The conversation: names in colour, the words in white, the last
+    // lines that fit.
+    framed(&mut image, HISTORY);
+    let mut rows: Vec<(Option<(String, [u8; 4])>, String)> = Vec::new();
+    for line in &conversation.lines {
+        if line.system {
+            for row in wrap(font, &line.text, HISTORY.width - 12) {
+                rows.push((Some((row, SYSTEM)), String::new()));
+            }
+            continue;
+        }
+        let colour = if line.sender.eq_ignore_ascii_case(own_name) { OWN } else { OTHER };
+        let name = format!("{}: ", line.sender);
+        let full = format!("{name}{}", line.text);
+        for (index, row) in wrap(font, &full, HISTORY.width - 12).into_iter().enumerate() {
+            match row.strip_prefix(&name).filter(|_| index == 0) {
+                Some(rest) => rows.push((Some((name.clone(), colour)), rest.to_owned())),
+                None if index == 0 => rows.push((Some((row, colour)), String::new())),
+                None => rows.push((None, row)),
+            }
         }
     }
     let shown = ((HISTORY.height - 8) / 15) as usize;
-    for (index, (row, colour)) in rows.iter().skip(rows.len().saturating_sub(shown)).enumerate() {
-        say(&mut image, row, [HISTORY.x + 6, HISTORY.y + 5 + index as i32 * 15], *colour, Some(HISTORY.width - 12))?;
+    for (index, (lead, rest)) in rows.iter().skip(rows.len().saturating_sub(shown)).enumerate() {
+        let y = HISTORY.y + 5 + index as i32 * 15;
+        let mut x = HISTORY.x + 6;
+        if let Some((lead, colour)) = lead {
+            say(&mut image, lead, [x, y], *colour, Some(HISTORY.width - 12))?;
+            x += crate::main_hud::text_width(font, lead, 12.0) + 3;
+        }
+        if !rest.is_empty() {
+            say(&mut image, rest, [x, y], WHITE, Some(HISTORY.x + HISTORY.width - 6 - x))?;
+        }
     }
-    // What is being written.
+    // What is being written, and your own face beside it.
     framed(&mut image, INPUT);
     if input_focused {
-        outline(&mut image, INPUT, GOLD);
+        outline(&mut image, INPUT, [196, 160, 90, 255]);
     }
     let typed = if input_focused { format!("{input}|") } else { input.to_owned() };
     let rows = wrap(font, &typed, INPUT.width - 12);
-    for (index, row) in rows.iter().skip(rows.len().saturating_sub(2)).enumerate() {
-        say(&mut image, row, [INPUT.x + 6, INPUT.y + 3 + index as i32 * 14], WHITE, Some(INPUT.width - 12))?;
+    for (index, row) in rows.iter().skip(rows.len().saturating_sub(4)).enumerate() {
+        say(&mut image, row, [INPUT.x + 6, INPUT.y + 5 + index as i32 * 15], WHITE, Some(INPUT.width - 12))?;
     }
-    crate::ui::draw_text_button(&mut image, font, SEND, "Send", hovered == Some(WhisperClick::Send), input.trim().is_empty());
-    crate::ui::draw_text_button(&mut image, font, CLOSE_BUTTON, "Close", hovered == Some(WhisperClick::Close), false);
+    portrait(assets, &mut image, OWN_FACE, (own_mesh != 0).then_some(own_mesh), own_name, true)?;
+    button(assets, &mut image, SEND, "MsgSendSend", hovered == Some(WhisperClick::Send))?;
+    button(assets, &mut image, CLOSE_BUTTON, "CloseBtn", hovered == Some(WhisperClick::Close))?;
     Ok(image)
 }
 
@@ -359,9 +428,10 @@ mod tests {
             class: 15,
             name: "Tom411".into(),
             guild: "Elite".into(),
+            battle_power: 143,
         });
         let conversation = whispers.conversation("tom411").expect("conversation").clone();
-        let window = window_image(&mut assets, &conversation, "Ikzordep", None, "ja vou", true, Some(WhisperClick::Send))
+        let window = window_image(&mut assets, &conversation, "Ikzordep", 1_004 + 12 * 10_000, None, "ja vou", true, Some(WhisperClick::Send))
             .expect("window");
         let icon = face_icon(&mut assets, &conversation, None, false).expect("icon");
         let mut sheet = RgbaImage::from_pixel(WINDOW_SIZE[0] + 80, WINDOW_SIZE[1], image::Rgba([60, 70, 60, 255]));
@@ -388,3 +458,4 @@ mod tests {
         assert!(!conversation.unread);
     }
 }
+

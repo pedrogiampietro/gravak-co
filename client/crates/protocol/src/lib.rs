@@ -400,6 +400,7 @@ pub struct WhisperCard {
     pub class: u32,
     pub name: String,
     pub guild: String,
+    pub battle_power: u32,
 }
 
 /// One ranked character, `index` of `total` (index 0 starts the rows over);

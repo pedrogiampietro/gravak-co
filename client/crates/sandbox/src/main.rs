@@ -261,6 +261,8 @@ struct App {
     hotkey_popup: Option<hotkey_menu::HotkeyPopup>,
     /// Private chats, their faces over the bar and the open window.
     whispers: whisper::Whispers,
+    /// The hero's look with the avatar (from the login), for their face.
+    own_mesh: u32,
     /// What each speaker said on the Talk channel and until when it shows
     /// over their head, by lower-case name.
     speech: HashMap<String, (String, f32)>,
@@ -367,6 +369,10 @@ struct App {
     warehouse_amount: String,
     warehouse_amount_focused: bool,
     chat_text: String,
+    /// The strip's whisper name: lines go to them while it is set.
+    chat_recipient: String,
+    /// The keys go to the whisper name rather than to the line.
+    chat_name_focused: bool,
     chat_focused: bool,
     chat_history: VecDeque<ChatMessage>,
     chat_filter: u16,
@@ -720,7 +726,10 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed {
                     let paste = self.modifiers.control_key()
                         && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV));
+                    let copy = self.modifiers.control_key()
+                        && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyC));
                     match event.physical_key {
+                        _ if copy => copy_to_clipboard(&self.whispers.input),
                         _ if paste => {
                             if let Ok(mut clipboard) = arboard::Clipboard::new()
                                 && let Ok(text) = clipboard.get_text()
@@ -777,8 +786,51 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
+            WindowEvent::KeyboardInput { event, .. } if self.chat_focused && self.chat_name_focused => {
+                if event.state == ElementState::Pressed {
+                    let control = self.modifiers.control_key();
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::KeyC) if control => copy_to_clipboard(&self.chat_recipient),
+                        PhysicalKey::Code(KeyCode::KeyV) if control => {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new()
+                                && let Ok(text) = clipboard.get_text()
+                            {
+                                self.chat_recipient = text.trim().chars().filter(|c| !c.is_whitespace()).take(16).collect();
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Escape) => self.chat_focused = false,
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            self.chat_recipient.pop();
+                        }
+                        // On to the line.
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab) => {
+                            self.chat_name_focused = false;
+                        }
+                        _ => {
+                            if let Some(text) = event.text.as_ref() {
+                                for character in text.chars().filter(|c| !c.is_control() && !c.is_whitespace()) {
+                                    if self.chat_recipient.chars().count() < 16 {
+                                        self.chat_recipient.push(character);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
             WindowEvent::KeyboardInput { event, .. } if self.chat_focused => {
                 if event.state == ElementState::Pressed {
+                    if self.modifiers.control_key()
+                        && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyC))
+                    {
+                        copy_to_clipboard(&self.chat_text);
+                        return;
+                    }
+                    if matches!(event.physical_key, PhysicalKey::Code(KeyCode::Tab)) {
+                        self.chat_name_focused = true;
+                        return;
+                    }
                     if self.modifiers.control_key()
                         && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV))
                     {
@@ -1100,6 +1152,16 @@ impl ApplicationHandler for App {
                         self.quick_panel = None;
                     }
                     PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                    // Enter at any time: to the line (the private chat's,
+                    // when its window is open).
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                        if self.whispers.open.is_some() {
+                            self.whispers.input_focused = true;
+                        } else {
+                            self.chat_focused = true;
+                            self.chat_name_focused = false;
+                        }
+                    }
                     PhysicalKey::Code(KeyCode::F1) => self.cast_action_slot(0),
                     PhysicalKey::Code(KeyCode::F2) => self.cast_action_slot(1),
                     PhysicalKey::Code(KeyCode::F3) => self.cast_action_slot(2),
@@ -2140,11 +2202,24 @@ impl App {
             self.held = false;
             return true;
         }
-        if hud::chat_input_at(viewport, self.cursor)
-            || hud::chat_button_at(viewport, self.cursor)
-            || hud::talk_channel_at(viewport, self.cursor)
-        {
+        // The channel button: back to Talk from a whisper, or to the name
+        // box to whisper someone.
+        if hud::talk_channel_at(viewport, self.cursor) {
             self.chat_focused = true;
+            self.chat_name_focused = self.chat_recipient.is_empty();
+            self.chat_recipient.clear();
+            self.held = false;
+            return true;
+        }
+        if hud::chat_name_at(viewport, self.cursor) {
+            self.chat_focused = true;
+            self.chat_name_focused = true;
+            self.held = false;
+            return true;
+        }
+        if hud::chat_input_at(viewport, self.cursor) || hud::chat_button_at(viewport, self.cursor) {
+            self.chat_focused = true;
+            self.chat_name_focused = false;
             self.held = false;
             return true;
         }
@@ -2529,7 +2604,8 @@ impl App {
                 self.send_team_action(REQUEST_INVITE, target_id);
             }
             PlayerMenuAction::Whisper => {
-                self.chat_text = format!("/w {name} ");
+                self.chat_recipient = name.to_owned();
+                self.chat_name_focused = false;
                 self.chat_focused = true;
                 self.network_status = format!("whisper preparado para {name}");
             }
@@ -2594,6 +2670,10 @@ impl App {
                     network.send_whisper(character_id, &self.character.name, recipient, whisper);
                     self.network_status = format!("online: whisper enviado para {recipient}");
                 }
+            } else if !message.starts_with('/') && !self.chat_recipient.trim().is_empty() {
+                let recipient = self.chat_recipient.trim().to_owned();
+                network.send_whisper(character_id, &self.character.name, &recipient, &message);
+                self.network_status = format!("online: whisper enviado para {recipient}");
             } else {
                 network.send_chat(character_id, &self.character.name, &message);
             }
@@ -2868,7 +2948,8 @@ impl App {
                 let Some(entry) = self.friends.get(index) else {
                     return;
                 };
-                self.chat_text = format!("/w {} ", entry.name);
+                self.chat_recipient = entry.name.clone();
+                self.chat_name_focused = false;
                 self.chat_focused = true;
                 self.quick_panel = None;
                 self.network_status = format!("whisper preparado para {}", entry.name);
@@ -3758,6 +3839,7 @@ impl App {
                 self.level_up_until = self.started.elapsed().as_secs_f32() + LEVEL_UP_DURATION;
             }
             NetworkEvent::Ready(ready) => {
+                self.own_mesh = ready.mesh;
                 self.player.position = ready.position.map(|value| value as f32);
                 self.character.name = ready.character_name;
                 self.silver = ready.silver;
@@ -5034,6 +5116,8 @@ impl App {
             dragging_emote: self
                 .dragging_emote
                 .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
+            chat_recipient: self.chat_recipient.clone(),
+            chat_name_focused: self.chat_name_focused,
             speech: self
                 .speech
                 .iter()
@@ -5441,6 +5525,7 @@ impl App {
             seen_mesh: self.seen_mesh(name),
             conversation,
             own_name: self.character.name.clone(),
+            own_mesh: self.own_mesh,
             input: self.whispers.input.clone(),
             input_focused: self.whispers.input_focused,
             hovered: hovered.filter(|click| *click != whisper::WhisperClick::Window),
@@ -7610,6 +7695,13 @@ fn wire_action(action: u32) -> Option<Action> {
     })
 }
 
+/// Puts `text` on the system clipboard.
+fn copy_to_clipboard(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text.to_owned());
+    }
+}
+
 /// Arrows go on an F key to be worn.
 fn is_arrow(item_type: u32) -> bool {
     item_type / 1_000 == 1_050
@@ -8064,6 +8156,7 @@ fn run() -> Result<()> {
         action_bar: action_bar::ActionBar::default(),
         hotkey_popup: None,
         whispers: whisper::Whispers::default(),
+        own_mesh: 0,
         speech: HashMap::new(),
         item_context: None,
         target_pick: None,
@@ -8166,6 +8259,8 @@ fn run() -> Result<()> {
         warehouse_amount: "1".into(),
         warehouse_amount_focused: false,
         chat_text: String::new(),
+        chat_recipient: String::new(),
+        chat_name_focused: false,
         chat_focused: false,
         chat_history: VecDeque::new(),
         chat_filter: 0,

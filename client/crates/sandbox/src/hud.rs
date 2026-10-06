@@ -125,6 +125,10 @@ pub struct SkillHud {
     pub dragging_hotkey: Option<usize>,
     /// The F keys' open popup and the cell under the cursor.
     pub hotkey_popup: Option<(crate::hotkey_menu::HotkeyPopupView, Option<usize>)>,
+    /// The chat strip's whisper name (empty: the Talk channel) and whether
+    /// the keys go to it rather than to the line.
+    pub chat_recipient: String,
+    pub chat_name_focused: bool,
     /// Who is saying what on the Talk channel, for the bubbles.
     pub speech: Vec<(String, String)>,
     /// The private chat window and the faces waiting over the bar.
@@ -137,6 +141,7 @@ pub struct SkillHud {
 pub struct WhisperWindowView {
     pub conversation: crate::whisper::Conversation,
     pub own_name: String,
+    pub own_mesh: u32,
     /// How the other end looks, when on screen.
     pub seen_mesh: Option<u32>,
     pub input: String,
@@ -191,7 +196,7 @@ fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
         return;
     };
     let ping_text = info.ping.map_or_else(|| "-".to_owned(), |ping| format!("{ping} ms"));
-    let detail = format!("{}, {}   ·   {} FPS   ·   {ping_text}", info.cell[0], info.cell[1], info.fps);
+    let detail = format!("{}, {}   Â·   {} FPS   Â·   {ping_text}", info.cell[0], info.cell[1], info.fps);
     let text_width = width_of(&cinzel, &info.map, 14.0).max(width_of(&ui, &detail, 11.0) + 20.0).round() as i32;
     let plate = crate::ui::UiRect::new(CORNER[0], CORNER[1], 52 + text_width + 14, PLATE_HEIGHT);
     let shape = rounded(plate, 10.0);
@@ -549,7 +554,7 @@ enum Count {
 }
 
 impl Count {
-    /// The effect prefix, the 斩's centre from the bottom right and the
+    /// The effect prefix, the æ–©'s centre from the bottom right and the
     /// digits' spacing, as the original places them (`W - 30, H - 111`
     /// and `W - 57, H - 138`).
     fn layout(self) -> (&'static str, [i32; 2], i32) {
@@ -815,6 +820,10 @@ pub fn chat_input_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
         layout::chat_strip_control_at(viewport, cursor),
         Some(ChatStripControl::Input | ChatStripControl::Name)
     )
+}
+
+pub fn chat_name_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::chat_strip_control_at(viewport, cursor) == Some(ChatStripControl::Name)
 }
 
 pub fn chat_clear_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -1223,6 +1232,8 @@ pub fn image(
             hovered_chat,
             chat_text,
             chat_focused,
+            chat_name: &skills.chat_recipient,
+            chat_name_focused: skills.chat_name_focused,
             kill_mode: skills.kill_mode,
             active_skill_icon: skills
                 .active_skill
@@ -1231,7 +1242,7 @@ pub fn image(
         font,
     );
     draw_skill_bar(&mut img, assets, font, viewport, skills);
-    // Cyclone or Superman: their KOs in the big red count ("<n> 斩"),
+    // Cyclone or Superman: their KOs in the big red count ("<n> æ–©"),
     // otherwise the kills of the last kind of monster in the small blue one.
     let in_xp_skill = skills.timers.iter().any(|(flag, _)| *flag & XP_SKILL_FLAGS != 0);
     if in_xp_skill {
@@ -1424,7 +1435,7 @@ mod tests {
                 channel: 2000,
                 sender_name: "CloudStrider".into(),
                 recipient_name: "ALLUSERS".into(),
-                message: "Olá, Twin City!".into(),
+                message: "OlÃ¡, Twin City!".into(),
             },
             crate::network::ChatMessage {
                 channel: 2001,
@@ -1448,7 +1459,7 @@ mod tests {
                 65,
                 40,
                 Some(1),
-                "Olá, Twin City!",
+                "OlÃ¡, Twin City!",
             ),
             ("hud-1024.png", 1024, 768, 25, 0, Some(HOVER_ORB), ""),
             ("hud-1704.png", 1704, 960, 100, 100, Some(HOVER_SLOT), ""),
@@ -1491,6 +1502,7 @@ mod tests {
                     info: Some(InfoBar { map: "Twin City".into(), cell: [430, 380], fps: 144, ping: Some(12) }),
                     xp_ready: true,
                     xp_points: 65,
+                    chat_recipient: "Tom411".into(),
                     timers: vec![(1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
                     ..SkillHud::default()
                 },

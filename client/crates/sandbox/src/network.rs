@@ -36,6 +36,8 @@ pub struct NetworkConfig {
 pub struct ReadyState {
     pub character_id: u32,
     pub character_name: String,
+    /// The hero's look with the avatar, for their face.
+    pub mesh: u32,
     pub body: u32,
     pub hair_style: u16,
     pub map_id: u32,
@@ -1298,6 +1300,7 @@ pub(crate) async fn play(
         .send(NetworkEvent::Ready(ReadyState {
             character_id: local_character_id,
             character_name: user.character_name,
+            mesh: user.mesh,
             body: body_from_mesh(user.mesh),
             hair_style: user.hair_style,
             map_id,

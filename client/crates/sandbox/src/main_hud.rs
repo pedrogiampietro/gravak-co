@@ -160,6 +160,8 @@ pub struct MainHudArt {
     /// The Capture button's art for each kill mode, `shop::KILL_MODES` order.
     kill_modes: Vec<[RgbaImage; 2]>,
     chat: Vec<(ChatStripControl, [RgbaImage; 2])>,
+    /// The channel button in Whisper (`TalkBtnS`, `Control.Ani` Button51).
+    talk_whisper: [RgbaImage; 2],
 }
 
 fn visible(assets: &mut Assets, path: &str) -> Result<RgbaImage> {
@@ -216,6 +218,10 @@ impl MainHudArt {
             buttons,
             kill_modes,
             chat,
+            talk_whisper: [
+                visible(assets, "data/main/TalkBtnS.dds")?,
+                visible(assets, "data/main/TalkBtnSClick.dds")?,
+            ],
         })
     }
 
@@ -245,6 +251,10 @@ pub struct MainHudState<'a> {
     pub hovered_chat: Option<ChatStripControl>,
     pub chat_text: &'a str,
     pub chat_focused: bool,
+    /// The whisper name in the strip's left box (empty: Talk), and whether
+    /// it takes the keys.
+    pub chat_name: &'a str,
+    pub chat_name_focused: bool,
     /// The kill mode in force, `shop::KILL_MODES` order.
     pub kill_mode: u8,
     /// Icon of the selected skill, painted over the "Skill" button.
@@ -352,14 +362,28 @@ pub fn draw(
         imageops::overlay(img, frame, x, y);
     }
     for (control, frames) in &art.chat {
+        let frames = if *control == ChatStripControl::Talk && !state.chat_name.is_empty() {
+            &art.talk_whisper
+        } else {
+            frames
+        };
         let rect = control.local_rect();
         let frame = &frames[usize::from(state.hovered_chat == Some(*control))];
         let [x, y] = at([rect.x as i64, rect.y as i64]);
         imageops::overlay(img, frame, x, y);
     }
 
+    // The whisper name in the left box.
+    let name_box = ChatStripControl::Name.local_rect();
+    let name = if state.chat_focused && state.chat_name_focused {
+        format!("{}|", state.chat_name)
+    } else {
+        state.chat_name.to_owned()
+    };
+    let [x, y] = at([name_box.x as i64 + 4, name_box.y as i64 + 4]);
+    text(img, font, &name, 12.0, [x as i32, y as i32], [255, 236, 170, 255], Some(name_box.width as i32 - 8));
     let input = ChatStripControl::Input.local_rect();
-    let typed = if state.chat_focused {
+    let typed = if state.chat_focused && !state.chat_name_focused {
         format!("{}|", state.chat_text)
     } else {
         state.chat_text.to_owned()

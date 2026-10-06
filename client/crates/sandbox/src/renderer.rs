@@ -4952,6 +4952,7 @@ impl Renderer {
                     assets,
                     &view.conversation,
                     &view.own_name,
+                    view.own_mesh,
                     view.seen_mesh,
                     &view.input,
                     view.input_focused,
