@@ -76,9 +76,34 @@ struct Soul {
     started: f32,
 }
 
+/// An arrow in flight from an archer to the target, as `3DFlyingObj.ini`
+/// shows it.
+#[derive(Debug, Clone)]
+struct Arrow {
+    attacker_id: u32,
+    target_id: u32,
+    /// A cell the arrow flies to instead of an actor (Scatter's fan).
+    to_cell: Option<[f32; 2]>,
+    /// Whether the archer or the target is the player, who is not among
+    /// the remote actors.
+    from_player: bool,
+    to_player: bool,
+    flying: crate::magic::FlyingObject,
+    started: f32,
+}
+
+/// The arrow leaves the bow this long into the shot, flies this many cells
+/// a second, from about the hands to about the chest (pixels above the
+/// feet), drawn at this size of the models.
+const ARROW_RELEASE_SECONDS: f32 = 0.2;
+const ARROW_CELLS_PER_SECOND: f32 = 24.0;
+const ARROW_FROM_LIFT: f32 = 46.0;
+const ARROW_TO_LIFT: f32 = 50.0;
+const ARROW_SCALE: f32 = 0.6;
+
 /// How long a soul lingers over the body, then how long it flies.
-const SOUL_RISE_SECONDS: f32 = 0.5;
-const SOUL_FLIGHT_SECONDS: f32 = 0.7;
+const SOUL_RISE_SECONDS: f32 = 1.0;
+const SOUL_FLIGHT_SECONDS: f32 = 0.8;
 
 /// The original `born` effect (`3DEffect.ini`) over a respawning monster:
 /// 151 frames of 40 ms. The monster itself fades in over the first moments.
@@ -732,6 +757,10 @@ pub struct Renderer {
     revive_rects: Vec<([f32; 4], bool)>,
     /// Souls of slain monsters on their way to whoever slew them.
     souls: Vec<Soul>,
+    /// Arrows in flight, and the flying models by path (`None` when one
+    /// cannot be read).
+    arrows: Vec<Arrow>,
+    flying_models: HashMap<String, Option<std::rc::Rc<C3Document>>>,
     /// Effects played once on an actor: (actor, effect, started).
     role_effects: Vec<(u32, String, f32)>,
     level_up_layers: Option<Vec<LevelUpLayer>>,
@@ -945,6 +974,8 @@ impl Renderer {
             ranking_icon_rect: None,
             revive_rects: Vec::new(),
             souls: Vec::new(),
+            arrows: Vec::new(),
+            flying_models: HashMap::new(),
             role_effects: Vec::new(),
             level_up_layers: None,
             effects: HashMap::new(),
@@ -2164,6 +2195,106 @@ impl Renderer {
         self.role_effects.push((actor_id, effect, now));
     }
 
+    /// `attacker_id` shoots `flying` at `target_id`; `from_player` and
+    /// `to_player` say which of them is the player.
+    pub fn add_arrow(
+        &mut self,
+        attacker_id: u32,
+        target_id: u32,
+        from_player: bool,
+        to_player: bool,
+        flying: crate::magic::FlyingObject,
+        now: f32,
+    ) {
+        self.arrows.push(Arrow { attacker_id, target_id, to_cell: None, from_player, to_player, flying, started: now });
+    }
+
+    /// `attacker_id` shoots `flying` at the cell `to`.
+    pub fn add_arrow_to(&mut self, attacker_id: u32, from_player: bool, to: [f32; 2], flying: crate::magic::FlyingObject, now: f32) {
+        self.arrows.push(Arrow {
+            attacker_id,
+            target_id: 0,
+            to_cell: Some(to),
+            from_player,
+            to_player: false,
+            flying,
+            started: now,
+        });
+    }
+
+    /// The arrow model `flying` at screen point `origin`, pointing along
+    /// the screen direction `direction`.
+    #[allow(clippy::too_many_arguments)]
+    fn push_flying_object(
+        &mut self,
+        assets: &mut Assets,
+        flying: &crate::magic::FlyingObject,
+        origin: [f32; 2],
+        direction: [f32; 2],
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        if !self.flying_models.contains_key(&flying.mesh) {
+            let model = assets
+                .read(&flying.mesh)
+                .ok()
+                .and_then(|bytes| C3Document::parse(&bytes).ok())
+                .map(std::rc::Rc::new);
+            self.flying_models.insert(flying.mesh.clone(), model);
+        }
+        let Some(model) = self.flying_models.get(&flying.mesh).cloned().flatten() else {
+            return;
+        };
+        self.texture(assets, &flying.texture);
+        if !self.textures.contains_key(&flying.texture) {
+            return;
+        }
+        let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
+        let scale = self.effect_scale * ARROW_SCALE;
+        // The ground direction that the screen direction shows: the world
+        // is seen from 45 degrees, so its depth is shortened by sin(45).
+        let ground = [direction[0], -direction[1] / cos];
+        // The model's tip points along -y; turn it about the vertical.
+        let turn = ground[1].atan2(ground[0]) - (-1.0_f32).atan2(0.0);
+        let (turn_sin, turn_cos) = turn.sin_cos();
+        for (mesh_index, mesh) in model.meshes.iter().enumerate() {
+            let Some(motion) = model.motions.get(mesh_index).or_else(|| model.motions.first()) else {
+                continue;
+            };
+            let vertices: Vec<Vertex> = mesh
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    let p = mesh.transformed_vertex_position(vertex, motion, Matrix4::IDENTITY, 0.0);
+                    let (x, y) = (p.x * turn_cos - p.y * turn_sin, p.x * turn_sin + p.y * turn_cos);
+                    let screen_y = (y * sin + p.z * cos) * scale;
+                    let depth = (y * cos - p.z * sin) * scale;
+                    Vertex {
+                        position: clip(
+                            [origin[0] + x * scale, origin[1] + screen_y],
+                            (0.5 + depth * 0.0005).clamp(0.001, 0.999),
+                            viewport,
+                        ),
+                        uv: [vertex.texture_coordinate.x, vertex.texture_coordinate.y],
+                        alpha: 1.0,
+                    }
+                })
+                .collect();
+            draws.push(Draw {
+                texture: flying.texture.clone(),
+                vertices: mesh
+                    .opaque_indices
+                    .iter()
+                    .chain(&mesh.alpha_indices)
+                    .filter_map(|index| vertices.get(*index as usize).copied())
+                    .collect(),
+                depth_test: false,
+                sort_depth,
+            });
+        }
+    }
+
     /// A soul leaves the monster slain at `from` for `killer_id`.
     pub fn add_soul(&mut self, from: [f32; 2], killer_id: u32, now: f32) {
         self.souls.push(Soul { from, killer_id, started: now });
@@ -2287,6 +2418,11 @@ impl Renderer {
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
         prompt: Option<crate::shop::PromptDialog>,
+        sell_all: Option<(
+            &crate::sell_all::SellAllView,
+            &[crate::network::OwnedItem],
+            Option<crate::sell_all::SellAllAction>,
+        )>,
         hovered_player: Option<u32>,
         item_action_panel: Option<crate::shop::ItemActionPanel>,
         action_animation_progress: Option<f32>,
@@ -2659,7 +2795,16 @@ impl Renderer {
             } else {
                 Action::Idle
             };
-            let action_progress = if held && time >= actor.animation_until {
+            // In a jump: how far along. The jump plays to its landing, even
+            // when a blow is struck in the air.
+            let jump_progress = (actor.jumping
+                && actor.movement_until > actor.movement_started
+                && time < actor.movement_until)
+                .then(|| ((time - actor.movement_started) / (actor.movement_until - actor.movement_started)).clamp(0.0, 1.0));
+            let action = if jump_progress.is_some() && action == Action::Idle { Action::Jump } else { action };
+            let action_progress = if action == Action::Jump && actor.action != 130 {
+                jump_progress
+            } else if held && time >= actor.animation_until {
                 Some(1.0)
             } else {
                 (action != Action::Idle && time < actor.animation_until).then(|| {
@@ -2869,13 +3014,8 @@ impl Renderer {
                         if let Some(vertices) = remote_pose_cache.get(&key) {
                             Arc::clone(vertices)
                         } else {
-                            let vertices = Arc::new(remote_character.vertices(
-                                part,
-                                time,
-                                action,
-                                facing,
-                                action_progress,
-                            ));
+                            let vertices =
+                                Arc::new(remote_character.vertices(part, time, action, facing, action_progress));
                             remote_pose_cache.insert(key, Arc::clone(&vertices));
                             vertices
                         }
@@ -3095,7 +3235,14 @@ impl Renderer {
             }
             for (name, actor) in [
                 (magic.intone_effect.as_deref(), effect.attacker_id),
-                (magic.target_effect.as_deref().filter(|_| effect.target_id != 0), effect.target_id),
+                // The bow skills show their arrows, not the table's blast.
+                (
+                    magic
+                        .target_effect
+                        .as_deref()
+                        .filter(|_| effect.target_id != 0 && !crate::action_bar::is_bow_skill(effect.skill_id)),
+                    effect.target_id,
+                ),
             ] {
                 let Some(name) = name else {
                     continue;
@@ -3160,6 +3307,52 @@ impl Renderer {
                 self.push_looping_effect(assets, "soul", origin, elapsed, depth, viewport, &mut draws);
             }
         }
+        // Arrows from the bows to their targets, with the effect some bows
+        // give them.
+        let arrows = std::mem::take(&mut self.arrows);
+        let mut flying = Vec::with_capacity(arrows.len());
+        for arrow in arrows {
+            let place = |player_side: bool, id: u32| {
+                if player_side {
+                    Some(player.position)
+                } else {
+                    remote_actors.get(&id).map(|actor| actor.position)
+                }
+            };
+            let to = arrow.to_cell.or_else(|| place(arrow.to_player, arrow.target_id));
+            let (Some(from), Some(to)) = (place(arrow.from_player, arrow.attacker_id), to) else {
+                continue;
+            };
+            let elapsed = time - arrow.started - ARROW_RELEASE_SECONDS;
+            let cells = (to[0] - from[0]).hypot(to[1] - from[1]);
+            let duration = (cells / ARROW_CELLS_PER_SECOND).clamp(0.08, 0.9);
+            if elapsed >= duration {
+                continue;
+            }
+            flying.push(arrow.clone());
+            if elapsed < 0.0 {
+                continue;
+            }
+            let t = elapsed / duration;
+            let start = map.project(from);
+            let end = map.project(to);
+            let start = [start[0], start[1] - ARROW_FROM_LIFT];
+            let end = [end[0], end[1] - ARROW_TO_LIFT];
+            let origin = [
+                start[0] + (end[0] - start[0]) * t - camera[0],
+                start[1] + (end[1] - start[1]) * t - camera[1],
+            ];
+            if !world_point_visible(origin, viewport, 128.0) {
+                continue;
+            }
+            let depth = from[0] + from[1] + (to[0] + to[1] - from[0] - from[1]) * t + 0.09;
+            let direction = [end[0] - start[0], end[1] - start[1]];
+            self.push_flying_object(assets, &arrow.flying, origin, direction, depth, viewport, &mut draws);
+            if let Some(effect) = &arrow.flying.effect {
+                self.push_looping_effect(assets, effect, origin, elapsed, depth, viewport, &mut draws);
+            }
+        }
+        self.arrows = flying;
         // Map portals glow with the original client's `Exit` effect
         // (3DEffect.ini), which it draws on each DMap portal itself. It
         // sits under whoever stands on the portal.
@@ -4254,6 +4447,7 @@ impl Renderer {
             shop.page.hash(&mut hasher);
             shop.selected.hash(&mut hasher);
             shop.repair_hover.hash(&mut hasher);
+            shop.sell_all_hover.hash(&mut hasher);
             shop.scroll_hover.hash(&mut hasher);
             let signature = hasher.finish();
             let base_key = "@original-shop-base".to_owned();
@@ -4721,6 +4915,20 @@ impl Renderer {
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(menu.position.map(|value| value as f32), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some((view, inventory, hovered)) = sell_all {
+            let key = format!("@sell-all-{}", view.signature(inventory, hovered, true));
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, view.image(assets, inventory, hovered, true)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(view.position.map(|value| value as f32), texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
@@ -5340,7 +5548,8 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 16] = [
+const TRANSIENT_PREFIXES: [&str; 17] = [
+    "@sell-all-",
     "@speech-",
     "@whisper-",
     "@actor-label-",
@@ -5579,7 +5788,10 @@ fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Te
 /// How high a remote actor's jump (action 130) lifts them now, along the
 /// local player's arc.
 fn remote_jump_lift(actor: &RemoteActor, time: f32) -> f32 {
-    if actor.action != 130 || actor.movement_until <= actor.movement_started || time >= actor.movement_until {
+    if !(actor.action == 130 || actor.jumping)
+        || actor.movement_until <= actor.movement_started
+        || time >= actor.movement_until
+    {
         return 0.0;
     }
     let progress = (time - actor.movement_started) / (actor.movement_until - actor.movement_started);

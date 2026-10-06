@@ -19,7 +19,12 @@ pub const OUTFITS: [[u32; 4]; 4] = [
     // Taoist: robe, cap and a backsword.
     [134_100, 114_100, 421_100, 0],
 ];
-const HAIR: u16 = 310;
+/// The hair the heroes wear until the player picks one: style 10 in
+/// colour 3.
+pub const HAIR: u16 = 310;
+/// A new character's look on the creation screen: body (index into
+/// `launcher::BODIES`), coat dye (index into `DYES`) and hair value.
+pub type LookKey = (usize, usize, u16);
 
 /// The coat every new character is given (any profession, level 1).
 pub const STARTER_COAT: u32 = 132_003;
@@ -33,6 +38,13 @@ pub enum Loaded {
     /// A body in the starter coat with dye `DYES[dye]`, and that coat's
     /// colour for its swatch.
     Coat { body: usize, dye: usize, hero: Hero, colour: [u8; 3] },
+    /// Face portraits by face number, `launcher::FACE_SIZE` square.
+    Faces(Vec<(u16, RgbaImage)>),
+    /// The swatch of each of `launcher::HAIR_COLOURS` for a body.
+    HairColours { body: usize, colours: Vec<[u8; 3]> },
+    /// A body in the starter coat with another hair, asked for by the
+    /// creation screen.
+    Look { key: LookKey, hero: Hero },
 }
 
 /// A model ready to draw: the character and the textures of its parts.
@@ -67,8 +79,13 @@ impl Hero {
     /// `body` in the starter coat dyed `dye`, with nothing else worn: what
     /// a new character looks like.
     pub fn load_coat(assets: &mut Assets, body: u32, dye: u8) -> Option<Self> {
+        Self::load_look(assets, body, dye, HAIR)
+    }
+
+    /// `body` in the starter coat dyed `dye`, with hair `hair`.
+    pub fn load_look(assets: &mut Assets, body: u32, dye: u8, hair: u16) -> Option<Self> {
         let armor = crate::character::dyed(STARTER_COAT, dye);
-        let character = Character::load_remote(assets, body, armor, 0, HAIR, 0, 0, String::new(), 1).ok()?;
+        let character = Character::load_remote(assets, body, armor, 0, hair, 0, 0, String::new(), 1).ok()?;
         let textures = character
             .parts
             .iter()
@@ -224,10 +241,80 @@ fn rasterise(
     }
 }
 
-/// Loads every profession's hero for every body on a thread, then every
-/// body in the starter coat in each dye; each arrives as it is ready.
-pub fn start(root: std::path::PathBuf) -> std::sync::mpsc::Receiver<Loaded> {
+/// The face portraits the creation screen offers, both sexes.
+fn faces(assets: &mut Assets) -> Vec<(u16, RgbaImage)> {
+    let size = crate::launcher::FACE_SIZE;
+    crate::launcher::MALE_FACES
+        .chain(crate::launcher::FEMALE_FACES)
+        .filter_map(|face| {
+            let image = assets
+                .image(&format!("data/PlayerFace/JPG/64/{face}.jpg"))
+                .ok()
+                .map(|image| image::imageops::resize(&image, size, size, image::imageops::FilterType::Triangle))
+                .or_else(|| crate::renderer::player_face(assets, u32::from(face) * 10_000 + 1003, size))?;
+            Some((face, image))
+        })
+        .collect()
+}
+
+/// The colour of each of `launcher::HAIR_COLOURS` on `body` (1..=4): the
+/// average of the opaque, not too dark texels of the hair's texture
+/// (`ini/armet.ini` entry `<body>119<colour>10`).
+fn hair_colours(assets: &mut Assets, body: u32) -> Vec<[u8; 3]> {
+    let catalogs = assets.read("ini/armet.ini").ok().zip(assets.read("ini/3dtexture.ini").ok());
+    let Some((armet, textures)) = catalogs else {
+        return vec![[128, 128, 128]; crate::launcher::HAIR_COLOURS.len()];
+    };
+    let armet = sandbox_data::ini::SectionCatalog::parse(&armet);
+    let textures = sandbox_data::ini::IdPathCatalog::parse(&textures);
+    crate::launcher::HAIR_COLOURS
+        .iter()
+        .map(|&colour| {
+            let key = body * 1_000_000 + 119_000 + u32::from(colour) * 100 + 10;
+            armet
+                .section(&key.to_string())
+                .and_then(|entry| entry.first("Texture0")?.parse::<u32>().ok())
+                .and_then(|texture| textures.get(texture).cloned())
+                .and_then(|path| assets.image(path.as_str()).ok())
+                .and_then(|image| {
+                    let mut sum = [0.0f32; 3];
+                    let mut count = 0.0;
+                    for pixel in image.pixels() {
+                        let light = u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]);
+                        if pixel[3] < 128 || light < 36 {
+                            continue;
+                        }
+                        sum = [0, 1, 2].map(|c| sum[c] + f32::from(pixel[c]));
+                        count += 1.0;
+                    }
+                    (count > 0.0).then(|| sum.map(|channel| (channel / count) as u8))
+                })
+                .unwrap_or([128, 128, 128])
+        })
+        .collect()
+}
+
+/// Loads the look the creation screen asked for and hands it over;
+/// `false` once the screen is gone.
+fn send_look(assets: &mut Assets, bodies: &[u32; 4], sender: &std::sync::mpsc::Sender<Loaded>, key: LookKey) -> bool {
+    let (body, dye, hair) = key;
+    let (Some(&model), Some(&dye_value)) = (bodies.get(body), DYES.get(dye)) else {
+        return true;
+    };
+    match Hero::load_look(assets, model, dye_value, hair) {
+        Some(hero) => sender.send(Loaded::Look { key, hero }).is_ok(),
+        None => true,
+    }
+}
+
+/// Loads the face portraits, the hair colours, every profession's hero
+/// for every body, then every body in the starter coat in each dye, on a
+/// thread; each arrives as it is ready. Looks with another hair are
+/// loaded when the returned sender asks for them (the latest request
+/// first, even while the rest is still loading).
+pub fn start(root: std::path::PathBuf) -> (std::sync::mpsc::Receiver<Loaded>, std::sync::mpsc::Sender<LookKey>) {
     let (sender, receiver) = std::sync::mpsc::channel();
+    let (look_sender, looks) = std::sync::mpsc::channel::<LookKey>();
     std::thread::spawn(move || {
         let Ok(mut assets) = Assets::open(&root) else {
             return;
@@ -235,8 +322,29 @@ pub fn start(root: std::path::PathBuf) -> std::sync::mpsc::Receiver<Loaded> {
         // Bodies 1003/1004 are the male models 3 and 4, 2001/2002 the
         // female 1 and 2.
         let bodies = crate::launcher::BODIES.map(|(_, mesh)| u32::from(mesh % 10));
+        // Only the latest request matters: the screen has moved on from
+        // the others.
+        macro_rules! serve_looks {
+            () => {
+                if let Some(key) = looks.try_iter().last()
+                    && !send_look(&mut assets, &bodies, &sender, key)
+                {
+                    return;
+                }
+            };
+        }
+        if sender.send(Loaded::Faces(faces(&mut assets))).is_err() {
+            return;
+        }
+        for (body_index, body) in bodies.into_iter().enumerate() {
+            let colours = hair_colours(&mut assets, body);
+            if sender.send(Loaded::HairColours { body: body_index, colours }).is_err() {
+                return;
+            }
+        }
         for (body_index, body) in bodies.into_iter().enumerate() {
             for class in 0..crate::launcher::CLASSES.len() {
+                serve_looks!();
                 if let Some(hero) = Hero::load(&mut assets, body, class)
                     && sender.send(Loaded::Hero { body: body_index, class, hero }).is_err()
                 {
@@ -245,6 +353,7 @@ pub fn start(root: std::path::PathBuf) -> std::sync::mpsc::Receiver<Loaded> {
             }
         }
         for (body_index, body) in bodies.into_iter().enumerate() {
+            serve_looks!();
             let coats: Vec<Option<Hero>> = DYES.iter().map(|&dye| Hero::load_coat(&mut assets, body, dye)).collect();
             // The coat is the part whose texture changes with the dye.
             let coat_part = coats[0].as_ref().zip(coats[1].as_ref()).and_then(|(plain, dyed)| {
@@ -272,6 +381,13 @@ pub fn start(root: std::path::PathBuf) -> std::sync::mpsc::Receiver<Loaded> {
                 }
             }
         }
+        // Then wait for the screen's requests until it closes.
+        while let Ok(key) = looks.recv() {
+            let key = looks.try_iter().last().unwrap_or(key);
+            if !send_look(&mut assets, &bodies, &sender, key) {
+                return;
+            }
+        }
     });
-    receiver
+    (receiver, look_sender)
 }

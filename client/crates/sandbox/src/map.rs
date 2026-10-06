@@ -21,6 +21,9 @@ impl Map {
         // Says whether our content reached the client, where a missing
         // build would otherwise go unnoticed.
         match assets.overlay_path() {
+            None if assets.is_packed() => {
+                eprintln!("map {id}: {} Gravak objects (packed)", map.gravak_objects)
+            }
             Some(overlay) => eprintln!(
                 "map {id}: {} Gravak objects (content {})",
                 map.gravak_objects,

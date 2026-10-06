@@ -114,6 +114,12 @@ pub struct RegisterCharacter {
     pub token: u32,
     /// Gravak: the dye (3..=9) of the starter coat; 0 leaves it plain.
     pub coat_dye: u32,
+    /// Gravak: the face picked (1..=102 male, 201..=290 female); 0 lets
+    /// the server draw one.
+    pub avatar: u16,
+    /// Gravak: the hair picked, colour (3..=9) * 100 + style; 0 lets the
+    /// server draw one.
+    pub hair: u16,
 }
 
 impl RegisterCharacter {
@@ -138,7 +144,16 @@ impl RegisterCharacter {
             class,
             token,
             coat_dye: 0,
+            avatar: 0,
+            hair: 0,
         }
+    }
+
+    /// The face and hair picked on the creation screen.
+    pub fn with_appearance(mut self, avatar: u16, hair: u16) -> Self {
+        self.avatar = avatar;
+        self.hair = hair;
+        self
     }
 
     /// The starter coat in Tinter dye `dye` (3..=9).
@@ -2292,7 +2307,7 @@ mod tests {
             .encode()
             .expect("register packet should encode");
         assert_eq!(register.0, MSG_REGISTER);
-        assert_eq!(register.1.len(), 60);
+        assert_eq!(register.1.len(), 64);
         assert_eq!(&register.1[52..56], &42_u32.to_le_bytes());
         // Gravak's starter coat dye follows the classic fields.
         let dyed = RegisterCharacter::new("test1", "Gravak", 42)
@@ -2300,6 +2315,13 @@ mod tests {
             .encode()
             .expect("register packet should encode");
         assert_eq!(&dyed.1[56..60], &5_u32.to_le_bytes());
+        // Then the face and the hair picked.
+        let look = RegisterCharacter::new("test1", "Gravak", 42)
+            .with_appearance(205, 742)
+            .encode()
+            .expect("register packet should encode");
+        assert_eq!(&look.1[60..62], &205_u16.to_le_bytes());
+        assert_eq!(&look.1[62..64], &742_u16.to_le_bytes());
 
         let action = ActionPacket::send_location(1000001)
             .encode()

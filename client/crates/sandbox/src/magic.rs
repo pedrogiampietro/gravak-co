@@ -321,6 +321,54 @@ pub fn status_effects(assets: &mut Assets) -> &'static [(u64, String)] {
     STATUS.get_or_init(|| status)
 }
 
+/// What flies when a bow shoots (`ini/3DFlyingObj.ini`): the arrow's model
+/// and texture (through `3DSimpleObj.ini`, `3dobj.ini`, `3dtexture.ini`)
+/// and the effect some bows give it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlyingObject {
+    pub mesh: String,
+    pub texture: String,
+    pub effect: Option<String>,
+}
+
+/// The arrow `bow` shoots with arrows `arrow`: their own entry
+/// (`[<bow>.<arrow>]`, the super bows with an effect), else any bow's
+/// (`[999999.<arrow>]`), else the plain arrow's.
+pub fn flying_object(assets: &mut Assets, bow: u32, arrow: u32) -> Option<FlyingObject> {
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<(u32, u32), Option<FlyingObject>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(found) = cache.lock().ok()?.get(&(bow, arrow)) {
+        return found.clone();
+    }
+    let found = (|| {
+        let flying = sandbox_data::ini::SectionCatalog::parse(&assets.read("ini/3DFlyingObj.ini").ok()?);
+        let section = [format!("{bow}.{arrow}"), format!("999999.{arrow}"), "999999.1050000".to_owned()]
+            .into_iter()
+            .find_map(|name| flying.section(&name))?;
+        let object = section.first("SimpleObjID")?.trim().to_owned();
+        let effect = section
+            .first("EffectIndex")
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+            .map(str::to_owned);
+        let simple = sandbox_data::ini::SectionCatalog::parse(&assets.read("ini/3DSimpleObj.ini").ok()?);
+        let simple = simple.section(&format!("ObjIDType{object}"))?;
+        let mesh = simple.first("Part0")?.trim().parse::<u32>().ok()?;
+        let texture = simple.first("Texture0")?.trim().parse::<u32>().ok()?;
+        let models = sandbox_data::ini::IdPathCatalog::parse(&assets.read("ini/3dobj.ini").ok()?);
+        let textures = sandbox_data::ini::IdPathCatalog::parse(&assets.read("ini/3dtexture.ini").ok()?);
+        Some(FlyingObject {
+            mesh: models.get(mesh)?.as_str().to_owned(),
+            texture: textures.get(texture)?.as_str().to_owned(),
+            effect,
+        })
+    })();
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert((bow, arrow), found.clone());
+    }
+    found
+}
+
 pub fn effect(assets: &mut Assets, name: &str) -> Option<EffectDefinition> {
     let tables = tables(assets);
     let section = tables.effects.get(&name.to_ascii_lowercase())?;

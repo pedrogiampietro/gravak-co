@@ -120,7 +120,7 @@ fn pager_button(index: usize) -> UiRect {
 }
 
 /// A tab or chip: a small rounded plate, gold when chosen.
-fn chip(image: &mut RgbaImage, ui: &Font, rect: UiRect, label: &str, chosen: bool, size: f32) {
+pub(crate) fn chip(image: &mut RgbaImage, ui: &Font, rect: UiRect, label: &str, chosen: bool, size: f32) {
     let shape = rounded(rect, 5.0);
     if chosen {
         glow_in(image, rect, &shape, 5.0, paint::hex(0xffd36b), 0.3);

@@ -8,13 +8,16 @@
     dist\Gravak\
         Gravak.exe        the client, with the C runtime linked in
         gravak.ini        game data folder and server
-        game\             the game data the client reads (ani, c3, data, ini,
-                          map, sound, c3.wdf, data.wdf)
+        game\gravak.gpk   all the game data, compressed and encrypted (ani,
+                          c3, data, ini, map, sound, the entries of c3.wdf
+                          and data.wdf, and our content\build)
         licenses\         LICENSE and NOTICE (Apache 2.0)
 
-    Only the data folders are copied from the 5065 installation; its
-    executables and libraries are not needed. Run again after a change:
-    robocopy only copies what differs.
+    Players get no loose game files: the client is built with the
+    packed-only feature and reads nothing but game\gravak.gpk, whose
+    entries it refuses when a byte was changed. The pack key lives in
+    client\installer\pack.key (made on the first run, never committed);
+    keep it to make packs for clients already handed out.
 
 .EXAMPLE
     .\tools\package-client.ps1
@@ -39,21 +42,43 @@ if (-not (Test-Path (Join-Path $Assets "ini\GameMap.dat"))) {
     throw "No 5065 installation at '$Assets' (ini\GameMap.dat is missing). Pass -Assets <folder>."
 }
 
-# 1. Build. Its own target folder keeps the static C runtime build from
+# 1. The pack key, compiled into both the client and gravak-pack.
+$keyFile = Join-Path $client "installer\pack.key"
+if (-not (Test-Path $keyFile)) {
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    ($bytes | ForEach-Object { $_.ToString("x2") }) -join "" | Set-Content -NoNewline -Encoding ascii $keyFile
+    Write-Host "New pack key: $keyFile (keep it, never commit it)" -ForegroundColor Yellow
+}
+$packKey = (Get-Content -Raw $keyFile).Trim()
+if ($packKey -notmatch '^[0-9a-fA-F]{64}$') { throw "$keyFile must hold 64 hexadecimal digits" }
+
+# 2. Our content (items, icons, map objects) built over the installation.
+$projectRoot = Split-Path -Parent $client
+$contentBuild = Join-Path $projectRoot "content\build\client"
+& (Join-Path $projectRoot "build-content.ps1") -Assets $Assets
+if (-not (Test-Path (Join-Path $contentBuild ".gravak-build"))) {
+    throw "content\ could not be built; see the error above"
+}
+
+# 3. Build. Its own target folder keeps the static C runtime build from
 #    rebuilding the everyday one, and the other way round.
 Write-Host "Building the client (release)..." -ForegroundColor Cyan
 $env:RUSTFLAGS = "-C target-feature=+crt-static"
 $env:CARGO_TARGET_DIR = Join-Path $client "target\dist"
+$env:GRAVAK_PACK_KEY = $packKey
 Push-Location $client
 try {
-    cargo build --release -p conquer-sandbox
+    cargo build --release -p conquer-sandbox --features packed-only
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    cargo build --release -p gravak-content --bin gravak-pack
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed (gravak-pack)" }
 } finally {
     Pop-Location
-    Remove-Item Env:RUSTFLAGS, Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:RUSTFLAGS, Env:CARGO_TARGET_DIR, Env:GRAVAK_PACK_KEY -ErrorAction SilentlyContinue
 }
 
-# 2. The executable, its configuration and the licenses.
+# 4. The executable, its configuration and the licenses.
 New-Item -ItemType Directory -Force $package, (Join-Path $package "licenses") | Out-Null
 Copy-Item (Join-Path $client "target\dist\release\conquer-sandbox.exe") (Join-Path $package "Gravak.exe") -Force
 @"
@@ -67,21 +92,19 @@ Realm=$Realm
 "@ | Set-Content -Encoding utf8 (Join-Path $package "gravak.ini")
 Copy-Item (Join-Path $client "LICENSE"), (Join-Path $client "NOTICE") (Join-Path $package "licenses") -Force
 
-# 3. The game data: the folders and archives the client reads.
-Write-Host "Copying the game data from $Assets..." -ForegroundColor Cyan
+# 5. The game data: one encrypted pack. The game folder is made afresh,
+#    so no loose file from an older package is left beside it.
+Write-Host "Packing the game data from $Assets..." -ForegroundColor Cyan
 $game = Join-Path $package "game"
-foreach ($folder in "ani", "c3", "data", "ini", "map", "sound") {
-    robocopy (Join-Path $Assets $folder) (Join-Path $game $folder) /MIR /NJH /NJS /NFL /NDL /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "robocopy failed for $folder" }
-}
-robocopy $Assets $game "c3.wdf" "data.wdf" /NJH /NJS /NFL /NDL /NP | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "robocopy failed for the .wdf archives" }
-$global:LASTEXITCODE = 0
+if (Test-Path $game) { Remove-Item -Recurse -Force $game }
+New-Item -ItemType Directory -Force $game | Out-Null
+& (Join-Path $client "target\dist\release\gravak-pack.exe") --assets $Assets --content $contentBuild --out (Join-Path $game "gravak.gpk")
+if ($LASTEXITCODE -ne 0) { throw "gravak-pack failed" }
 
 $size = (Get-ChildItem $package -Recurse -File | Measure-Object Length -Sum).Sum / 1GB
 Write-Host ("dist\Gravak ready: {0:N2} GB" -f $size) -ForegroundColor Green
 
-# 4. The installer.
+# 6. The installer.
 if ($NoInstaller) { return }
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",

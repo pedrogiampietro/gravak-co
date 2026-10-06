@@ -21,6 +21,29 @@ pub struct MsgRegister {
     /// Gravak: the Tinter dye (3..=9) of the starter coat; anything else
     /// leaves it plain.
     pub coat_dye: u32,
+    /// Gravak: the face picked on the creation screen (`MALE_AVATARS` or
+    /// `FEMALE_AVATARS` by body); 0 or any other draws one at random.
+    pub avatar: u16,
+    /// Gravak: the hair picked, colour (3..=9) * 100 + style
+    /// (`ALL_HAIR_STYLES`); 0 or any other draws one at random.
+    pub hair: u16,
+}
+
+/// `avatar` when the creation screen may offer it for `mesh`.
+pub fn chosen_avatar(mesh: BodyType, avatar: u16) -> Option<u16> {
+    let faces = if u16::from(mesh) < 2000 {
+        crate::constants::MALE_AVATARS
+    } else {
+        crate::constants::FEMALE_AVATARS
+    };
+    faces.contains(&avatar).then_some(avatar)
+}
+
+/// `hair` when it is one of the game's hair styles in one of its colours.
+pub fn chosen_hair(hair: u16) -> Option<u16> {
+    (crate::constants::HAIR_COLOURS.contains(&(hair / 100))
+        && crate::constants::ALL_HAIR_STYLES.contains(&(hair % 100)))
+    .then_some(hair)
 }
 
 /// Every new character starts in the plain coat (any profession, any body,
@@ -63,13 +86,23 @@ pub async fn give_starter_coat(
 
 impl MsgRegister {
     pub fn build_character(&self, account_id: u32, realm_id: u32) -> Result<tq_db::character::Character, Error> {
-        Self::build_character_with(
+        let mesh = BodyType::try_from(self.mesh).map_err(|_| Error::InvalidBodyType)?;
+        let mut character = Self::build_character_with(
             self.character_name.to_string(),
-            BodyType::try_from(self.mesh).map_err(|_| Error::InvalidBodyType)?,
+            mesh,
             BaseClass::try_from(self.class).map_err(|_| Error::InvalidClass)?,
             account_id,
             realm_id,
-        )
+        )?;
+        // The face and hair picked on the creation screen replace the
+        // ones drawn at random.
+        if let Some(avatar) = chosen_avatar(mesh, self.avatar) {
+            character.avatar = avatar as i16;
+        }
+        if let Some(hair) = chosen_hair(self.hair) {
+            character.hair_style = hair as i16;
+        }
+        Ok(character)
     }
 
     pub fn build_character_with(
@@ -269,6 +302,42 @@ mod tests {
             );
             assert_eq!(character.health_points, health as i16);
         }
+    }
+
+    #[test]
+    fn new_characters_keep_the_face_and_hair_they_picked() {
+        let picked = MsgRegister {
+            character_name: "Hero".to_owned().into(),
+            mesh: BodyType::AgileFemale.into(),
+            class: BaseClass::Archer.into(),
+            avatar: 205,
+            hair: 742,
+            ..Default::default()
+        }
+        .build_character(1, 1)
+        .unwrap();
+        assert_eq!((picked.avatar, picked.hair_style), (205, 742));
+
+        // A male face on a female body, or an unknown hair, is drawn at
+        // random as before.
+        let drawn = MsgRegister {
+            character_name: "Hero".to_owned().into(),
+            mesh: BodyType::AgileFemale.into(),
+            class: BaseClass::Archer.into(),
+            avatar: 5,
+            hair: 1210,
+            ..Default::default()
+        }
+        .build_character(1, 1)
+        .unwrap();
+        assert!((201..249).contains(&drawn.avatar));
+        assert!((3..9).contains(&(drawn.hair_style / 100)));
+
+        assert_eq!(chosen_avatar(BodyType::MuscularMale, 102), Some(102));
+        assert_eq!(chosen_avatar(BodyType::MuscularMale, 201), None);
+        assert_eq!(chosen_hair(951), Some(951));
+        assert_eq!(chosen_hair(318), None);
+        assert_eq!(chosen_hair(0), None);
     }
 
     #[test]

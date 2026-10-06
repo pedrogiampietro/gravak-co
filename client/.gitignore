@@ -16,3 +16,7 @@
 
 # Output of the login-art probe test
 login-art-probe/
+
+# The key of the encrypted game pack (tools/package-client.ps1)
+/installer/pack.key
+*.gpk

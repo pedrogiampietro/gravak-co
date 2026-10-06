@@ -1,6 +1,7 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 use sandbox_data::{
     VirtualPath,
+    pack::{self, PackReader},
     wdf::{WdfDirectory, WdfHeader, path_id},
 };
 use std::{
@@ -19,6 +20,10 @@ pub struct Assets {
     overlay: Option<PathBuf>,
     archives: Vec<(File, WdfDirectory)>,
     resolved: HashMap<String, PathBuf>,
+    /// The encrypted pack (`gravak.gpk`) of an installed game. When the
+    /// game folder has one, every file comes from it and loose files are
+    /// never read, so a file dropped beside it changes nothing.
+    pack: Option<PackReader>,
 }
 
 #[cfg(test)]
@@ -184,6 +189,28 @@ impl Assets {
         if !root.is_dir() {
             return Err("--assets must name an installation directory".into());
         }
+        let pack_path = root.join(pack::FILE_NAME);
+        if pack_path.is_file() {
+            let pack = PackReader::open(&pack_path, &pack::master_key()).map_err(|error| {
+                format!("Game data {} cannot be read: {error}", pack_path.display())
+            })?;
+            return Ok(Self {
+                root,
+                overlay: None,
+                archives: Vec::new(),
+                resolved: HashMap::new(),
+                pack: Some(pack),
+            });
+        }
+        // The players' build reads nothing but the pack.
+        if cfg!(feature = "packed-only") {
+            return Err(format!(
+                "Game data not found: {} has no {}. Install Gravak again.",
+                root.display(),
+                pack::FILE_NAME
+            )
+            .into());
+        }
         let overlay = std::env::var_os("GRAVAK_CONTENT")
             .map(PathBuf::from)
             .filter(|path| path.is_dir())
@@ -193,6 +220,7 @@ impl Assets {
             overlay,
             archives: Vec::new(),
             resolved: HashMap::new(),
+            pack: None,
         };
         for name in ["data.wdf", "c3.wdf"] {
             if let Some(path) = assets.loose(name)? {
@@ -218,6 +246,10 @@ impl Assets {
     pub fn root_path(&self) -> &Path {
         &self.root
     }
+    /// Whether the game data comes from the encrypted pack.
+    pub fn is_packed(&self) -> bool {
+        self.pack.is_some()
+    }
     /// The built content read before the installation, when there is one.
     pub fn overlay_path(&self) -> Option<&Path> {
         self.overlay.as_deref()
@@ -242,6 +274,18 @@ impl Assets {
     }
     pub fn read(&mut self, name: &str) -> Result<Vec<u8>> {
         let virtual_path = VirtualPath::try_from(name)?;
+        if let Some(pack) = &mut self.pack {
+            // A name first, then the id of the original archives, the
+            // same order as loose files before data.wdf/c3.wdf below.
+            let ordinal = match pack.find_name(virtual_path.as_str()) {
+                Some(ordinal) => Some(ordinal),
+                None => pack.find_id(path_id(&virtual_path)?),
+            };
+            let Some(ordinal) = ordinal else {
+                return Err(format!("Missing installed asset: {name}").into());
+            };
+            return Ok(pack.read(ordinal)?);
+        }
         if let Some(path) = self.loose(name)? {
             let file = File::open(path)?;
             if file.metadata()?.len() > 128 * 1024 * 1024 {

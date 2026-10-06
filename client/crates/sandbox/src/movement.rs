@@ -159,6 +159,10 @@ impl Player {
         });
         Some(target.map(|v| v as i32))
     }
+    /// In the air: a blow or a hit then keeps the jump going.
+    pub fn jumping(&self) -> bool {
+        self.segment.as_ref().is_some_and(|segment| segment.jump)
+    }
     pub fn face(&mut self, target: [i32; 2]) {
         if !self.moving() {
             self.facing =

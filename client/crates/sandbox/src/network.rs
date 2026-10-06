@@ -435,6 +435,9 @@ pub struct RemoteActor {
     pub booth: Option<String>,
     /// KOs of their Cyclone or Superman, shown over their head.
     pub ko_count: u32,
+    /// The current movement is a jump: they stay in the air until it
+    /// lands, even when they shoot or are hit on the way.
+    pub jumping: bool,
 }
 
 pub(crate) enum NetworkCommand {
@@ -2252,6 +2255,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         level: player.level.max(0) as u16,
         booth: None,
         ko_count: 0,
+        jumping: false,
     }
 }
 
@@ -2295,6 +2299,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         level: 0,
         booth: None,
         ko_count: 0,
+        jumping: false,
     }
 }
 

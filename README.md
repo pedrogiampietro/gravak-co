@@ -88,6 +88,28 @@ O modo online autentica em uma thread de rede separada, carrega o personagem e u
 
 Nos limites fixos, o pacing usa uma janela híbrida: aguarda até 2 ms antes do próximo frame e faz polling apenas no trecho final. Assim os caps altos mantêm precisão sem deixar o cliente em polling contínuo durante todo o intervalo.
 
+### Instalador e arquivos do jogo criptografados
+
+`package-client.bat` gera `client\dist\Gravak` e o instalador
+`client\dist\GravakSetup.exe`. O jogador não recebe arquivos soltos: tudo o
+que o cliente lê (ani, c3, data, ini, map, sound, as entradas de `data.wdf` e
+`c3.wdf` e o nosso `content\build`) vai num único `game\gravak.gpk`, cada
+arquivo comprimido e criptografado com ChaCha20-Poly1305. Se um byte for
+alterado, o cliente recusa o arquivo; arquivos soltos colocados na pasta são
+ignorados. O executável do instalador é compilado com a feature
+`packed-only` e só abre o pacote.
+
+A chave fica em `client\installer\pack.key`, criada na primeira execução e
+fora do Git. Guarde uma cópia: ela é compilada no `Gravak.exe` e no
+`gravak-pack`, e um pacote só abre num cliente com a mesma chave. No
+desenvolvimento nada muda: `run-client.bat` continua lendo `R:\5065` e
+`content\build` soltos.
+
+Para gerar só o pacote: `cargo run --release -p gravak-content --bin
+gravak-pack -- --assets R:\5065 --content ..\content\build\client --out
+<pasta>\gravak.gpk` (com `GRAVAK_PACK_KEY` definido como no
+`tools\package-client.ps1`; sem ele usa a chave de desenvolvimento).
+
 ## Servidor
 
 O servidor exige Rust nightly; a versão está fixada em `server\rust-toolchain.toml`. O banco é Postgres, num container Docker durante o desenvolvimento; o game server aplica as migrations ao iniciar, e o `run-server.bat` sobe o container sozinho:

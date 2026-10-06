@@ -5016,7 +5016,6 @@ impl Character {
     }
 
     pub fn combat_stats_with_catalog(&self, catalog: Option<&ShopCatalog>) -> CombatStats {
-        let level = self.entity.level().max(1) as u32;
         let strength = u32::from(self.strength());
         let agility = u32::from(self.agility());
         let vitality = u32::from(self.vitality());
@@ -5098,8 +5097,10 @@ impl Character {
         };
         let damage_reduction_percent = damage_reduction_percent.saturating_add(self.bless_reduction_percent());
         CombatStats {
-            min_attack: level + strength.saturating_mul(2) + agility / 2 + equipment.0,
-            max_attack: level.saturating_mul(2) + strength.saturating_mul(3) + agility + equipment.1,
+            // As in the original: a point of Strength is a point of
+            // attack, the rest is the gear's. Level and Agility add none.
+            min_attack: strength + equipment.0,
+            max_attack: strength + equipment.1,
             attack_flat,
             defense,
             penetration_percent,
