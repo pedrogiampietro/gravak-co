@@ -2604,7 +2604,7 @@ impl Renderer {
             {
                 continue;
             }
-            let held = matches!(actor.action, REMOTE_SIT | REMOTE_DEAD);
+            let held = remote_held(actor.action);
             let action = if time < actor.animation_until || held {
                 remote_action(actor.action)
             } else {
@@ -2691,7 +2691,7 @@ impl Renderer {
                 // Seconds since the respawn, while the effect plays.
                 let born = (actor.respawn_until > time)
                     .then(|| (MONSTER_BORN_SECONDS - (actor.respawn_until - time)).max(0.0));
-                let dynamic_kind = if actor.action == 160 && time < actor.animation_until {
+                let dynamic_kind = if actor.action == REMOTE_FADING && time < actor.animation_until {
                     Some(0)
                 } else if time < actor.animation_until {
                     Some(if matches!(actor.action, 110 | 111 | 120 | 121) {
@@ -3602,6 +3602,21 @@ impl Renderer {
             .feedback_signature
             .map(|signature| format!("@network-feedback-{signature}"));
         self.prune_textures("@network-feedback-", &[current_feedback.as_deref()]);
+        if skill_hud.action_panel_open {
+            let key = format!("@action-panel-{:?}", skill_hud.action_panel_hover);
+            if !self.textures.contains_key(&key) {
+                let image = crate::action_panel::image(assets, skill_hud.action_panel_hover)?;
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::action_panel::position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         if status_open {
             use std::hash::{Hash, Hasher};
             let status_equipment = crate::shop::status_equipment_items(
@@ -5185,35 +5200,32 @@ fn show_feedback(status: &str) -> bool {
             .any(|prefix| status.starts_with(prefix))
 }
 
-/// Remote action codes whose last frame is held: sitting (250) and a
-/// dead player (161, a client-side code for the 401 fall).
-pub(crate) const REMOTE_SIT: u8 = 250;
-pub(crate) const REMOTE_DEAD: u8 = 161;
+/// Client-side remote action codes: a dead player (the 401 fall, its last
+/// frame held) and a dead monster fading out. The rest are the server's
+/// ChangeAction codes; sitting, kneeling and lying hold their last frame.
+pub(crate) const REMOTE_DEAD: u16 = 1161;
+pub(crate) const REMOTE_FADING: u16 = 1160;
 
-fn remote_action(value: u8) -> Action {
+fn remote_action(value: u16) -> Action {
     match value {
-        REMOTE_SIT => Action::Sit,
         REMOTE_DEAD => Action::Die,
-        110 => Action::WalkLeft,
-        111 => Action::WalkRight,
-        120 => Action::RunLeft,
-        121 => Action::RunRight,
-        130 => Action::Jump,
-        140 => Action::Attack,
-        150 => Action::Hit,
-        220 => Action::Pickup,
-        _ => Action::Idle,
+        _ => Action::from_catalog_id(u32::from(value)).unwrap_or(Action::Idle),
     }
+}
+
+/// Whether a remote action's last frame stays once it has played.
+fn remote_held(value: u16) -> bool {
+    value == REMOTE_DEAD || remote_action(value).held()
 }
 
 fn should_hide_dead_monster(
     health: u16,
-    action: u8,
+    action: u16,
     animation_until: f32,
     respawn_until: f32,
     time: f32,
 ) -> bool {
-    health == 0 && action == 160 && time >= animation_until && time >= respawn_until
+    health == 0 && action == REMOTE_FADING && time >= animation_until && time >= respawn_until
 }
 
 fn clip(p: [f32; 2], z: f32, viewport: [f32; 2]) -> [f32; 3] {
@@ -5490,10 +5502,10 @@ mod tests {
 
     #[test]
     fn dead_monster_is_hidden_after_death_animation_until_respawn() {
-        assert!(!should_hide_dead_monster(0, 160, 1.2, 0.0, 1.19));
-        assert!(should_hide_dead_monster(0, 160, 1.2, 0.0, 1.2));
-        assert!(!should_hide_dead_monster(100, 160, 1.2, 0.0, 2.0));
-        assert!(!should_hide_dead_monster(0, 160, 1.2, 3.0, 2.0));
+        assert!(!should_hide_dead_monster(0, super::REMOTE_FADING, 1.2, 0.0, 1.19));
+        assert!(should_hide_dead_monster(0, super::REMOTE_FADING, 1.2, 0.0, 1.2));
+        assert!(!should_hide_dead_monster(100, super::REMOTE_FADING, 1.2, 0.0, 2.0));
+        assert!(!should_hide_dead_monster(0, super::REMOTE_FADING, 1.2, 3.0, 2.0));
     }
 
     #[test]

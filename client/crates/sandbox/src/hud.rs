@@ -116,6 +116,9 @@ pub struct SkillHud {
     /// Information is shown.
     pub battle_power_open: bool,
     pub battle_power_detail: Option<u8>,
+    /// The Action panel is open, with the emote under the cursor.
+    pub action_panel_open: bool,
+    pub action_panel_hover: Option<usize>,
 }
 
 /// Seconds since 1970 on this machine.
@@ -789,6 +792,10 @@ pub fn items_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
 
 pub fn capture_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Capture)
+}
+
+pub fn action_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Action)
 }
 
 pub fn status_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {

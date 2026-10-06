@@ -37,6 +37,7 @@ mod store_panel;
 mod daily_rewards_panel;
 mod highscores_panel;
 mod emblems;
+mod action_panel;
 mod battle_power_panel;
 mod showcase;
 mod ui;
@@ -295,8 +296,9 @@ struct App {
     xp_points: u8,
     /// When the player died; `None` while alive.
     dead_since: Option<f32>,
-    /// Sitting (MsgAction 250): stamina comes back faster.
-    sitting: bool,
+    /// A held pose and when it began: sitting (MsgAction 250, stamina comes
+    /// back faster), kneeling or lying down, until the player moves.
+    held_pose: Option<(Action, f32)>,
     /// A portal works once the hero has stood off every portal, so arriving
     /// on the destination's own portal does not bounce straight back.
     portal_armed: bool,
@@ -321,6 +323,8 @@ struct App {
     /// The Battle Power Evaluation, and the part whose details are open.
     battle_power_open: bool,
     battle_power_detail: Option<u8>,
+    /// The main bar's Action panel of emotes is open.
+    action_panel_open: bool,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -1062,7 +1066,7 @@ impl ApplicationHandler for App {
                 let expired_dead = self
                     .remote_actors
                     .iter()
-                    .filter(|(_, actor)| actor.action == 160 && elapsed >= actor.animation_until)
+                    .filter(|(_, actor)| actor.action == renderer::REMOTE_FADING && elapsed >= actor.animation_until)
                     .map(|(id, _)| *id)
                     .collect::<Vec<_>>();
                 for id in expired_dead {
@@ -1085,12 +1089,16 @@ impl ApplicationHandler for App {
                         self.local_action = None;
                     }
                 }
-                if self.sitting && self.player.moving() {
-                    self.sitting = false;
+                if self.held_pose.is_some() && self.player.moving() {
+                    self.held_pose = None;
                 }
-                if self.sitting && self.dead_since.is_none() {
-                    self.player.action = Action::Sit;
-                    local_action_progress = Some(1.0);
+                if let Some((pose, since)) = self.held_pose
+                    && self.dead_since.is_none()
+                {
+                    // The pose plays once, then its last frame stays.
+                    let length = self.character.duration(pose).as_secs_f32().max(0.1);
+                    self.player.action = pose;
+                    local_action_progress = Some(((elapsed - since) / length).clamp(0.0, 1.0));
                 }
                 // Dead: the body falls, then a ghost walks until revived.
                 if let Some(died_at) = self.dead_since
@@ -1574,6 +1582,23 @@ impl App {
                 return true;
             }
             // Any click elsewhere closes the menu and is handled as usual.
+        }
+        // The Action panel: an emote, or close; the Action button toggles it.
+        if self.action_panel_open
+            && let Some(click) = action_panel::click_at(viewport, self.cursor)
+        {
+            match click {
+                Some(action_panel::ActionPanelClick::Emote(emote)) => self.perform_emote(emote),
+                Some(action_panel::ActionPanelClick::Close) => self.action_panel_open = false,
+                None => {}
+            }
+            self.held = false;
+            return true;
+        }
+        if hud::action_button_at(viewport, self.cursor) {
+            self.action_panel_open = !self.action_panel_open;
+            self.held = false;
+            return true;
         }
         if self.pk_menu_open {
             let menu = shop::ChoiceMenu::kill_modes(viewport, self.kill_mode);
@@ -4116,7 +4141,7 @@ impl App {
                         actor.animation_until = now;
                         return;
                     }
-                    actor.action = action as u8;
+                    actor.action = action;
                     actor.animation_started = now;
                     actor.animation_until = now + action_duration(action, &self.character);
                 }
@@ -4171,7 +4196,7 @@ impl App {
                             actor.animation_started = now;
                             actor.animation_until = now + fall;
                         } else {
-                            actor.action = 160;
+                            actor.action = renderer::REMOTE_FADING;
                             // A death ends any respawn effect still playing.
                             actor.respawn_until = 0.0;
                             actor.animation_until = now + 1.2;
@@ -4369,7 +4394,7 @@ impl App {
                 if monster && actor.health == 0 {
                     if let Some(existing) = self.remote_actors.get_mut(&actor.id) {
                         existing.health = 0;
-                        existing.action = 160;
+                        existing.action = renderer::REMOTE_FADING;
                         // A death ends any respawn effect still playing.
                         existing.respawn_until = 0.0;
                         existing.animation_until = self.started.elapsed().as_secs_f32() + 1.2;
@@ -4894,6 +4919,15 @@ impl App {
             attribute_details: self.attribute_details,
             battle_power_open: self.battle_power_open,
             battle_power_detail: self.battle_power_detail,
+            action_panel_open: self.action_panel_open,
+            action_panel_hover: self
+                .window
+                .as_ref()
+                .filter(|_| self.action_panel_open)
+                .and_then(|window| {
+                    let size = window.inner_size();
+                    action_panel::hovered([size.width as f32, size.height as f32], self.cursor)
+                }),
             stamina: self.stamina,
             max_stamina: if self.status_flags & network::HEAVEN_BLESSING_FLAG != 0 {
                 150
@@ -5063,7 +5097,7 @@ impl App {
             return;
         };
         // Training dummies are NPCs without health; only real targets die.
-        if !target.npc && (target.health == 0 || target.action == 160) {
+        if !target.npc && (target.health == 0 || target.action == renderer::REMOTE_FADING) {
             self.pending_skill_attack = None;
             return;
         }
@@ -5252,17 +5286,35 @@ impl App {
 
     /// X: sit down or stand up (ChangeAction 250 / 100).
     fn toggle_sit(&mut self) {
+        self.perform_emote(Action::Sit);
+    }
+
+    /// An emote from the Action panel (or X for sitting), sent as the
+    /// original's ChangeAction: sitting, kneeling and lying hold until the
+    /// player moves or picks the same one again; the rest play once.
+    fn perform_emote(&mut self, emote: Action) {
         if self.dead_since.is_some() || self.player.moving() {
             return;
         }
         let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
             return;
         };
-        self.sitting = !self.sitting;
-        network.send_action(character_id, if self.sitting { 250 } else { 100 });
+        let now = self.started.elapsed().as_secs_f32();
+        let standing_up = self.held_pose.is_some_and(|(pose, _)| pose == emote);
         self.player.action_instance = self.player.action_instance.wrapping_add(1);
-        if !self.sitting {
+        if standing_up {
+            network.send_action(character_id, Action::Idle.catalog_id());
+            self.held_pose = None;
             self.player.action = Action::Idle;
+            return;
+        }
+        network.send_action(character_id, emote.catalog_id());
+        self.held_pose = None;
+        if emote.held() {
+            self.held_pose = Some((emote, now));
+        } else {
+            self.player.action = emote;
+            self.local_action = Some((emote, now, now + self.character.duration(emote).as_secs_f32()));
         }
     }
 
@@ -7179,12 +7231,9 @@ fn action_duration(action: u16, character: &character::Character) -> f32 {
     match action {
         110 | 111 => 1.0 / 3.0,
         120 | 121 => 1.0 / 6.0,
-        130 => character.duration(Action::Jump).as_secs_f32(),
-        140 => character.duration(Action::Attack).as_secs_f32(),
-        150 => character.duration(Action::Hit).as_secs_f32(),
-        220 => character.duration(Action::Pickup).as_secs_f32(),
-        250 => character.duration(Action::Sit).as_secs_f32(),
-        _ => 0.5,
+        _ => Action::from_catalog_id(u32::from(action))
+            .filter(|action| *action != Action::Idle)
+            .map_or(0.5, |action| character.duration(action).as_secs_f32()),
     }
 }
 /// `WeaponGoal`, `MagicGoal`, `BowGoal` and `Target`: training dummies.
@@ -7651,7 +7700,7 @@ fn run() -> Result<()> {
         stamina: 100,
         xp_points: 0,
         dead_since: None,
-        sitting: false,
+        held_pose: None,
         portal_armed: false,
         hit_until: 0.0,
         level_up_until: 0.0,
@@ -7679,6 +7728,7 @@ fn run() -> Result<()> {
         attribute_details: false,
         battle_power_open: false,
         battle_power_detail: None,
+        action_panel_open: false,
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,

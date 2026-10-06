@@ -17,10 +17,23 @@ pub enum Action {
     Die,
     /// `3dmotion.ini` 250: sitting down; the last frame is held.
     Sit,
+    /// The Action panel's emotes (`Control.Ani` `ButtonA<n>`): Cool 230,
+    /// Kneel 210, Sad 170, Happy 150, Angry 160, Lie 270, Dance 1, Wave
+    /// 190, Bow 200.
+    Cool,
+    Kneel,
+    Sad,
+    Happy,
+    Angry,
+    Lie,
+    Dance,
+    Wave,
+    Bow,
 }
 
 impl Action {
-    pub const ALL: [Self; 11] = [
+    pub const COUNT: usize = 20;
+    pub const ALL: [Self; Self::COUNT] = [
         Self::Idle,
         Self::WalkLeft,
         Self::WalkRight,
@@ -32,6 +45,15 @@ impl Action {
         Self::Pickup,
         Self::Die,
         Self::Sit,
+        Self::Cool,
+        Self::Kneel,
+        Self::Sad,
+        Self::Happy,
+        Self::Angry,
+        Self::Lie,
+        Self::Dance,
+        Self::Wave,
+        Self::Bow,
     ];
 
     pub const fn index(self) -> usize {
@@ -47,6 +69,15 @@ impl Action {
             Self::Pickup => 8,
             Self::Die => 9,
             Self::Sit => 10,
+            Self::Cool => 11,
+            Self::Kneel => 12,
+            Self::Sad => 13,
+            Self::Happy => 14,
+            Self::Angry => 15,
+            Self::Lie => 16,
+            Self::Dance => 17,
+            Self::Wave => 18,
+            Self::Bow => 19,
         }
     }
 
@@ -68,7 +99,44 @@ impl Action {
             Self::Pickup => 220,
             Self::Die => 401,
             Self::Sit => 250,
+            Self::Cool => 230,
+            Self::Kneel => 210,
+            Self::Sad => 170,
+            Self::Happy => 150,
+            Self::Angry => 160,
+            Self::Lie => 270,
+            Self::Dance => 1,
+            Self::Wave => 190,
+            Self::Bow => 200,
         }
+    }
+
+    /// The action for a ChangeAction code, as the original's Action panel
+    /// and the server send them.
+    pub fn from_catalog_id(id: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.catalog_id() == id && *action != Self::Hit)
+    }
+
+    /// Emotes whose last frame is held until the player moves: sitting,
+    /// kneeling and lying down.
+    pub const fn held(self) -> bool {
+        matches!(self, Self::Sit | Self::Kneel | Self::Lie)
+    }
+
+    pub const fn emote(self) -> bool {
+        matches!(
+            self,
+            Self::Sit
+                | Self::Cool
+                | Self::Kneel
+                | Self::Sad
+                | Self::Happy
+                | Self::Angry
+                | Self::Lie
+                | Self::Dance
+                | Self::Wave
+                | Self::Bow
+        )
     }
 
     pub const fn paired_action(self) -> Option<Self> {
@@ -86,10 +154,12 @@ mod tests {
 
     #[test]
     fn actions_keep_their_catalog_and_storage_order() {
-        assert_eq!(Action::ALL.map(Action::index), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(Action::ALL.map(Action::index), std::array::from_fn(|index| index));
         assert_eq!(
             Action::ALL.map(Action::catalog_id),
-            [100, 110, 111, 120, 121, 130, 140, 100, 220, 401, 250]
+            [100, 110, 111, 120, 121, 130, 140, 100, 220, 401, 250, 230, 210, 170, 150, 160, 270, 1, 190, 200]
         );
+        assert_eq!(Action::from_catalog_id(150), Some(Action::Happy));
+        assert_eq!(Action::from_catalog_id(100), Some(Action::Idle));
     }
 }
