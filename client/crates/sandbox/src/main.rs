@@ -37,6 +37,7 @@ mod store_panel;
 mod daily_rewards_panel;
 mod highscores_panel;
 mod emblems;
+mod battle_power_panel;
 mod showcase;
 mod ui;
 mod ui_theme;
@@ -315,6 +316,11 @@ struct App {
     weapon_filter: shop::WeaponFilter,
     /// The Character window's Skills tab: page, scroll and pick.
     skill_page: shop::SkillPage,
+    /// The Attributes tab on Details (attack and defence).
+    attribute_details: bool,
+    /// The Battle Power Evaluation, and the part whose details are open.
+    battle_power_open: bool,
+    battle_power_detail: Option<u8>,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -1788,9 +1794,52 @@ impl App {
             }
         }
         if self.status_open {
+            // The Battle Power windows beside the Character window.
+            if self.battle_power_open {
+                let detail = self
+                    .battle_power_detail
+                    .and_then(|_| battle_power_panel::details_action_at(viewport, self.cursor));
+                let action = detail.or_else(|| battle_power_panel::evaluation_action_at(viewport, self.cursor));
+                if let Some(action) = action {
+                    match action {
+                        Some(battle_power_panel::BattlePowerAction::Close) => {
+                            self.battle_power_open = false;
+                            self.battle_power_detail = None;
+                        }
+                        Some(battle_power_panel::BattlePowerAction::Details(part)) => {
+                            self.battle_power_detail =
+                                if self.battle_power_detail == Some(part) { None } else { Some(part) };
+                        }
+                        Some(battle_power_panel::BattlePowerAction::CloseDetails) => {
+                            self.battle_power_detail = None;
+                        }
+                        Some(battle_power_panel::BattlePowerAction::Help) => {
+                            self.network_status = "Battle Power: level, 5 per rebirth, the quality, sockets, super gems and plus of the gear worn, and nobility.".into();
+                        }
+                        None => {}
+                    }
+                    self.held = false;
+                    return true;
+                }
+            }
+            if shop::status_battle_power_at(viewport, self.cursor) {
+                self.battle_power_open = !self.battle_power_open;
+                self.battle_power_detail = None;
+                self.held = false;
+                return true;
+            }
+            if self.status_tab == shop::StatusTab::Attributes
+                && let Some(details) = shop::status_attribute_mode_at(viewport, self.cursor)
+            {
+                self.attribute_details = details;
+                self.held = false;
+                return true;
+            }
             if shop::status_close_at(viewport, self.cursor) {
                 self.status_open = false;
                 self.inventory_open = false;
+                self.battle_power_open = false;
+                self.battle_power_detail = None;
                 self.held = false;
                 return true;
             }
@@ -4842,6 +4891,9 @@ impl App {
                 .collect(),
             weapon_filter: self.weapon_filter,
             skill_page: self.skill_page,
+            attribute_details: self.attribute_details,
+            battle_power_open: self.battle_power_open,
+            battle_power_detail: self.battle_power_detail,
             stamina: self.stamina,
             max_stamina: if self.status_flags & network::HEAVEN_BLESSING_FLAG != 0 {
                 150
@@ -7624,6 +7676,9 @@ fn run() -> Result<()> {
         },
         weapon_filter: shop::WeaponFilter::OneHand,
         skill_page: shop::SkillPage::default(),
+        attribute_details: false,
+        battle_power_open: false,
+        battle_power_detail: None,
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,

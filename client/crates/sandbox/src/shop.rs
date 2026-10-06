@@ -198,6 +198,8 @@ pub struct ItemInfo {
     pub defense: u32,
     pub health_add: u32,
     pub mana_add: u32,
+    pub magic_attack: u32,
+    pub magic_defense: u32,
     pub attack_speed: u32,
     pub price: u32,
     pub item_type: String,
@@ -1979,6 +1981,28 @@ pub fn status_tab_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<StatusTab> 
     None
 }
 
+/// The Attributes tab's Basics (`Some(false)`) or Details (`Some(true)`)
+/// under the cursor ([132-1150], [132-1151]).
+pub fn status_attribute_mode_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<bool> {
+    let [left, top] = status_position(viewport);
+    let local = [cursor[0] - left, cursor[1] - top];
+    let button = |x: i32| UiRect::new(StatusLayout::PAPER_X + x, StatusLayout::PAPER_Y + 282, 61, 19);
+    if button(24).contains_local(local) {
+        Some(false)
+    } else if button(119).contains_local(local) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// Whether the cursor is on the Battle Power orb and its plate
+/// ([131-1464]): a click opens the Battle Power Evaluation.
+pub fn status_battle_power_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [left, top] = status_position(viewport);
+    UiRect::new(0, 0, 118, 60).contains_local([cursor[0] - left, cursor[1] - top])
+}
+
 pub fn status_close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     let [left, top] = status_position(viewport);
     let local = [cursor[0] - left, cursor[1] - top];
@@ -2457,6 +2481,7 @@ pub fn status_base_image(
     active_tab: StatusTab,
     weapon_filter: WeaponFilter,
     close_hovered: bool,
+    attribute_details: bool,
 ) -> Result<RgbaImage> {
     use crate::original_ui::{CharacterComponent, overlay_asset};
     let (width, height) = status_surface_size(active_tab);
@@ -2475,6 +2500,12 @@ pub fn status_base_image(
         i64::from(StatusLayout::PAPER_Y),
     );
     imageops::overlay(&mut image, &child, paper_x, paper_y);
+    // Details: attack and defence over the attributes' box (8, 194 in the
+    // role panel).
+    if active_tab == StatusTab::Attributes && attribute_details {
+        let more = crate::original_ui::component(assets, CharacterComponent::RoleMore)?;
+        imageops::overlay(&mut image, &more, paper_x + 8, paper_y + 193);
+    }
     if active_tab == StatusTab::Equipment {
         // `[Image160]`: the left-hand weapon frame is a separate texture
         // around the 65x65 control [135-1675].
@@ -2504,6 +2535,10 @@ pub fn status_base_image(
 
     let controls: &[(&str, i64, i64)] = match active_tab {
         // [132-1150], [132-1151] and the four [132-156x] plus buttons.
+        StatusTab::Attributes if attribute_details => &[
+            ("data/main/RoleBtnBase.dds", 24, 282),
+            ("data/main/RoleBtnMore.dds", 119, 282),
+        ],
         StatusTab::Attributes => &[
             ("data/main/RoleBtnBase.dds", 24, 282),
             ("data/main/RoleBtnMore.dds", 119, 282),
@@ -2584,6 +2619,7 @@ pub fn status_dynamic_image(
     weapon_skills: &[(u32, u32, u32)],
     weapon_filter: WeaponFilter,
     skill_page: SkillPage,
+    attribute_details: bool,
 ) -> Result<RgbaImage> {
     let (width, height) = status_surface_size(active_tab);
     let mut image = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
@@ -2605,18 +2641,20 @@ pub fn status_dynamic_image(
     // The orb beside "Battle Power" shows the battle power (potency), in
     // white italic with a soft blue glow, spilling over the orb like the
     // original.
+    // White on a dark outline, inside the orb as the original sets it.
     let power = battle_power(level, character.rebirths, equipment, nobility_rank).to_string();
     let power_font = crate::main_hud::italic_font().unwrap_or(font);
-    let size = if power.len() > 2 { 24.0 } else { 30.0 };
+    let size = match power.len() {
+        0..=2 => 24.0,
+        3 => 19.0,
+        _ => 15.0,
+    };
     let power_width = crate::main_hud::text_width(power_font, &power, size);
-    crate::main_hud::glow_text(
-        &mut image,
-        power_font,
-        &power,
-        size,
-        [28 - power_width / 2, 27 - (size * 0.62) as i32],
-        [90, 104, 234],
-    );
+    let at = [28 - power_width / 2, 28 - (size * 0.62) as i32];
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1), (2, 2)] {
+        crate::main_hud::text(&mut image, power_font, &power, size, [at[0] + dx, at[1] + dy], [12, 20, 46, 255], None);
+    }
+    crate::main_hud::text(&mut image, power_font, &power, size, at, [255, 255, 255, 255], None);
 
     let or_none = |text: &str| {
         if text.is_empty() {
@@ -2639,15 +2677,30 @@ pub fn status_dynamic_image(
             ] {
                 value(&mut image, &text, 72, y);
             }
-            // [132-1137], [132-1566..1569].
-            for (number, x, y) in [
-                (character.strength, 53, 199),
-                (character.agility, 148, 199),
-                (character.vitality, 53, 229),
-                (character.spirit, 148, 229),
-                (character.attribute_points, 102, 259),
-            ] {
-                value(&mut image, &number.to_string(), x, y);
+            if attribute_details {
+                // [132-1152..1155]: attack, defence, magic attack and
+                // magic defence.
+                let ([low, high], defense, magic_attack, magic_defense) =
+                    combat_figures(assets, character, equipment);
+                for (text, y) in [
+                    (format!("{low}-{high}"), 202),
+                    (defense.to_string(), 221),
+                    (magic_attack.to_string(), 240),
+                    (magic_defense.to_string(), 261),
+                ] {
+                    value(&mut image, &text, 88, y);
+                }
+            } else {
+                // [132-1137], [132-1566..1569].
+                for (number, x, y) in [
+                    (character.strength, 53, 199),
+                    (character.agility, 148, 199),
+                    (character.vitality, 53, 229),
+                    (character.spirit, 148, 229),
+                    (character.attribute_points, 102, 259),
+                ] {
+                    value(&mut image, &number.to_string(), x, y);
+                }
             }
         }
         StatusTab::Equipment => {
@@ -2846,33 +2899,106 @@ pub fn battle_power(
     equipment: &[crate::network::OwnedItem],
     nobility_rank: u32,
 ) -> u32 {
-    let nobility = match nobility_rank {
+    BattlePower::of(level, rebirths, equipment, nobility_rank).total()
+}
+
+/// The battle power's parts, as the Battle Power Evaluation window lists
+/// them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct BattlePower {
+    pub level: u32,
+    pub rebirths: u32,
+    /// Quality of Equipment, Sockets, Super Gems, +n Items, Other Bonus:
+    /// the evaluation's rows with Details.
+    pub parts: [u32; BATTLE_POWER_PARTS],
+}
+
+/// The evaluation's rows with Details: quality, sockets, super gems, plus,
+/// and the other bonus (nobility).
+pub const BATTLE_POWER_PARTS: usize = 5;
+
+impl BattlePower {
+    pub fn of(level: u8, rebirths: u8, equipment: &[crate::network::OwnedItem], nobility_rank: u32) -> Self {
+        let mut parts = [0; BATTLE_POWER_PARTS];
+        for (_, item_parts) in battle_power_items(equipment) {
+            for (part, value) in parts.iter_mut().zip(item_parts) {
+                *part += value;
+            }
+        }
+        parts[4] = nobility_battle_power(nobility_rank);
+        Self { level: u32::from(level), rebirths: u32::from(rebirths) * 5, parts }
+    }
+
+    pub fn total(&self) -> u32 {
+        self.level + self.rebirths + self.parts.iter().sum::<u32>()
+    }
+}
+
+/// What a nobility rank adds: King 5, Prince 4, Duke 3, Earl 2, Baron 1.
+fn nobility_battle_power(rank: u32) -> u32 {
+    match rank {
         12 => 5,
         9 => 4,
         7 => 3,
         5 => 2,
         3 => 1,
         _ => 0,
-    };
-    let item_power = |item: &crate::network::OwnedItem| {
-        let quality = (item.item_type % 10).saturating_sub(5);
-        let gems = [item.gem_one, item.gem_two]
-            .into_iter()
-            .filter(|gem| *gem != 0 && *gem != 255)
-            .map(|gem| if gem % 10 == 3 { 2 } else { 1 })
-            .sum::<u32>();
-        quality + u32::from(item.plus) + gems
-    };
-    let has_off_hand = equipment.iter().any(|item| item.position == 5);
-    let items = equipment
+    }
+}
+
+/// Each worn item (garment aside; the window's own stand-ins, uid 0, are
+/// not items) with what it adds to the evaluation's rows: quality, sockets,
+/// super gems, plus, and nothing to the other bonus. A two-handed weapon
+/// without an off-hand item counts twice.
+pub fn battle_power_items(equipment: &[crate::network::OwnedItem]) -> Vec<(crate::network::OwnedItem, [u32; BATTLE_POWER_PARTS])> {
+    let has_off_hand = equipment.iter().any(|item| item.position == 5 && item.uid != 0);
+    equipment
         .iter()
-        .filter(|item| (1..=8).contains(&item.position))
+        .filter(|item| item.uid != 0 && (1..=8).contains(&item.position))
         .map(|item| {
+            let gems = [item.gem_one, item.gem_two].into_iter().filter(|gem| *gem != 0 && *gem != 255);
+            let parts = [
+                (item.item_type % 10).saturating_sub(5),
+                gems.clone().count() as u32,
+                gems.filter(|gem| gem % 10 == 3).count() as u32,
+                u32::from(item.plus),
+                0,
+            ];
             let two_handed = item.position == 4 && (500..600).contains(&(item.item_type / 1_000));
-            item_power(item) * if two_handed && !has_off_hand { 2 } else { 1 }
+            let times = if two_handed && !has_off_hand { 2 } else { 1 };
+            (*item, parts.map(|part| part * times))
         })
-        .sum::<u32>();
-    u32::from(level) + u32::from(rebirths) * 5 + nobility + items
+        .collect()
+}
+
+/// Attack, defence, magic attack and magic defence as the Attributes tab's
+/// Details show them (Redux `CombatStatistics`): strength and the gear's
+/// attack (half of an off-hand weapon's), the gear's defence and magic.
+pub fn combat_figures(
+    assets: &mut Assets,
+    character: &crate::character::Character,
+    equipment: &[crate::network::OwnedItem],
+) -> ([u32; 2], u32, u32, u32) {
+    let worn: Vec<&crate::network::OwnedItem> =
+        equipment.iter().filter(|item| item.uid != 0 && item.durability > 0 && item.position != 9).collect();
+    let ids: Vec<u32> = worn.iter().map(|item| item.item_type).collect();
+    let infos = load_item_infos(assets, &ids);
+    let strength = u32::from(character.strength);
+    let (mut attack, mut defense, mut magic_attack, mut magic_defense) = ([strength, strength], 0, 0, 0);
+    for item in worn {
+        let Some(info) = infos.get(&item.item_type) else {
+            continue;
+        };
+        let scale = item_stat_scale(item.plus, item.rarity);
+        let scaled = |value: u32| value.saturating_mul(scale) / 100;
+        let share = if item.position == 5 { 2 } else { 1 };
+        attack[0] += scaled(info.attack_min) / share;
+        attack[1] += scaled(info.attack_max) / share;
+        defense += scaled(info.defense);
+        magic_attack += scaled(info.magic_attack);
+        magic_defense += info.magic_defense;
+    }
+    (attack, defense, magic_attack, magic_defense)
 }
 
 fn draw_reputation_tab(
@@ -7078,6 +7204,8 @@ fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemIn
                 defense: number(16),
                 health_add: number(19),
                 mana_add: number(20),
+                magic_attack: number(29),
+                magic_defense: number(30),
                 attack_speed: number(32),
                 price: number(12),
                 item_type: fields[37].replace('~', " "),
@@ -7985,14 +8113,15 @@ mod icon_tests {
         character.agility = 15;
         character.vitality = 24;
         let equipment = status_equipment_items(&character, &[], &[false; 10]);
-        for (tab, name) in [
-            (StatusTab::Equipment, "equipment"),
-            (StatusTab::Attributes, "attributes"),
-            (StatusTab::Weapon, "weapon"),
-            (StatusTab::Skills, "skills"),
+        for (tab, name, details) in [
+            (StatusTab::Equipment, "equipment", false),
+            (StatusTab::Attributes, "attributes", false),
+            (StatusTab::Attributes, "attributes-details", true),
+            (StatusTab::Weapon, "weapon", false),
+            (StatusTab::Skills, "skills", false),
         ] {
             // Same layers, in the same order, as the renderer.
-            let mut image = status_base_image(&mut assets, tab, super::WeaponFilter::OneHand, false)?;
+            let mut image = status_base_image(&mut assets, tab, super::WeaponFilter::OneHand, false, details)?;
             let skills = [(1_000, 3, 120), (1_001, 1, 15)];
             let values = status_dynamic_image(
                 &mut assets,
@@ -8008,6 +8137,7 @@ mod icon_tests {
                 &[(410, 1, 110), (420, 12, 3_500), (480, 3, 90)],
                 super::WeaponFilter::OneHand,
                 super::SkillPage { filter: super::SkillFilter::Magic, scroll: 0, selected: Some(1_000) },
+                details,
             )?;
             image::imageops::overlay(&mut image, &values, 0, 0);
             if tab == StatusTab::Equipment {

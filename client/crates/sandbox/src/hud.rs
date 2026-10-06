@@ -109,6 +109,13 @@ pub struct SkillHud {
     pub timers: Vec<(u64, u32)>,
     /// The Character window's Skills tab: page, scroll and pick.
     pub skill_page: crate::shop::SkillPage,
+    /// The Attributes tab shows attack and defence (Details) instead of
+    /// the attributes (Basics).
+    pub attribute_details: bool,
+    /// The Battle Power Evaluation is open, and the part whose Detailed
+    /// Information is shown.
+    pub battle_power_open: bool,
+    pub battle_power_detail: Option<u8>,
 }
 
 /// Seconds since 1970 on this machine.

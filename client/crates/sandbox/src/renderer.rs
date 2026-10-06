@@ -266,6 +266,7 @@ enum UiTextureJob {
         active_tab: crate::shop::StatusTab,
         weapon_filter: crate::shop::WeaponFilter,
         close_hovered: bool,
+        attribute_details: bool,
     },
     StatusDynamic {
         path: String,
@@ -281,6 +282,7 @@ enum UiTextureJob {
         weapon_skills: Vec<(u32, u32, u32)>,
         weapon_filter: crate::shop::WeaponFilter,
         skill_page: crate::shop::SkillPage,
+        attribute_details: bool,
     },
     StatusOverlay {
         path: String,
@@ -492,8 +494,9 @@ impl UiTextureJob {
                 active_tab,
                 weapon_filter,
                 close_hovered,
+                attribute_details,
                 ..
-            } => crate::shop::status_base_image(assets, active_tab, weapon_filter, close_hovered),
+            } => crate::shop::status_base_image(assets, active_tab, weapon_filter, close_hovered, attribute_details),
             Self::StatusDynamic {
                 level,
                 experience,
@@ -507,6 +510,7 @@ impl UiTextureJob {
                 weapon_skills,
                 weapon_filter,
                 skill_page,
+                attribute_details,
                 ..
             } => crate::shop::status_dynamic_image(
                 assets,
@@ -522,6 +526,7 @@ impl UiTextureJob {
                 &weapon_skills,
                 weapon_filter,
                 skill_page,
+                attribute_details,
             ),
             Self::StatusOverlay {
                 equipment,
@@ -3641,6 +3646,7 @@ impl Renderer {
             skill_hud.weapon_filter.hash(&mut hasher);
             skill_hud.active_skill.hash(&mut hasher);
             skill_hud.skill_page.hash(&mut hasher);
+            skill_hud.attribute_details.hash(&mut hasher);
             mana.hash(&mut hasher);
             maximum_mana.hash(&mut hasher);
             let close_hovered = crate::shop::status_close_at(viewport, cursor);
@@ -3654,8 +3660,9 @@ impl Renderer {
             title_hovered.hash(&mut hasher);
             let signature = hasher.finish();
             let weapon_filter = skill_hud.weapon_filter;
+            let attribute_details = skill_hud.attribute_details;
             let base_key = format!(
-                "@original-character-base-{status_tab:?}-{weapon_filter:?}-{close_hovered}"
+                "@original-character-base-{status_tab:?}-{weapon_filter:?}-{close_hovered}-{attribute_details}"
             );
             let dynamic_key = format!("@original-character-dynamic-{signature}");
             if !self.textures.contains_key(&base_key) && !self.loading.contains(&base_key) {
@@ -3666,6 +3673,7 @@ impl Renderer {
                         active_tab: status_tab,
                         weapon_filter,
                         close_hovered,
+                        attribute_details,
                     },
                 );
             }
@@ -3686,9 +3694,45 @@ impl Renderer {
                         weapon_skills: skill_hud.weapon_skills.clone(),
                         weapon_filter,
                         skill_page: skill_hud.skill_page,
+                        attribute_details,
                     },
                 );
                 self.status_signature = Some(signature);
+            }
+            if skill_hud.battle_power_open {
+                let power = crate::shop::BattlePower::of(level, character.rebirths, &status_equipment, nobility_rank);
+                let key = format!("@battle-power-{power:?}-{}-{level}", character.rebirths);
+                if !self.textures.contains_key(&key) {
+                    let image = crate::battle_power_panel::evaluation_image(assets, &power, character.rebirths, level)?;
+                    self.prune_textures("@battle-power-", &[]);
+                    self.upload(&key, image);
+                }
+                if let Some(texture) = self.textures.get(&key) {
+                    draws.push(Draw {
+                        texture: key,
+                        vertices: quad(crate::battle_power_panel::evaluation_position(viewport), texture.size, viewport),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
+                if let Some(part) = skill_hud.battle_power_detail {
+                    let mut detail_hasher = std::collections::hash_map::DefaultHasher::new();
+                    status_equipment.hash(&mut detail_hasher);
+                    let key = format!("@battle-detail-{part}-{power:?}-{}", detail_hasher.finish());
+                    if !self.textures.contains_key(&key) {
+                        let image = crate::battle_power_panel::details_image(assets, &status_equipment, &power, part)?;
+                        self.prune_textures("@battle-detail-", &[]);
+                        self.upload(&key, image);
+                    }
+                    if let Some(texture) = self.textures.get(&key) {
+                        draws.push(Draw {
+                            texture: key,
+                            vertices: quad(crate::battle_power_panel::details_position(viewport), texture.size, viewport),
+                            depth_test: false,
+                            sort_depth: f32::INFINITY,
+                        });
+                    }
+                }
             }
             let status_base_draw_key = if self.textures.contains_key(&base_key) {
                 self.last_status_base_key = Some(base_key.clone());
