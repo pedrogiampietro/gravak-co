@@ -1029,7 +1029,7 @@ impl Renderer {
 
     /// A flat 2D effect (the original's status flags, 25 units square)
     /// drawn `size` pixels wide over the interface, looping.
-    pub(crate) fn push_ui_effect(
+    fn push_ui_effect(
         &mut self,
         assets: &mut Assets,
         name: &str,
@@ -4159,11 +4159,13 @@ impl Renderer {
             avatar.hash(&mut hasher);
             let hovered = crate::npc_dialog::hovered_option(viewport, cursor, messages, options);
             hovered.hash(&mut hasher);
+            let close_hovered = crate::npc_dialog::close_hovered(viewport, cursor, messages, options);
+            close_hovered.hash(&mut hasher);
             let key = format!("@npc-dialog-{}", hasher.finish());
             if !self.textures.contains_key(&key) {
                 self.upload(
                     &key,
-                    crate::npc_dialog::image(assets, messages, options, avatar, hovered)?,
+                    crate::npc_dialog::image(assets, messages, options, avatar, hovered, close_hovered)?,
                 );
             }
             if let Some(texture) = self.textures.get(&key) {

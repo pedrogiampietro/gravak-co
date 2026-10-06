@@ -4,13 +4,11 @@
 //! correct with the database. If the combination is correct, the client
 //! will be transferred to the message server of their choice.
 
-use bytes::Bytes;
-use msg_connect::MsgConnect;
 use std::env;
-use tq_network::{Actor, ActorHandle, PacketDecode, PacketHandler, PacketID, TQCipher};
+use tq_network::TQCipher;
 #[cfg(feature = "server")]
 use tq_server::TQServer;
-use wasmtime::{Config, Engine, ExternRef, Linker, Module, Store};
+use wasmtime::{Config, Engine, Linker, Module};
 
 use auth::error::Error;
 use auth::{Runtime, State};

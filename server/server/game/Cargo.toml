@@ -1,8 +1,9 @@
 [package]
 name = "game"
 version = "0.1.0"
-authors = ["Shady Khalifa <dev@shadykhalifa.me>"]
+authors = ["Shady Khalifa <dev@shadykhalifa.me>", "Pedro Giampietro"]
 edition.workspace = true
+repository.workspace = true
 
 
 [[bin]]

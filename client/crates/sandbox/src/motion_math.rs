@@ -50,7 +50,6 @@ pub fn jump_screen_height(peak_screen_pixels: f32, progress: f32) -> f32 {
     peak_screen_pixels * (PI * progress.clamp(0.0, 1.0)).sin()
 }
 
-#[must_use]
 /// Cell distance along the larger axis, the metric the server uses for
 /// magic range.
 #[must_use]

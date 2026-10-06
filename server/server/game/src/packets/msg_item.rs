@@ -1,5 +1,5 @@
 use super::{MsgGroundItem, MsgItemInfo, MsgPlayer, MsgTalk, MsgUserInfo, TalkChannel};
-use crate::entities::{NpcKind, PurchaseOutcome, SaleOutcome};
+use crate::entities::{NpcKind, PurchaseOutcome, RepairOutcome, SaleOutcome};
 use crate::shop::TemporaryEffect;
 use crate::state::State;
 use crate::ActorState;
@@ -526,6 +526,65 @@ impl PacketProcess for MsgItem {
                         actor
                             .send(reject("Your silver balance is at the maximum limit."))
                             .await?;
+                    },
+                }
+            },
+            // The shop's Repair: one item of the bag or worn, made whole for
+            // silver at the open shop.
+            ItemActionType::Repair => {
+                let entity = actor.entity();
+                let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+                let reject = |message: &str| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, message);
+                if self.character_id != character.id() {
+                    return Ok(());
+                }
+                let shop_id = character.active_shop_id();
+                let map = state.try_map(character.entity().map_id())?;
+                let near = map.npc(shop_id).is_some_and(|npc| {
+                    let (player, at) = (character.entity().location(), npc.entity().location());
+                    npc.kind() == NpcKind::ShopKeeper && player.x.abs_diff(at.x) <= 12 && player.y.abs_diff(at.y) <= 12
+                });
+                if shop_id == 0 || self.param1 != shop_id || !near {
+                    actor.send(reject("Open a shop to repair your equipment.")).await?;
+                    return Ok(());
+                }
+                let Some(item) = character
+                    .inventory_items()
+                    .into_iter()
+                    .chain(character.equipment_items())
+                    .find(|item| item.uid == self.param0)
+                else {
+                    actor.send(reject("That item is not yours to repair.")).await?;
+                    return Ok(());
+                };
+                if item.max_durability == 0 || item.durability >= item.max_durability {
+                    actor.send(reject("This item does not need repairing.")).await?;
+                    return Ok(());
+                }
+                let Some(cost) = state.shop_catalog().repair_price(item.item_type, item.durability, item.max_durability) else {
+                    actor.send(reject("This item cannot be repaired.")).await?;
+                    return Ok(());
+                };
+                match character.repair_item(state.pool(), item.uid, cost).await? {
+                    RepairOutcome::Repaired { item, worn } => {
+                        economic_audit_log("npc_repair", character.id(), shop_id, item.uid, cost);
+                        item_audit_log("repair", character.id(), item.uid, item.item_type, format_args!("cost={cost}"));
+                        let info = if worn { MsgItemInfo::equipment_item(item) } else { MsgItemInfo::inventory_item(item) };
+                        actor.send(info).await?;
+                        actor.send(MsgUserInfo::from(character)).await?;
+                        actor
+                            .send(MsgTalk::from_system(
+                                character.id(),
+                                TalkChannel::TopLeft,
+                                format!("Repaired for {cost} silver."),
+                            ))
+                            .await?;
+                    },
+                    RepairOutcome::CannotPay => {
+                        actor.send(reject(&format!("Repairing it costs {cost} silver, but you cannot pay it."))).await?;
+                    },
+                    RepairOutcome::ItemNotFound => {
+                        actor.send(reject("That item is no longer there.")).await?;
                     },
                 }
             },

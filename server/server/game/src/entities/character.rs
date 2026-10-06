@@ -429,6 +429,15 @@ pub enum SaleOutcome {
     SilverLimit,
 }
 
+/// How a shop's repair of one item went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepairOutcome {
+    /// The item as repaired, and whether it is worn.
+    Repaired { item: InventoryItem, worn: bool },
+    ItemNotFound,
+    CannotPay,
+}
+
 impl Character {
     pub fn new(owner: ActorHandle, inner: tq_db::character::Character) -> Self {
         let class = inner.current_class as u8;
@@ -2862,6 +2871,47 @@ impl Character {
         Ok(Some(item))
     }
 
+    /// Repairs one item, in the bag or worn, to its full durability while
+    /// charging `cost` silver in the same transaction.
+    pub async fn repair_item(&self, pool: &sqlx::PgPool, item_uid: u32, cost: u32) -> Result<RepairOutcome, Error> {
+        let worn = self.equipment.lock().iter().any(|item| item.uid == item_uid);
+        let table = if worn { "equipment_items" } else { "inventory_items" };
+        let mut transaction = pool.begin().await?;
+        let balance = sqlx::query_scalar::<_, i64>(
+            "UPDATE characters SET silver = silver - $1
+             WHERE character_id = $2 AND silver >= $1
+             RETURNING silver",
+        )
+        .bind(i64::from(cost))
+        .bind(self.inner.character_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(balance) = balance else {
+            transaction.rollback().await?;
+            return Ok(RepairOutcome::CannotPay);
+        };
+        let repaired = sqlx::query(&format!(
+            "UPDATE {table} SET durability = max_durability
+             WHERE item_uid = $1 AND character_id = $2 AND durability < max_durability"
+        ))
+        .bind(i64::from(item_uid))
+        .bind(self.inner.character_id)
+        .execute(&mut *transaction)
+        .await?;
+        if repaired.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(RepairOutcome::ItemNotFound);
+        }
+        transaction.commit().await?;
+        self.silver.store(balance.max(0) as u64, Ordering::Relaxed);
+        let mut items = if worn { self.equipment.lock() } else { self.inventory.lock() };
+        let Some(item) = items.iter_mut().find(|item| item.uid == item_uid) else {
+            return Ok(RepairOutcome::ItemNotFound);
+        };
+        item.durability = item.max_durability;
+        Ok(RepairOutcome::Repaired { item: *item, worn })
+    }
+
     /// Repairs all damaged equipment while charging silver in the same
     /// transaction. `None` means the character could not pay the cost.
     pub async fn repair_all_equipment(
@@ -5189,7 +5239,7 @@ impl Character {
     /// Uses `amount` stamina; `false` (and nothing used) when short.
     pub fn spend_stamina(&self, amount: u8) -> bool {
         self.stamina
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |stamina| stamina.checked_sub(amount))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |stamina| stamina.checked_sub(amount))
             .is_ok()
     }
 
@@ -5212,7 +5262,7 @@ impl Character {
         if self.xp_ready_until.lock().is_none() {
             let _ = self
                 .xp_points
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |xp| Some(xp.saturating_add(1).min(crate::vitals::MAX_XP)));
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |xp| Some(xp.saturating_add(1).min(crate::vitals::MAX_XP)));
             *self.last_xp_up.lock() = std::time::Instant::now();
         }
     }
@@ -5415,7 +5465,7 @@ impl Character {
     /// Spends `amount` virtue; `false` (nothing spent) when short.
     pub fn spend_virtue(&self, amount: u32) -> bool {
         self.virtue
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |virtue| virtue.checked_sub(amount))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |virtue| virtue.checked_sub(amount))
             .is_ok()
     }
 

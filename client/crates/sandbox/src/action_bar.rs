@@ -537,6 +537,7 @@ impl ActionBar {
         }
     }
 
+    #[cfg(test)]
     pub fn skill_id(&self, index: usize) -> Option<u32> {
         self.slots
             .get(index)

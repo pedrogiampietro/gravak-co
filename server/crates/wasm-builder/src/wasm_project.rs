@@ -191,7 +191,17 @@ fn adjust_mtime(
     compressed_or_compact_wasm: Option<&WasmBinary>,
 ) -> std::io::Result<()> {
     let out_dir = build_helper::out_dir();
-    let invoked_timestamp = out_dir.join("../invoked.timestamp");
+    // Older cargo keeps `invoked.timestamp` beside `out`; newer cargo (the
+    // per-package build directories) in its `run` or `fingerprint` folder.
+    // Without one there is nothing to align to: cargo then only reruns the
+    // build script more often.
+    let Some(invoked_timestamp) = ["../invoked.timestamp", "../run/invoked.timestamp", "../fingerprint/invoked.timestamp"]
+        .into_iter()
+        .map(|candidate| out_dir.join(candidate))
+        .find(|candidate| candidate.exists())
+    else {
+        return Ok(());
+    };
 
     // Get the mtime of the `invoked.timestamp`
     let metadata = fs::metadata(invoked_timestamp)?;

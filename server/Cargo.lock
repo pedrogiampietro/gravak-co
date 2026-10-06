@@ -3495,7 +3495,6 @@ dependencies = [
 name = "tq-crypto"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "parking_lot",
 ]
 

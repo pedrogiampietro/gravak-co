@@ -5,9 +5,8 @@ authors = ["Shady Khalifa <dev@shadykhalifa.me>"]
 edition.workspace = true
 
 [dependencies]
-bytes.workspace = true
 parking_lot.workspace = true
 
 [features]
 default = ["std"]
-std = ["bytes/std"]
+std = []

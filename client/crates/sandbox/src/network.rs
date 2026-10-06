@@ -566,6 +566,11 @@ pub(crate) enum NetworkCommand {
         item_uid: u32,
         shop_id: u32,
     },
+    RepairItem {
+        character_id: u32,
+        item_uid: u32,
+        shop_id: u32,
+    },
     DropInventoryItem {
         character_id: u32,
         item_uid: u32,
@@ -972,6 +977,10 @@ impl NetworkHandle {
             item_uid,
             shop_id,
         });
+    }
+
+    pub fn repair_item(&self, character_id: u32, item_uid: u32, shop_id: u32) {
+        let _ = self.commands.send(NetworkCommand::RepairItem { character_id, item_uid, shop_id });
     }
 
     pub fn drop_inventory_item(&self, character_id: u32, item_uid: u32) {
@@ -2087,6 +2096,12 @@ pub(crate) async fn play(
                 Some(NetworkCommand::SellItem { character_id, item_uid, shop_id }) => {
                         session
                         .send(&ItemActionPacket::sell(character_id, item_uid, shop_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::RepairItem { character_id, item_uid, shop_id }) => {
+                    session
+                        .send(&ItemActionPacket::repair(character_id, item_uid, shop_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

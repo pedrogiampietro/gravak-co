@@ -1014,6 +1014,17 @@ impl ApplicationHandler for App {
                 {
                     return;
                 }
+                // The hammer: a click on an item repairs it; the right button
+                // puts it away.
+                if self.repairing() && state == ElementState::Pressed {
+                    if button == MouseButton::Right {
+                        self.stop_repairing();
+                        return;
+                    }
+                    if button == MouseButton::Left && self.repair_at_cursor() {
+                        return;
+                    }
+                }
                 if button == MouseButton::Left && state == ElementState::Released && self.chat_log.grab.take().is_some() {
                     return;
                 }
@@ -1169,6 +1180,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::Escape) if self.shop.is_some() => {
                         self.shop = None;
                     }
+                    PhysicalKey::Code(KeyCode::Escape) if self.repairing() => self.stop_repairing(),
                     PhysicalKey::Code(KeyCode::Escape) if self.warehouse.is_some() => {
                         self.warehouse = None;
                         self.warehouse_npc_id = None;
@@ -1188,6 +1200,40 @@ impl ApplicationHandler for App {
                             .renderer
                             .as_mut()
                             .is_some_and(renderer::Renderer::collapse_minimap) => {}
+                    // The NPC dialog: 1 to 9 pick its answers.
+                    PhysicalKey::Code(
+                        code @ (KeyCode::Digit1
+                        | KeyCode::Digit2
+                        | KeyCode::Digit3
+                        | KeyCode::Digit4
+                        | KeyCode::Digit5
+                        | KeyCode::Digit6
+                        | KeyCode::Digit7
+                        | KeyCode::Digit8
+                        | KeyCode::Digit9
+                        | KeyCode::Numpad1
+                        | KeyCode::Numpad2
+                        | KeyCode::Numpad3
+                        | KeyCode::Numpad4
+                        | KeyCode::Numpad5
+                        | KeyCode::Numpad6
+                        | KeyCode::Numpad7
+                        | KeyCode::Numpad8
+                        | KeyCode::Numpad9),
+                    ) if self.dialog.is_some() => {
+                        let index = match code {
+                            KeyCode::Digit1 | KeyCode::Numpad1 => 0,
+                            KeyCode::Digit2 | KeyCode::Numpad2 => 1,
+                            KeyCode::Digit3 | KeyCode::Numpad3 => 2,
+                            KeyCode::Digit4 | KeyCode::Numpad4 => 3,
+                            KeyCode::Digit5 | KeyCode::Numpad5 => 4,
+                            KeyCode::Digit6 | KeyCode::Numpad6 => 5,
+                            KeyCode::Digit7 | KeyCode::Numpad7 => 6,
+                            KeyCode::Digit8 | KeyCode::Numpad8 => 7,
+                            _ => 8,
+                        };
+                        self.choose_dialog_option(index);
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.hotkey_popup.is_some() => {
                         self.hotkey_popup = None;
                     }
@@ -2321,6 +2367,9 @@ impl App {
     /// the arrow.
     fn wanted_cursor(&self) -> cursors::GameCursor {
         use cursors::GameCursor;
+        if self.repairing() {
+            return GameCursor::Repair;
+        }
         match self.target_pick {
             Some(TargetPick::Friend) => return GameCursor::PickFriend,
             Some(TargetPick::Ignore) => return GameCursor::PickEnemy,
@@ -6415,42 +6464,82 @@ impl App {
                 self.network_status = "online: NPC dialog closed".into();
                 true
             }
-            npc_dialog::DialogHit::Option(index) => {
-                let Some(dialog) = self.dialog.as_ref() else {
-                    return true;
-                };
-                let Some((option_id, _)) = dialog.options.get(index).cloned() else {
-                    return true;
-                };
-                if dialog.edit.as_ref().is_some_and(|(edit_id, _)| *edit_id == option_id) {
-                    if let Some(dialog) = self.dialog.as_mut() {
-                        if dialog.input_focused && !dialog.input.trim().is_empty() {
-                            self.submit_dialog_text();
-                        } else {
-                            dialog.input_focused = true;
-                            dialog.refresh_edit_row();
-                        }
-                    }
-                    return true;
-                }
-                if dialog.task_id == REVIVE_TASK_ID {
-                    if let (Some(network), Some(character_id)) =
-                        (&self.network, self.network_character_id)
-                    {
-                        network.revive(character_id, false);
-                        self.network_status = "online: reviving".into();
-                    }
-                    self.dialog = None;
-                    return true;
-                }
-                if let Some(network) = &self.network {
-                    network.send_npc_dialog_answer(dialog.task_id, option_id);
-                    self.dialog = None;
-                    self.network_status = format!("online: NPC option {option_id}");
-                }
-                true
-            }
+            npc_dialog::DialogHit::Option(index) => self.choose_dialog_option(index),
         }
+    }
+
+    /// Answers the NPC dialog with its `index`th option (a text box takes
+    /// the keys first, then sends what was typed).
+    fn choose_dialog_option(&mut self, index: usize) -> bool {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return true;
+        };
+        let Some((option_id, _)) = dialog.options.get(index).cloned() else {
+            return true;
+        };
+        if dialog.edit.as_ref().is_some_and(|(edit_id, _)| *edit_id == option_id) {
+            if let Some(dialog) = self.dialog.as_mut() {
+                if dialog.input_focused && !dialog.input.trim().is_empty() {
+                    self.submit_dialog_text();
+                } else {
+                    dialog.input_focused = true;
+                    dialog.refresh_edit_row();
+                }
+            }
+            return true;
+        }
+        if dialog.task_id == REVIVE_TASK_ID {
+            if let (Some(network), Some(character_id)) =
+                (&self.network, self.network_character_id)
+            {
+                network.revive(character_id, false);
+                self.network_status = "online: reviving".into();
+            }
+            self.dialog = None;
+            return true;
+        }
+        if let Some(network) = &self.network {
+            network.send_npc_dialog_answer(dialog.task_id, option_id);
+            self.dialog = None;
+            self.network_status = format!("online: NPC option {option_id}");
+        }
+        true
+    }
+
+    fn repairing(&self) -> bool {
+        self.shop.as_ref().is_some_and(|shop| shop.repairing)
+    }
+
+    fn stop_repairing(&mut self) {
+        if let Some(shop) = self.shop.as_mut() {
+            shop.repairing = false;
+        }
+        self.refresh_cursor();
+    }
+
+    /// With the hammer: the item under the cursor, in the bag or worn, is
+    /// repaired at the open shop. Elsewhere the click goes on as usual (the
+    /// shop's own buttons, or closing it).
+    fn repair_at_cursor(&mut self) -> bool {
+        let item = self
+            .inventory_slot_item_at_cursor()
+            .filter(|_| self.inventory_open)
+            .or_else(|| self.equipped_item_at_cursor().filter(|_| self.status_open));
+        let Some(item) = item.filter(|item| item.uid != 0) else {
+            return false;
+        };
+        let Some(shop_id) = self.shop.as_ref().map(|shop| shop.npc_id) else {
+            return false;
+        };
+        if item.max_durability == 0 || item.durability >= item.max_durability {
+            self.network_status = format!("{} does not need repairing.", shop::item_name(&mut self.assets, item.item_type));
+            return true;
+        }
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.repair_item(character_id, item.uid, shop_id);
+        }
+        self.held = false;
+        true
     }
 
     fn select_shop(&mut self) -> bool {
@@ -6467,6 +6556,18 @@ impl App {
         if shop::close_at(viewport, self.cursor) {
             self.shop = None;
             self.network_status = "online: shop closed".into();
+            return true;
+        }
+        // Repair: the hammer, and the bag open to strike its items.
+        if shop::repair_button_at(viewport, self.cursor) {
+            if let Some(shop) = self.shop.as_mut() {
+                shop.repairing = !shop.repairing;
+                if shop.repairing {
+                    self.inventory_open = true;
+                    self.network_status = "Click an item to repair it (right button to stop).".into();
+                }
+            }
+            self.refresh_cursor();
             return true;
         }
         if shop::sell_all_button_at(viewport, self.cursor) {
@@ -7411,23 +7512,6 @@ impl App {
                         self.item_action_panel = None;
                         self.queue_apply_artifact(panel.item)
                     }
-                    shop::ItemContextAction::OpenSocket => {
-                        self.item_action_panel = None;
-                        self.queue_open_socket(panel.item)
-                    }
-                    shop::ItemContextAction::InsertGem => {
-                        self.item_action_panel = None;
-                        false
-                    }
-                    shop::ItemContextAction::RemoveGem => {
-                        self.item_action_panel = None;
-                        let socket = if panel.item.gem_one > 0 && panel.item.gem_one != 255 {
-                            1
-                        } else {
-                            2
-                        };
-                        self.queue_remove_gem(panel.item, socket)
-                    }
                     _ => false,
                 };
             }
@@ -7459,11 +7543,8 @@ impl App {
                 | shop::ItemContextAction::Rarity
                 | shop::ItemContextAction::ImproveQuality
                 | shop::ItemContextAction::GemSocket
-                | shop::ItemContextAction::OpenSocket
                 | shop::ItemContextAction::ApplyRefinery
-                | shop::ItemContextAction::ApplyArtifact
-                | shop::ItemContextAction::InsertGem
-                | shop::ItemContextAction::RemoveGem => {
+                | shop::ItemContextAction::ApplyArtifact => {
                     self.open_item_action_panel(context.item, context.actions[index]);
                     false
                 }

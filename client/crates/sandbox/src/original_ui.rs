@@ -3,11 +3,10 @@
 use crate::assets::{Assets, Result};
 use image::{Rgba, RgbaImage, imageops};
 
-pub const LOGICAL_WIDTH: u32 = 1024;
-pub const LOGICAL_HEIGHT: u32 = 768;
+#[cfg(test)]
 pub const MAIN_HUD_RECT: [u32; 4] = [0, 627, 1024, 141];
+#[cfg(test)]
 pub const CHARACTER_RECT: [u32; 4] = [0, 65, 262, 406];
-pub const NPC_SHOP_RECT: [u32; 4] = [0, 65, 272, 250];
 pub const INVENTORY_RECT: [u32; 4] = [754, 0, 270, 502];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +14,8 @@ pub enum CharacterComponent {
     Shell,
     Role,
     RoleMore,
+    // The equipment dialog's art, checked by the tests only.
+    #[cfg(test)]
     Equipment,
     Weapon,
     Mission,
@@ -26,6 +27,7 @@ impl CharacterComponent {
             Self::Shell => "data/main/DialogQuery.dds",
             Self::Role => "data/main/DialogQuery_Role.dds",
             Self::RoleMore => "data/main/DialogQuery_Role_More.dds",
+            #[cfg(test)]
             Self::Equipment => "data/main/DialogNpcEquip.dds",
             Self::Weapon => "data/main/DialogQuery_Weapon.dds",
             Self::Mission => "data/main/DialogQuery_Mission.dds",
@@ -34,11 +36,6 @@ impl CharacterComponent {
 }
 
 pub const INVENTORY_ASSET: &str = "data/main/DialogMpcGoods.dds";
-pub const WAREHOUSE_ASSET: &str = "data/main/DialogDepot.dds";
-pub const CLOSE_ASSET: &str = "data/main/CloseBtnS.dds";
-pub const CLOSE_HOVER_ASSET: &str = "data/main/CloseBtnSclick.dds";
-pub const ROLE_BASE_BUTTON_ASSET: &str = "data/main/RoleBtnBase.dds";
-pub const ROLE_MORE_BUTTON_ASSET: &str = "data/main/RoleBtnMore.dds";
 
 /// Draws an original control texture with its canvas origin at `(x, y)`.
 /// `GUI.ini` rectangles address the texture canvas, transparent margin
@@ -74,24 +71,6 @@ pub fn inventory_base(assets: &mut Assets) -> Result<RgbaImage> {
     Ok(base)
 }
 
-pub fn close_button(assets: &mut Assets, hovered: bool) -> Result<RgbaImage> {
-    let path = if hovered {
-        CLOSE_HOVER_ASSET
-    } else {
-        CLOSE_ASSET
-    };
-    visible_part(&assets.image(path)?)
-}
-
-pub fn role_button(assets: &mut Assets, more: bool) -> Result<RgbaImage> {
-    let path = if more {
-        ROLE_MORE_BUTTON_ASSET
-    } else {
-        ROLE_BASE_BUTTON_ASSET
-    };
-    visible_part(&assets.image(path)?)
-}
-
 impl CharacterComponent {
     /// Native canvas occupied by each component in the 5065 UI atlas.
     ///
@@ -104,6 +83,7 @@ impl CharacterComponent {
             Self::Shell => [0, 0, 264, 435],
             Self::Role | Self::Weapon | Self::Mission => [0, 0, 256, 322],
             Self::RoleMore => [0, 0, 256, 128],
+            #[cfg(test)]
             Self::Equipment => [0, 0, 256, 440],
         }
     }

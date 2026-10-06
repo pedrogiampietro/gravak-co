@@ -28,9 +28,6 @@ pub const GRAVAK: Palette = Palette {
     glow: hex(0xffd36b),
 };
 
-/// Size of an ornate button, spikes included.
-pub const SIZE: [u32; 2] = [136, 40];
-
 /// A filled polygon, edges smoothed by 4x4 samples a pixel.
 fn polygon(image: &mut RgbaImage, points: &[[f32; 2]], colour: impl Fn(f32, f32) -> Colour, alpha: f32) {
     let inside = |x: f32, y: f32| {
@@ -84,19 +81,6 @@ fn greyed(palette: Palette) -> Palette {
         text: palette.text.map(|colour| paint::mix(grey(colour), hex(0x808080), 0.3)),
         glow: palette.glow,
     }
-}
-
-/// An ornate button with `label`; `emblem` is a letter on a gold medallion
-/// riveted on the left edge.
-pub fn button(
-    assets: &mut Assets,
-    label: &str,
-    palette: Palette,
-    hovered: bool,
-    emblem: Option<&str>,
-) -> crate::assets::Result<RgbaImage> {
-    let look = if hovered { Look::Hovered } else { Look::Normal };
-    plate(Some(assets), SIZE, label, palette, look, emblem)
 }
 
 /// An ornate button of any size. From [`SIZE`]'s height up it has spikes,

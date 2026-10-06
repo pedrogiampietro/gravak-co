@@ -484,7 +484,7 @@ pub const ACCURACY_STATUS_BONUS: u32 = 20;
 
 pub fn next_roll() -> u32 {
     ROLL_COUNTER
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.wrapping_mul(1_664_525).wrapping_add(1_013_904_223))
         })
         .unwrap_or_default()

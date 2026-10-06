@@ -10,9 +10,7 @@ use tq_network::{Actor, PacketID, PacketProcess};
 
 use super::{MsgItemInfo, MsgTalk, MsgUserInfo, TalkChannel};
 
-/// Client: send the catalog.
-pub const OPEN: u32 = 0;
-/// Client: buy product `param`.
+/// Client: buy product `param`. Any other action (0) sends the catalog.
 pub const BUY: u32 = 1;
 /// Client (VIP): teleport to city `param` of [`crate::store::CITIES`].
 pub const TELEPORT: u32 = 2;
