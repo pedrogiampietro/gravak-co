@@ -115,13 +115,15 @@ impl PacketProcess for MsgNpc {
 /// Dialog text, `(option id, label)` pairs and avatar of an NPC.
 type NpcDialog = (String, Vec<(u8, String)>, u16);
 
+/// A shopkeeper offers its shop (where items are sold too, so there is
+/// no separate Sell answer).
 fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
     let lower = name.to_ascii_lowercase();
     if kind == NpcKind::ShopKeeper {
         if lower.contains("pharmac") {
             return (
                 format!("{name}: medicines and antidotes for every journey. {shop_items} items are available."),
-                vec![(1, "Buy medicine.".into()), (2, "Sell items.".into())],
+                vec![(1, "Buy medicine.".into())],
                 30,
             );
         }
@@ -130,7 +132,6 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
                 format!("{name}: I repair and sell dependable equipment. {shop_items} items are available."),
                 vec![
                     (1, "Buy equipment.".into()),
-                    (2, "Sell equipment.".into()),
                     (3, "Repair all equipment.".into()),
                 ],
                 40,
@@ -145,7 +146,7 @@ fn npc_script(name: &str, kind: NpcKind, shop_items: usize) -> NpcDialog {
         }
         return (
             format!("Welcome to {name}'s shop. {shop_items} items are available."),
-            vec![(1, "Buy items.".into()), (2, "Sell items.".into())],
+            vec![(1, "Buy items.".into())],
             47,
         );
     }
