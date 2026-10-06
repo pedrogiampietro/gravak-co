@@ -791,6 +791,15 @@ impl TalkPacket {
         }
     }
 
+    /// A line on `channel` (Team 2003, Guild 2004, Friend 2009, World
+    /// 2021...).
+    pub fn on_channel(channel: u16, character_id: u32, sender_name: &str, message: &str) -> Self {
+        Self {
+            channel,
+            ..Self::public(character_id, sender_name, message)
+        }
+    }
+
     pub fn whisper(
         character_id: u32,
         sender_name: &str,

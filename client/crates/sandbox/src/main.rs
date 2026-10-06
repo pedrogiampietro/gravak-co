@@ -373,6 +373,10 @@ struct App {
     chat_recipient: String,
     /// The keys go to the whisper name rather than to the line.
     chat_name_focused: bool,
+    /// The chat channel (`CHAT_CHANNELS` index) and whether its list is
+    /// open.
+    chat_channel: u8,
+    chat_channel_menu: bool,
     chat_focused: bool,
     chat_history: VecDeque<ChatMessage>,
     chat_filter: u16,
@@ -1705,6 +1709,18 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        // The channel list: a channel picked; a Whisper wants a name.
+        if self.chat_channel_menu {
+            self.chat_channel_menu = false;
+            if let Some(index) = original_ui_layout::chat_channel_at(viewport, self.cursor) {
+                self.chat_channel = index as u8;
+                self.chat_focused = true;
+                self.chat_name_focused =
+                    self.chat_channel == original_ui_layout::WHISPER_CHANNEL && self.chat_recipient.is_empty();
+                self.held = false;
+                return true;
+            }
+        }
         // An F key: a click uses it, a drag takes it to another key (see
         // `finish_hotkey_drag`).
         if let Some(slot) = hud::action_slot_at(viewport, self.cursor) {
@@ -2202,16 +2218,14 @@ impl App {
             self.held = false;
             return true;
         }
-        // The channel button: back to Talk from a whisper, or to the name
-        // box to whisper someone.
+        // The channel button opens the list.
         if hud::talk_channel_at(viewport, self.cursor) {
-            self.chat_focused = true;
-            self.chat_name_focused = self.chat_recipient.is_empty();
-            self.chat_recipient.clear();
+            self.chat_channel_menu = true;
             self.held = false;
             return true;
         }
         if hud::chat_name_at(viewport, self.cursor) {
+            self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
             self.chat_focused = true;
             self.chat_name_focused = true;
             self.held = false;
@@ -2604,6 +2618,7 @@ impl App {
                 self.send_team_action(REQUEST_INVITE, target_id);
             }
             PlayerMenuAction::Whisper => {
+                self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
                 self.chat_recipient = name.to_owned();
                 self.chat_name_focused = false;
                 self.chat_focused = true;
@@ -2670,10 +2685,24 @@ impl App {
                     network.send_whisper(character_id, &self.character.name, recipient, whisper);
                     self.network_status = format!("online: whisper enviado para {recipient}");
                 }
-            } else if !message.starts_with('/') && !self.chat_recipient.trim().is_empty() {
+            } else if !message.starts_with('/') && self.chat_channel == original_ui_layout::WHISPER_CHANNEL {
                 let recipient = self.chat_recipient.trim().to_owned();
+                if recipient.is_empty() {
+                    self.chat_name_focused = true;
+                    self.network_status = "Whisper: escreva o nome na caixa da esquerda".into();
+                    return;
+                }
                 network.send_whisper(character_id, &self.character.name, &recipient, &message);
                 self.network_status = format!("online: whisper enviado para {recipient}");
+            } else if !message.starts_with('/') {
+                match original_ui_layout::CHAT_CHANNELS.get(usize::from(self.chat_channel)) {
+                    // A paid broadcast to the whole server.
+                    Some((_, 0, _)) => network.send_broadcast(&message),
+                    Some((_, channel, _)) if *channel != 2000 => {
+                        network.send_channel(*channel, character_id, &self.character.name, &message);
+                    }
+                    _ => network.send_chat(character_id, &self.character.name, &message),
+                }
             } else {
                 network.send_chat(character_id, &self.character.name, &message);
             }
@@ -2948,6 +2977,7 @@ impl App {
                 let Some(entry) = self.friends.get(index) else {
                     return;
                 };
+                self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
                 self.chat_recipient = entry.name.clone();
                 self.chat_name_focused = false;
                 self.chat_focused = true;
@@ -5118,6 +5148,13 @@ impl App {
                 .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
             chat_recipient: self.chat_recipient.clone(),
             chat_name_focused: self.chat_name_focused,
+            chat_channel: self.chat_channel,
+            chat_channel_menu: self.chat_channel_menu,
+            chat_channel_hover: self
+                .viewport()
+                .filter(|_| self.chat_channel_menu)
+                .and_then(|viewport| original_ui_layout::chat_channel_at(viewport, self.cursor))
+                .map(|index| index as u8),
             speech: self
                 .speech
                 .iter()
@@ -8261,6 +8298,8 @@ fn run() -> Result<()> {
         chat_text: String::new(),
         chat_recipient: String::new(),
         chat_name_focused: false,
+        chat_channel: 0,
+        chat_channel_menu: false,
         chat_focused: false,
         chat_history: VecDeque::new(),
         chat_filter: 0,

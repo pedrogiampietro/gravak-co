@@ -533,13 +533,15 @@ mod tests {
     }
 }
 
-/// The bubble over someone who speaks on the Talk channel: the line in
-/// yellow inside a thin light frame, wrapped, its tail running down to
-/// the right. The tail's tip is the image's bottom-right corner.
+/// The bubble over someone who speaks on the Talk channel, as the
+/// original's: a rounded box of light glass, at least 154 by 72, the line
+/// in yellow from its top left, and a narrow tail from its bottom down to
+/// the speaker's name. The tail's tip is [`SPEECH_TIP`] from the image's
+/// bottom right.
 pub fn speech_bubble_image(message: &str) -> Result<RgbaImage> {
-    const MAX_WIDTH: f32 = 170.0;
+    const MAX_WIDTH: f32 = 190.0;
     const LINE: u32 = 15;
-    const TAIL: u32 = 18;
+    const TAIL: u32 = 9;
     let font = font()?;
     let mut lines: Vec<String> = Vec::new();
     let mut line = String::new();
@@ -554,30 +556,57 @@ pub fn speech_bubble_image(message: &str) -> Result<RgbaImage> {
     if !line.is_empty() {
         lines.push(line);
     }
-    lines.truncate(4);
-    let text_width = lines.iter().map(|line| width(&font, line)).fold(0.0_f32, f32::max).min(MAX_WIDTH + 40.0);
-    let box_w = text_width.max(110.0).ceil() as u32 + 14;
-    let box_h = lines.len() as u32 * LINE + 8;
-    let mut image = RgbaImage::new(box_w + TAIL, box_h + TAIL);
-    let border = Rgba([228, 228, 220, 210]);
+    lines.truncate(6);
+    let text_width = lines.iter().map(|line| width(&font, line)).fold(0.0_f32, f32::max);
+    let box_w = (text_width.ceil() as u32 + 18).max(154);
+    let box_h = (lines.len() as u32 * LINE + 14).max(72);
+    let mut image = RgbaImage::new(box_w, box_h + TAIL);
+    let glass = Rgba([34, 34, 40, 60]);
+    let border = Rgba([206, 206, 210, 220]);
+    // The box, its corners rounded off.
+    let radius = 5.0_f32;
     for y in 0..box_h {
         for x in 0..box_w {
-            let edge = x == 0 || y == 0 || x == box_w - 1 || y == box_h - 1;
-            image.put_pixel(x, y, if edge { border } else { Rgba([0, 0, 0, 96]) });
+            let cx = (x as f32 + 0.5).clamp(radius, box_w as f32 - radius);
+            let cy = (y as f32 + 0.5).clamp(radius, box_h as f32 - radius);
+            let distance = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            if distance <= radius - 1.0 {
+                image.put_pixel(x, y, glass);
+            } else if distance <= radius {
+                image.put_pixel(x, y, border);
+            }
         }
     }
-    // The tail: from the box's bottom edge down to the corner.
-    for step in 0..=TAIL {
-        let x = box_w - 12 + step;
-        let y = box_h - 1 + step;
-        if x < image.width() && y < image.height() {
-            image.put_pixel(x, y, border);
+    // The tail: a narrow wedge from the bottom edge to the tip, the edge
+    // between its feet open.
+    let feet = [box_w as f32 - 64.0, box_w as f32 - 52.0];
+    let tip = [box_w as f32 - SPEECH_TIP[0] as f32, (box_h + TAIL) as f32 - SPEECH_TIP[1] as f32];
+    let bottom = box_h as f32 - 1.0;
+    for y in (box_h - 1)..(box_h + TAIL) {
+        let t = ((y as f32 - bottom) / (tip[1] - bottom)).clamp(0.0, 1.0);
+        let left = feet[0] + (tip[0] - feet[0]) * t;
+        let right = feet[1] + (tip[0] - feet[1]) * t;
+        for x in left.floor() as i32..=right.ceil() as i32 {
+            if x < 0 || x as u32 >= box_w {
+                continue;
+            }
+            let edge = (x as f32 - left).abs() < 1.0 || (x as f32 - right).abs() < 1.0;
+            let pixel = if edge && y > box_h - 1 { border } else { glass };
+            image.put_pixel(x as u32, y, pixel);
         }
     }
     for (index, line) in lines.iter().enumerate() {
-        text(&mut image, &font, &[(line.as_str(), [255, 255, 64])], [7.0, 4.0 + (index as u32 * LINE) as f32]);
+        text(&mut image, &font, &[(line.as_str(), [255, 255, 0])], [8.0, 6.0 + (index as u32 * LINE) as f32]);
     }
     Ok(image)
+}
+
+/// Where the bubble's tail ends, from the image's bottom right.
+pub const SPEECH_TIP: [u32; 2] = [5, 1];
+
+/// How wide a name is drawn over a head.
+pub fn name_width(name: &str) -> f32 {
+    font().map_or(name.len() as f32 * 6.0, |font| width(&font, name))
 }
 
 #[cfg(test)]
@@ -586,7 +615,7 @@ mod speech_preview {
     #[test]
     fn speech_bubble_preview() {
         let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
-        let mut sheet = image::RgbaImage::from_pixel(460, 120, image::Rgba([110, 120, 100, 255]));
+        let mut sheet = image::RgbaImage::new(460, 120);
         let short = super::speech_bubble_image("teste").expect("bubble");
         let long = super::speech_bubble_image("alguém vende uma Super Dragon Ball? pago bem, chama no whisper").expect("bubble");
         image::imageops::overlay(&mut sheet, &short, 10, 10);

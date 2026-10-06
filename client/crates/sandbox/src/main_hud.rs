@@ -160,8 +160,26 @@ pub struct MainHudArt {
     /// The Capture button's art for each kill mode, `shop::KILL_MODES` order.
     kill_modes: Vec<[RgbaImage; 2]>,
     chat: Vec<(ChatStripControl, [RgbaImage; 2])>,
-    /// The channel button in Whisper (`TalkBtnS`, `Control.Ani` Button51).
-    talk_whisper: [RgbaImage; 2],
+    /// The channel buttons, `CHAT_CHANNELS` order.
+    channels: Vec<[RgbaImage; 2]>,
+}
+
+/// A channel button without its own art: the Talk button's frame with
+/// `label` written in its place.
+fn labelled_button(base: &RgbaImage, label: &str) -> Result<RgbaImage> {
+    let mut image = base.clone();
+    let (width, height) = image.dimensions();
+    for y in 4..height.saturating_sub(4) {
+        let inside = *image.get_pixel(6.min(width - 1), y);
+        for x in 5..width.saturating_sub(5) {
+            image.put_pixel(x, y, inside);
+        }
+    }
+    let font = font()?;
+    let size = if label.len() > 6 { 9.5 } else { 12.0 };
+    let label_width = text_width(font, label, size);
+    text(&mut image, font, label, size, [(width as i32 - label_width) / 2, (height as i32 - 13) / 2], [232, 218, 168, 255], None);
+    Ok(image)
 }
 
 fn visible(assets: &mut Assets, path: &str) -> Result<RgbaImage> {
@@ -218,10 +236,19 @@ impl MainHudArt {
             buttons,
             kill_modes,
             chat,
-            talk_whisper: [
-                visible(assets, "data/main/TalkBtnS.dds")?,
-                visible(assets, "data/main/TalkBtnSClick.dds")?,
-            ],
+            channels: {
+                let talk = [visible(assets, "data/main/TalkBtnG.dds")?, visible(assets, "data/main/TalkBtnGClick.dds")?];
+                crate::original_ui_layout::CHAT_CHANNELS
+                    .iter()
+                    .map(|(label, _, art)| match art {
+                        Some(art) => Ok([
+                            visible(assets, &format!("data/main/{art}.dds"))?,
+                            visible(assets, &format!("data/main/{art}Click.dds"))?,
+                        ]),
+                        None => Ok([labelled_button(&talk[0], label)?, labelled_button(&talk[1], label)?]),
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            },
         })
     }
 
@@ -255,6 +282,11 @@ pub struct MainHudState<'a> {
     /// it takes the keys.
     pub chat_name: &'a str,
     pub chat_name_focused: bool,
+    /// The chat channel (`CHAT_CHANNELS` index), whether its list is open
+    /// and the one under the cursor.
+    pub chat_channel: u8,
+    pub chat_channel_menu: bool,
+    pub chat_channel_hover: Option<u8>,
     /// The kill mode in force, `shop::KILL_MODES` order.
     pub kill_mode: u8,
     /// Icon of the selected skill, painted over the "Skill" button.
@@ -362,10 +394,9 @@ pub fn draw(
         imageops::overlay(img, frame, x, y);
     }
     for (control, frames) in &art.chat {
-        let frames = if *control == ChatStripControl::Talk && !state.chat_name.is_empty() {
-            &art.talk_whisper
-        } else {
-            frames
+        let frames = match control {
+            ChatStripControl::Talk => art.channels.get(usize::from(state.chat_channel)).unwrap_or(frames),
+            _ => frames,
         };
         let rect = control.local_rect();
         let frame = &frames[usize::from(state.hovered_chat == Some(*control))];
@@ -373,6 +404,16 @@ pub fn draw(
         imageops::overlay(img, frame, x, y);
     }
 
+    // The channel list, stacked over the channel button.
+    if state.chat_channel_menu {
+        let talk = ChatStripControl::Talk.local_rect();
+        for (index, frames) in art.channels.iter().enumerate() {
+            let above = (art.channels.len() - index) as i64 * 25;
+            let lit = state.chat_channel_hover == Some(index as u8) || state.chat_channel == index as u8;
+            let [x, y] = at([talk.x as i64, talk.y as i64 - above]);
+            imageops::overlay(img, &frames[usize::from(lit)], x, y);
+        }
+    }
     // The whisper name in the left box.
     let name_box = ChatStripControl::Name.local_rect();
     let name = if state.chat_focused && state.chat_name_focused {

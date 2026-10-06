@@ -1138,6 +1138,11 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Talk { packet });
     }
 
+    pub fn send_channel(&self, channel: u16, character_id: u32, sender_name: &str, message: &str) {
+        let packet = TalkPacket::on_channel(channel, character_id, sender_name, message);
+        let _ = self.commands.send(NetworkCommand::Talk { packet });
+    }
+
     pub fn send_booth_name(&self, character_id: u32, sender_name: &str, name: &str) {
         let packet = TalkPacket::booth(character_id, sender_name, name);
         let _ = self.commands.send(NetworkCommand::Talk { packet });

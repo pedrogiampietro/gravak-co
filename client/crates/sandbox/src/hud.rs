@@ -129,6 +129,11 @@ pub struct SkillHud {
     /// the keys go to it rather than to the line.
     pub chat_recipient: String,
     pub chat_name_focused: bool,
+    /// The chat channel (`CHAT_CHANNELS` index), its list and the one
+    /// under the cursor.
+    pub chat_channel: u8,
+    pub chat_channel_menu: bool,
+    pub chat_channel_hover: Option<u8>,
     /// Who is saying what on the Talk channel, for the bubbles.
     pub speech: Vec<(String, String)>,
     /// The private chat window and the faces waiting over the bar.
@@ -1234,6 +1239,9 @@ pub fn image(
             chat_focused,
             chat_name: &skills.chat_recipient,
             chat_name_focused: skills.chat_name_focused,
+            chat_channel: skills.chat_channel,
+            chat_channel_menu: skills.chat_channel_menu,
+            chat_channel_hover: skills.chat_channel_hover,
             kill_mode: skills.kill_mode,
             active_skill_icon: skills
                 .active_skill

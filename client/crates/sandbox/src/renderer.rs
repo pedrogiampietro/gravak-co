@@ -1492,13 +1492,15 @@ impl Renderer {
 
     /// Frees the textures named `prefix...` except `keep`: versions of a
     /// redrawn image that are no longer shown.
-    /// The bubble over `name` while they speak: its tail ends over their
-    /// head, the bubble up to the left.
+    /// The bubble over `name` while they speak, up to the left of their
+    /// name (drawn centred on `origin[0]` from `name_top` down), its tail
+    /// ending at the name's left, as the original's.
     fn push_speech(
         &mut self,
         speech: &[(String, String)],
         name: &str,
         origin: [f32; 2],
+        name_top: f32,
         viewport: [f32; 2],
         draws: &mut Vec<Draw>,
     ) -> Result<()> {
@@ -1512,11 +1514,15 @@ impl Renderer {
             self.upload(&key, crate::labels::speech_bubble_image(line)?);
         }
         if let Some(texture) = self.textures.get(&key) {
-            let tip = [origin[0] - 8.0, origin[1] - 146.0];
+            let tip = [origin[0] - crate::labels::name_width(name) * 0.5 + 6.0, name_top + 13.0];
+            let [from_right, from_bottom] = crate::labels::SPEECH_TIP.map(|value| value as f32);
             draws.push(Draw {
                 texture: key,
                 vertices: quad(
-                    [(tip[0] - texture.size[0]).round(), (tip[1] - texture.size[1]).round()],
+                    [
+                        (tip[0] + from_right - texture.size[0]).round(),
+                        (tip[1] + from_bottom - texture.size[1]).round(),
+                    ],
                     texture.size,
                     viewport,
                 ),
@@ -2890,7 +2896,7 @@ impl Renderer {
                 }
             }
             if !actor.npc && !monster && !actor.name.is_empty() {
-                self.push_speech(&skill_hud.speech, &actor.name, origin, viewport, &mut draws)?;
+                self.push_speech(&skill_hud.speech, &actor.name, origin, origin[1] - 152.0 + 2.0, viewport, &mut draws)?;
             }
             // A hovered player shows their face, name and health instead
             // of the plain name.
@@ -3276,7 +3282,7 @@ impl Renderer {
         if status_flags & VIP_FLAG != 0 {
             self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
         }
-        self.push_speech(&skill_hud.speech, &character.name, origin, viewport, &mut draws)?;
+        self.push_speech(&skill_hud.speech, &character.name, origin, origin[1] - 152.0 + 13.0, viewport, &mut draws)?;
         let over_name = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
         self.push_ko_tag(assets, skill_hud.ko_count, status_flags, [origin[0], over_name], viewport, &mut draws);
         if let Some(booth) = character.booth.as_deref() {
