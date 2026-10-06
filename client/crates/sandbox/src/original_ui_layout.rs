@@ -126,6 +126,32 @@ impl ChatStripControl {
     }
 }
 
+/// The chat channels the channel button picks from, top to bottom as the
+/// original's list (`Control.Ani` Button50-55): the label, the channel
+/// (0: a paid broadcast) and the button's art (`None`: drawn in its look).
+pub const CHAT_CHANNELS: [(&str, u16, Option<&str>); 7] = [
+    ("Talk", 2000, Some("TalkBtnG")),
+    ("Whisper", 2001, Some("TalkBtnS")),
+    ("Team", 2003, Some("TalkBtnD")),
+    ("Guild", 2004, Some("TalkBtnB")),
+    ("Friend", 2009, Some("TalkBtnH")),
+    ("World", 2021, None),
+    ("Broadcast", 0, None),
+];
+pub const WHISPER_CHANNEL: u8 = 1;
+const CHANNEL_STEP: f32 = 25.0;
+
+/// The channel list's buttons, stacked over the channel button.
+pub fn chat_channel_rect(viewport: [f32; 2], index: usize) -> Rect {
+    let talk = ChatStripControl::Talk.local_rect();
+    let above = (CHAT_CHANNELS.len() - index) as f32 * CHANNEL_STEP;
+    main_hud_local(viewport, Rect::new(talk.x, talk.y - above, talk.width, talk.height))
+}
+
+pub fn chat_channel_at(viewport: [f32; 2], point: [f32; 2]) -> Option<usize> {
+    (0..CHAT_CHANNELS.len()).find(|&index| chat_channel_rect(viewport, index).contains(point))
+}
+
 /// HP/MP orb, `GUI.ini` `[130-1018]`.
 pub const ORB_RECT: Rect = Rect::new(0.0, 50.0, 92.0, 86.0);
 /// Experience trough, `GUI.ini` `[130-1019]`.

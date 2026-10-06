@@ -38,6 +38,7 @@ pub const MSG_DAILY_REWARD_CHOICE: u16 = 9131;
 pub const MSG_DAILY_REWARD_STATE: u16 = 9132;
 /// Gravak's Highscores: one ranked character, and the page shown.
 pub const MSG_HIGHSCORE_ROW: u16 = 9141;
+pub const MSG_WHISPER_CARD: u16 = 9150;
 pub const MSG_HIGHSCORE_STATE: u16 = 9142;
 /// Strings tied to an entity: fireworks, an effect played on it...
 pub const MSG_NAME: u16 = 1015;
@@ -386,6 +387,20 @@ impl HighscoresPacket {
     pub fn new(category: u32, profession: u32, page: u32) -> Self {
         Self { category, profession, page }
     }
+}
+
+/// Who is on the other side of a whisper (Gravak): their look with the
+/// avatar, level, rebirths, class, name and guild (empty without one).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9150)]
+pub struct WhisperCard {
+    pub mesh: u32,
+    pub level: u32,
+    pub rebirths: u32,
+    pub class: u32,
+    pub name: String,
+    pub guild: String,
+    pub battle_power: u32,
 }
 
 /// One ranked character, `index` of `total` (index 0 starts the rows over);
@@ -773,6 +788,15 @@ impl TalkPacket {
             recipient_name: "ALLUSERS".to_owned(),
             suffix: String::new(),
             message: message.to_owned(),
+        }
+    }
+
+    /// A line on `channel` (Team 2003, Guild 2004, Friend 2009, World
+    /// 2021...).
+    pub fn on_channel(channel: u16, character_id: u32, sender_name: &str, message: &str) -> Self {
+        Self {
+            channel,
+            ..Self::public(character_id, sender_name, message)
         }
     }
 
@@ -1690,6 +1714,7 @@ pub enum GameEvent {
     DailyRewardChoice(DailyRewardChoice),
     DailyRewardState(DailyRewardState),
     HighscoreRow(HighscoreRow),
+    WhisperCard(WhisperCard),
     HighscoreState(HighscoreState),
     StorePurchase(StorePurchase),
     StatusTimers(StatusTimers),
@@ -1811,6 +1836,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_DAILY_REWARD_STATE => Ok(GameEvent::DailyRewardState(
             DailyRewardState::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_WHISPER_CARD => Ok(GameEvent::WhisperCard(
+            WhisperCard::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_HIGHSCORE_ROW => Ok(GameEvent::HighscoreRow(
             HighscoreRow::decode(body).map_err(ProtocolError::Decode)?,

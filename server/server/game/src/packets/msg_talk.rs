@@ -186,6 +186,7 @@ async fn deliver_whisper(state: &State, actor: &Actor<ActorState>, message: &Msg
         actor.send(outgoing.clone()).await?;
     }
     persist_chat_for_owners(state, &[actor.entity().id(), recipient.id()], &outgoing).await?;
+    super::msg_whisper_card::exchange(state, actor, &recipient).await?;
     Ok(())
 }
 

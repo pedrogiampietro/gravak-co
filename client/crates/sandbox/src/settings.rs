@@ -11,6 +11,10 @@ pub struct HudSettings {
     pub skill_bar_open: bool,
     pub performance_overlay: bool,
     pub team_join_enabled: bool,
+    /// The chat log's x, y, width and height, minimised, letters' size.
+    pub chat_rect: Option<[i32; 4]>,
+    pub chat_minimized: bool,
+    pub chat_font: u8,
 }
 
 impl HudSettings {
@@ -20,7 +24,24 @@ impl HudSettings {
             skill_bar_open,
             performance_overlay,
             team_join_enabled,
+            chat_rect: None,
+            chat_minimized: false,
+            chat_font: 1,
         }
+    }
+
+    /// The chat log's settings too.
+    pub fn with_chat(mut self, chat: &crate::chat_log::ChatLogState) -> Self {
+        self.chat_rect = chat.rect;
+        self.chat_minimized = chat.minimized;
+        self.chat_font = chat.font;
+        self
+    }
+
+    pub fn apply_chat(&self, chat: &mut crate::chat_log::ChatLogState) {
+        chat.rect = self.chat_rect;
+        chat.minimized = self.chat_minimized;
+        chat.font = self.chat_font;
     }
 
     pub fn apply_to(&self, bar: &mut ActionBar) {
@@ -37,12 +58,18 @@ impl HudSettings {
         text += &format!("skill_bar={}\n", u8::from(self.skill_bar_open));
         text += &format!("performance={}\n", u8::from(self.performance_overlay));
         text += &format!("team_join={}\n", u8::from(self.team_join_enabled));
+        if let Some([x, y, w, h]) = self.chat_rect {
+            text += &format!("chat_rect={x},{y},{w},{h}\n");
+        }
+        text += &format!("chat_minimized={}\n", u8::from(self.chat_minimized));
+        text += &format!("chat_font={}\n", self.chat_font);
         text
     }
 
     fn parse(text: &str) -> Self {
         let mut settings = Self {
             team_join_enabled: true,
+            chat_font: 1,
             ..Self::default()
         };
         for line in text.lines() {
@@ -54,6 +81,12 @@ impl HudSettings {
                 "skill_bar" => settings.skill_bar_open = value == "1",
                 "performance" => settings.performance_overlay = value == "1",
                 "team_join" => settings.team_join_enabled = value == "1",
+                "chat_minimized" => settings.chat_minimized = value == "1",
+                "chat_font" => settings.chat_font = value.parse().unwrap_or(1).min(2),
+                "chat_rect" => {
+                    let numbers: Vec<i32> = value.split(',').filter_map(|part| part.trim().parse().ok()).collect();
+                    settings.chat_rect = <[i32; 4]>::try_from(numbers).ok();
+                }
                 key => {
                     let index = key.strip_prefix("slot").and_then(|index| index.parse::<usize>().ok());
                     if let Some(slot) = index.and_then(|index| settings.slots.get_mut(index)) {

@@ -17,7 +17,7 @@ pub struct Part {
 pub struct Character {
     pub parts: Vec<Part>,
     actions: Vec<C3Document>,
-    intervals: [f32; 11],
+    intervals: [f32; Action::COUNT],
     pub body_id: u32,
     pub armor_id: u32,
     pub helmet_id: u32,
@@ -219,7 +219,7 @@ impl Character {
         let actions = Action::ALL
             .into_iter()
             .map(|action| match action {
-                Action::Die | Action::Sit => motion(action).or_else(|_| motion(Action::Idle)),
+                _ if action == Action::Die || action.emote() => motion(action).or_else(|_| motion(Action::Idle)),
                 _ => motion(action),
             })
             .collect::<Result<Vec<_>>>()?;

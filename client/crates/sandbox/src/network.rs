@@ -36,6 +36,8 @@ pub struct NetworkConfig {
 pub struct ReadyState {
     pub character_id: u32,
     pub character_name: String,
+    /// The hero's look with the avatar, for their face.
+    pub mesh: u32,
     pub body: u32,
     pub hair_style: u16,
     pub map_id: u32,
@@ -240,6 +242,7 @@ pub enum NetworkEvent {
     DailyRewardState(gravak_protocol::DailyRewardState),
     /// One ranked character of the Highscores.
     HighscoreRow(gravak_protocol::HighscoreRow),
+    WhisperCard(gravak_protocol::WhisperCard),
     /// The Highscores page shown: the window opens on it.
     HighscoreState(gravak_protocol::HighscoreState),
     /// When each of the hero's statuses ends.
@@ -416,7 +419,7 @@ pub struct RemoteActor {
     pub hair_style: u16,
     pub right_weapon: u32,
     pub left_weapon: u32,
-    pub action: u8,
+    pub action: u16,
     pub health: u16,
     pub maximum_health: u16,
     pub status_flags: u64,
@@ -730,6 +733,7 @@ impl NetworkHandle {
                 | NetworkEvent::DailyRewardChoice(_)
                 | NetworkEvent::DailyRewardState(_)
                 | NetworkEvent::HighscoreRow(_)
+                | NetworkEvent::WhisperCard(_)
                 | NetworkEvent::HighscoreState(_)
                 | NetworkEvent::StatusTimers(_)
                 | NetworkEvent::RoleEffect { .. }
@@ -1134,6 +1138,11 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::Talk { packet });
     }
 
+    pub fn send_channel(&self, channel: u16, character_id: u32, sender_name: &str, message: &str) {
+        let packet = TalkPacket::on_channel(channel, character_id, sender_name, message);
+        let _ = self.commands.send(NetworkCommand::Talk { packet });
+    }
+
     pub fn send_booth_name(&self, character_id: u32, sender_name: &str, name: &str) {
         let packet = TalkPacket::booth(character_id, sender_name, name);
         let _ = self.commands.send(NetworkCommand::Talk { packet });
@@ -1296,6 +1305,7 @@ pub(crate) async fn play(
         .send(NetworkEvent::Ready(ReadyState {
             character_id: local_character_id,
             character_name: user.character_name,
+            mesh: user.mesh,
             body: body_from_mesh(user.mesh),
             hair_style: user.hair_style,
             map_id,
@@ -1499,6 +1509,9 @@ pub(crate) async fn play(
                 }
                 Some(GameEvent::DailyRewardState(state)) => {
                     let _ = events.send(NetworkEvent::DailyRewardState(state));
+                }
+                Some(GameEvent::WhisperCard(card)) => {
+                    let _ = events.send(NetworkEvent::WhisperCard(card));
                 }
                 Some(GameEvent::HighscoreRow(row)) => {
                     let _ = events.send(NetworkEvent::HighscoreRow(row));
@@ -2226,7 +2239,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         hair_style: player.hair_style.max(0) as u16,
         right_weapon: player.right_hand.max(0) as u32,
         left_weapon: crate::character::dyed(player.left_hand.max(0) as u32, ((player.reserved1 >> 16) & 0xff) as u8),
-        action: player.action,
+        action: u16::from(player.action),
         health: player.health_points,
         maximum_health: player.health_points,
         status_flags: player.status_flags.max(0) as u64,

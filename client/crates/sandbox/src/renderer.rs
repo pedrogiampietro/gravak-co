@@ -245,7 +245,6 @@ enum UiTextureJob {
         action_bar: crate::action_bar::ActionBar,
         hover: Option<u8>,
         action_context_slot: Option<usize>,
-        action_context_hover: Option<usize>,
         chat_text: String,
         chat_focused: bool,
         chat_history: Vec<crate::network::ChatMessage>,
@@ -444,7 +443,6 @@ impl UiTextureJob {
                 action_bar,
                 hover,
                 action_context_slot,
-                action_context_hover,
                 chat_text,
                 chat_focused,
                 chat_history,
@@ -474,7 +472,6 @@ impl UiTextureJob {
                 &action_bar,
                 hover,
                 action_context_slot,
-                action_context_hover,
                 &chat_text,
                 chat_focused,
                 &chat_history,
@@ -648,6 +645,11 @@ impl UiTextureJob {
 }
 
 pub struct Renderer {
+    /// The chat log to draw this frame, and its line menu with the option
+    /// under the cursor.
+    pub chat_log: Option<crate::chat_log::ChatLogView>,
+    pub chat_log_rect: [i32; 4],
+    pub chat_menu: Option<(crate::chat_log::LineMenu, Option<usize>)>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -950,6 +952,9 @@ impl Renderer {
             effect_scale: 0.75,
             current_trail: (0.0, Vec::new()),
             last_hud_key: None,
+            chat_log: None,
+            chat_log_rect: [0; 4],
+            chat_menu: None,
         })
     }
 
@@ -1495,6 +1500,50 @@ impl Renderer {
 
     /// Frees the textures named `prefix...` except `keep`: versions of a
     /// redrawn image that are no longer shown.
+    /// The bubble over `name` while they speak, up to the left of their
+    /// name (drawn centred on `origin[0]` from `name_top` down), its tail
+    /// ending at the name's left, as the original's.
+    fn push_speech(
+        &mut self,
+        speech: &[(String, String)],
+        name: &str,
+        origin: [f32; 2],
+        name_top: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) -> Result<()> {
+        let Some((_, line)) = speech.iter().find(|(speaker, _)| speaker.eq_ignore_ascii_case(name)) else {
+            return Ok(());
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(line, &mut hasher);
+        let key = format!("@speech-{}", std::hash::Hasher::finish(&hasher));
+        if !self.textures.contains_key(&key) {
+            self.upload(&key, crate::labels::speech_bubble_image(line)?);
+        }
+        if let Some(texture) = self.textures.get(&key) {
+            // As the original: the tip just under the life bar, a little in
+            // from its left end.
+            let _ = name_top;
+            let tip = [origin[0] - 16.0, origin[1] - 107.0];
+            let [from_right, from_bottom] = crate::labels::SPEECH_TIP.map(|value| value as f32);
+            draws.push(Draw {
+                texture: key,
+                vertices: quad(
+                    [
+                        (tip[0] + from_right - texture.size[0]).round(),
+                        (tip[1] + from_bottom - texture.size[1]).round(),
+                    ],
+                    texture.size,
+                    viewport,
+                ),
+                depth_test: false,
+                sort_depth: WORLD_OVERLAY_SORT,
+            });
+        }
+        Ok(())
+    }
+
     fn prune_textures(&mut self, prefix: &str, keep: &[Option<&str>]) {
         self.textures
             .retain(|key, _| !key.starts_with(prefix) || keep.contains(&Some(key.as_str())));
@@ -2604,7 +2653,7 @@ impl Renderer {
             {
                 continue;
             }
-            let held = matches!(actor.action, REMOTE_SIT | REMOTE_DEAD);
+            let held = remote_held(actor.action);
             let action = if time < actor.animation_until || held {
                 remote_action(actor.action)
             } else {
@@ -2691,7 +2740,7 @@ impl Renderer {
                 // Seconds since the respawn, while the effect plays.
                 let born = (actor.respawn_until > time)
                     .then(|| (MONSTER_BORN_SECONDS - (actor.respawn_until - time)).max(0.0));
-                let dynamic_kind = if actor.action == 160 && time < actor.animation_until {
+                let dynamic_kind = if actor.action == REMOTE_FADING && time < actor.animation_until {
                     Some(0)
                 } else if time < actor.animation_until {
                     Some(if matches!(actor.action, 110 | 111 | 120 | 121) {
@@ -2856,6 +2905,9 @@ impl Renderer {
                         sort_depth: depth,
                     });
                 }
+            }
+            if !actor.npc && !monster && !actor.name.is_empty() {
+                self.push_speech(&skill_hud.speech, &actor.name, origin, origin[1] - 152.0 + 2.0, viewport, &mut draws)?;
             }
             // A hovered player shows their face, name and health instead
             // of the plain name.
@@ -3241,6 +3293,7 @@ impl Renderer {
         if status_flags & VIP_FLAG != 0 {
             self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
         }
+        self.push_speech(&skill_hud.speech, &character.name, origin, origin[1] - 152.0 + 13.0, viewport, &mut draws)?;
         let over_name = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
         self.push_ko_tag(assets, skill_hud.ko_count, status_flags, [origin[0], over_name], viewport, &mut draws);
         if let Some(booth) = character.booth.as_deref() {
@@ -3312,8 +3365,6 @@ impl Renderer {
             self.push_xp_bar(skill_hud.xp_fire_until, viewport, &mut draws);
         }
         let hud_hover = crate::hud::hovered_button(viewport, cursor);
-        let action_context_hover = action_context_slot
-            .and_then(|slot| crate::hud::action_context_option_at(viewport, cursor, slot));
         use std::hash::{Hash, Hasher};
         let mut hud_hasher = std::collections::hash_map::DefaultHasher::new();
         self.config.width.hash(&mut hud_hasher);
@@ -3327,7 +3378,6 @@ impl Renderer {
         status_flags.hash(&mut hud_hasher);
         hud_hover.hash(&mut hud_hasher);
         action_context_slot.hash(&mut hud_hasher);
-        action_context_hover.hash(&mut hud_hasher);
         chat_text.hash(&mut hud_hasher);
         chat_focused.hash(&mut hud_hasher);
         chat_history.hash(&mut hud_hasher);
@@ -3357,7 +3407,6 @@ impl Renderer {
                     action_bar: action_bar.clone(),
                     hover: hud_hover,
                     action_context_slot,
-                    action_context_hover,
                     chat_text: chat_text.to_owned(),
                     chat_focused,
                     chat_history: chat_history.to_vec(),
@@ -3399,6 +3448,26 @@ impl Renderer {
                 depth_test: false,
                 sort_depth: f32::INFINITY,
             });
+        }
+        // The chat log, over the bar's corner.
+        if let Some(view) = self.chat_log.clone() {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&view, &mut hasher);
+            let key = format!("@chat-log-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::chat_log::image(&view)?;
+                self.prune_textures("@chat-log-", &[]);
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let [x, y, _, _] = self.chat_log_rect;
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad([x as f32, y as f32], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
         }
         // The original's animated status flags (double EXP, Heaven's
         // Blessing, lucky time) in their slots of the status bar.
@@ -3602,6 +3671,21 @@ impl Renderer {
             .feedback_signature
             .map(|signature| format!("@network-feedback-{signature}"));
         self.prune_textures("@network-feedback-", &[current_feedback.as_deref()]);
+        if skill_hud.action_panel_open {
+            let key = format!("@action-panel-{:?}", skill_hud.action_panel_hover);
+            if !self.textures.contains_key(&key) {
+                let image = crate::action_panel::image(assets, skill_hud.action_panel_hover)?;
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::action_panel::position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         if status_open {
             use std::hash::{Hash, Hasher};
             let status_equipment = crate::shop::status_equipment_items(
@@ -4877,6 +4961,127 @@ impl Renderer {
                 });
             }
         }
+        // The chat log's line menu.
+        if let Some((menu, hover)) = self.chat_menu.clone() {
+            let key = format!("@chat-menu-{}-{}-{hover:?}", menu.sender, menu.at[0] * 10_000 + menu.at[1]);
+            if !self.textures.contains_key(&key) {
+                let image = crate::chat_log::menu_image(&menu, viewport, hover)?;
+                self.prune_textures("@chat-menu-", &[]);
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::chat_log::menu_position(&menu, viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // Private chats: the faces waiting over the bar and the window.
+        for (index, (conversation, seen_mesh, hovered)) in skill_hud.whisper_faces.iter().enumerate() {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&(&conversation.name, &conversation.card, seen_mesh, hovered), &mut hasher);
+            let key = format!("@whisper-face-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::whisper::face_icon(assets, conversation, *seen_mesh, *hovered)?;
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let rect = crate::whisper::face_rect(viewport, index);
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad([rect.x as f32, rect.y as f32], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(view) = &skill_hud.whisper_window {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(view, &mut hasher);
+            let key = format!("@whisper-window-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::whisper::window_image(
+                    assets,
+                    &view.conversation,
+                    &view.own_name,
+                    view.own_mesh,
+                    view.seen_mesh,
+                    &view.input,
+                    view.input_focused,
+                    view.hovered,
+                )?;
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::whisper::window_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // The F keys' popup and a dragged emote go over every window.
+        if let Some((view, hover)) = &skill_hud.hotkey_popup {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&(view, hover), &mut hasher);
+            let key = format!("@hotkey-popup-{}", std::hash::Hasher::finish(&hasher));
+            if !self.textures.contains_key(&key) {
+                let image = crate::hotkey_menu::image(assets, view, *hover)?;
+                self.prune_textures("@hotkey-popup-", &[]);
+                self.upload(&key, image);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::hotkey_menu::position(view), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(slot) = skill_hud.dragging_hotkey.and_then(|slot| action_bar.slots.get(slot)) {
+            let key = format!("@hotkey-drag-{}", slot.action_id.as_deref().unwrap_or_default());
+            if !self.textures.contains_key(&key) {
+                let art = match slot.binding() {
+                    Some(crate::action_bar::Binding::Item(item_type)) => crate::shop::item_icon_image(assets, item_type).ok(),
+                    _ => slot
+                        .icon_path()
+                        .and_then(|path| assets.image(&path).ok())
+                        .and_then(|art| crate::original_ui::visible_part(&art).ok()),
+                };
+                let art = art.map(|art| image::imageops::resize(&art, 34, 34, image::imageops::FilterType::Triangle));
+                let art = art.unwrap_or_else(|| crate::labels::tooltip_image(&slot.hotkey).unwrap_or_default());
+                self.upload(&key, art);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(index) = skill_hud.dragging_emote {
+            let key = format!("@emote-drag-{index}");
+            if !self.textures.contains_key(&key) {
+                let art = assets.image(&format!("data/main/Act{index}.dds"))?;
+                self.upload(&key, crate::original_ui::visible_part(&art)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                let position = [cursor[0] - texture.size[0] * 0.5, cursor[1] - texture.size[1] * 0.5];
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(position, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         let ui_phase_finished = Instant::now();
         self.release_unused_transients(&draws);
         draws.sort_by(|a, b| a.sort_depth.total_cmp(&b.sort_depth));
@@ -5135,7 +5340,9 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 14] = [
+const TRANSIENT_PREFIXES: [&str; 16] = [
+    "@speech-",
+    "@whisper-",
     "@actor-label-",
     "@monster-label-",
     "@label-",
@@ -5185,35 +5392,32 @@ fn show_feedback(status: &str) -> bool {
             .any(|prefix| status.starts_with(prefix))
 }
 
-/// Remote action codes whose last frame is held: sitting (250) and a
-/// dead player (161, a client-side code for the 401 fall).
-pub(crate) const REMOTE_SIT: u8 = 250;
-pub(crate) const REMOTE_DEAD: u8 = 161;
+/// Client-side remote action codes: a dead player (the 401 fall, its last
+/// frame held) and a dead monster fading out. The rest are the server's
+/// ChangeAction codes; sitting, kneeling and lying hold their last frame.
+pub(crate) const REMOTE_DEAD: u16 = 1161;
+pub(crate) const REMOTE_FADING: u16 = 1160;
 
-fn remote_action(value: u8) -> Action {
+fn remote_action(value: u16) -> Action {
     match value {
-        REMOTE_SIT => Action::Sit,
         REMOTE_DEAD => Action::Die,
-        110 => Action::WalkLeft,
-        111 => Action::WalkRight,
-        120 => Action::RunLeft,
-        121 => Action::RunRight,
-        130 => Action::Jump,
-        140 => Action::Attack,
-        150 => Action::Hit,
-        220 => Action::Pickup,
-        _ => Action::Idle,
+        _ => Action::from_catalog_id(u32::from(value)).unwrap_or(Action::Idle),
     }
+}
+
+/// Whether a remote action's last frame stays once it has played.
+fn remote_held(value: u16) -> bool {
+    value == REMOTE_DEAD || remote_action(value).held()
 }
 
 fn should_hide_dead_monster(
     health: u16,
-    action: u8,
+    action: u16,
     animation_until: f32,
     respawn_until: f32,
     time: f32,
 ) -> bool {
-    health == 0 && action == 160 && time >= animation_until && time >= respawn_until
+    health == 0 && action == REMOTE_FADING && time >= animation_until && time >= respawn_until
 }
 
 fn clip(p: [f32; 2], z: f32, viewport: [f32; 2]) -> [f32; 3] {
@@ -5490,10 +5694,10 @@ mod tests {
 
     #[test]
     fn dead_monster_is_hidden_after_death_animation_until_respawn() {
-        assert!(!should_hide_dead_monster(0, 160, 1.2, 0.0, 1.19));
-        assert!(should_hide_dead_monster(0, 160, 1.2, 0.0, 1.2));
-        assert!(!should_hide_dead_monster(100, 160, 1.2, 0.0, 2.0));
-        assert!(!should_hide_dead_monster(0, 160, 1.2, 3.0, 2.0));
+        assert!(!should_hide_dead_monster(0, super::REMOTE_FADING, 1.2, 0.0, 1.19));
+        assert!(should_hide_dead_monster(0, super::REMOTE_FADING, 1.2, 0.0, 1.2));
+        assert!(!should_hide_dead_monster(100, super::REMOTE_FADING, 1.2, 0.0, 2.0));
+        assert!(!should_hide_dead_monster(0, super::REMOTE_FADING, 1.2, 3.0, 2.0));
     }
 
     #[test]

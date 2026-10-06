@@ -116,6 +116,42 @@ pub struct SkillHud {
     /// Information is shown.
     pub battle_power_open: bool,
     pub battle_power_detail: Option<u8>,
+    /// The Action panel is open, with the emote under the cursor.
+    pub action_panel_open: bool,
+    pub action_panel_hover: Option<usize>,
+    /// The Action panel's emote being dragged (its index there).
+    pub dragging_emote: Option<usize>,
+    /// The F key being dragged to another.
+    pub dragging_hotkey: Option<usize>,
+    /// The F keys' open popup and the cell under the cursor.
+    pub hotkey_popup: Option<(crate::hotkey_menu::HotkeyPopupView, Option<usize>)>,
+    /// The chat strip's whisper name (empty: the Talk channel) and whether
+    /// the keys go to it rather than to the line.
+    pub chat_recipient: String,
+    pub chat_name_focused: bool,
+    /// The chat channel (`CHAT_CHANNELS` index), its list and the one
+    /// under the cursor.
+    pub chat_channel: u8,
+    pub chat_channel_menu: bool,
+    pub chat_channel_hover: Option<u8>,
+    /// Who is saying what on the Talk channel, for the bubbles.
+    pub speech: Vec<(String, String)>,
+    /// The private chat window and the faces waiting over the bar.
+    pub whisper_window: Option<WhisperWindowView>,
+    pub whisper_faces: Vec<(crate::whisper::Conversation, Option<u32>, bool)>,
+}
+
+/// What the private chat window shows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WhisperWindowView {
+    pub conversation: crate::whisper::Conversation,
+    pub own_name: String,
+    pub own_mesh: u32,
+    /// How the other end looks, when on screen.
+    pub seen_mesh: Option<u32>,
+    pub input: String,
+    pub input_focused: bool,
+    pub hovered: Option<crate::whisper::WhisperClick>,
 }
 
 /// Seconds since 1970 on this machine.
@@ -165,7 +201,7 @@ fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
         return;
     };
     let ping_text = info.ping.map_or_else(|| "-".to_owned(), |ping| format!("{ping} ms"));
-    let detail = format!("{}, {}   ·   {} FPS   ·   {ping_text}", info.cell[0], info.cell[1], info.fps);
+    let detail = format!("{}, {}   Â·   {} FPS   Â·   {ping_text}", info.cell[0], info.cell[1], info.fps);
     let text_width = width_of(&cinzel, &info.map, 14.0).max(width_of(&ui, &detail, 11.0) + 20.0).round() as i32;
     let plate = crate::ui::UiRect::new(CORNER[0], CORNER[1], 52 + text_width + 14, PLATE_HEIGHT);
     let shape = rounded(plate, 10.0);
@@ -392,14 +428,6 @@ const CHAT_LOG_WIDTH: i32 = 590;
 const CHAT_LOG_LINES: usize = 12;
 const CHAT_LINE_HEIGHT: i32 = 16;
 const CHAT_TAB_HEIGHT: i32 = 20;
-const CONTEXT_OPTIONS: [&str; 4] = [
-    "Assign Spell",
-    "Assign Object",
-    "Assign Text",
-    "Assign Hotkey",
-];
-const CONTEXT_ROW: i32 = 22;
-const CONTEXT_WIDTH: i32 = 150;
 
 // Hover codes shared between hit testing and painting.
 const HOVER_SLOT: u8 = 20;
@@ -531,7 +559,7 @@ enum Count {
 }
 
 impl Count {
-    /// The effect prefix, the 斩's centre from the bottom right and the
+    /// The effect prefix, the æ–©'s centre from the bottom right and the
     /// digits' spacing, as the original places them (`W - 30, H - 111`
     /// and `W - 57, H - 138`).
     fn layout(self) -> (&'static str, [i32; 2], i32) {
@@ -704,63 +732,14 @@ fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {
     [x.round() as i32, y.round() as i32]
 }
 
-/// The chat log sits at the left edge above the bar, like the original.
-fn chat_log_rect(viewport: [f32; 2]) -> Rect {
-    let [hud_x, hud_y] = hud_origin(viewport);
-    // Where the bar reaches under the log, keep clear of the orb's small
-    // buttons (their tops sit 11px into the bar).
-    let bottom = if hud_x < CHAT_LOG_WIDTH {
-        hud_y + 8
-    } else {
-        hud_y + 18
-    };
-    let height = CHAT_TAB_HEIGHT + 10 + CHAT_LOG_LINES as i32 * CHAT_LINE_HEIGHT + 6;
-    Rect(0, bottom - height, CHAT_LOG_WIDTH, height)
-}
 
-fn chat_tab_rect(viewport: [f32; 2], index: usize) -> Rect {
-    let log = chat_log_rect(viewport);
-    let font = main_hud::font().ok();
-    let mut x = log.0 + 6;
-    for (current, (label, _)) in CHAT_TABS.into_iter().enumerate() {
-        let width = font.map_or(48, |font| main_hud::text_width(font, label, 12.0) + 18);
-        if current == index {
-            return Rect(x, log.1 + 6, width, CHAT_TAB_HEIGHT);
-        }
-        x += width + 2;
-    }
-    Rect(0, 0, 0, 0)
-}
 
 fn hotkey_rect(viewport: [f32; 2], index: usize) -> Rect {
     layout::hotkey_slot_rect(viewport, index).into()
 }
 
-fn action_context_menu_rect(viewport: [f32; 2], slot: usize) -> Rect {
-    let anchor = hotkey_rect(viewport, slot.min(9));
-    let height = CONTEXT_ROW * CONTEXT_OPTIONS.len() as i32 + 8;
-    let x = (anchor.0 + anchor.2 / 2 - CONTEXT_WIDTH / 2)
-        .clamp(4, (viewport[0] as i32 - CONTEXT_WIDTH - 4).max(4));
-    Rect(x, anchor.1 - height - 26, CONTEXT_WIDTH, height)
-}
-
 pub fn action_slot_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<usize> {
     layout::hotkey_slot_at(viewport, cursor)
-}
-
-pub fn action_context_option_at(
-    viewport: [f32; 2],
-    cursor: [f32; 2],
-    slot: usize,
-) -> Option<usize> {
-    let menu = action_context_menu_rect(viewport, slot);
-    if !menu.contains(cursor) {
-        return None;
-    }
-    let option = (cursor[1] as i32 - menu.1 - 4).div_euclid(CONTEXT_ROW);
-    (0..CONTEXT_OPTIONS.len() as i32)
-        .contains(&option)
-        .then_some(option as usize)
 }
 
 pub fn position(_viewport: [f32; 2]) -> [f32; 2] {
@@ -780,7 +759,7 @@ pub fn contains(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     if cursor[0] < 0.0 || cursor[1] < 0.0 || cursor[0] >= viewport[0] || cursor[1] >= viewport[1] {
         return false;
     }
-    layout::main_hud_solid_at(viewport, cursor) || chat_tab_at(viewport, cursor).is_some()
+    layout::main_hud_solid_at(viewport, cursor)
 }
 
 pub fn items_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -789,6 +768,10 @@ pub fn items_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
 
 pub fn capture_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Capture)
+}
+
+pub fn action_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Action)
 }
 
 pub fn status_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -818,6 +801,10 @@ pub fn chat_input_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     )
 }
 
+pub fn chat_name_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::chat_strip_control_at(viewport, cursor) == Some(ChatStripControl::Name)
+}
+
 pub fn chat_clear_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::chat_strip_control_at(viewport, cursor) == Some(ChatStripControl::Clear)
 }
@@ -832,12 +819,6 @@ pub fn chat_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
 
 pub fn talk_channel_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::chat_strip_control_at(viewport, cursor) == Some(ChatStripControl::Talk)
-}
-
-pub fn chat_tab_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u16> {
-    (0..CHAT_TABS.len())
-        .find(|&index| chat_tab_rect(viewport, index).contains(cursor))
-        .map(|index| CHAT_TABS[index].1)
 }
 
 pub fn hovered_button(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
@@ -855,10 +836,6 @@ pub fn hovered_button(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {
             .iter()
             .position(|&candidate| candidate == control)
             .map(|index| HOVER_CHAT + index as u8);
-    }
-    if let Some(index) = (0..CHAT_TABS.len()).find(|&i| chat_tab_rect(viewport, i).contains(cursor))
-    {
-        return Some(HOVER_TAB + index as u8);
     }
     layout::orb_rect(viewport)
         .contains(cursor)
@@ -917,99 +894,6 @@ fn tooltip(img: &mut RgbaImage, font: &fontdue::Font, lines: &[(&str, [u8; 4])],
     }
 }
 
-fn chat_color(channel: u16) -> ([u8; 4], Option<(&'static str, [u8; 4])>) {
-    match channel {
-        2001 => (
-            [255, 128, 255, 255],
-            Some(("[Whisper]", [255, 128, 255, 255])),
-        ),
-        2003 => ([128, 255, 255, 255], Some(("[Team]", [128, 255, 255, 255]))),
-        2004 => (
-            [128, 255, 128, 255],
-            Some(("[Guild]", [128, 255, 128, 255])),
-        ),
-        2021 => (
-            [255, 200, 120, 255],
-            Some(("[World]", [255, 200, 120, 255])),
-        ),
-        2005 | 2007 | 2011 => ([255, 255, 0, 255], Some(("[System]", [255, 64, 255, 255]))),
-        2500 => ([255, 214, 96, 255], Some(("[Broadcast]", [255, 160, 60, 255]))),
-        _ => ([255, 255, 255, 255], None),
-    }
-}
-
-fn draw_chat_log(
-    img: &mut RgbaImage,
-    font: &fontdue::Font,
-    viewport: [f32; 2],
-    history: &[crate::network::ChatMessage],
-    filter: u16,
-    hover: Option<u8>,
-) {
-    let log = chat_log_rect(viewport);
-    fill(img, log, [0, 0, 0, 70]);
-    for (index, (label, channel)) in CHAT_TABS.into_iter().enumerate() {
-        let tab = chat_tab_rect(viewport, index);
-        let active = channel == filter;
-        let hovered = hover == Some(HOVER_TAB + index as u8);
-        fill(
-            img,
-            tab,
-            if active {
-                [92, 96, 104, 235]
-            } else if hovered {
-                [70, 74, 82, 225]
-            } else {
-                [44, 47, 54, 215]
-            },
-        );
-        outline(
-            img,
-            tab,
-            if active {
-                [176, 190, 214, 255]
-            } else {
-                [74, 79, 88, 255]
-            },
-        );
-        let color = if active {
-            [255, 255, 255, 255]
-        } else {
-            [205, 208, 214, 255]
-        };
-        let text_x = tab.0 + (tab.2 - main_hud::text_width(font, label, 12.0)) / 2;
-        main_hud::text(img, font, label, 12.0, [text_x, tab.1 + 3], color, None);
-    }
-    let messages = history
-        .iter()
-        .filter(|message| filter == 0 || message.channel == filter)
-        .rev()
-        .take(CHAT_LOG_LINES)
-        .collect::<Vec<_>>();
-    let max_width = log.2 - 12;
-    for (row, message) in messages.into_iter().enumerate() {
-        let y = log.1 + log.3 - 6 - (row as i32 + 1) * CHAT_LINE_HEIGHT;
-        let (color, tag) = chat_color(message.channel);
-        let mut x = log.0 + 6;
-        if let Some((tag, tag_color)) = tag {
-            x += main_hud::text(img, font, tag, 12.0, [x, y], tag_color, None) + 4;
-        }
-        let body = if message.channel == 2007 || message.channel == 2005 {
-            message.message.clone()
-        } else {
-            format!("{}: {}", message.sender_name, message.message)
-        };
-        main_hud::text(
-            img,
-            font,
-            &body,
-            12.0,
-            [x, y],
-            color,
-            Some(max_width - (x - log.0)),
-        );
-    }
-}
 
 fn draw_hotkeys(
     img: &mut RgbaImage,
@@ -1022,13 +906,18 @@ fn draw_hotkeys(
     for (index, slot) in action_bar.slots.iter().enumerate() {
         let frame = hotkey_rect(viewport, index);
         let inner = frame.inset(3);
-        if let Some(mut icon) = slot
-            .icon_path()
-            .and_then(|path| assets.image(&path).ok())
-        {
+        let binding = slot.binding();
+        let art = match &binding {
+            Some(crate::action_bar::Binding::Item(item_type)) => crate::shop::item_icon_image(assets, *item_type).ok(),
             // Skill textures keep their artwork in a larger transparent
             // canvas; crop it so the icon fills the slot like the original.
-            icon = crate::original_ui::visible_part(&icon)?;
+            _ => slot
+                .icon_path()
+                .and_then(|path| assets.image(&path).ok())
+                .map(|icon| crate::original_ui::visible_part(&icon))
+                .transpose()?,
+        };
+        if let Some(mut icon) = art {
             let size = (frame.2 - 4) as u32;
             if icon.dimensions() != (size, size) {
                 icon = imageops::resize(&icon, size, size, imageops::FilterType::Triangle);
@@ -1039,6 +928,18 @@ fn draw_hotkeys(
                 }
             }
             imageops::overlay(img, &icon, i64::from(frame.0 + 2), i64::from(frame.1 + 2));
+        }
+        if let Some(crate::action_bar::Binding::Text(text)) = &binding {
+            // A line of text: its first letters on a dark plate.
+            fill(img, inner, [20, 24, 30, 230]);
+            let short: String = text.chars().take(5).collect();
+            let x = inner.0 + (inner.2 - main_hud::text_width(font, &short, 11.0)).max(0) / 2;
+            main_hud::text(img, font, &short, 11.0, [x, inner.1 + 10], [255, 236, 170, 255], Some(inner.2));
+        }
+        if let Some(count) = slot.count {
+            let label = count.to_string();
+            let x = inner.0 + inner.2 - main_hud::text_width(font, &label, 11.0) - 1;
+            main_hud::text(img, font, &label, 11.0, [x, inner.1 + inner.3 - 13], [255, 255, 255, 255], None);
         }
         if slot.cooldown_left > 0 {
             cooldown_sweep(img, inner, slot.cooldown_left);
@@ -1082,42 +983,6 @@ fn cooldown_sweep(img: &mut RgbaImage, area: Rect, left: u8) {
                 }
             }
         }
-    }
-}
-
-fn draw_action_context_menu(
-    img: &mut RgbaImage,
-    font: &fontdue::Font,
-    viewport: [f32; 2],
-    slot: usize,
-    hover: Option<usize>,
-) {
-    let menu = action_context_menu_rect(viewport, slot);
-    fill(img, menu, [0, 0, 0, 200]);
-    outline(img, menu, [137, 115, 74, 255]);
-    for (index, label) in CONTEXT_OPTIONS.into_iter().enumerate() {
-        let row = Rect(
-            menu.0 + 3,
-            menu.1 + 4 + index as i32 * CONTEXT_ROW,
-            menu.2 - 6,
-            CONTEXT_ROW,
-        );
-        if hover == Some(index) {
-            fill(img, row, [96, 78, 44, 200]);
-        }
-        main_hud::text(
-            img,
-            font,
-            label,
-            12.0,
-            [row.0 + 8, row.1 + 4],
-            if hover == Some(index) {
-                [255, 236, 170, 255]
-            } else {
-                [235, 235, 235, 255]
-            },
-            None,
-        );
     }
 }
 
@@ -1196,7 +1061,6 @@ pub fn image(
     action_bar: &crate::action_bar::ActionBar,
     hover: Option<u8>,
     action_context_slot: Option<usize>,
-    action_context_hover: Option<usize>,
     chat_text: &str,
     chat_focused: bool,
     chat_history: &[crate::network::ChatMessage],
@@ -1216,7 +1080,7 @@ pub fn image(
     let viewport = [width as f32, height as f32];
     let mut img = RgbaImage::new(width.max(1), height.max(1));
 
-    draw_chat_log(&mut img, font, viewport, chat_history, chat_filter, hover);
+    let _ = (chat_history, chat_filter);
 
     let art = MainHudArt::get(assets)?;
     let [x, y] = hud_origin(viewport);
@@ -1244,6 +1108,11 @@ pub fn image(
             hovered_chat,
             chat_text,
             chat_focused,
+            chat_name: &skills.chat_recipient,
+            chat_name_focused: skills.chat_name_focused,
+            chat_channel: skills.chat_channel,
+            chat_channel_menu: skills.chat_channel_menu,
+            chat_channel_hover: skills.chat_channel_hover,
             kill_mode: skills.kill_mode,
             active_skill_icon: skills
                 .active_skill
@@ -1252,7 +1121,7 @@ pub fn image(
         font,
     );
     draw_skill_bar(&mut img, assets, font, viewport, skills);
-    // Cyclone or Superman: their KOs in the big red count ("<n> 斩"),
+    // Cyclone or Superman: their KOs in the big red count ("<n> æ–©"),
     // otherwise the kills of the last kind of monster in the small blue one.
     let in_xp_skill = skills.timers.iter().any(|(flag, _)| *flag & XP_SKILL_FLAGS != 0);
     if in_xp_skill {
@@ -1342,14 +1211,13 @@ pub fn image(
         && action_context_slot.is_none()
     {
         let slot = &action_bar.slots[index];
-        let name = slot
-            .action_id
-            .as_deref()
-            .and_then(|action| action.strip_prefix("skill:"))
-            .and_then(|id| id.parse::<u32>().ok())
-            .and_then(crate::action_bar::skill_action)
-            .map(|skill| skill.name);
-        if let Some(name) = name {
+        let name = slot.binding().map(|binding| match binding {
+            crate::action_bar::Binding::Skill(id) => crate::magic::skill_name(assets, id),
+            crate::action_bar::Binding::Emote(action) => format!("{action:?}"),
+            crate::action_bar::Binding::Item(item_type) => crate::shop::item_name(assets, item_type),
+            crate::action_bar::Binding::Text(text) => text,
+        });
+        if let Some(name) = name.as_deref() {
             let frame = hotkey_rect(viewport, index);
             tooltip(
                 &mut img,
@@ -1361,9 +1229,6 @@ pub fn image(
                 [frame.0, frame.1 - 4],
             );
         }
-    }
-    if let Some(slot) = action_context_slot {
-        draw_action_context_menu(&mut img, font, viewport, slot, action_context_hover);
     }
     Ok(img)
 }
@@ -1399,28 +1264,9 @@ mod tests {
             assert!(chat_clear_at(viewport, clear));
             let input = center(layout::chat_strip_rect(viewport, ChatStripControl::Input));
             assert!(chat_input_at(viewport, input));
-            for (index, (_, channel)) in CHAT_TABS.into_iter().enumerate() {
-                let tab = chat_tab_rect(viewport, index);
-                let p = [(tab.0 + tab.2 / 2) as f32, (tab.1 + tab.3 / 2) as f32];
-                assert_eq!(chat_tab_at(viewport, p), Some(channel));
-            }
             assert!(!contains(viewport, [viewport[0] * 0.5, viewport[1] * 0.5]));
             assert!(!contains(viewport, [-1.0, viewport[1] - 1.0]));
         }
-    }
-
-    #[test]
-    fn context_menu_rows_are_hit_tested() {
-        let viewport = [1366.0, 768.0];
-        let menu = action_context_menu_rect(viewport, 3);
-        for index in 0..CONTEXT_OPTIONS.len() {
-            let y = menu.1 + 4 + index as i32 * CONTEXT_ROW + CONTEXT_ROW / 2;
-            assert_eq!(
-                action_context_option_at(viewport, [(menu.0 + 20) as f32, y as f32], 3),
-                Some(index)
-            );
-        }
-        assert_eq!(action_context_option_at(viewport, [0.0, 0.0], 3), None);
     }
 
     #[test]
@@ -1463,7 +1309,7 @@ mod tests {
                 channel: 2000,
                 sender_name: "CloudStrider".into(),
                 recipient_name: "ALLUSERS".into(),
-                message: "Olá, Twin City!".into(),
+                message: "OlÃ¡, Twin City!".into(),
             },
             crate::network::ChatMessage {
                 channel: 2001,
@@ -1472,7 +1318,13 @@ mod tests {
                 message: "Mensagem privada de teste".into(),
             },
         ];
-        let action_bar = crate::action_bar::ActionBar::default();
+        let mut action_bar = crate::action_bar::ActionBar::default();
+        // An emote, an object and a line of text on F4 to F6.
+        use crate::action_bar::Binding;
+        action_bar.set(3, Some(Binding::Emote(crate::action::Action::Dance)));
+        action_bar.set(4, Some(Binding::Item(1_000_000)));
+        action_bar.slots[4].count = Some(12);
+        action_bar.set(5, Some(Binding::Text("Hello all".into())));
         for (name, width, height, hp, mp, hover, chat) in [
             (
                 "hud-1366.png",
@@ -1481,7 +1333,7 @@ mod tests {
                 65,
                 40,
                 Some(1),
-                "Olá, Twin City!",
+                "OlÃ¡, Twin City!",
             ),
             ("hud-1024.png", 1024, 768, 25, 0, Some(HOVER_ORB), ""),
             ("hud-1704.png", 1704, 960, 100, 100, Some(HOVER_SLOT), ""),
@@ -1499,7 +1351,6 @@ mod tests {
                 160,
                 &action_bar,
                 hover,
-                None,
                 None,
                 chat,
                 !chat.is_empty(),
@@ -1525,6 +1376,7 @@ mod tests {
                     info: Some(InfoBar { map: "Twin City".into(), cell: [430, 380], fps: 144, ping: Some(12) }),
                     xp_ready: true,
                     xp_points: 65,
+                    chat_recipient: "Tom411".into(),
                     timers: vec![(1 << 48, 3_400), (1 << 49, 200_000), (1 << 46, 600_000), (1 << 50, 5_000)],
                     ..SkillHud::default()
                 },

@@ -9,6 +9,41 @@ pub struct ActionSlot {
     /// Cooldown left, in [`COOLDOWN_STEPS`] of the whole (0 when ready).
     pub cooldown_left: u8,
     pub disabled: bool,
+    /// How many of an object slot's item the bag holds.
+    pub count: Option<u32>,
+}
+
+/// What an F key does, as `action_id` keeps it (and the HUD settings file):
+/// `skill:<id>`, `emote:<ChangeAction code>`, `item:<item type>` or
+/// `text:<line>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Binding {
+    Skill(u32),
+    Emote(crate::action::Action),
+    Item(u32),
+    Text(String),
+}
+
+impl Binding {
+    pub fn parse(action_id: &str) -> Option<Self> {
+        let (kind, value) = action_id.split_once(':')?;
+        Some(match kind {
+            "skill" => Self::Skill(value.parse().ok()?),
+            "emote" => Self::Emote(crate::action::Action::from_catalog_id(value.parse().ok()?)?),
+            "item" => Self::Item(value.parse().ok()?),
+            "text" => Self::Text(value.to_owned()),
+            _ => return None,
+        })
+    }
+
+    pub fn id(&self) -> String {
+        match self {
+            Self::Skill(id) => format!("skill:{id}"),
+            Self::Emote(action) => format!("emote:{}", action.catalog_id()),
+            Self::Item(item_type) => format!("item:{item_type}"),
+            Self::Text(text) => format!("text:{text}"),
+        }
+    }
 }
 
 /// How finely the cooldown sweep animates (each step redraws the HUD).
@@ -427,14 +462,20 @@ pub fn skill_icon(skill_id: u32) -> String {
 }
 
 impl ActionSlot {
-    /// Explicit icon, or the original skill icon for skill actions.
+    pub fn binding(&self) -> Option<Binding> {
+        self.action_id.as_deref().and_then(Binding::parse)
+    }
+
+    /// Explicit icon, or the original art of the skill or emote (an
+    /// object's icon comes from the item catalog).
     pub fn icon_path(&self) -> Option<String> {
-        self.icon.clone().or_else(|| {
-            self.action_id
-                .as_deref()
-                .and_then(|action| action.strip_prefix("skill:"))
-                .and_then(|id| id.parse().ok())
-                .map(skill_icon)
+        self.icon.clone().or_else(|| match self.binding()? {
+            Binding::Skill(id) => Some(skill_icon(id)),
+            Binding::Emote(action) => crate::action_panel::EMOTES
+                .iter()
+                .position(|emote| *emote == action)
+                .map(|index| format!("data/main/Act{index}.dds")),
+            Binding::Item(_) | Binding::Text(_) => None,
         })
     }
 }
@@ -476,6 +517,21 @@ impl ActionBar {
         Some(index)
     }
 
+    /// Puts `binding` on F key `index` (or clears it).
+    pub fn set(&mut self, index: usize, binding: Option<Binding>) {
+        if let Some(slot) = self.slots.get_mut(index) {
+            slot.action_id = binding.map(|binding| binding.id());
+        }
+    }
+
+    /// Swaps what two F keys do; the keys stay where they are.
+    pub fn swap(&mut self, first: usize, second: usize) {
+        if first < self.slots.len() && second < self.slots.len() && first != second {
+            let moved = self.slots[first].action_id.take();
+            self.slots[first].action_id = std::mem::replace(&mut self.slots[second].action_id, moved);
+        }
+    }
+
     pub fn skill_id(&self, index: usize) -> Option<u32> {
         self.slots
             .get(index)
@@ -503,6 +559,25 @@ mod tests {
         assert_eq!(bar.assign_skill(1002), Some(2));
         assert_eq!(bar.skill_id(2), Some(1002));
         assert_eq!(bar.assign_skill(1002), Some(2));
+    }
+
+    #[test]
+    fn bindings_round_trip_and_keys_swap() {
+        use super::Binding;
+        for binding in [
+            Binding::Skill(1045),
+            Binding::Emote(crate::action::Action::Lie),
+            Binding::Item(1_000_000),
+            Binding::Text("hello: world".into()),
+        ] {
+            assert_eq!(Binding::parse(&binding.id()), Some(binding));
+        }
+        let mut bar = ActionBar::default();
+        bar.set(5, Some(Binding::Emote(crate::action::Action::Dance)));
+        bar.swap(0, 5);
+        assert_eq!(bar.slots[0].action_id.as_deref(), Some("emote:1"));
+        assert_eq!(bar.skill_id(5), Some(1000));
+        assert_eq!(bar.slots[0].icon_path().as_deref(), Some("data/main/Act6.dds"));
     }
 
     #[test]

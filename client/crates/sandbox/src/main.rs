@@ -37,6 +37,10 @@ mod store_panel;
 mod daily_rewards_panel;
 mod highscores_panel;
 mod emblems;
+mod action_panel;
+mod hotkey_menu;
+mod whisper;
+mod chat_log;
 mod battle_power_panel;
 mod showcase;
 mod ui;
@@ -254,7 +258,15 @@ struct App {
     map: map::Map,
     character: character::Character,
     action_bar: action_bar::ActionBar,
-    action_context_slot: Option<usize>,
+    /// The F keys' right-click menu, or what it opened.
+    hotkey_popup: Option<hotkey_menu::HotkeyPopup>,
+    /// Private chats, their faces over the bar and the open window.
+    whispers: whisper::Whispers,
+    /// The hero's look with the avatar (from the login), for their face.
+    own_mesh: u32,
+    /// What each speaker said on the Talk channel and until when it shows
+    /// over their head, by lower-case name.
+    speech: HashMap<String, (String, f32)>,
     item_context: Option<shop::ItemContext>,
     /// A Friend/Trade button waiting for the player to click its target.
     target_pick: Option<TargetPick>,
@@ -295,8 +307,9 @@ struct App {
     xp_points: u8,
     /// When the player died; `None` while alive.
     dead_since: Option<f32>,
-    /// Sitting (MsgAction 250): stamina comes back faster.
-    sitting: bool,
+    /// A held pose and when it began: sitting (MsgAction 250, stamina comes
+    /// back faster), kneeling or lying down, until the player moves.
+    held_pose: Option<(Action, f32)>,
     /// A portal works once the hero has stood off every portal, so arriving
     /// on the destination's own portal does not bounce straight back.
     portal_armed: bool,
@@ -321,6 +334,12 @@ struct App {
     /// The Battle Power Evaluation, and the part whose details are open.
     battle_power_open: bool,
     battle_power_detail: Option<u8>,
+    /// The main bar's Action panel of emotes is open.
+    action_panel_open: bool,
+    /// An emote pressed on the Action panel, until the button comes up.
+    dragging_emote: Option<Action>,
+    /// An F key pressed and where, until the button comes up.
+    dragging_hotkey: Option<(usize, [f32; 2])>,
     performance_overlay: bool,
     hud_config: hud::HudConfig,
     network: Option<NetworkHandle>,
@@ -351,9 +370,19 @@ struct App {
     warehouse_amount: String,
     warehouse_amount_focused: bool,
     chat_text: String,
+    /// The strip's whisper name: lines go to them while it is set.
+    chat_recipient: String,
+    /// The keys go to the whisper name rather than to the line.
+    chat_name_focused: bool,
+    /// The chat channel (`CHAT_CHANNELS` index) and whether its list is
+    /// open.
+    chat_channel: u8,
+    chat_channel_menu: bool,
     chat_focused: bool,
     chat_history: VecDeque<ChatMessage>,
     chat_filter: u16,
+    /// The chat log's window: place, size, tab, reading back, its menu.
+    chat_log: chat_log::ChatLogState,
     friends: Vec<SocialEntry>,
     ignores: Vec<SocialEntry>,
     dragging_shop_item: Option<u32>,
@@ -571,6 +600,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
+                if self.chat_log.grab.is_some()
+                    && let Some(viewport) = self.viewport()
+                {
+                    self.chat_log.drag(viewport, self.cursor);
+                }
                 self.refresh_cursor();
                 if let (Some(shop), Some(window)) = (&mut self.shop, &self.window) {
                     let size = window.inner_size();
@@ -585,6 +619,14 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, vertical) => vertical,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32,
                 };
+                if amount != 0.0
+                    && let Some(viewport) = self.viewport()
+                    && self.chat_log.contains(viewport, self.cursor)
+                    && !self.chat_log.minimized
+                {
+                    self.chat_log.scroll_by(amount > 0.0);
+                    return;
+                }
                 if amount != 0.0 && self.scroll_shop_page(amount < 0.0) {
                     return;
                 }
@@ -698,8 +740,117 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.whispers.input_focused && self.whispers.open.is_some() =>
+            {
+                if event.state == ElementState::Pressed {
+                    let paste = self.modifiers.control_key()
+                        && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV));
+                    let copy = self.modifiers.control_key()
+                        && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyC));
+                    match event.physical_key {
+                        _ if copy => copy_to_clipboard(&self.whispers.input),
+                        _ if paste => {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new()
+                                && let Ok(text) = clipboard.get_text()
+                            {
+                                for character in text.chars().filter(|character| !character.is_control()) {
+                                    if self.whispers.input.chars().count() < 120 {
+                                        self.whispers.input.push(character);
+                                    }
+                                }
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Escape) => self.whispers.close(),
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.send_whisper_input(),
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            self.whispers.input.pop();
+                        }
+                        _ => {
+                            if let Some(typed) = event.text.as_ref() {
+                                for character in typed.chars().filter(|character| !character.is_control()) {
+                                    if self.whispers.input.chars().count() < 120 {
+                                        self.whispers.input.push(character);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if matches!(self.hotkey_popup, Some(hotkey_menu::HotkeyPopup::Text { .. })) =>
+            {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => self.hotkey_popup = None,
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.save_hotkey_text(),
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            if let Some(hotkey_menu::HotkeyPopup::Text { text, .. }) = self.hotkey_popup.as_mut() {
+                                text.pop();
+                            }
+                        }
+                        _ => {
+                            if let (Some(hotkey_menu::HotkeyPopup::Text { text, .. }), Some(typed)) =
+                                (self.hotkey_popup.as_mut(), event.text.as_ref())
+                            {
+                                for character in typed.chars().filter(|character| !character.is_control()) {
+                                    if text.chars().count() < hotkey_menu::TEXT_LIMIT {
+                                        text.push(character);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. } if self.chat_focused && self.chat_name_focused => {
+                if event.state == ElementState::Pressed {
+                    let control = self.modifiers.control_key();
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::KeyC) if control => copy_to_clipboard(&self.chat_recipient),
+                        PhysicalKey::Code(KeyCode::KeyV) if control => {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new()
+                                && let Ok(text) = clipboard.get_text()
+                            {
+                                self.chat_recipient = text.trim().chars().filter(|c| !c.is_whitespace()).take(16).collect();
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Escape) => self.chat_focused = false,
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            self.chat_recipient.pop();
+                        }
+                        // On to the line.
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab) => {
+                            self.chat_name_focused = false;
+                        }
+                        _ => {
+                            if let Some(text) = event.text.as_ref() {
+                                for character in text.chars().filter(|c| !c.is_control() && !c.is_whitespace()) {
+                                    if self.chat_recipient.chars().count() < 16 {
+                                        self.chat_recipient.push(character);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
             WindowEvent::KeyboardInput { event, .. } if self.chat_focused => {
                 if event.state == ElementState::Pressed {
+                    if self.modifiers.control_key()
+                        && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyC))
+                    {
+                        copy_to_clipboard(&self.chat_text);
+                        return;
+                    }
+                    if matches!(event.physical_key, PhysicalKey::Code(KeyCode::Tab)) {
+                        self.chat_name_focused = true;
+                        return;
+                    }
                     if self.modifiers.control_key()
                         && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV))
                     {
@@ -798,9 +949,9 @@ impl ApplicationHandler for App {
                         let size = window.inner_size();
                         let viewport = [size.width as f32, size.height as f32];
                         if let Some(slot) = hud::action_slot_at(viewport, self.cursor) {
-                            self.action_context_slot = Some(slot);
+                            self.hotkey_popup = Some(hotkey_menu::HotkeyPopup::Menu { slot });
                             true
-                        } else if self.action_context_slot.take().is_some() {
+                        } else if self.hotkey_popup.take().is_some() {
                             true
                         } else {
                             false
@@ -838,29 +989,24 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
-                if button == MouseButton::Left && state == ElementState::Pressed {
-                    if let Some(slot) = self.action_context_slot {
-                        let option = self.window.as_ref().and_then(|window| {
-                            let size = window.inner_size();
-                            hud::action_context_option_at(
-                                [size.width as f32, size.height as f32],
-                                self.cursor,
-                                slot,
-                            )
-                        });
-                        self.action_context_slot = None;
-                        if let Some(option) = option {
-                            let labels = [
-                                "Assign Spell",
-                                "Assign Object",
-                                "Assign Text",
-                                "Assign Hotkey",
-                            ];
-                            self.network_status =
-                                format!("action bar slot {}: {}", slot + 1, labels[option]);
-                        }
-                        return;
-                    }
+                if button == MouseButton::Left
+                    && state == ElementState::Pressed
+                    && self.handle_whisper_click()
+                {
+                    return;
+                }
+                if button == MouseButton::Left && state == ElementState::Released && self.chat_log.grab.take().is_some() {
+                    return;
+                }
+                if button == MouseButton::Right && state == ElementState::Pressed && self.open_chat_line_menu() {
+                    return;
+                }
+                if button == MouseButton::Left
+                    && state == ElementState::Pressed
+                    && self.hotkey_popup.is_some()
+                {
+                    self.handle_hotkey_popup_click();
+                    return;
                 }
                 match (button, state) {
                     (MouseButton::Right, ElementState::Pressed)
@@ -889,6 +1035,12 @@ impl ApplicationHandler for App {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.select_shop() => return,
+                    (MouseButton::Left, ElementState::Released) if self.finish_hotkey_drag() => {
+                        return;
+                    }
+                    (MouseButton::Left, ElementState::Released) if self.finish_emote_drag() => {
+                        return;
+                    }
                     (MouseButton::Left, ElementState::Released) if self.finish_shop_drag() => {
                         return;
                     }
@@ -1013,6 +1165,9 @@ impl ApplicationHandler for App {
                             .renderer
                             .as_mut()
                             .is_some_and(renderer::Renderer::collapse_minimap) => {}
+                    PhysicalKey::Code(KeyCode::Escape) if self.hotkey_popup.is_some() => {
+                        self.hotkey_popup = None;
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.inventory_open => {
                         self.inventory_open = false;
                     }
@@ -1023,9 +1178,26 @@ impl ApplicationHandler for App {
                         self.quick_panel = None;
                     }
                     PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                    // Enter at any time: to the line (the private chat's,
+                    // when its window is open).
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                        if self.whispers.open.is_some() {
+                            self.whispers.input_focused = true;
+                        } else {
+                            self.chat_focused = true;
+                            self.chat_name_focused = false;
+                        }
+                    }
                     PhysicalKey::Code(KeyCode::F1) => self.cast_action_slot(0),
                     PhysicalKey::Code(KeyCode::F2) => self.cast_action_slot(1),
                     PhysicalKey::Code(KeyCode::F3) => self.cast_action_slot(2),
+                    PhysicalKey::Code(KeyCode::F4) => self.cast_action_slot(3),
+                    PhysicalKey::Code(KeyCode::F5) => self.cast_action_slot(4),
+                    PhysicalKey::Code(KeyCode::F6) => self.cast_action_slot(5),
+                    PhysicalKey::Code(KeyCode::F7) => self.cast_action_slot(6),
+                    PhysicalKey::Code(KeyCode::F8) => self.cast_action_slot(7),
+                    PhysicalKey::Code(KeyCode::F9) => self.cast_action_slot(8),
+                    PhysicalKey::Code(KeyCode::F10) => self.cast_action_slot(9),
                     PhysicalKey::Code(KeyCode::F11) => {
                         self.performance_overlay = !self.performance_overlay;
                     }
@@ -1062,7 +1234,7 @@ impl ApplicationHandler for App {
                 let expired_dead = self
                     .remote_actors
                     .iter()
-                    .filter(|(_, actor)| actor.action == 160 && elapsed >= actor.animation_until)
+                    .filter(|(_, actor)| actor.action == renderer::REMOTE_FADING && elapsed >= actor.animation_until)
                     .map(|(id, _)| *id)
                     .collect::<Vec<_>>();
                 for id in expired_dead {
@@ -1085,12 +1257,16 @@ impl ApplicationHandler for App {
                         self.local_action = None;
                     }
                 }
-                if self.sitting && self.player.moving() {
-                    self.sitting = false;
+                if self.held_pose.is_some() && self.player.moving() {
+                    self.held_pose = None;
                 }
-                if self.sitting && self.dead_since.is_none() {
-                    self.player.action = Action::Sit;
-                    local_action_progress = Some(1.0);
+                if let Some((pose, since)) = self.held_pose
+                    && self.dead_since.is_none()
+                {
+                    // The pose plays once, then its last frame stays.
+                    let length = self.character.duration(pose).as_secs_f32().max(0.1);
+                    self.player.action = pose;
+                    local_action_progress = Some(((elapsed - since) / length).clamp(0.0, 1.0));
                 }
                 // Dead: the body falls, then a ghost walks until revived.
                 if let Some(died_at) = self.dead_since
@@ -1172,6 +1348,17 @@ impl ApplicationHandler for App {
                     actor.ko_count = self.actor_kos.get(&actor.id).copied().unwrap_or(0);
                 }
                 self.character.booth = self.booths.get(&own_name).cloned();
+                let chat_log = self.chat_log_view();
+                if let Some(renderer) = &mut self.renderer {
+                    match chat_log {
+                        Some((view, rect, menu)) => {
+                            renderer.chat_log = Some(view);
+                            renderer.chat_log_rect = rect;
+                            renderer.chat_menu = menu;
+                        }
+                        None => renderer.chat_log = None,
+                    }
+                }
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1189,7 +1376,7 @@ impl ApplicationHandler for App {
                         &self.guild_members,
                         self.pending_guild_invite,
                         &self.trade,
-                        self.action_context_slot,
+                        self.hotkey_popup.as_ref().map(hotkey_menu::HotkeyPopup::slot),
                         &self.player,
                         &self.remote_actors,
                         self.selected_target,
@@ -1306,6 +1493,7 @@ impl ApplicationHandler for App {
         // look like they teleport or freeze between updates.
         let now = self.started.elapsed().as_secs_f32();
         self.combat_numbers.retain(|(_, _, expires)| *expires > now);
+        self.speech.retain(|_, (_, until)| *until > now);
         self.skill_effects.retain(|effect| effect.expires > now);
         for slot in &mut self.action_bar.slots {
             let skill_id = slot
@@ -1322,6 +1510,14 @@ impl ApplicationHandler for App {
             // Whole seconds only for long cooldowns; the sweep shows the rest.
             slot.cooldown = Some(remaining.ceil() as u32).filter(|seconds| *seconds > 1);
             slot.cooldown_left = action_bar::cooldown_steps(remaining, total);
+            // An object's count, greyed when the bag has none.
+            slot.count = match slot.binding() {
+                Some(action_bar::Binding::Item(item_type)) => {
+                    Some(self.inventory.iter().filter(|item| item.item_type == item_type).count() as u32)
+                }
+                _ => None,
+            };
+            slot.disabled = slot.count == Some(0);
         }
         self.ground_loot.retain(|(_, _, _, expires)| *expires > now);
         if let Some(character_id) = self.network_character_id {
@@ -1330,7 +1526,8 @@ impl ApplicationHandler for App {
                 self.skill_bar_open,
                 self.performance_overlay,
                 self.team_join_enabled,
-            );
+            )
+            .with_chat(&self.chat_log);
             if self.saved_hud.as_ref() != Some(&hud) {
                 settings::save(character_id, &hud);
                 self.saved_hud = Some(hud);
@@ -1546,8 +1743,22 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        // The channel list: a channel picked; a Whisper wants a name.
+        if self.chat_channel_menu {
+            self.chat_channel_menu = false;
+            if let Some(index) = original_ui_layout::chat_channel_at(viewport, self.cursor) {
+                self.chat_channel = index as u8;
+                self.chat_focused = true;
+                self.chat_name_focused =
+                    self.chat_channel == original_ui_layout::WHISPER_CHANNEL && self.chat_recipient.is_empty();
+                self.held = false;
+                return true;
+            }
+        }
+        // An F key: a click uses it, a drag takes it to another key (see
+        // `finish_hotkey_drag`).
         if let Some(slot) = hud::action_slot_at(viewport, self.cursor) {
-            self.cast_action_slot(slot);
+            self.dragging_hotkey = Some((slot, self.cursor));
             self.held = false;
             return true;
         }
@@ -1574,6 +1785,25 @@ impl App {
                 return true;
             }
             // Any click elsewhere closes the menu and is handled as usual.
+        }
+        // The Action panel: an emote, or close; the Action button toggles it.
+        if self.action_panel_open
+            && let Some(click) = action_panel::click_at(viewport, self.cursor)
+        {
+            match click {
+                // The release decides: on an F key it is assigned there, on
+                // the emote itself it is played.
+                Some(action_panel::ActionPanelClick::Emote(emote)) => self.dragging_emote = Some(emote),
+                Some(action_panel::ActionPanelClick::Close) => self.action_panel_open = false,
+                None => {}
+            }
+            self.held = false;
+            return true;
+        }
+        if hud::action_button_at(viewport, self.cursor) {
+            self.action_panel_open = !self.action_panel_open;
+            self.held = false;
+            return true;
         }
         if self.pk_menu_open {
             let menu = shop::ChoiceMenu::kill_modes(viewport, self.kill_mode);
@@ -2016,17 +2246,25 @@ impl App {
             self.held = false;
             return true;
         }
-        if let Some(filter) = hud::chat_tab_at(viewport, self.cursor) {
-            self.chat_filter = filter;
-            self.chat_focused = false;
+        if self.handle_chat_log_press() {
+            return true;
+        }
+        // The channel button opens the list.
+        if hud::talk_channel_at(viewport, self.cursor) {
+            self.chat_channel_menu = true;
             self.held = false;
             return true;
         }
-        if hud::chat_input_at(viewport, self.cursor)
-            || hud::chat_button_at(viewport, self.cursor)
-            || hud::talk_channel_at(viewport, self.cursor)
-        {
+        if hud::chat_name_at(viewport, self.cursor) {
+            self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
             self.chat_focused = true;
+            self.chat_name_focused = true;
+            self.held = false;
+            return true;
+        }
+        if hud::chat_input_at(viewport, self.cursor) || hud::chat_button_at(viewport, self.cursor) {
+            self.chat_focused = true;
+            self.chat_name_focused = false;
             self.held = false;
             return true;
         }
@@ -2058,9 +2296,9 @@ impl App {
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
         let over_action_bar = hud::action_slot_at(viewport, self.cursor).is_some();
-        let over_context = self
-            .action_context_slot
-            .is_some_and(|slot| hud::action_context_option_at(viewport, self.cursor, slot).is_some());
+        let over_context = self.hotkey_view(viewport).is_some_and(|view| {
+            !matches!(hotkey_menu::click_at(&view, self.cursor), None | Some(hotkey_menu::HotkeyChoice::Nothing))
+        });
         let over_menu = self.choice_menu().is_some_and(|menu| menu.row_at(self.cursor).is_some());
         if over_action_bar || over_context || over_menu {
             GameCursor::Interact
@@ -2411,7 +2649,9 @@ impl App {
                 self.send_team_action(REQUEST_INVITE, target_id);
             }
             PlayerMenuAction::Whisper => {
-                self.chat_text = format!("/w {name} ");
+                self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
+                self.chat_recipient = name.to_owned();
+                self.chat_name_focused = false;
                 self.chat_focused = true;
                 self.network_status = format!("whisper preparado para {name}");
             }
@@ -2475,6 +2715,24 @@ impl App {
                 } else {
                     network.send_whisper(character_id, &self.character.name, recipient, whisper);
                     self.network_status = format!("online: whisper enviado para {recipient}");
+                }
+            } else if !message.starts_with('/') && self.chat_channel == original_ui_layout::WHISPER_CHANNEL {
+                let recipient = self.chat_recipient.trim().to_owned();
+                if recipient.is_empty() {
+                    self.chat_name_focused = true;
+                    self.network_status = "Whisper: escreva o nome na caixa da esquerda".into();
+                    return;
+                }
+                network.send_whisper(character_id, &self.character.name, &recipient, &message);
+                self.network_status = format!("online: whisper enviado para {recipient}");
+            } else if !message.starts_with('/') {
+                match original_ui_layout::CHAT_CHANNELS.get(usize::from(self.chat_channel)) {
+                    // A paid broadcast to the whole server.
+                    Some((_, 0, _)) => network.send_broadcast(&message),
+                    Some((_, channel, _)) if *channel != 2000 => {
+                        network.send_channel(*channel, character_id, &self.character.name, &message);
+                    }
+                    _ => network.send_chat(character_id, &self.character.name, &message),
                 }
             } else {
                 network.send_chat(character_id, &self.character.name, &message);
@@ -2750,7 +3008,9 @@ impl App {
                 let Some(entry) = self.friends.get(index) else {
                     return;
                 };
-                self.chat_text = format!("/w {} ", entry.name);
+                self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
+                self.chat_recipient = entry.name.clone();
+                self.chat_name_focused = false;
                 self.chat_focused = true;
                 self.quick_panel = None;
                 self.network_status = format!("whisper preparado para {}", entry.name);
@@ -3553,6 +3813,7 @@ impl App {
                     format!("friend {name} ({friend_id}) action {action} {state}");
             }
             // A booth's name (the Vendor channel); empty when it closes.
+            NetworkEvent::WhisperCard(card) => self.whispers.card(card),
             NetworkEvent::ChatMessage(message) if message.channel == 2104 => {
                 if message.message.is_empty() {
                     self.booths.remove(&message.sender_name);
@@ -3574,8 +3835,25 @@ impl App {
                     2500 => Some(format!("[Broadcast] {}: {}", message.sender_name, message.message)),
                     _ => None,
                 };
+                if message.channel == 2001 {
+                    self.whispers.line(
+                        &self.character.name,
+                        &message.sender_name,
+                        &message.recipient_name,
+                        &message.message,
+                    );
+                }
+                // Said on the Talk channel: a bubble over the speaker a few
+                // seconds, longer for longer lines.
+                if message.channel == 2000 && !message.message.trim().is_empty() {
+                    let now = self.started.elapsed().as_secs_f32();
+                    let seconds = (4.0 + message.message.chars().count() as f32 * 0.08).min(10.0);
+                    self.speech
+                        .insert(message.sender_name.to_lowercase(), (message.message.clone(), now + seconds));
+                }
                 self.chat_history.push_back(message);
-                while self.chat_history.len() > 40 {
+                self.chat_log.arrived();
+                while self.chat_history.len() > chat_log::KEPT {
                     self.chat_history.pop_front();
                 }
                 self.network_status = banner.unwrap_or_else(|| format!("online: {display}"));
@@ -3623,6 +3901,7 @@ impl App {
                 self.level_up_until = self.started.elapsed().as_secs_f32() + LEVEL_UP_DURATION;
             }
             NetworkEvent::Ready(ready) => {
+                self.own_mesh = ready.mesh;
                 self.player.position = ready.position.map(|value| value as f32);
                 self.character.name = ready.character_name;
                 self.silver = ready.silver;
@@ -4116,7 +4395,7 @@ impl App {
                         actor.animation_until = now;
                         return;
                     }
-                    actor.action = action as u8;
+                    actor.action = action;
                     actor.animation_started = now;
                     actor.animation_until = now + action_duration(action, &self.character);
                 }
@@ -4171,7 +4450,7 @@ impl App {
                             actor.animation_started = now;
                             actor.animation_until = now + fall;
                         } else {
-                            actor.action = 160;
+                            actor.action = renderer::REMOTE_FADING;
                             // A death ends any respawn effect still playing.
                             actor.respawn_until = 0.0;
                             actor.animation_until = now + 1.2;
@@ -4369,7 +4648,7 @@ impl App {
                 if monster && actor.health == 0 {
                     if let Some(existing) = self.remote_actors.get_mut(&actor.id) {
                         existing.health = 0;
-                        existing.action = 160;
+                        existing.action = renderer::REMOTE_FADING;
                         // A death ends any respawn effect still playing.
                         existing.respawn_until = 0.0;
                         existing.animation_until = self.started.elapsed().as_secs_f32() + 1.2;
@@ -4894,6 +5173,43 @@ impl App {
             attribute_details: self.attribute_details,
             battle_power_open: self.battle_power_open,
             battle_power_detail: self.battle_power_detail,
+            action_panel_open: self.action_panel_open,
+            dragging_hotkey: self.moved_hotkey(),
+            dragging_emote: self
+                .dragging_emote
+                .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
+            chat_recipient: self.chat_recipient.clone(),
+            chat_name_focused: self.chat_name_focused,
+            chat_channel: self.chat_channel,
+            chat_channel_menu: self.chat_channel_menu,
+            chat_channel_hover: self
+                .viewport()
+                .filter(|_| self.chat_channel_menu)
+                .and_then(|viewport| original_ui_layout::chat_channel_at(viewport, self.cursor))
+                .map(|index| index as u8),
+            speech: self
+                .speech
+                .iter()
+                .map(|(name, (line, _))| (name.clone(), line.clone()))
+                .collect(),
+            whisper_window: self.whisper_window_view(),
+            whisper_faces: self.whisper_faces(),
+            hotkey_popup: self.window.as_ref().and_then(|window| {
+                let size = window.inner_size();
+                let viewport = [size.width as f32, size.height as f32];
+                self.hotkey_view(viewport).map(|view| {
+                    let hover = hotkey_menu::hover_index(&view, self.cursor);
+                    (view, hover)
+                })
+            }),
+            action_panel_hover: self
+                .window
+                .as_ref()
+                .filter(|_| self.action_panel_open)
+                .and_then(|window| {
+                    let size = window.inner_size();
+                    action_panel::hovered([size.width as f32, size.height as f32], self.cursor)
+                }),
             stamina: self.stamina,
             max_stamina: if self.status_flags & network::HEAVEN_BLESSING_FLAG != 0 {
                 150
@@ -5063,7 +5379,7 @@ impl App {
             return;
         };
         // Training dummies are NPCs without health; only real targets die.
-        if !target.npc && (target.health == 0 || target.action == 160) {
+        if !target.npc && (target.health == 0 || target.action == renderer::REMOTE_FADING) {
             self.pending_skill_attack = None;
             return;
         }
@@ -5152,9 +5468,16 @@ impl App {
     }
 
     fn cast_action_slot(&mut self, slot: usize) {
-        let Some(skill_id) = self.action_bar.skill_id(slot) else {
-            self.network_status = format!("action bar slot {} is empty", slot + 1);
-            return;
+        let binding = self.action_bar.slots.get(slot).and_then(action_bar::ActionSlot::binding);
+        let skill_id = match binding {
+            None => {
+                self.network_status = format!("action bar slot {} is empty", slot + 1);
+                return;
+            }
+            Some(action_bar::Binding::Skill(skill_id)) => skill_id,
+            Some(action_bar::Binding::Emote(emote)) => return self.perform_emote(emote),
+            Some(action_bar::Binding::Item(item_type)) => return self.use_hotkey_object(item_type),
+            Some(action_bar::Binding::Text(text)) => return self.send_hotkey_text(text),
         };
         let Some(skill) = action_bar::skill_action(skill_id) else {
             self.network_status = format!("skill {skill_id} ainda não possui ação no cliente");
@@ -5250,19 +5573,435 @@ impl App {
         self.network_status = format!("online: portal at ({}, {})", portal.x, portal.y);
     }
 
+    /// A left press on the chat log or its line menu.
+    fn handle_chat_log_press(&mut self) -> bool {
+        let Some(viewport) = self.viewport() else {
+            return false;
+        };
+        if let Some(menu) = self.chat_log.menu.take() {
+            // Off the menu it just closes, and the click goes on.
+            let Some(option) = chat_log::menu_click_at(&menu, viewport, self.cursor) else {
+                return self.handle_chat_log_press();
+            };
+            match option {
+                Some(option) => self.chat_line_action(&menu, option),
+                None => self.chat_log.menu = Some(menu),
+            }
+            self.held = false;
+            return true;
+        }
+        let Some(click) = chat_log::click_at(
+            &self.chat_log,
+            self.chat_history.make_contiguous(),
+            &self.character.name,
+            viewport,
+            self.cursor,
+        ) else {
+            return false;
+        };
+        self.held = false;
+        match click {
+            chat_log::ChatClick::Tab(filter) => {
+                self.chat_log.filter = filter;
+                self.chat_log.scroll = 0;
+                self.chat_log.unread = 0;
+                if self.chat_log.minimized {
+                    self.chat_log.minimized = false;
+                }
+            }
+            chat_log::ChatClick::Font => {
+                self.chat_log.font = (self.chat_log.font + 1) % chat_log::FONT_SIZES.len() as u8;
+            }
+            chat_log::ChatClick::Minimize => {
+                self.chat_log.minimized = !self.chat_log.minimized;
+                if !self.chat_log.minimized && self.chat_log.scroll == 0 {
+                    self.chat_log.unread = 0;
+                }
+            }
+            chat_log::ChatClick::Grip => self.chat_log.grab = Some(chat_log::Grab::Resize),
+            chat_log::ChatClick::Header => {
+                let [x, y, _, _] = self.chat_log.shown_rect(viewport);
+                self.chat_log.grab =
+                    Some(chat_log::Grab::Move { offset: [self.cursor[0] - x as f32, self.cursor[1] - y as f32] });
+            }
+            chat_log::ChatClick::Newest => {
+                self.chat_log.scroll = 0;
+                self.chat_log.unread = 0;
+            }
+            chat_log::ChatClick::Name(name) => self.whisper_to(&name),
+            // The lines let the click through to the ground.
+            chat_log::ChatClick::Line { .. } | chat_log::ChatClick::Body => return false,
+        }
+        true
+    }
+
+    /// The right button on a chat line: its menu.
+    fn open_chat_line_menu(&mut self) -> bool {
+        let Some(viewport) = self.viewport() else {
+            return false;
+        };
+        let click = chat_log::click_at(
+            &self.chat_log,
+            self.chat_history.make_contiguous(),
+            &self.character.name,
+            viewport,
+            self.cursor,
+        );
+        let at = [self.cursor[0] as i32, self.cursor[1] as i32];
+        let menu = match click {
+            None => return false,
+            Some(chat_log::ChatClick::Name(name)) => {
+                let message = self
+                    .chat_history
+                    .iter()
+                    .rev()
+                    .find(|message| message.sender_name == name)
+                    .map(|message| message.message.clone())
+                    .unwrap_or_default();
+                chat_log::LineMenu { sender: name, message, at }
+            }
+            Some(chat_log::ChatClick::Line { sender, message }) => chat_log::LineMenu { sender, message, at },
+            Some(_) => return true,
+        };
+        self.chat_log.menu = Some(menu);
+        true
+    }
+
+    fn chat_line_action(&mut self, menu: &chat_log::LineMenu, option: usize) {
+        match chat_log::MENU_OPTIONS[option] {
+            "Whisper" => self.whisper_to(&menu.sender),
+            "Add Friend" => {
+                let target = self
+                    .remote_actors
+                    .values()
+                    .find(|actor| !actor.npc && actor.name.eq_ignore_ascii_case(&menu.sender))
+                    .map(|actor| actor.id);
+                match (target, &self.network) {
+                    (Some(target_id), Some(network)) => {
+                        network.send_friend_action(10, target_id, &menu.sender);
+                        self.network_status = format!("online: pedido de amizade enviado para {}", menu.sender);
+                    }
+                    _ => self.network_status = format!("{} precisa estar por perto para a amizade", menu.sender),
+                }
+            }
+            "Copy Name" => copy_to_clipboard(&menu.sender),
+            _ => copy_to_clipboard(&menu.message),
+        }
+    }
+
+    /// The chat strip set to whisper `name`, the keys on its line.
+    fn whisper_to(&mut self, name: &str) {
+        if name.is_empty() || name.eq_ignore_ascii_case(&self.character.name) {
+            return;
+        }
+        self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
+        self.chat_recipient = name.to_owned();
+        self.chat_name_focused = false;
+        self.chat_focused = true;
+    }
+
+    /// The chat log's picture this frame.
+    fn chat_log_view(&mut self) -> Option<(chat_log::ChatLogView, [i32; 4], Option<(chat_log::LineMenu, Option<usize>)>)> {
+        let viewport = self.viewport()?;
+        let rect = self.chat_log.shown_rect(viewport);
+        let [_, _, w, h] = self.chat_log.full_rect(viewport);
+        let history = self.chat_history.make_contiguous().to_vec();
+        let hover = chat_log::hover_at(&self.chat_log, &history, &self.character.name, viewport, self.cursor);
+        let menu = self.chat_log.menu.clone().map(|menu| {
+            let hover = chat_log::menu_click_at(&menu, viewport, self.cursor).flatten();
+            (menu, hover)
+        });
+        Some((
+            chat_log::ChatLogView {
+                history,
+                own_name: self.character.name.clone(),
+                filter: self.chat_log.filter,
+                size: [w, h],
+                font: self.chat_log.font,
+                scroll: self.chat_log.scroll,
+                minimized: self.chat_log.minimized,
+                unread: self.chat_log.unread,
+                hover,
+                hovered: self.chat_log.contains(viewport, self.cursor) || self.chat_log.grab.is_some(),
+                menu: None,
+            },
+            rect,
+            menu,
+        ))
+    }
+
+    /// How a player on screen looks, by name.
+    fn seen_mesh(&self, name: &str) -> Option<u32> {
+        self.remote_actors
+            .values()
+            .find(|actor| !actor.npc && actor.name.eq_ignore_ascii_case(name))
+            .map(|actor| actor.mesh)
+    }
+
+    fn viewport(&self) -> Option<[f32; 2]> {
+        let size = self.window.as_ref()?.inner_size();
+        Some([size.width as f32, size.height as f32])
+    }
+
+    fn whisper_window_view(&self) -> Option<hud::WhisperWindowView> {
+        let name = self.whispers.open.as_deref()?;
+        let conversation = self.whispers.conversation(name)?.clone();
+        let hovered = self.viewport().and_then(|viewport| whisper::window_click_at(viewport, self.cursor));
+        Some(hud::WhisperWindowView {
+            seen_mesh: self.seen_mesh(name),
+            conversation,
+            own_name: self.character.name.clone(),
+            own_mesh: self.own_mesh,
+            input: self.whispers.input.clone(),
+            input_focused: self.whispers.input_focused,
+            hovered: hovered.filter(|click| *click != whisper::WhisperClick::Window),
+        })
+    }
+
+    fn whisper_faces(&self) -> Vec<(whisper::Conversation, Option<u32>, bool)> {
+        let hovered = self.viewport().and_then(|viewport| whisper::face_at(&self.whispers, viewport, self.cursor));
+        self.whispers
+            .waiting()
+            .into_iter()
+            .map(|conversation| {
+                let lit = hovered.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(&conversation.name));
+                (conversation.clone(), self.seen_mesh(&conversation.name), lit)
+            })
+            .collect()
+    }
+
+    /// A left click on the private chat window or a waiting face; off the
+    /// window, its line stops taking the keys.
+    fn handle_whisper_click(&mut self) -> bool {
+        let Some(viewport) = self.viewport() else {
+            return false;
+        };
+        if self.whispers.open.is_some() {
+            match whisper::window_click_at(viewport, self.cursor) {
+                Some(whisper::WhisperClick::Close) => self.whispers.close(),
+                Some(whisper::WhisperClick::Send) => self.send_whisper_input(),
+                Some(whisper::WhisperClick::Input | whisper::WhisperClick::Window) => {
+                    self.whispers.input_focused = true;
+                    self.chat_focused = false;
+                }
+                None => self.whispers.input_focused = false,
+            }
+            if whisper::window_click_at(viewport, self.cursor).is_some() {
+                self.held = false;
+                return true;
+            }
+        }
+        if let Some(name) = whisper::face_at(&self.whispers, viewport, self.cursor) {
+            self.whispers.open(&name);
+            self.chat_focused = false;
+            self.held = false;
+            return true;
+        }
+        false
+    }
+
+    /// The window's line goes to its conversation's other end.
+    fn send_whisper_input(&mut self) {
+        let text = self.whispers.input.trim().to_owned();
+        let Some(peer) = self.whispers.open.clone() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.send_whisper(character_id, &self.character.name, &peer, &text);
+            self.whispers.input.clear();
+        }
+    }
+
+    /// The open hotkey popup with what it lists.
+    fn hotkey_view(&self, viewport: [f32; 2]) -> Option<hotkey_menu::HotkeyPopupView> {
+        let popup = self.hotkey_popup.clone()?;
+        let rect = original_ui_layout::hotkey_slot_rect(viewport, popup.slot());
+        let mut skills: Vec<u32> = self
+            .known_skills
+            .keys()
+            .copied()
+            .filter(|id| action_bar::skill_action(*id).is_some())
+            .collect();
+        skills.sort_unstable();
+        let mut objects: Vec<(u32, u32)> = Vec::new();
+        if matches!(popup, hotkey_menu::HotkeyPopup::Objects { .. }) {
+            for item in self.inventory.iter().filter(|item| usable_object(item.item_type)) {
+                match objects.iter_mut().find(|(item_type, _)| *item_type == item.item_type) {
+                    Some((_, count)) => *count += 1,
+                    None => objects.push((item.item_type, 1)),
+                }
+            }
+            objects.sort_unstable();
+        }
+        Some(hotkey_menu::HotkeyPopupView {
+            popup,
+            skills,
+            objects,
+            anchor: [rect.x as i32, rect.y as i32, rect.width as i32, rect.height as i32],
+            viewport: [viewport[0] as i32, viewport[1] as i32],
+        })
+    }
+
+    /// A left click while a hotkey popup is open: its choice, or off it,
+    /// closing it.
+    fn handle_hotkey_popup_click(&mut self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let size = window.inner_size();
+        let Some(view) = self.hotkey_view([size.width as f32, size.height as f32]) else {
+            return;
+        };
+        let slot = view.popup.slot();
+        let choice = hotkey_menu::click_at(&view, self.cursor);
+        self.held = false;
+        match choice {
+            None => self.hotkey_popup = None,
+            Some(hotkey_menu::HotkeyChoice::Nothing) => {}
+            Some(hotkey_menu::HotkeyChoice::Option(option)) => {
+                self.hotkey_popup = match option {
+                    0 => Some(hotkey_menu::HotkeyPopup::Skills { slot }),
+                    1 => Some(hotkey_menu::HotkeyPopup::Objects { slot }),
+                    2 => {
+                        let text = match self.action_bar.slots[slot].binding() {
+                            Some(action_bar::Binding::Text(text)) => text,
+                            _ => String::new(),
+                        };
+                        Some(hotkey_menu::HotkeyPopup::Text { slot, text })
+                    }
+                    3 => Some(hotkey_menu::HotkeyPopup::Rebind { slot }),
+                    _ => {
+                        self.action_bar.set(slot, None);
+                        None
+                    }
+                };
+            }
+            Some(hotkey_menu::HotkeyChoice::Skill(skill_id)) => {
+                self.action_bar.set(slot, Some(action_bar::Binding::Skill(skill_id)));
+                self.hotkey_popup = None;
+            }
+            Some(hotkey_menu::HotkeyChoice::Object(item_type)) => {
+                self.action_bar.set(slot, Some(action_bar::Binding::Item(item_type)));
+                self.hotkey_popup = None;
+            }
+            Some(hotkey_menu::HotkeyChoice::Key(key)) => {
+                self.action_bar.swap(slot, key);
+                self.hotkey_popup = None;
+            }
+            Some(hotkey_menu::HotkeyChoice::SaveText) => self.save_hotkey_text(),
+        }
+    }
+
+    /// The text popup's line goes on its F key (an empty one clears it).
+    fn save_hotkey_text(&mut self) {
+        if let Some(hotkey_menu::HotkeyPopup::Text { slot, text }) = self.hotkey_popup.take() {
+            let text = text.trim().to_owned();
+            let binding = (!text.is_empty()).then_some(action_bar::Binding::Text(text));
+            self.action_bar.set(slot, binding);
+        }
+    }
+
+    /// An F key's line of text, said as if typed in the chat (commands
+    /// such as /w work too); what was being typed is kept.
+    fn send_hotkey_text(&mut self, text: String) {
+        let typed = std::mem::replace(&mut self.chat_text, text);
+        self.submit_chat();
+        self.chat_text = typed;
+    }
+
+    /// An F key's object: the first of that item in the bag, used (arrows
+    /// are worn).
+    fn use_hotkey_object(&mut self, item_type: u32) {
+        let Some(item) = self.inventory.iter().find(|item| item.item_type == item_type).copied() else {
+            self.network_status = format!("No {} left", shop::item_name(&mut self.assets, item_type));
+            return;
+        };
+        if is_arrow(item_type) {
+            self.queue_equip_item(item);
+        } else {
+            self.queue_use_item(item);
+        }
+    }
+
+    /// The F key being dragged, once it has moved off the click.
+    fn moved_hotkey(&self) -> Option<usize> {
+        let (slot, [x, y]) = self.dragging_hotkey?;
+        let (dx, dy) = (self.cursor[0] - x, self.cursor[1] - y);
+        (dx * dx + dy * dy > 36.0 && self.action_bar.slots[slot].action_id.is_some()).then_some(slot)
+    }
+
+    /// An F key let go: unmoved it is used; dropped on another key the two
+    /// swap.
+    fn finish_hotkey_drag(&mut self) -> bool {
+        let moved = self.moved_hotkey();
+        let Some((slot, _)) = self.dragging_hotkey.take() else {
+            return false;
+        };
+        if moved.is_none() {
+            self.cast_action_slot(slot);
+            return true;
+        }
+        if let Some(target) = self.viewport().and_then(|viewport| hud::action_slot_at(viewport, self.cursor)) {
+            self.action_bar.swap(slot, target);
+        }
+        true
+    }
+
+    /// An emote let go: on an F key it goes there, on its own button it is
+    /// played.
+    fn finish_emote_drag(&mut self) -> bool {
+        let Some(emote) = self.dragging_emote.take() else {
+            return false;
+        };
+        let Some(window) = &self.window else {
+            return true;
+        };
+        let size = window.inner_size();
+        let viewport = [size.width as f32, size.height as f32];
+        if let Some(slot) = hud::action_slot_at(viewport, self.cursor) {
+            self.action_bar.set(slot, Some(action_bar::Binding::Emote(emote)));
+        } else if action_panel::click_at(viewport, self.cursor)
+            == Some(Some(action_panel::ActionPanelClick::Emote(emote)))
+        {
+            self.perform_emote(emote);
+        }
+        true
+    }
+
     /// X: sit down or stand up (ChangeAction 250 / 100).
     fn toggle_sit(&mut self) {
+        self.perform_emote(Action::Sit);
+    }
+
+    /// An emote from the Action panel (or X for sitting), sent as the
+    /// original's ChangeAction: sitting, kneeling and lying hold until the
+    /// player moves or picks the same one again; the rest play once.
+    fn perform_emote(&mut self, emote: Action) {
         if self.dead_since.is_some() || self.player.moving() {
             return;
         }
         let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
             return;
         };
-        self.sitting = !self.sitting;
-        network.send_action(character_id, if self.sitting { 250 } else { 100 });
+        let now = self.started.elapsed().as_secs_f32();
+        let standing_up = self.held_pose.is_some_and(|(pose, _)| pose == emote);
         self.player.action_instance = self.player.action_instance.wrapping_add(1);
-        if !self.sitting {
+        if standing_up {
+            network.send_action(character_id, Action::Idle.catalog_id());
+            self.held_pose = None;
             self.player.action = Action::Idle;
+            return;
+        }
+        network.send_action(character_id, emote.catalog_id());
+        self.held_pose = None;
+        if emote.held() {
+            self.held_pose = Some((emote, now));
+        } else {
+            self.player.action = emote;
+            self.local_action = Some((emote, now, now + self.character.duration(emote).as_secs_f32()));
         }
     }
 
@@ -6574,6 +7313,13 @@ impl App {
                 return true;
             }
         }
+        // A potion, arrows or a scroll let go on an F key goes there.
+        if let Some(slot) = hud::action_slot_at(viewport, self.cursor)
+            && usable_object(item.item_type)
+        {
+            self.action_bar.set(slot, Some(action_bar::Binding::Item(item.item_type)));
+            return true;
+        }
         debug_log::write(format_args!(
             "drag release: uid={} type={} source_position={} cursor=({:.1},{:.1}) panel_at={} slot={:?} open={} shop={} warehouse={}",
             item.uid,
@@ -7175,16 +7921,31 @@ fn wire_action(action: u32) -> Option<Action> {
     })
 }
 
+/// Puts `text` on the system clipboard.
+fn copy_to_clipboard(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text.to_owned());
+    }
+}
+
+/// Arrows go on an F key to be worn.
+fn is_arrow(item_type: u32) -> bool {
+    item_type / 1_000 == 1_050
+}
+
+/// What an F key can hold from the bag: potions and other consumables,
+/// arrows and scrolls.
+fn usable_object(item_type: u32) -> bool {
+    shop::is_consumable(item_type) || is_arrow(item_type) || item_type / 1_000 == 1_060
+}
+
 fn action_duration(action: u16, character: &character::Character) -> f32 {
     match action {
         110 | 111 => 1.0 / 3.0,
         120 | 121 => 1.0 / 6.0,
-        130 => character.duration(Action::Jump).as_secs_f32(),
-        140 => character.duration(Action::Attack).as_secs_f32(),
-        150 => character.duration(Action::Hit).as_secs_f32(),
-        220 => character.duration(Action::Pickup).as_secs_f32(),
-        250 => character.duration(Action::Sit).as_secs_f32(),
-        _ => 0.5,
+        _ => Action::from_catalog_id(u32::from(action))
+            .filter(|action| *action != Action::Idle)
+            .map_or(0.5, |action| character.duration(action).as_secs_f32()),
     }
 }
 /// `WeaponGoal`, `MagicGoal`, `BowGoal` and `Target`: training dummies.
@@ -7619,7 +8380,10 @@ fn run() -> Result<()> {
         map,
         character,
         action_bar: action_bar::ActionBar::default(),
-        action_context_slot: None,
+        hotkey_popup: None,
+        whispers: whisper::Whispers::default(),
+        own_mesh: 0,
+        speech: HashMap::new(),
         item_context: None,
         target_pick: None,
         pending_friend_request: None,
@@ -7651,7 +8415,7 @@ fn run() -> Result<()> {
         stamina: 100,
         xp_points: 0,
         dead_since: None,
-        sitting: false,
+        held_pose: None,
         portal_armed: false,
         hit_until: 0.0,
         level_up_until: 0.0,
@@ -7679,6 +8443,9 @@ fn run() -> Result<()> {
         attribute_details: false,
         battle_power_open: false,
         battle_power_detail: None,
+        action_panel_open: false,
+        dragging_emote: None,
+        dragging_hotkey: None,
         performance_overlay: false,
         hud_config: hud::HudConfig::default(),
         network,
@@ -7718,9 +8485,14 @@ fn run() -> Result<()> {
         warehouse_amount: "1".into(),
         warehouse_amount_focused: false,
         chat_text: String::new(),
+        chat_recipient: String::new(),
+        chat_name_focused: false,
+        chat_channel: 0,
+        chat_channel_menu: false,
         chat_focused: false,
         chat_history: VecDeque::new(),
         chat_filter: 0,
+        chat_log: chat_log::ChatLogState::default(),
         friends: Vec::new(),
         ignores: Vec::new(),
         dragging_shop_item: None,
@@ -7818,6 +8590,7 @@ fn run() -> Result<()> {
         app.skill_bar_open = saved.skill_bar_open;
         app.performance_overlay = saved.performance_overlay;
         app.team_join_enabled = saved.team_join_enabled;
+        saved.apply_chat(&mut app.chat_log);
         app.saved_hud = Some(saved);
     }
     match event_loop {

@@ -532,3 +532,111 @@ mod tests {
         assert_eq!(short.height(), 34);
     }
 }
+
+/// The bubble over someone who speaks on the Talk channel, drawn as the
+/// original draws it: a box of faint dark glass at least 153 by 71 with
+/// slightly rounded corners and a double edge (dark outside, light inside),
+/// a narrow tail from its bottom down to the speaker, all one outline, and
+/// the words in yellow with a black shadow from the top left. Edges are
+/// smoothed. The tail's tip is [`SPEECH_TIP`] from the image's bottom right.
+pub fn speech_bubble_image(message: &str) -> Result<RgbaImage> {
+    const MAX_WIDTH: f32 = 190.0;
+    const LINE: u32 = 15;
+    const TAIL: u32 = 18;
+    let font = font()?;
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in message.split_whitespace() {
+        let candidate = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+        if width(&font, &candidate) > MAX_WIDTH && !line.is_empty() {
+            lines.push(std::mem::replace(&mut line, word.to_owned()));
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines.truncate(6);
+    let text_width = lines.iter().map(|line| width(&font, line)).fold(0.0_f32, f32::max);
+    let (w, h) = ((text_width.ceil() as u32 + 18).max(153), (lines.len() as u32 * LINE + 14).max(71));
+    let mut image = RgbaImage::new(w, h + TAIL);
+    let (wf, hf) = (w as f32, h as f32);
+    // The tail: feet on the bottom edge, the tip down by the right corner.
+    let feet = [[wf - 64.0, hf - 3.0], [wf - 33.0, hf - 3.0]];
+    let tip = [wf - SPEECH_TIP[0] as f32, (h + TAIL) as f32 - SPEECH_TIP[1] as f32];
+    for y in 0..image.height() {
+        for x in 0..image.width() {
+            let p = [x as f32 + 0.5, y as f32 + 0.5];
+            let distance = round_rect_distance(p, [0.5, 0.5], [wf - 0.5, hf - 0.5], 3.0)
+                .min(triangle_distance(p, feet[0], feet[1], tip));
+            // Coverage of the shape shrunk by `inset` pixels.
+            let inside = |inset: f32| (0.5 - (distance + inset)).clamp(0.0, 1.0);
+            let dark = inside(0.0) - inside(1.0);
+            let light = inside(1.0) - inside(2.0);
+            let glass = inside(2.0);
+            let alpha = dark * 0.42 + light * 0.36 + glass * 0.13;
+            if alpha <= 0.0 {
+                continue;
+            }
+            let white = light * 0.36 * 236.0 / alpha;
+            let tone = white.round().clamp(0.0, 255.0) as u8;
+            image.put_pixel(x, y, Rgba([tone, tone, tone.saturating_add(6), (alpha * 255.0).round() as u8]));
+        }
+    }
+    for (index, line) in lines.iter().enumerate() {
+        let y = 6.0 + (index as u32 * LINE) as f32;
+        text(&mut image, &font, &[(line.as_str(), [0, 0, 0])], [9.0, y + 1.0]);
+        text(&mut image, &font, &[(line.as_str(), [255, 255, 0])], [8.0, y]);
+    }
+    Ok(image)
+}
+
+/// Signed distance from `p` to the rounded box `min`..`max` (negative
+/// inside).
+fn round_rect_distance(p: [f32; 2], min: [f32; 2], max: [f32; 2], radius: f32) -> f32 {
+    let centre = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let half = [(max[0] - min[0]) * 0.5 - radius, (max[1] - min[1]) * 0.5 - radius];
+    let q = [(p[0] - centre[0]).abs() - half[0], (p[1] - centre[1]).abs() - half[1]];
+    let outside = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2)).sqrt();
+    outside + q[0].max(q[1]).min(0.0) - radius
+}
+
+/// Signed distance from `p` to the triangle `a`, `b`, `c` (negative
+/// inside).
+fn triangle_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+    let segment = |from: [f32; 2], to: [f32; 2]| {
+        let edge = [to[0] - from[0], to[1] - from[1]];
+        let offset = [p[0] - from[0], p[1] - from[1]];
+        let t = ((offset[0] * edge[0] + offset[1] * edge[1]) / (edge[0].powi(2) + edge[1].powi(2))).clamp(0.0, 1.0);
+        ((offset[0] - edge[0] * t).powi(2) + (offset[1] - edge[1] * t).powi(2)).sqrt()
+    };
+    let distance = segment(a, b).min(segment(b, c)).min(segment(c, a));
+    let side = |from: [f32; 2], to: [f32; 2]| (to[0] - from[0]) * (p[1] - from[1]) - (to[1] - from[1]) * (p[0] - from[0]);
+    let (ab, bc, ca) = (side(a, b), side(b, c), side(c, a));
+    let inside = (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0);
+    if inside { -distance } else { distance }
+}
+
+/// Where the bubble's tail ends, from the image's bottom right.
+pub const SPEECH_TIP: [u32; 2] = [3, 2];
+
+/// How wide a name is drawn over a head.
+pub fn name_width(name: &str) -> f32 {
+    font().map_or(name.len() as f32 * 6.0, |font| width(&font, name))
+}
+
+#[cfg(test)]
+mod speech_preview {
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox speech_bubble_preview`
+    #[test]
+    fn speech_bubble_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let mut sheet = image::RgbaImage::new(460, 120);
+        let short = super::speech_bubble_image("teste").expect("bubble");
+        let long = super::speech_bubble_image("alguém vende uma Super Dragon Ball? pago bem, chama no whisper").expect("bubble");
+        image::imageops::overlay(&mut sheet, &short, 10, 10);
+        image::imageops::overlay(&mut sheet, &long, 140, 10);
+        sheet.save(format!("{dir}/speech.png")).expect("png");
+    }
+}

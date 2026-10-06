@@ -143,8 +143,9 @@ const STAMINA_ORIGIN: [i64; 2] = [44, 57];
 /// that fills with the XP points and lights up full.
 const XP_FILL: &str = "data/main/ProgressPower.dds";
 const XP_FULL: &str = "data/main/ProgressPowerH.dds";
-/// Where the ring's texture goes so its centre meets the orb's.
-const XP_ORIGIN: [i64; 2] = [3, 40];
+/// Where the ring's texture goes so it lies in the frame's dark band: the
+/// ring's centre (47, 45 in the texture) on the orb's (47, 93).
+const XP_ORIGIN: [i64; 2] = [0, 48];
 
 /// Decoded artwork, cropped and cached for the life of the process.
 pub struct MainHudArt {
@@ -159,6 +160,26 @@ pub struct MainHudArt {
     /// The Capture button's art for each kill mode, `shop::KILL_MODES` order.
     kill_modes: Vec<[RgbaImage; 2]>,
     chat: Vec<(ChatStripControl, [RgbaImage; 2])>,
+    /// The channel buttons, `CHAT_CHANNELS` order.
+    channels: Vec<[RgbaImage; 2]>,
+}
+
+/// A channel button without its own art: the Talk button's frame with
+/// `label` written in its place.
+fn labelled_button(base: &RgbaImage, label: &str) -> Result<RgbaImage> {
+    let mut image = base.clone();
+    let (width, height) = image.dimensions();
+    for y in 4..height.saturating_sub(4) {
+        let inside = *image.get_pixel(6.min(width - 1), y);
+        for x in 5..width.saturating_sub(5) {
+            image.put_pixel(x, y, inside);
+        }
+    }
+    let font = font()?;
+    let size = if label.len() > 6 { 9.5 } else { 12.0 };
+    let label_width = text_width(font, label, size);
+    text(&mut image, font, label, size, [(width as i32 - label_width) / 2, (height as i32 - 13) / 2], [232, 218, 168, 255], None);
+    Ok(image)
 }
 
 fn visible(assets: &mut Assets, path: &str) -> Result<RgbaImage> {
@@ -215,6 +236,19 @@ impl MainHudArt {
             buttons,
             kill_modes,
             chat,
+            channels: {
+                let talk = [visible(assets, "data/main/TalkBtnG.dds")?, visible(assets, "data/main/TalkBtnGClick.dds")?];
+                crate::original_ui_layout::CHAT_CHANNELS
+                    .iter()
+                    .map(|(label, _, art)| match art {
+                        Some(art) => Ok([
+                            visible(assets, &format!("data/main/{art}.dds"))?,
+                            visible(assets, &format!("data/main/{art}Click.dds"))?,
+                        ]),
+                        None => Ok([labelled_button(&talk[0], label)?, labelled_button(&talk[1], label)?]),
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            },
         })
     }
 
@@ -244,6 +278,15 @@ pub struct MainHudState<'a> {
     pub hovered_chat: Option<ChatStripControl>,
     pub chat_text: &'a str,
     pub chat_focused: bool,
+    /// The whisper name in the strip's left box (empty: Talk), and whether
+    /// it takes the keys.
+    pub chat_name: &'a str,
+    pub chat_name_focused: bool,
+    /// The chat channel (`CHAT_CHANNELS` index), whether its list is open
+    /// and the one under the cursor.
+    pub chat_channel: u8,
+    pub chat_channel_menu: bool,
+    pub chat_channel_hover: Option<u8>,
     /// The kill mode in force, `shop::KILL_MODES` order.
     pub kill_mode: u8,
     /// Icon of the selected skill, painted over the "Skill" button.
@@ -351,14 +394,37 @@ pub fn draw(
         imageops::overlay(img, frame, x, y);
     }
     for (control, frames) in &art.chat {
+        let frames = match control {
+            ChatStripControl::Talk => art.channels.get(usize::from(state.chat_channel)).unwrap_or(frames),
+            _ => frames,
+        };
         let rect = control.local_rect();
         let frame = &frames[usize::from(state.hovered_chat == Some(*control))];
         let [x, y] = at([rect.x as i64, rect.y as i64]);
         imageops::overlay(img, frame, x, y);
     }
 
+    // The channel list, stacked over the channel button.
+    if state.chat_channel_menu {
+        let talk = ChatStripControl::Talk.local_rect();
+        for (index, frames) in art.channels.iter().enumerate() {
+            let above = (art.channels.len() - index) as i64 * 25;
+            let lit = state.chat_channel_hover == Some(index as u8) || state.chat_channel == index as u8;
+            let [x, y] = at([talk.x as i64, talk.y as i64 - above]);
+            imageops::overlay(img, &frames[usize::from(lit)], x, y);
+        }
+    }
+    // The whisper name in the left box.
+    let name_box = ChatStripControl::Name.local_rect();
+    let name = if state.chat_focused && state.chat_name_focused {
+        format!("{}|", state.chat_name)
+    } else {
+        state.chat_name.to_owned()
+    };
+    let [x, y] = at([name_box.x as i64 + 4, name_box.y as i64 + 4]);
+    text(img, font, &name, 12.0, [x as i32, y as i32], [255, 236, 170, 255], Some(name_box.width as i32 - 8));
     let input = ChatStripControl::Input.local_rect();
-    let typed = if state.chat_focused {
+    let typed = if state.chat_focused && !state.chat_name_focused {
         format!("{}|", state.chat_text)
     } else {
         state.chat_text.to_owned()
