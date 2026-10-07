@@ -81,6 +81,14 @@ fn frame(panel: QuickPanel) -> Option<Frame> {
             anchor: Anchor::Center,
             close: &[[304, 8, 16, 16]],
         },
+        // [0-307] with [0-310] beside it (or [0-309] alone), drawn by
+        // `nobility_panel`, which closes it itself.
+        QuickPanel::Nobility => Frame {
+            art: "data/interface/Style01/checontribute/checontributeBG.dds",
+            size: crate::nobility_panel::SIZE,
+            anchor: Anchor::Center,
+            close: &[],
+        },
         _ => return None,
     })
 }

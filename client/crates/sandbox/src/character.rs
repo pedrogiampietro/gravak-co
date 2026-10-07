@@ -72,6 +72,9 @@ pub struct NpcModel {
 #[derive(Clone)]
 pub struct NpcCatalog {
     appearances: SectionCatalog,
+    /// `ini/armor.ini`: a monster look's mesh and skin (`[look * 10^6]`
+    /// Mesh0/Texture0), as the original client reads them.
+    armors: SectionCatalog,
     models: IdPathCatalog,
     motions: IdPathCatalog,
     textures: IdPathCatalog,
@@ -81,6 +84,7 @@ impl NpcCatalog {
     pub fn load(assets: &mut Assets) -> Result<Self> {
         Ok(Self {
             appearances: SectionCatalog::parse(&assets.read("ini/npc.ini")?),
+            armors: SectionCatalog::parse(&assets.read("ini/armor.ini")?),
             models: IdPathCatalog::parse(&assets.read("ini/3dobj.ini")?),
             motions: IdPathCatalog::parse(&assets.read("ini/3dmotion.ini")?),
             textures: IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?),
@@ -527,6 +531,12 @@ impl NpcModel {
         // where `3dmotion.ini` binds each look's stand motion (look * 10^6 +
         // 100) and `3dobj.ini` the model (look * 10^6).
         let catalog_id = look.saturating_mul(1_000_000);
+        // `armor.ini` first: Turtledove (304) is the Pheasant's mesh
+        // (104000000) in its own skin, and has no model of its own.
+        let armor = catalog.armors.section(&catalog_id.to_string());
+        let armor_id = |key: &str| armor.and_then(|section| section.first(key)).and_then(|value| value.parse::<u32>().ok());
+        let armor_mesh = armor_id("Mesh0").and_then(|id| catalog.models.get(id)).map(|path| path.as_str().to_owned());
+        let armor_texture = armor_id("Texture0").and_then(|id| catalog.textures.get(id)).map(|path| path.as_str().to_owned());
         let cataloged = [
             catalog.motions.get(catalog_id + 100),
             catalog.models.get(catalog_id),
@@ -534,19 +544,20 @@ impl NpcModel {
         .into_iter()
         .flatten()
         .map(|path| path.as_str().to_owned());
-        let model_candidates = [
-            format!("c3/monster/{look}N/{look:03}000000.c3"),
-            format!("c3/monster/{look}n/{look:03}000000.c3"),
-        ]
-        .into_iter()
-        .chain(cataloged);
-        let Some((model_path, bytes)) = model_candidates
+        let model_candidates = armor_mesh
             .into_iter()
-            .find_map(|path| assets.read(&path).ok().map(|bytes| (path, bytes)))
-        else {
+            .chain([
+                format!("c3/monster/{look}N/{look:03}000000.c3"),
+                format!("c3/monster/{look}n/{look:03}000000.c3"),
+            ])
+            .chain(cataloged);
+        // A motion file has no mesh; it is not the model.
+        let Some((model_path, document)) = model_candidates.into_iter().find_map(|path| {
+            let document = C3Document::parse(&assets.read(&path).ok()?).ok()?;
+            (!document.meshes.is_empty()).then_some((path, document))
+        }) else {
             return Err(format!("Monster model missing for look {look}").into());
         };
-        let document = C3Document::parse(&bytes)?;
         // Monster model files contain the mesh, while their neutral pose is
         // defined by the dedicated 100 motion in 3dmotion.ini. Using the
         // model's first embedded motion leaves Pheasant with its wings spread.
@@ -587,19 +598,22 @@ impl NpcModel {
         let model_id = catalog.models.ids_for_path(model_path.as_str()).next();
         // A look's own skin comes first (Guard2 shares Guard1's mesh but
         // not its texture).
-        let texture = catalog
-            .textures
-            .get(catalog_id)
+        let texture = armor_texture
             .or_else(|| {
-                mesh.texture_name
-                    .trim_end_matches(".dds")
-                    .parse::<u32>()
-                    .ok()
-                    .and_then(|id| catalog.textures.get(id))
+                catalog
+                    .textures
+                    .get(catalog_id)
+                    .or_else(|| {
+                        mesh.texture_name
+                            .trim_end_matches(".dds")
+                            .parse::<u32>()
+                            .ok()
+                            .and_then(|id| catalog.textures.get(id))
+                    })
+                    .or_else(|| model_id.and_then(|id| catalog.textures.get(id)))
+                    .or_else(|| model_id.and_then(|id| catalog.textures.get(id / 10)))
+                    .map(|path| path.as_str().to_owned())
             })
-            .or_else(|| model_id.and_then(|id| catalog.textures.get(id)))
-            .or_else(|| model_id.and_then(|id| catalog.textures.get(id / 10)))
-            .map(|path| path.as_str().to_owned())
             .or_else(|| {
                 catalog
                     .texture_for_model_path(model_path.as_str())
@@ -801,21 +815,23 @@ impl NpcModel {
     ) -> Vec<([f32; 3], [f32; 2])> {
         let (s, c) = facing.sin_cos();
         let (ts, tc) = (-std::f32::consts::FRAC_PI_4).sin_cos();
+        // Each bone's matrix once per pose, not once per vertex: the key
+        // search and blend made a pose of a 37-bone Birdman costly enough
+        // that only one walking monster a frame could have one.
+        let bones: Vec<_> = motion.map_or_else(Vec::new, |motion| {
+            (0..motion.bone_count)
+                .map(|bone| self.mesh.initial_matrix.multiply(motion.matrix_at(bone, frame)))
+                .collect()
+        });
         self.mesh
             .vertices
             .iter()
             .map(|vertex| {
                 let transform = motion
-                    .and_then(|motion| {
+                    .and_then(|_| {
                         (0..2)
                             .find(|i| vertex.bone_weights[*i] > 0.0)
-                            .and_then(|i| {
-                                Some(
-                                    self.mesh
-                                        .initial_matrix
-                                        .multiply(motion.matrix_at(vertex.bone_indices[i], frame)),
-                                )
-                            })
+                            .map(|i| bones.get(vertex.bone_indices[i] as usize).copied().unwrap_or(self.mesh.initial_matrix))
                     })
                     .unwrap_or(self.mesh.initial_matrix);
                 let p = transform.transform_point(vertex.position);
@@ -977,3 +993,31 @@ fn weapon_motions(assets: &mut Assets, weapon: u32, codes: &[Option<u32>]) -> Ve
 }
 
 
+
+#[cfg(test)]
+mod monster_probe {
+    use super::*;
+
+    /// Loads every monster look the server spawns and names those that fail
+    /// or have no walk.
+    #[test]
+    #[ignore = "Needs the 5065 installation"]
+    fn every_server_monster_loads() {
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).unwrap();
+        let catalog = NpcCatalog::load(&mut assets).unwrap();
+        let looks = [103,104,105,108,117,126,127,129,130,131,132,133,136,145,148,151,152,153,154,155,156,157,160,162,163,164,165,166,168,171,179,188,196,197,200,201,202,203,204,205,206,207,209,211,213,214,217,222,224,225,226,227,230,240,241,242,243,244,245,246,247,248,249,250,252,254,255,257,258,260,262,263,265,266,267,268,273,274,277,303,304,305,306,307,308,309,310,311,312,313,314,317,325,326,327,328,329,332,348,353,354,355,356,357,360,361,362,363,373,374,377,380,381,382,383,397,400,401,402,403,404,405,406,425,426,442,443,463,503,505,517,531,536,548,556,597,601,602,603,604,605,606,900,910,920];
+        // The bosses TeratoDragon, SnowBanshee, ThrillingSpook and
+        // SwordMaster (950-953) came after 5065: it has no art for them.
+        let mut broken = Vec::new();
+        for look in looks {
+            match NpcModel::load_monster(&mut assets, &catalog, look) {
+                Ok(model) if model.walk_motion.is_none() => broken.push(format!("{look}: no walk")),
+                Ok(_) => {}
+                Err(error) => broken.push(format!("{look}: {error}")),
+            }
+        }
+        println!("{}", broken.join("
+"));
+        assert!(broken.is_empty(), "{} looks broken", broken.len());
+    }
+}

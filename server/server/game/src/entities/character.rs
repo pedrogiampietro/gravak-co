@@ -730,7 +730,7 @@ impl Character {
     }
 
     pub fn nobility_status(&self) -> crate::nobility::NobilityStatus {
-        crate::nobility::status_for(self.nobility_donation())
+        crate::nobility::status_for(self.database_id(), self.nobility_donation())
     }
 
     /// Atomically exchanges silver for nobility donation points. The database
@@ -741,6 +741,17 @@ impl Character {
         pool: &sqlx::PgPool,
         amount: u32,
     ) -> Result<crate::nobility::DonateOutcome, Error> {
+        self.donate_nobility_with(pool, amount, false).await
+    }
+
+    /// A donation paid in silver, or in CPs (one CP for every 50,000
+    /// silver, rounded up) when `in_cps`.
+    pub async fn donate_nobility_with(
+        &self,
+        pool: &sqlx::PgPool,
+        amount: u32,
+        in_cps: bool,
+    ) -> Result<crate::nobility::DonateOutcome, Error> {
         use crate::nobility::{DonateOutcome, MIN_DONATION, MIN_LEVEL};
         if self.entity.level() < u16::from(MIN_LEVEL) {
             return Ok(DonateOutcome::InvalidLevel);
@@ -750,27 +761,38 @@ impl Character {
         }
         let amount = i64::from(amount);
         let max_donation = i64::MAX.saturating_sub(amount);
-        let Some((silver, donation)) = sqlx::query_as::<_, (i64, i64)>(
+        // Silver, or the CPs it stands for: the column paid from, and how much.
+        let (column, cost) = if in_cps {
+            ("cps", (amount as u64).div_ceil(crate::nobility::SILVER_PER_CP) as i64)
+        } else {
+            ("silver", amount)
+        };
+        let Some((balance, donation)) = sqlx::query_as::<_, (i64, i64)>(&format!(
             "UPDATE characters
-             SET silver = silver - $1, nobility_donation = nobility_donation + $2
-             WHERE character_id = $3 AND silver >= $4 AND nobility_donation <= $5
-             RETURNING silver, nobility_donation",
-        )
-        .bind(amount)
+             SET {column} = {column} - $1, nobility_donation = nobility_donation + $2
+             WHERE character_id = $3 AND {column} >= $4 AND nobility_donation <= $5
+             RETURNING {column}, nobility_donation",
+        ))
+        .bind(cost)
         .bind(amount)
         .bind(self.inner.character_id)
-        .bind(amount)
+        .bind(cost)
         .bind(max_donation)
         .fetch_optional(pool)
         .await?
         else {
             return Ok(DonateOutcome::InsufficientSilver);
         };
-        let silver = silver.max(0) as u64;
+        let balance = balance.max(0) as u64;
         let donation = donation.max(0) as u64;
-        self.silver.store(silver, Ordering::Relaxed);
+        if in_cps {
+            self.cps.store(balance, Ordering::Relaxed);
+        } else {
+            self.silver.store(balance, Ordering::Relaxed);
+        }
         self.nobility_donation.store(donation, Ordering::Relaxed);
-        Ok(DonateOutcome::Donated(crate::nobility::status_for(donation)))
+        let changed = crate::nobility::record(self.database_id(), self.entity.name(), donation);
+        Ok(DonateOutcome::Donated(self.nobility_status(), changed))
     }
 
     pub async fn grant_silver(&self, pool: &sqlx::PgPool, amount: u32) -> Result<u32, Error> {
@@ -6249,10 +6271,12 @@ mod tests {
         assert_eq!(character.nobility_donation(), 0);
 
         let outcome = character.donate_nobility(&pool, 3_000_000).await?;
-        let crate::nobility::DonateOutcome::Donated(status) = outcome else {
+        let crate::nobility::DonateOutcome::Donated(status, _) = outcome else {
             panic!("valid donation should succeed");
         };
-        assert_eq!(status.rank, crate::nobility::NobilityRank::Serf);
+        // A donor holds a seat by place alone (the board is shared by the
+        // tests, so which one depends on who else donated).
+        assert!(status.position.is_some() && status.rank >= crate::nobility::NobilityRank::Duke);
         assert_eq!(status.donation, 3_000_000);
         assert_eq!(character.silver(), 500_000);
         assert_eq!(character.nobility_donation(), 3_000_000);
@@ -6290,11 +6314,14 @@ mod tests {
 
         let entries = crate::nobility::ranking(&pool, 10).await?;
         assert_eq!(entries.len(), 3);
+        // The board loads from the same rows at start-up.
+        assert!(crate::nobility::load(&pool).await? >= 3);
         assert_eq!(entries[0].name, "rank-high");
         assert_eq!(entries[1].name, "rank-tie");
         assert_eq!(entries[2].name, "item-test");
-        assert_eq!(entries[0].rank, crate::nobility::NobilityRank::Knight);
-        assert_eq!(entries[2].rank, crate::nobility::NobilityRank::Serf);
+        // Seats go by place alone: the first three are Kings.
+        assert_eq!(entries[0].rank, crate::nobility::NobilityRank::King);
+        assert_eq!(entries[2].rank, crate::nobility::NobilityRank::King);
         Ok(())
     }
 

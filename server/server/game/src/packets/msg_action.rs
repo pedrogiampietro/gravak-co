@@ -293,6 +293,11 @@ impl MsgAction {
         if selling(state, actor, me).await? {
             return Ok(());
         }
+        // A ghost only walks, as in the original.
+        if me.entity().is_dead() {
+            me.kick_back().await?;
+            return Ok(());
+        }
         let loc = me.entity().location();
         let mymap_id = me.entity().map_id();
         // Starting to validate this jump.

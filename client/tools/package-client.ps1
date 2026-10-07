@@ -7,7 +7,9 @@
 .DESCRIPTION
     dist\Gravak\
         Gravak.exe        the client, with the C runtime linked in
-        gravak.ini        game data folder and server
+        gravak.ini        game data folder, server and update address
+        servers.ini       the worlds on the login screen (installer\servers.ini
+                          when it exists, else the one -Auth/-Realm server)
         game\gravak.gpk   all the game data, compressed and encrypted (ani,
                           c3, data, ini, map, sound, the entries of c3.wdf
                           and data.wdf, and our content\build)
@@ -29,6 +31,9 @@ param(
     # The login server written into gravak.ini.
     [string]$Auth = "127.0.0.1:9958",
     [string]$Realm = "Gravak",
+    # The folder URL players' clients update from (tools\publish-update.ps1
+    # makes its contents); empty leaves the updater off.
+    [string]$Update = "",
     # Skip the installer even when Inno Setup is present.
     [switch]$NoInstaller
 )
@@ -84,12 +89,25 @@ Copy-Item (Join-Path $client "target\dist\release\conquer-sandbox.exe") (Join-Pa
 @"
 ; Gravak client settings.
 ; Assets: the game data folder, relative to this file.
-; Auth:   the login server (host:port).
+; Auth:   the login server (host:port), when servers.ini lists none.
+; Update: where new versions are downloaded from.
 [Client]
 Assets=game
 Auth=$Auth
 Realm=$Realm
+Update=$Update
 "@ | Set-Content -Encoding utf8 (Join-Path $package "gravak.ini")
+$servers = Join-Path $client "installer\servers.ini"
+if (Test-Path $servers) {
+    Copy-Item $servers (Join-Path $package "servers.ini") -Force
+} else {
+    @"
+; The worlds on the login screen: one section per world.
+[$Realm]
+Auth=$Auth
+Realm=$Realm
+"@ | Set-Content -Encoding utf8 (Join-Path $package "servers.ini")
+}
 Copy-Item (Join-Path $client "LICENSE"), (Join-Path $client "NOTICE") (Join-Path $package "licenses") -Force
 
 # 5. The game data: one encrypted pack. The game folder is made afresh,
@@ -117,6 +135,7 @@ if (-not $iscc) {
     return
 }
 Write-Host "Building the installer..." -ForegroundColor Cyan
-& $iscc /Q (Join-Path $client "installer\gravak.iss")
+$version = (Select-String -Path (Join-Path $client "Cargo.toml") -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+& $iscc /Q "/DAppVersion=$version" (Join-Path $client "installer\gravak.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 Write-Host "Installer ready: dist\GravakSetup.exe" -ForegroundColor Green

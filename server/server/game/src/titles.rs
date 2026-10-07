@@ -70,10 +70,10 @@ mod tests {
     #[test]
     fn catalog_validates_level_and_nobility_requirements() {
         let novice = definition(1).expect("novice title should exist");
-        assert!(is_unlocked(novice, 1, status_for(0)));
+        assert!(is_unlocked(novice, 1, status_for(-1, 0)));
         let knight = definition(3).expect("knight title should exist");
-        assert!(!is_unlocked(knight, 70, status_for(0)));
-        assert!(is_unlocked(knight, 70, status_for(30_000_000)));
+        assert!(!is_unlocked(knight, 70, status_for(-1, 0)));
+        assert!(is_unlocked(knight, 70, status_for(-1, 30_000_000)));
         assert_eq!(knight.required_rank, NobilityRank::Knight);
     }
 

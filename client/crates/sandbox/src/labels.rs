@@ -198,6 +198,11 @@ pub fn actor_image(name: &str, name_colour: [u8; 3]) -> Result<RgbaImage> {
     Ok(image)
 }
 
+/// How wide a name is written over its owner.
+pub fn name_width(name: &str) -> f32 {
+    font().map_or(0.0, |font| width(&font, name))
+}
+
 /// Side of the face portrait on the hovered player's nameplate.
 pub const PLAYER_FACE_SIZE: u32 = 32;
 

@@ -15,7 +15,7 @@ mod msg_user_info;
 pub use msg_user_info::MsgUserInfo;
 
 mod msg_nobility;
-pub use msg_nobility::MsgNobility;
+pub use msg_nobility::{donate as donate_nobility, MsgNobility};
 
 mod msg_nobility_ranking;
 pub use msg_nobility_ranking::{send_nobility_ranking, MsgNobilityRanking};

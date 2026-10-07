@@ -33,6 +33,7 @@ pub mod special_items;
 pub mod store;
 pub mod systems;
 pub mod titles;
+pub mod top_classes;
 pub mod utils;
 pub mod world;
 

@@ -831,6 +831,57 @@ pub fn field(
     }
 }
 
+/// A small check box with its caption to the right; `rect` is the box.
+pub fn checkbox(image: &mut RgbaImage, rect: [i32; 4], caption: &str, checked: bool, hot: bool) {
+    let [x, y, w, h] = rect;
+    fill(image, rect, [0, 0, 0, 170]);
+    outline(image, rect, if hot { GOLD_BRIGHT } else { [168, 128, 52, 255] });
+    if checked {
+        // A tick: down from the left, then up to the top right corner.
+        let colour = if hot { [255, 250, 230, 255] } else { GOLD_BRIGHT };
+        let (left, bottom, right) = ([x + 3, y + h / 2], [x + w / 2 - 1, y + h - 4], [x + w - 3, y + 3]);
+        for (from, to) in [(left, bottom), (bottom, right)] {
+            let steps = (to[0] - from[0]).abs().max((to[1] - from[1]).abs()).max(1);
+            for step in 0..=steps {
+                let px = from[0] + (to[0] - from[0]) * step / steps;
+                let py = from[1] + (to[1] - from[1]) * step / steps;
+                fill(image, [px, py - 1, 2, 2], colour);
+            }
+        }
+    }
+    label_left(image, caption, 12.0, x + w + 6, y + (h - 14) / 2, if hot { GOLD_BRIGHT } else { GOLD });
+}
+
+/// A small triangle pointing down (or up when `open`), centred on `centre`.
+pub fn chevron(image: &mut RgbaImage, centre: [i32; 2], open: bool, colour: [u8; 4]) {
+    for row in 0..5 {
+        let half = if open { row } else { 4 - row };
+        fill(image, [centre[0] - half, centre[1] - 2 + row, half * 2 + 1, 1], colour);
+    }
+}
+
+/// A small × centred on `centre`.
+pub fn cross(image: &mut RgbaImage, centre: [i32; 2], radius: i32, colour: [u8; 4]) {
+    for step in -radius..=radius {
+        for thick in 0..2 {
+            blend(image, centre[0] + step + thick, centre[1] + step, colour);
+            blend(image, centre[0] + step + thick, centre[1] - step, colour);
+        }
+    }
+}
+
+/// A round lamp, as the world list's status.
+pub fn dot(image: &mut RgbaImage, centre: [i32; 2], radius: i32, colour: [u8; 4]) {
+    radial_glow(image, centre[0], centre[1], radius * 3, [colour[0], colour[1], colour[2], 60]);
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if dx * dx + dy * dy <= radius * radius {
+                blend(image, centre[0] + dx, centre[1] + dy, colour);
+            }
+        }
+    }
+}
+
 /// A horizontal bar of `value` out of five pips.
 pub fn stat_bar(image: &mut RgbaImage, x: i32, y: i32, caption: &str, value: u8) {
     label_left(image, caption, 13.0, x, y - 1, GOLD);

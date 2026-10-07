@@ -7,10 +7,12 @@
 
 use crate::login::{CharacterSummary, LoginClient, LoginCommand, LoginEvent};
 use crate::network::NetworkHandle;
+use crate::settings::{LoginPrefs, SavedAccount};
+use crate::worlds::{Status, World};
 use image::RgbaImage;
 use std::{
     num::NonZeroU32,
-    rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use winit::{
@@ -32,6 +34,11 @@ const MAX_INPUT: usize = 15;
 const GREY: [u8; 4] = [150, 164, 166, 255];
 const ERROR: [u8; 4] = [240, 128, 108, 255];
 const OK: [u8; 4] = [136, 220, 146, 255];
+/// The client's version, shown on the login screen and compared by the
+/// updater.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// One row of the world and saved-account lists.
+const LIST_ROW: i32 = 30;
 
 pub const BODIES: [(&str, u16); 4] = [
     ("Male", 1003),
@@ -119,6 +126,39 @@ pub enum Target {
     HairStyle(bool),
     /// A hair colour, an index into `HAIR_COLOURS`.
     HairColour(usize),
+    /// The world box, which opens the world list.
+    WorldBox,
+    /// A world in the open list.
+    World(usize),
+    /// The arrow on the account field, which opens the saved accounts.
+    SavedList,
+    /// A saved account in the open list, and its forget cross.
+    Saved(usize),
+    Forget(usize),
+    Check(Check),
+}
+
+/// The login screen's check boxes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    RememberAccount,
+    SavePassword,
+    HideAccount,
+}
+
+/// A list dropped down over the login panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum List {
+    Worlds,
+    Saved,
+}
+
+/// `pedro3` as `ped***`: the start of an account, enough to tell one's
+/// own apart, without showing it whole.
+pub fn mask(account: &str) -> String {
+    let count = account.chars().count();
+    let shown = if count > 3 { 3 } else { 1.min(count) };
+    account.chars().take(shown).chain(std::iter::repeat_n('*', count - shown)).collect()
 }
 
 impl Target {
@@ -198,6 +238,26 @@ pub struct LoginUi {
     turning: Option<(f32, f32)>,
     /// Still renders of the heroes not selected, by (body, class).
     still_heroes: std::cell::RefCell<std::collections::HashMap<(usize, usize), RgbaImage>>,
+    /// The worlds to log in to, the one chosen, and how each answers.
+    worlds: Vec<World>,
+    pub world: usize,
+    world_status: Vec<Status>,
+    /// Remembered accounts and the check boxes; `prefs_changed` asks the
+    /// launcher to save them.
+    prefs: LoginPrefs,
+    prefs_changed: bool,
+    /// The list dropped down, if any.
+    list: Option<List>,
+    /// The password field holds a saved password, cleared when the account
+    /// is edited.
+    autofilled: bool,
+    /// The account and password of the login in flight, remembered once
+    /// the server accepts them.
+    pending: Option<(String, String)>,
+    /// The updater's line at the foot of the screen, and whether the
+    /// buttons wait for it.
+    pub update_status: Option<(String, [u8; 4])>,
+    pub updating: bool,
 }
 
 /// What the screens ask the login session to do.
@@ -208,7 +268,24 @@ pub enum Request {
 }
 
 impl LoginUi {
-    pub fn new(last_account: Option<String>) -> Self {
+    pub fn new(worlds: Vec<World>, mut prefs: LoginPrefs) -> Self {
+        assert!(!worlds.is_empty(), "the login screen needs a world");
+        let world = prefs
+            .world
+            .as_ref()
+            .and_then(|name| worlds.iter().position(|world| &world.name == name))
+            .unwrap_or(0);
+        // Accounts saved before worlds belong to the first one.
+        for saved in &mut prefs.accounts {
+            if saved.world.is_empty() {
+                saved.world = worlds[0].name.clone();
+            }
+        }
+        let account = prefs
+            .accounts_on(&worlds[world].name)
+            .next()
+            .map(|saved| saved.account.clone())
+            .unwrap_or_default();
         let mut ui = Self {
             screen: Screen::Login,
             fields: Vec::new(),
@@ -219,7 +296,7 @@ impl LoginUi {
             status_colour: GREY,
             busy: false,
             hovered: None,
-            account: last_account.unwrap_or_default(),
+            account,
             fade_pending: std::cell::Cell::new(false),
             fade_from: std::cell::Cell::new(None),
             heroes: std::collections::HashMap::new(),
@@ -240,6 +317,16 @@ impl LoginUi {
             chosen_hero: std::cell::RefCell::new(None),
             turn: 0.0,
             turning: None,
+            world_status: vec![Status::Checking; worlds.len()],
+            worlds,
+            world,
+            prefs,
+            prefs_changed: false,
+            list: None,
+            autofilled: false,
+            pending: None,
+            update_status: None,
+            updating: false,
         };
         ui.show(Screen::Login);
         ui
@@ -274,13 +361,155 @@ impl LoginUi {
             Screen::Select(_) => Vec::new(),
         };
         self.focus = 0;
+        self.autofilled = false;
+        self.list = None;
         if matches!(screen, Screen::Login | Screen::Register) && !self.account.is_empty() {
             self.fields[0].value = self.account.clone();
             self.focus = 1;
+            if screen == Screen::Login
+                && let Some(password) = self.saved_password(&self.account)
+            {
+                self.fields[1].value = password;
+                self.autofilled = true;
+            }
         }
         self.screen = screen;
         self.fade_pending.set(true);
         self.hovered = None;
+    }
+
+    /// Shows the updater's progress; `true` when the client must restart.
+    pub fn update_event(&mut self, event: &crate::updater::UpdateEvent) -> bool {
+        use crate::updater::UpdateEvent;
+        const MB: f64 = 1024.0 * 1024.0;
+        let dim = crate::launcher_art::DIM;
+        let (text, colour, updating) = match event {
+            UpdateEvent::Checking => ("Checking for updates...".to_owned(), dim, true),
+            UpdateEvent::Downloading { version, file, done, total } => (
+                format!(
+                    "Updating to v{version}  ·  {file}  ·  {}%  ({:.1} of {:.1} MB)",
+                    done * 100 / (*total).max(1),
+                    *done as f64 / MB,
+                    *total as f64 / MB
+                ),
+                crate::launcher_art::GOLD,
+                true,
+            ),
+            UpdateEvent::UpToDate => ("Up to date".to_owned(), dim, false),
+            UpdateEvent::Updated(version) => (format!("Updated to v{version}. Restarting..."), OK, true),
+            UpdateEvent::Failed(error) => (format!("Could not update: {error}"), ERROR, false),
+        };
+        self.update_status = Some((text, colour));
+        self.updating = updating;
+        matches!(event, UpdateEvent::Updated(_))
+    }
+
+    pub fn world(&self) -> &World {
+        &self.worlds[self.world]
+    }
+
+    pub fn set_world_status(&mut self, index: usize, status: Status) {
+        if let Some(slot) = self.world_status.get_mut(index) {
+            *slot = status;
+        }
+    }
+
+    /// The remembered accounts and choices, once, after they change.
+    pub fn take_prefs(&mut self) -> Option<LoginPrefs> {
+        std::mem::take(&mut self.prefs_changed).then(|| self.prefs.clone())
+    }
+
+    fn saved(&self) -> Vec<&SavedAccount> {
+        self.prefs.accounts_on(&self.worlds[self.world].name).collect()
+    }
+
+    fn saved_password(&self, account: &str) -> Option<String> {
+        self.saved()
+            .into_iter()
+            .find(|saved| saved.account.eq_ignore_ascii_case(account))
+            .and_then(|saved| saved.password.clone())
+    }
+
+    /// An account as the screen shows it.
+    fn shown_account(&self, account: &str) -> String {
+        if self.prefs.hide_account { mask(account) } else { account.to_owned() }
+    }
+
+    fn choose_world(&mut self, index: usize) {
+        if index >= self.worlds.len() {
+            return;
+        }
+        self.world = index;
+        self.prefs.world = Some(self.worlds[index].name.clone());
+        self.prefs_changed = true;
+        // The world's own last account, when it has one.
+        if let Some(saved) = self.saved().first().map(|saved| saved.account.clone()) {
+            self.account = saved;
+            let screen = self.screen.clone();
+            self.show(screen);
+        } else if self.autofilled {
+            self.fields[1].value.clear();
+            self.autofilled = false;
+        }
+        self.info(format!("World: {}", self.worlds[index].name));
+    }
+
+    fn choose_saved(&mut self, index: usize) {
+        let Some(saved) = self.saved().get(index).map(|saved| (*saved).clone()) else {
+            return;
+        };
+        self.fields[0].value = saved.account.clone();
+        self.account = saved.account;
+        self.fields[1].value = saved.password.clone().unwrap_or_default();
+        self.autofilled = saved.password.is_some();
+        self.focus = if self.autofilled { 0 } else { 1 };
+        self.info("");
+    }
+
+    fn forget_saved(&mut self, index: usize) {
+        let Some(saved) = self.saved().get(index).map(|saved| (*saved).clone()) else {
+            return;
+        };
+        self.prefs.forget(&saved.world, &saved.account);
+        self.prefs_changed = true;
+        if self.autofilled && self.fields[0].value.eq_ignore_ascii_case(&saved.account) {
+            self.fields[1].value.clear();
+            self.autofilled = false;
+        }
+        self.info(format!("{} forgotten.", self.shown_account(&saved.account)));
+    }
+
+    fn toggle(&mut self, check: Check) {
+        let prefs = &mut self.prefs;
+        match check {
+            Check::RememberAccount => {
+                prefs.remember_account = !prefs.remember_account;
+                // A password is only saved with its account.
+                prefs.save_password &= prefs.remember_account;
+            }
+            Check::SavePassword => {
+                prefs.save_password = !prefs.save_password;
+                prefs.remember_account |= prefs.save_password;
+            }
+            Check::HideAccount => prefs.hide_account = !prefs.hide_account,
+        }
+        self.prefs_changed = true;
+    }
+
+    /// The server took the login: remember (or forget) the account.
+    fn commit_login(&mut self) {
+        let Some((account, password)) = self.pending.take() else {
+            return;
+        };
+        let world = self.worlds[self.world].name.clone();
+        if self.prefs.remember_account {
+            let password = self.prefs.save_password.then_some(password);
+            self.prefs.remember(SavedAccount { world: world.clone(), account, password });
+        } else {
+            self.prefs.forget(&world, &account);
+        }
+        self.prefs.world = Some(world);
+        self.prefs_changed = true;
     }
 
     fn set_status(&mut self, text: impl Into<String>, colour: [u8; 4]) {
@@ -322,11 +551,13 @@ impl LoginUi {
             | LoginEvent::LoginFailed(message)
             | LoginEvent::CharacterRejected(message) => self.error(capitalise(message)),
             LoginEvent::NeedsCharacter => {
+                self.commit_login();
                 self.busy = false;
                 self.show(Screen::CreateCharacter);
                 self.info("Create your character.");
             }
             LoginEvent::Character(summary) => {
+                self.commit_login();
                 self.busy = false;
                 self.show(Screen::Select(summary.clone()));
                 self.info("");
@@ -344,9 +575,10 @@ impl LoginUi {
 
     /// Runs a button's action.
     pub fn activate(&mut self, action: Action) -> Option<Request> {
-        if self.busy && action != Action::Exit {
+        if (self.busy || self.updating) && action != Action::Exit {
             return None;
         }
+        self.list = None;
         match action {
             Action::Exit => Some(Request::Exit),
             Action::OpenRegister => {
@@ -372,10 +604,14 @@ impl LoginUi {
                     return None;
                 }
                 self.account = username.clone();
-                crate::settings::save_last_account(&username);
+                self.pending = Some((username.clone(), password.clone()));
                 self.busy = true;
                 self.info("Logging in...");
-                Some(Request::Send(LoginCommand::Login { username, password }))
+                Some(Request::Send(LoginCommand::Login {
+                    world: self.world().clone(),
+                    username,
+                    password,
+                }))
             }
             Action::Register => {
                 let username = self.field_value(0).to_owned();
@@ -394,7 +630,11 @@ impl LoginUi {
                 }
                 self.busy = true;
                 self.info("Creating account...");
-                Some(Request::Send(LoginCommand::Register { username, password }))
+                Some(Request::Send(LoginCommand::Register {
+                    world: self.world().clone(),
+                    username,
+                    password,
+                }))
             }
             Action::Create => {
                 let name = self.field_value(0).to_owned();
@@ -440,7 +680,36 @@ impl LoginUi {
     }
 
     pub fn click(&mut self, size: [u32; 2], cursor: [f32; 2]) -> Option<Request> {
-        match self.target_at(size, cursor)? {
+        let target = self.target_at(size, cursor);
+        // A click anywhere but on the open list closes it.
+        let list = self.list.take();
+        match target? {
+            Target::WorldBox => {
+                self.list = (list != Some(List::Worlds) && !self.busy).then_some(List::Worlds);
+                None
+            }
+            Target::World(index) => {
+                self.choose_world(index);
+                None
+            }
+            Target::SavedList => {
+                self.list = (list != Some(List::Saved) && !self.busy).then_some(List::Saved);
+                None
+            }
+            Target::Saved(index) => {
+                self.choose_saved(index);
+                None
+            }
+            Target::Forget(index) => {
+                self.forget_saved(index);
+                // The list stays open for the others.
+                self.list = list.filter(|_| !self.saved().is_empty());
+                None
+            }
+            Target::Check(check) => {
+                self.toggle(check);
+                None
+            }
             Target::Field(index) => {
                 self.focus = index;
                 None
@@ -478,6 +747,23 @@ impl LoginUi {
     }
 
     pub fn key(&mut self, key: &Key, text: Option<&str>, shift: bool) -> Option<Request> {
+        if self.list.take().is_some() && matches!(key, Key::Named(NamedKey::Escape)) {
+            return None;
+        }
+        let typing = match key {
+            Key::Named(NamedKey::Backspace) => true,
+            Key::Named(_) => false,
+            _ => text.is_some_and(|text| text.chars().any(|c| c.is_ascii_graphic())),
+        };
+        if typing && self.screen == Screen::Login && self.autofilled {
+            // A saved password goes with its account: changing either
+            // starts the password afresh.
+            self.autofilled = false;
+            self.fields[1].value.clear();
+            if self.focus == 1 && matches!(key, Key::Named(NamedKey::Backspace)) {
+                return None;
+            }
+        }
         match key {
             Key::Named(NamedKey::Enter) => return self.activate(self.primary()),
             Key::Named(NamedKey::Escape) => return self.activate(self.escape()),
@@ -547,18 +833,44 @@ impl LoginUi {
         let mut fields = Vec::new();
         let classes = Vec::new();
         let bodies = Vec::new();
+        let mut world_box = None;
+        let mut saved_arrow = None;
+        let mut checks = Vec::new();
         let panel_width;
         let mut y;
         match self.screen {
             Screen::Login | Screen::Register => {
                 panel_width = 420;
-                y = 66;
+                y = 66 + 20;
+                let rect = [36, y, panel_width - 72, FIELD_HEIGHT];
+                world_box = Some(rect);
+                targets.push((rect, Target::WorldBox));
+                y += FIELD_HEIGHT + 14;
                 for index in 0..self.fields.len() {
                     y += 20;
                     let rect = [36, y, panel_width - 72, FIELD_HEIGHT];
                     fields.push(rect);
+                    if index == 0 && self.screen == Screen::Login && !self.saved().is_empty() {
+                        let arrow = [rect[0] + rect[2] - FIELD_HEIGHT, y, FIELD_HEIGHT, FIELD_HEIGHT];
+                        saved_arrow = Some(arrow);
+                        targets.push((arrow, Target::SavedList));
+                    }
                     targets.push((rect, Target::Field(index)));
                     y += FIELD_HEIGHT + 14;
+                }
+                if self.screen == Screen::Login {
+                    let mut boxes = vec![(Check::RememberAccount, "Remember")];
+                    if crate::vault::AVAILABLE {
+                        boxes.push((Check::SavePassword, "Save password"));
+                    }
+                    boxes.push((Check::HideAccount, "Hide account"));
+                    let column = (panel_width - 72) / 3;
+                    for (index, (check, caption)) in boxes.into_iter().enumerate() {
+                        let rect = [36 + index as i32 * column, y - 2, 14, 14];
+                        checks.push((rect, check, caption));
+                        targets.push(([rect[0] - 2, rect[1] - 4, column - 4, 22], Target::Check(check)));
+                    }
+                    y += 22;
                 }
             }
             Screen::CreateCharacter => unreachable!("laid out by creation_layout"),
@@ -601,6 +913,30 @@ impl LoginUi {
         ];
         let offset = |rect: [i32; 4]| [rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]];
         let panel = [origin[0], origin[1], panel_width, panel_height];
+        // The open list drops below its box, over the rest of the panel,
+        // and takes the clicks first.
+        let mut list_rows = Vec::new();
+        let anchor = match self.list {
+            Some(List::Worlds) => world_box.map(|rect| (rect, self.worlds.len())),
+            Some(List::Saved) => fields.first().map(|rect| (*rect, self.saved().len())),
+            None => None,
+        };
+        if let Some((anchor, count)) = anchor {
+            let [x, y, w, h] = anchor;
+            let mut overlay = Vec::new();
+            for index in 0..count {
+                let row = [x, y + h + 2 + index as i32 * LIST_ROW, w, LIST_ROW];
+                list_rows.push((offset(row), index));
+                if self.list == Some(List::Saved) {
+                    overlay.push(([x + w - 30, row[1], 30, LIST_ROW], Target::Forget(index)));
+                    overlay.push((row, Target::Saved(index)));
+                } else {
+                    overlay.push((row, Target::World(index)));
+                }
+            }
+            overlay.append(&mut targets);
+            targets = overlay;
+        }
         // The four professions along the bottom of the login screens.
         let mut showcase = Vec::new();
         if matches!(self.screen, Screen::Login | Screen::Register)
@@ -614,6 +950,10 @@ impl LoginUi {
         }
         Layout {
             panel,
+            world_box: world_box.map(offset),
+            saved_arrow: saved_arrow.map(offset),
+            checks: checks.into_iter().map(|(rect, check, caption)| (offset(rect), check, caption)).collect(),
+            list_rows,
             fields: fields.into_iter().map(offset).collect(),
             classes: classes.into_iter().map(offset).collect(),
             bodies: bodies.into_iter().map(offset).collect(),
@@ -695,9 +1035,14 @@ impl LoginUi {
 
         match &self.screen {
             Screen::Login | Screen::Register => {
+                if let Some(rect) = layout.world_box {
+                    self.paint_world_box(&mut image, rect);
+                }
                 for (index, (field, rect)) in self.fields.iter().zip(&layout.fields).enumerate() {
                     let shown = if field.secret {
                         "•".repeat(field.value.len())
+                    } else if index == 0 {
+                        self.shown_account(&field.value)
                     } else {
                         field.value.clone()
                     };
@@ -710,6 +1055,20 @@ impl LoginUi {
                         self.hovered == Some(Target::Field(index)),
                         caret,
                     );
+                }
+                if let Some([x, y, w, h]) = layout.saved_arrow {
+                    let hot = self.hovered == Some(Target::SavedList) || self.list == Some(List::Saved);
+                    art::fill(&mut image, [x, y + 6, 1, h - 12], [168, 128, 52, 160]);
+                    let colour = if hot { art::GOLD_BRIGHT } else { art::GOLD };
+                    art::chevron(&mut image, [x + w / 2, y + h / 2], self.list == Some(List::Saved), colour);
+                }
+                for (rect, check, caption) in &layout.checks {
+                    let checked = match check {
+                        Check::RememberAccount => self.prefs.remember_account,
+                        Check::SavePassword => self.prefs.save_password,
+                        Check::HideAccount => self.prefs.hide_account,
+                    };
+                    art::checkbox(&mut image, *rect, caption, checked, self.hovered == Some(Target::Check(*check)));
                 }
             }
             Screen::CreateCharacter => {}
@@ -789,9 +1148,10 @@ impl LoginUi {
                 text,
                 style,
                 hot,
-                self.busy && *action != Action::Exit,
+                (self.busy || self.updating) && *action != Action::Exit,
             );
         }
+        self.paint_list(&mut image, &layout);
 
         // Showcase of the professions.
         let featured = (time / 3.5) as usize % 4;
@@ -830,19 +1190,91 @@ impl LoginUi {
             );
         }
 
-        let footer = "Gravak-CO";
-        let width = art::text_width(footer, 11.0);
+        let footer = format!("Gravak-CO  ·  v{VERSION}");
+        let width = art::text_width(&footer, 11.0);
         art::body(
             &mut image,
-            footer,
+            &footer,
             11.0,
             size[0] as i32 - width - 14,
             size[1] as i32 - 22,
             art::DIM,
             200,
         );
+        if let Some((text, colour)) = &self.update_status {
+            art::body(&mut image, text, 11.0, 14, size[1] as i32 - 22, *colour, size[0] as i32 / 2);
+        }
         let _ = ph;
         image
+    }
+
+    /// The world box: the chosen world and whether it answers.
+    fn paint_world_box(&self, image: &mut RgbaImage, rect: [i32; 4]) {
+        use crate::launcher_art as art;
+        let open = self.list == Some(List::Worlds);
+        let hot = self.hovered == Some(Target::WorldBox);
+        art::field(image, rect, "World", &self.world().name, open, hot, false);
+        let [x, y, w, h] = rect;
+        art::chevron(image, [x + w - 16, y + h / 2], open, if hot || open { art::GOLD_BRIGHT } else { art::GOLD });
+        self.paint_status(image, self.world_status[self.world], x + w - 34, y + h / 2);
+    }
+
+    /// A world's lamp and words, ending at `right`.
+    fn paint_status(&self, image: &mut RgbaImage, status: Status, right: i32, middle: i32) {
+        use crate::launcher_art as art;
+        let (text, colour) = match status {
+            Status::Checking => ("Checking...".to_owned(), art::DIM),
+            Status::Online(ms) => (format!("Online  ·  {ms} ms"), OK),
+            Status::Offline => ("Offline".to_owned(), ERROR),
+        };
+        let width = art::text_width(&text, 11.0);
+        art::body(image, &text, 11.0, right - width, middle - 7, colour, 160);
+        art::dot(image, [right - width - 10, middle], 3, colour);
+    }
+
+    /// The list dropped from the world box or the account field.
+    fn paint_list(&self, image: &mut RgbaImage, layout: &Layout) {
+        use crate::launcher_art as art;
+        let (Some(list), Some(first), Some(last)) = (self.list, layout.list_rows.first(), layout.list_rows.last()) else {
+            return;
+        };
+        let [x, y, w, _] = first.0;
+        let height = last.0[1] + last.0[3] - y;
+        let frame = [x, y, w, height];
+        art::fill(image, [x + 3, y + 4, w, height], [0, 0, 0, 110]);
+        art::fill(image, frame, [8, 22, 28, 246]);
+        art::outline(image, frame, art::GOLD_DEEP);
+        let saved = self.saved();
+        for (row, index) in &layout.list_rows {
+            let [rx, ry, rw, rh] = *row;
+            let middle = ry + rh / 2;
+            let (hot, chosen) = match list {
+                List::Worlds => (self.hovered == Some(Target::World(*index)), *index == self.world),
+                List::Saved => (
+                    matches!(self.hovered, Some(Target::Saved(i) | Target::Forget(i)) if i == *index),
+                    saved.get(*index).is_some_and(|saved| saved.account.eq_ignore_ascii_case(&self.fields[0].value)),
+                ),
+            };
+            if hot {
+                art::fill(image, [rx + 1, ry, rw - 2, rh], [120, 90, 30, 120]);
+            }
+            let colour = if hot || chosen { art::GOLD_BRIGHT } else { art::WHITE };
+            match list {
+                List::Worlds => {
+                    art::body(image, &self.worlds[*index].name, 13.0, rx + 10, middle - 8, colour, rw / 2);
+                    self.paint_status(image, self.world_status[*index], rx + rw - 12, middle);
+                }
+                List::Saved => {
+                    let Some(saved) = saved.get(*index) else { continue };
+                    let advance = art::body(image, &self.shown_account(&saved.account), 13.0, rx + 10, middle - 8, colour, rw - 60);
+                    if saved.password.is_some() {
+                        art::body(image, "·  password saved", 11.0, rx + 18 + advance, middle - 7, art::DIM, 140);
+                    }
+                    let forget = self.hovered == Some(Target::Forget(*index));
+                    art::cross(image, [rx + rw - 15, middle], 4, if forget { ERROR } else { art::DIM });
+                }
+            }
+        }
     }
 
     /// The creation screen fills the window: a tall column per profession
@@ -907,7 +1339,7 @@ impl LoginUi {
             status_y: bar[1] + 84,
             buttons,
             targets,
-            showcase: Vec::new(),
+            ..Layout::default()
         }
     }
 
@@ -1304,8 +1736,16 @@ impl LookControls {
     }
 }
 
+#[derive(Default)]
 struct Layout {
     panel: [i32; 4],
+    /// The login screens' world box, the account field's saved-accounts
+    /// arrow, the check boxes (box, check, caption) and the open list's
+    /// rows (row, index).
+    world_box: Option<[i32; 4]>,
+    saved_arrow: Option<[i32; 4]>,
+    checks: Vec<([i32; 4], Check, &'static str)>,
+    list_rows: Vec<([i32; 4], usize)>,
     fields: Vec<[i32; 4]>,
     classes: Vec<[i32; 4]>,
     bodies: Vec<[i32; 4]>,
@@ -1406,8 +1846,8 @@ fn inside(rect: [i32; 4], point: [i32; 2]) -> bool {
 struct Launcher {
     ui: LoginUi,
     client: LoginClient,
-    window: Option<Rc<Window>>,
-    surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    window: Option<Arc<Window>>,
+    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     cursor: [f32; 2],
     shift: bool,
     started: Instant,
@@ -1419,6 +1859,10 @@ struct Launcher {
     heroes: std::sync::mpsc::Receiver<crate::showcase::Loaded>,
     /// The theme and the clicks; none without a sound device.
     audio: Option<crate::audio::LoginAudio>,
+    /// How the worlds answer, from `worlds::watch`.
+    world_status: std::sync::mpsc::Receiver<(usize, Status)>,
+    /// The updater's progress, when the client has an update address.
+    updates: Option<std::sync::mpsc::Receiver<crate::updater::UpdateEvent>>,
 }
 
 impl Launcher {
@@ -1489,7 +1933,7 @@ impl ApplicationHandler for Launcher {
             .create_window(attributes)
             .map_err(|error| error.to_string())
             .and_then(|window| {
-                let window = Rc::new(window);
+                let window = Arc::new(window);
                 let context =
                     softbuffer::Context::new(window.clone()).map_err(|error| error.to_string())?;
                 let surface = softbuffer::Surface::new(&context, window.clone())
@@ -1541,7 +1985,21 @@ impl ApplicationHandler for Launcher {
                     return;
                 }
                 let target = self.ui.target_at(self.size(), self.cursor);
-                if matches!(target, Some(Target::Button(_) | Target::Body(_) | Target::Class(_) | Target::Dye(_)))
+                if matches!(
+                    target,
+                    Some(
+                        Target::Button(_)
+                            | Target::Body(_)
+                            | Target::Class(_)
+                            | Target::Dye(_)
+                            | Target::WorldBox
+                            | Target::World(_)
+                            | Target::SavedList
+                            | Target::Saved(_)
+                            | Target::Forget(_)
+                            | Target::Check(_)
+                    )
+                )
                     && let Some(audio) = &self.audio
                 {
                     audio.play(crate::audio::LoginSound::Click);
@@ -1578,6 +2036,22 @@ impl ApplicationHandler for Launcher {
         while let Ok(view) = self.scenes.try_recv() {
             crate::launcher_art::add_scene(view, self.started.elapsed().as_secs_f32());
         }
+        while let Ok((index, status)) = self.world_status.try_recv() {
+            self.ui.set_world_status(index, status);
+        }
+        let updates: Vec<_> = self.updates.as_ref().map(|updates| updates.try_iter().collect()).unwrap_or_default();
+        for event in updates {
+            if self.ui.update_event(&event) {
+                // New files are in: the client starts again on them.
+                match crate::updater::restart() {
+                    Ok(()) => {
+                        event_loop.exit();
+                        return;
+                    }
+                    Err(error) => self.ui.update_status = Some((format!("Updated; start Gravak again ({error})"), OK)),
+                }
+            }
+        }
         for event in self.client.drain() {
             let before = std::mem::discriminant(&self.ui.screen);
             self.ui.handle_event(&event);
@@ -1588,6 +2062,9 @@ impl ApplicationHandler for Launcher {
                 return;
             }
             self.redraw();
+        }
+        if let Some(prefs) = self.ui.take_prefs() {
+            crate::settings::save_login_prefs(&prefs);
         }
         // Animate the embers and caret, and poll the login session.
         self.redraw();
@@ -1602,20 +2079,26 @@ impl ApplicationHandler for Launcher {
 pub fn run(
     event_loop: &mut EventLoop<()>,
     assets: &mut crate::assets::Assets,
-    auth_address: String,
-    realm: String,
-) -> Result<Option<NetworkHandle>, String> {
+    worlds: Vec<World>,
+    update_url: Option<String>,
+) -> Result<Option<(NetworkHandle, Arc<Window>)>, String> {
     // The panels and columns use the game's window art when it is there.
     match crate::original_panels::general_bg(assets) {
         Ok(source) => crate::launcher_art::set_frame_source(source),
         Err(error) => eprintln!("Login screens without the game's window art: {error}"),
     }
     let (heroes, look_requests) = crate::showcase::start(assets.root_path().to_path_buf());
-    let mut ui = LoginUi::new(crate::settings::load_last_account());
+    let world_status = crate::worlds::watch(&worlds);
+    let mut ui = LoginUi::new(worlds, crate::settings::load_login_prefs());
     ui.set_look_requests(look_requests);
     let mut launcher = Launcher {
         ui,
-        client: LoginClient::start(auth_address, realm),
+        world_status,
+        updates: update_url.and_then(|url| {
+            let root = std::env::current_exe().ok()?.parent()?.to_path_buf();
+            Some(crate::updater::start(url, root))
+        }),
+        client: LoginClient::start(),
         window: None,
         surface: None,
         cursor: [0.0; 2],
@@ -1636,7 +2119,10 @@ pub fn run(
     if let Some(error) = launcher.error {
         return Err(error);
     }
-    Ok(launcher.entered)
+    // The game goes on in the same window: the screens' surface lets go
+    // of it first.
+    drop(launcher.surface.take());
+    Ok(launcher.entered.zip(launcher.window.take()))
 }
 
 #[cfg(test)]
@@ -1659,13 +2145,21 @@ mod tests {
         ]
     }
 
+    fn world() -> World {
+        World::new("Gravak", "127.0.0.1:9958", "Gravak")
+    }
+
+    fn new_ui() -> LoginUi {
+        LoginUi::new(vec![world()], LoginPrefs::default())
+    }
+
     fn type_text(ui: &mut LoginUi, text: &str) {
         ui.key(&Key::Character(text.into()), Some(text), false);
     }
 
     #[test]
     fn login_sends_typed_credentials() {
-        let mut ui = LoginUi::new(None);
+        let mut ui = new_ui();
         type_text(&mut ui, "hero");
         ui.key(&Key::Named(NamedKey::Tab), None, false);
         type_text(&mut ui, "s3cret");
@@ -1673,6 +2167,7 @@ mod tests {
         assert_eq!(
             request,
             Some(Request::Send(LoginCommand::Login {
+                world: world(),
                 username: "hero".into(),
                 password: "s3cret".into()
             }))
@@ -1680,11 +2175,103 @@ mod tests {
         assert!(ui.busy);
         // Buttons wait for the answer.
         assert_eq!(ui.activate(Action::Login), None);
+        // Nothing is remembered until the server takes the login.
+        assert_eq!(ui.take_prefs(), None);
+    }
+
+    fn two_worlds() -> Vec<World> {
+        vec![world(), World::new("Test", "127.0.0.1:9960", "Test")]
+    }
+
+    fn character() -> CharacterSummary {
+        CharacterSummary { name: "Hero".into(), level: 1, class: 10, mesh: 1003 }
+    }
+
+    #[test]
+    fn an_accepted_login_is_remembered_on_its_world() {
+        let mut ui = LoginUi::new(two_worlds(), LoginPrefs::default());
+        ui.click(SIZE, centre(&ui, Target::WorldBox));
+        ui.click(SIZE, centre(&ui, Target::World(1)));
+        assert_eq!(ui.world().name, "Test");
+        ui.take_prefs();
+        ui.click(SIZE, centre(&ui, Target::Check(Check::SavePassword)));
+        type_text(&mut ui, "hero");
+        ui.key(&Key::Named(NamedKey::Tab), None, false);
+        type_text(&mut ui, "s3cret");
+        let Some(Request::Send(LoginCommand::Login { world, .. })) = ui.activate(Action::Login) else {
+            panic!("expected a login");
+        };
+        assert_eq!(world.name, "Test");
+        ui.handle_event(&LoginEvent::Character(character()));
+        let prefs = ui.take_prefs().expect("remembered");
+        assert_eq!(prefs.world.as_deref(), Some("Test"));
+        assert!(prefs.remember_account && prefs.save_password);
+        assert_eq!(
+            prefs.accounts,
+            vec![SavedAccount { world: "Test".into(), account: "hero".into(), password: Some("s3cret".into()) }]
+        );
+
+        // Next time the world, account and password are filled in.
+        let mut ui = LoginUi::new(two_worlds(), prefs.clone());
+        assert_eq!(ui.world().name, "Test");
+        assert_eq!((ui.field_value(0), ui.field_value(1)), ("hero", "s3cret"));
+        // The other world has its own accounts.
+        ui.click(SIZE, centre(&ui, Target::WorldBox));
+        ui.click(SIZE, centre(&ui, Target::World(0)));
+        assert_eq!(ui.field_value(1), "");
+        assert!(ui.target_at(SIZE, centre_or_none(&ui, Target::SavedList)).is_none());
+    }
+
+    fn centre_or_none(ui: &LoginUi, target: Target) -> [f32; 2] {
+        ui.layout(SIZE)
+            .targets
+            .into_iter()
+            .find(|(_, candidate)| *candidate == target)
+            .map_or([-10.0, -10.0], |(rect, _)| [rect[0] as f32 + 1.0, rect[1] as f32 + 1.0])
+    }
+
+    #[test]
+    fn saved_accounts_fill_in_and_can_be_forgotten() {
+        let mut prefs = LoginPrefs { hide_account: true, ..LoginPrefs::default() };
+        prefs.remember(SavedAccount { world: "Gravak".into(), account: "second".into(), password: None });
+        prefs.remember(SavedAccount { world: "Gravak".into(), account: "pedro3".into(), password: Some("pw".into()) });
+        let mut ui = LoginUi::new(vec![world()], prefs);
+        assert_eq!((ui.field_value(0), ui.field_value(1)), ("pedro3", "pw"));
+        assert_eq!(ui.shown_account(ui.field_value(0)), "ped***");
+        // Editing the account drops the saved password.
+        ui.click(SIZE, centre(&ui, Target::Field(0)));
+        ui.key(&Key::Named(NamedKey::Backspace), None, false);
+        assert_eq!(ui.field_value(1), "");
+        // The list: pick the other account, then forget it.
+        ui.click(SIZE, centre(&ui, Target::SavedList));
+        ui.click(SIZE, centre(&ui, Target::Saved(1)));
+        assert_eq!((ui.field_value(0), ui.field_value(1)), ("second", ""));
+        ui.click(SIZE, centre(&ui, Target::SavedList));
+        ui.click(SIZE, centre(&ui, Target::Forget(1)));
+        let prefs = ui.take_prefs().expect("forgotten");
+        assert_eq!(prefs.accounts.len(), 1);
+        // Unticking Remember forgets the account at the next login.
+        ui.click(SIZE, centre(&ui, Target::Check(Check::RememberAccount)));
+        ui.click(SIZE, centre(&ui, Target::SavedList));
+        ui.click(SIZE, centre(&ui, Target::Saved(0)));
+        ui.key(&Key::Named(NamedKey::Tab), None, false);
+        type_text(&mut ui, "pw");
+        ui.activate(Action::Login);
+        ui.handle_event(&LoginEvent::NeedsCharacter);
+        assert!(ui.take_prefs().unwrap().accounts.is_empty());
+    }
+
+    #[test]
+    fn masks_keep_the_start() {
+        assert_eq!(mask("pedro3"), "ped***");
+        assert_eq!(mask("abc"), "a**");
+        assert_eq!(mask("a"), "a");
+        assert_eq!(mask(""), "");
     }
 
     #[test]
     fn register_validates_before_sending() {
-        let mut ui = LoginUi::new(None);
+        let mut ui = new_ui();
         ui.click(SIZE, centre(&ui, Target::Button(Action::OpenRegister)));
         assert_eq!(ui.screen, Screen::Register);
         type_text(&mut ui, "newhero");
@@ -1699,6 +2286,7 @@ mod tests {
         assert_eq!(
             ui.key(&Key::Named(NamedKey::Enter), None, false),
             Some(Request::Send(LoginCommand::Register {
+                world: world(),
                 username: "newhero".into(),
                 password: "pass1".into()
             }))
@@ -1710,7 +2298,7 @@ mod tests {
 
     #[test]
     fn character_creation_sends_the_chosen_look() {
-        let mut ui = LoginUi::new(Some("hero".into()));
+        let mut ui = new_ui();
         ui.handle_event(&LoginEvent::NeedsCharacter);
         assert_eq!(ui.screen, Screen::CreateCharacter);
         type_text(&mut ui, "Gravak");
@@ -1739,7 +2327,7 @@ mod tests {
 
     #[test]
     fn character_creation_sends_the_picked_face_and_hair() {
-        let mut ui = LoginUi::new(Some("hero".into()));
+        let mut ui = new_ui();
         ui.handle_event(&LoginEvent::NeedsCharacter);
         type_text(&mut ui, "Gravak");
         ui.add_loaded(crate::showcase::Loaded::HairColours { body: 0, colours: vec![[0, 0, 0]; 7] });
@@ -1772,7 +2360,7 @@ mod tests {
 
     #[test]
     fn selection_enters_or_logs_out() {
-        let mut ui = LoginUi::new(None);
+        let mut ui = new_ui();
         ui.handle_event(&LoginEvent::Character(CharacterSummary {
             name: "Gravak".into(),
             level: 3,
@@ -1785,6 +2373,60 @@ mod tests {
             Some(Request::Send(LoginCommand::Logout))
         );
         assert_eq!(ui.screen, Screen::Login);
+    }
+}
+
+#[cfg(test)]
+mod preview {
+    //! Paints the login screen in its states to PNGs, to look at.
+    use super::*;
+
+    /// `cargo test -p conquer-sandbox login_preview -- --ignored`; the
+    /// images land in GRAVAK_PREVIEW_OUT (default `login-preview`).
+    #[test]
+    #[ignore = "Needs the 5065 installation"]
+    fn login_preview() {
+        let root = std::path::PathBuf::from(std::env::var("GRAVAK_CLIENT").unwrap_or_else(|_| "R:/5065".into()));
+        let out = std::path::PathBuf::from(std::env::var("GRAVAK_PREVIEW_OUT").unwrap_or_else(|_| "login-preview".into()));
+        std::fs::create_dir_all(&out).unwrap();
+        let mut assets = crate::assets::Assets::open(&root).unwrap();
+        crate::launcher_art::set_frame_source(crate::original_panels::general_bg(&mut assets).unwrap());
+        let worlds = vec![
+            World::new("Gravak", "127.0.0.1:9958", "Gravak"),
+            World::new("Gravak PvP", "127.0.0.1:9960", "PvP"),
+            World::new("Test Realm", "127.0.0.1:9962", "Test"),
+        ];
+        let mut prefs = LoginPrefs { save_password: true, hide_account: true, ..LoginPrefs::default() };
+        prefs.remember(SavedAccount { world: "Gravak".into(), account: "gravak".into(), password: None });
+        prefs.remember(SavedAccount { world: "Gravak".into(), account: "pedro3".into(), password: Some("123456".into()) });
+        let size = [1024, 768];
+        let shot = |ui: &LoginUi, name: &str| ui.paint(size, 4.0).save(out.join(name)).unwrap();
+        let mut ui = LoginUi::new(worlds.clone(), prefs.clone());
+        ui.set_world_status(0, Status::Online(12));
+        ui.set_world_status(1, Status::Offline);
+        shot(&ui, "1-login.png");
+        let point = |ui: &LoginUi, target| {
+            let rect = ui.layout(size).targets.into_iter().find(|(_, t)| *t == target).unwrap().0;
+            [rect[0] as f32 + rect[2] as f32 / 2.0, rect[1] as f32 + rect[3] as f32 / 2.0]
+        };
+        ui.click(size, point(&ui, Target::WorldBox));
+        ui.hovered = Some(Target::World(1));
+        shot(&ui, "2-worlds.png");
+        ui.click(size, [5.0, 5.0]);
+        ui.click(size, point(&ui, Target::SavedList));
+        ui.hovered = Some(Target::Forget(1));
+        shot(&ui, "3-saved.png");
+        ui.click(size, [5.0, 5.0]);
+        ui.click(size, point(&ui, Target::Check(Check::HideAccount)));
+        ui.update_status = Some(("Downloading update 0.1.1  ·  42%  (12.3 of 29.0 MB)".into(), art_gold()));
+        ui.updating = true;
+        shot(&ui, "4-updating.png");
+        ui.activate(Action::OpenRegister);
+        shot(&ui, "5-register.png");
+    }
+
+    fn art_gold() -> [u8; 4] {
+        crate::launcher_art::GOLD
     }
 }
 
