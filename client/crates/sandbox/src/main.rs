@@ -369,6 +369,9 @@ struct App {
     /// race its own authoritative item updates.
     pending_inventory_sort: Option<VecDeque<(u32, u8)>>,
     pending_inventory_sort_move: Option<(u32, u8)>,
+    /// When the bag closes its gaps (seconds since start): a little after
+    /// items leave it, so several leaving at once close in one pass.
+    compact_inventory_at: Option<f32>,
     pending_inventory_drop: Option<network::OwnedItem>,
     silver: u32,
     mana: u32,
@@ -1330,6 +1333,10 @@ impl ApplicationHandler for App {
                 // A blow struck in the air is over: the jump plays on.
                 if self.player.jumping() && self.local_action.is_none() {
                     self.player.action = Action::Jump;
+                }
+                if self.compact_inventory_at.is_some_and(|at| elapsed >= at) {
+                    self.compact_inventory_at = None;
+                    self.compact_inventory();
                 }
                 // Flying (status bit 27): hover, and the flying pose at rest
                 // and on every glide (a flier's jump is no leap).
@@ -4268,6 +4275,8 @@ impl App {
             NetworkEvent::InventoryItemRemoved(uid) => {
                 debug_log::write(format_args!("app received inventory removal: uid={uid}"));
                 self.inventory.retain(|item| item.uid != uid);
+                // The bag closes the gap the item leaves, as the original's.
+                self.compact_inventory_at = Some(self.started.elapsed().as_secs_f32() + 0.6);
                 if self.pending_inventory_sort.is_some()
                     || self.pending_inventory_sort_move.is_some()
                 {
@@ -6769,6 +6778,26 @@ impl App {
         }
     }
 
+    /// Closes the bag's gaps: every item keeps its order, the later ones
+    /// moving up into the free slots, as the original's bag never has holes.
+    fn compact_inventory(&mut self) {
+        if self.pending_inventory_sort.is_some()
+            || self.pending_inventory_sort_move.is_some()
+            || self.pending_inventory_move.is_some()
+            || self.dragging_inventory_item.is_some()
+        {
+            // Busy: try again in a moment.
+            self.compact_inventory_at = Some(self.started.elapsed().as_secs_f32() + 0.5);
+            return;
+        }
+        let mut desired = self.inventory.iter().filter(|item| item.position < 40).copied().collect::<Vec<_>>();
+        desired.sort_by_key(|item| item.position);
+        let gaps = desired.iter().enumerate().any(|(index, item)| usize::from(item.position) != index);
+        if gaps {
+            self.plan_inventory(desired, false);
+        }
+    }
+
     fn organize_inventory(&mut self) {
         if self.pending_inventory_sort.is_some() || self.pending_inventory_sort_move.is_some() {
             self.network_status = "aguarde o inventário terminar de organizar".into();
@@ -6781,6 +6810,12 @@ impl App {
             .copied()
             .collect::<Vec<_>>();
         desired.sort_by_key(|item| (item.item_type, item.uid));
+        self.plan_inventory(desired, true);
+    }
+
+    /// Moves the bag's items so `desired` fills slots 0, 1, 2… in order;
+    /// `announce` tells the player (a sort they asked for).
+    fn plan_inventory(&mut self, desired: Vec<network::OwnedItem>, announce: bool) {
 
         // Build the same swap sequence the server will execute, but keep the
         // live online inventory untouched until authoritative responses arrive.
@@ -6811,7 +6846,9 @@ impl App {
                 .map(|(current, target)| (current.uid, target))
                 .collect::<VecDeque<_>>();
             self.pending_inventory_sort = Some(queue);
-            self.network_status = format!("organizando inventário: {moved_count} trocas pendentes");
+            if announce {
+                self.network_status = format!("organizando inventário: {moved_count} trocas pendentes");
+            }
             self.advance_inventory_sort();
         } else {
             for (current, target) in moves {
@@ -7835,6 +7872,8 @@ impl App {
                         character_id, item.uid, slot
                     ));
                     network.move_inventory_item(character_id, item.uid, slot);
+                    // Dropped past the last item, it moves up to close the gap.
+                    self.compact_inventory_at = Some(self.started.elapsed().as_secs_f32() + 0.6);
                     self.selected_inventory_uid = Some(item.uid);
                     self.network_status = format!(
                         "online: moving item {} to slot {}",
@@ -8846,6 +8885,7 @@ fn run() -> Result<()> {
         pending_inventory_move: None,
         pending_inventory_sort: None,
         pending_inventory_sort_move: None,
+        compact_inventory_at: None,
         pending_inventory_drop: None,
         silver: server_ready
             .as_ref()
