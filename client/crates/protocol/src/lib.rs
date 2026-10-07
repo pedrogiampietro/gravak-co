@@ -1167,6 +1167,19 @@ impl ItemActionPacket {
         }
     }
 
+    /// The item menu's LEVEL (MsgItem 44): the next level of the item, as
+    /// MagicArtisan or WeaponMaster gives it.
+    pub fn upgrade_level(character_id: u32, item_uid: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: 44,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
     pub fn improve_quality(character_id: u32, item_uid: u32) -> Self {
         Self {
             character_id,

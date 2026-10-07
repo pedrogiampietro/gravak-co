@@ -213,6 +213,8 @@ fn appearance_signature(character: &Character) -> u64 {
 
 enum LoadedData {
     Image(std::result::Result<image::RgbaImage, String>),
+    /// A panel redraw dropped for a newer one of the same panel.
+    Superseded,
     Minimap {
         map_id: u32,
         result: std::result::Result<Option<crate::minimap::Minimap>, String>,
@@ -378,6 +380,21 @@ enum UiTextureJob {
 }
 
 impl UiTextureJob {
+    /// Whole-panel redraws: only the newest of a kind is worth drawing, the
+    /// ones queued before it are already out of date.
+    fn panel(&self) -> Option<u8> {
+        Some(match self {
+            Self::Hud { .. } => 0,
+            Self::StatusDynamic { .. } => 1,
+            Self::StatusOverlay { .. } => 2,
+            Self::InventoryOverlay { .. } => 3,
+            Self::QuickPanel { .. } => 4,
+            Self::ShopOverlay { .. } => 5,
+            Self::WarehouseOverlay { .. } => 6,
+            _ => return None,
+        })
+    }
+
     fn path(&self) -> &str {
         match self {
             Self::Minimap { path, .. }
@@ -1696,9 +1713,27 @@ impl Renderer {
                         return;
                     }
                 };
-                while let Ok(job) = request_rx.recv() {
+                let mut queue = std::collections::VecDeque::new();
+                loop {
+                    // Everything asked so far, so a stale redraw can be seen.
+                    if queue.is_empty() {
+                        match request_rx.recv() {
+                            Ok(job) => queue.push_back(job),
+                            Err(_) => break,
+                        }
+                    }
+                    while let Ok(job) = request_rx.try_recv() {
+                        queue.push_back(job);
+                    }
+                    let Some(job) = queue.pop_front() else {
+                        continue;
+                    };
                     let path = job.path().to_owned();
+                    let stale = job
+                        .panel()
+                        .is_some_and(|panel| queue.iter().any(|later| later.panel() == Some(panel)));
                     let data = match job {
+                        _ if stale => LoadedData::Superseded,
                         UiTextureJob::Minimap { map_id, .. } => LoadedData::Minimap {
                             map_id,
                             result: crate::minimap::Minimap::load(&mut assets, map_id)
@@ -1848,9 +1883,26 @@ impl Renderer {
                 self.ready_textures.push_back(loaded);
             }
         }
+        // The interface's own images go up at once: a bag or a window
+        // waiting behind the world's textures shows what is no longer so.
+        let mut interface = Vec::new();
         if let Some(loader) = &self.ui_texture_loader {
             while let Ok(loaded) = loader.results.try_recv() {
-                self.ready_textures.push_back(loaded);
+                interface.push(loaded);
+            }
+        }
+        for loaded in interface {
+            self.loading.remove(&loaded.path);
+            match loaded.data {
+                LoadedData::Image(Ok(image)) => self.upload(&loaded.path, image),
+                LoadedData::Image(Err(error)) => {
+                    eprintln!("Skipped texture {}: {error}", loaded.path);
+                    self.missing.insert(loaded.path);
+                }
+                LoadedData::Superseded => {}
+                LoadedData::Minimap { map_id, result } => {
+                    self.minimap_ready = Some((map_id, result));
+                }
             }
         }
         while self.texture_loads_this_frame < self.max_texture_loads_per_frame {
@@ -1865,6 +1917,7 @@ impl Renderer {
                     eprintln!("Skipped texture {}: {error}", loaded.path);
                     self.missing.insert(loaded.path);
                 }
+                LoadedData::Superseded => {}
                 LoadedData::Minimap { map_id, result } => {
                     self.minimap_ready = Some((map_id, result));
                 }

@@ -194,6 +194,14 @@ pub struct ItemInfo {
     pub attack_range: u32,
     pub price: u32,
     pub item_type: String,
+    /// The weapon proficiency level it asks (itemtype.dat column 3).
+    pub required_weapon_skill: u32,
+    /// 1 male, 2 female, 0 either (column 5).
+    pub required_sex: u32,
+    /// Strength, agility, vitality and spirit it asks (columns 6 to 9).
+    pub required_attributes: [u32; 4],
+    /// What the item says of itself (column 38), for gems and the like.
+    pub description: String,
 }
 
 /// Quality tiers used by the item presentation. In the 5065 catalog the final
@@ -284,24 +292,6 @@ pub fn rarity_bonus(item_uid: u32, rarity_roll: u8, slot: u8) -> (&'static str, 
         4 => ("Damage", value, "%"),
         _ => ("Damage Resist", value, "%"),
     }
-}
-
-pub fn upgrade_cost_and_chance(plus: u8) -> Option<(u8, u8)> {
-    Some(match plus {
-        0 => (1, 100),
-        1 => (1, 95),
-        2 => (1, 90),
-        3 => (2, 80),
-        4 => (2, 70),
-        5 => (3, 60),
-        6 => (3, 50),
-        7 => (4, 40),
-        8 => (5, 30),
-        9 => (5, 25),
-        10 => (6, 20),
-        11 => (8, 15),
-        _ => return None,
-    })
 }
 
 #[derive(Debug, Clone)]
@@ -2588,6 +2578,7 @@ pub enum ItemContextAction {
     Upgrade,
     Rarity,
     ImproveQuality,
+    UpgradeLevel,
     ApplyRefinery,
     ApplyArtifact,
     GemSocket,
@@ -2602,6 +2593,7 @@ impl ItemContextAction {
             Self::Upgrade => "UPGRADE",
             Self::Rarity => "RARITY",
             Self::ImproveQuality => "QUALITY",
+            Self::UpgradeLevel => "LEVEL",
             Self::ApplyRefinery => "REFINERY",
             Self::ApplyArtifact => "ARTIFACT",
             Self::GemSocket => "GEM SOCKET",
@@ -2621,6 +2613,8 @@ pub struct ItemActionPanel {
     pub item: crate::network::OwnedItem,
     pub action: ItemContextAction,
     pub selected_rarity: u8,
+    /// What QUALITY, LEVEL or UPGRADE takes, worked out when it opened.
+    pub price: crate::forge_rules::ForgePrice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -3105,21 +3099,8 @@ pub fn item_action_panel_confirm_enabled(
     inventory: &[crate::network::OwnedItem],
 ) -> bool {
     match panel.action {
-        ItemContextAction::Upgrade => {
-            let Some((cost, _chance)) = upgrade_cost_and_chance(panel.item.plus) else {
-                return false;
-            };
-            inventory
-                .iter()
-                .filter(|item| item.position < 40 && item.item_type == 1_088_001)
-                .count()
-                >= usize::from(cost)
-        }
-        ItemContextAction::ImproveQuality => {
-            matches!(panel.item.item_type % 10, 5..=8)
-                && inventory
-                    .iter()
-                    .any(|item| item.position < 40 && item.item_type == 1_088_000)
+        ItemContextAction::Upgrade | ItemContextAction::ImproveQuality | ItemContextAction::UpgradeLevel => {
+            panel.price.affordable(inventory, panel.item.uid)
         }
         ItemContextAction::Rarity => {
             let Some((cost, _chance)) = rarity_upgrade_cost_and_chance(panel.item.rarity) else {
@@ -3310,10 +3291,24 @@ fn item_action_panel_content(
             (hint, panel.item.plus < 12 && meteor_count > 0)
         }
         ItemContextAction::Rarity => unreachable!("rarity uses its dedicated panel"),
-        ItemContextAction::ImproveQuality => (
-            "Uses one DragonBall.",
-            item_action_panel_confirm_enabled(panel, inventory),
-        ),
+        ItemContextAction::ImproveQuality | ItemContextAction::UpgradeLevel => {
+            let result = match panel.price {
+                crate::forge_rules::ForgePrice::Pay { result, .. } => item_name(assets, result),
+                _ => String::new(),
+            };
+            let line = if result.is_empty() { String::new() } else { format!("Becomes {result}. Never fails.") };
+            labels::text_sized(&mut image, &font, &[(line.as_str(), ui_theme::TEXT_GOLD)], [22.0, 96.0], 10.0);
+            let cost = panel.price.describe(inventory, panel.item.uid);
+            labels::text_sized(&mut image, &font, &[(cost.as_str(), ui_theme::TEXT)], [22.0, 112.0], 10.0);
+            (
+                if panel.action == ItemContextAction::UpgradeLevel {
+                    "As MagicArtisan (WeaponMaster above level 120)."
+                } else {
+                    "As MagicArtisan in the Market."
+                },
+                item_action_panel_confirm_enabled(panel, inventory),
+            )
+        }
         ItemContextAction::ApplyRefinery => ("Uses a compatible refinery.", true),
         ItemContextAction::ApplyArtifact => ("Uses a compatible artifact.", true),
         _ => ("Confirm this item action.", true),
@@ -3614,6 +3609,12 @@ fn gem_selection_panel_content(
         [88.0, 69.0],
         8.0,
     );
+    // What OPEN takes, as GodlyArtisan asks it.
+    let open_price = crate::forge_rules::socket_price(panel.item, inventory);
+    if open_price != crate::forge_rules::ForgePrice::Done {
+        let line = format!("Open socket - {}", open_price.describe(inventory, panel.item.uid));
+        labels::text_sized(&mut image, &font, &[(line.as_str(), ui_theme::TEXT_GOLD)], [88.0, 83.0], 8.0);
+    }
     labels::text_sized(
         &mut image,
         &font,
@@ -3844,12 +3845,13 @@ fn upgrade_action_panel_image(
     );
     let font = labels::font()?;
     let confirm_enabled = item_action_panel_confirm_enabled(panel, inventory);
-    let meteor_count = inventory
-        .iter()
-        .filter(|item| item.position < 40 && item.item_type == 1_088_001)
-        .count();
-    let (meteor_cost, success_chance) = upgrade_cost_and_chance(panel.item.plus).unwrap_or((0, 0));
-    let next_plus = panel.item.plus.saturating_add(1).min(12);
+    // WuxingOven's next plus: a pair from the bag below +9, then
+    // DragonBalls and DBScrolls; it never fails.
+    let next_plus = match panel.price {
+        crate::forge_rules::ForgePrice::Pay { result, .. } => result as u8,
+        crate::forge_rules::ForgePrice::Pair { result, .. } => result,
+        _ => panel.item.plus.saturating_add(1).min(12),
+    };
     let animating = animation_progress.is_some();
     let current_name = item_name(assets, panel.item.item_type);
     let current_title = if panel.item.plus > 0 {
@@ -3975,36 +3977,20 @@ fn upgrade_action_panel_image(
         UiRect::new(24, 241, 472, 28),
         [126, 91, 39, 255],
     );
-    let cost = format!(
-        "COST: {meteor_cost} METEOR{}     AVAILABLE: {meteor_count}",
-        if meteor_cost == 1 { "" } else { "S" }
-    );
+    let cost = panel.price.describe(inventory, panel.item.uid);
     labels::text_sized(
         &mut image,
         &font,
-        &[(cost.as_str(), ui_theme::TEXT)],
+        &[(cost.as_str(), if confirm_enabled { ui_theme::TEXT } else { [255, 174, 65] })],
         [40.0, 250.0],
         10.0,
     );
-    let chance = if panel.item.plus >= 12 {
-        "MAXIMUM LEVEL".to_owned()
-    } else {
-        format!("SUCCESS CHANCE: {success_chance}%")
-    };
+    let chance = if panel.item.plus >= 12 { "MAXIMUM +12" } else { "NEVER FAILS" };
     labels::text_sized(
         &mut image,
         &font,
-        &[(
-            chance.as_str(),
-            if panel.item.plus >= 12 {
-                [232, 100, 82]
-            } else if success_chance >= 70 {
-                [99, 221, 133]
-            } else {
-                [255, 174, 65]
-            },
-        )],
-        [318.0, 250.0],
+        &[(chance, if panel.item.plus >= 12 { [232, 100, 82] } else { [99, 221, 133] })],
+        [380.0, 250.0],
         10.0,
     );
     draw_upgrade_action_button(
@@ -5126,20 +5112,41 @@ pub fn equipment_tooltip_image(
 ///
 /// The hero's class and level, which the tooltip checks the requirements
 /// against (red when unmet); the main loop keeps them current.
-static HERO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-pub fn set_hero(class: u8, level: u8) {
-    HERO.store(u32::from(class) << 8 | u32::from(level), std::sync::atomic::Ordering::Relaxed);
+/// What the hero brings to an item's requirements, for the tooltips.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Hero {
+    pub class: u8,
+    pub level: u8,
+    /// Strength, agility, vitality and spirit.
+    pub attributes: [u16; 4],
+    pub female: bool,
+    /// Proficiency level by kind of weapon (410 blades).
+    pub proficiency: Vec<(u32, u32)>,
 }
 
-fn hero() -> (u32, u32) {
-    let value = hero_key();
-    (value >> 8, value & 0xff)
+fn hero_cell() -> &'static std::sync::RwLock<(Hero, u64)> {
+    static HERO: std::sync::OnceLock<std::sync::RwLock<(Hero, u64)>> = std::sync::OnceLock::new();
+    HERO.get_or_init(Default::default)
 }
 
-/// The hero's class and level as one number, for tooltip cache keys.
-pub fn hero_key() -> u32 {
-    HERO.load(std::sync::atomic::Ordering::Relaxed)
+pub fn set_hero(hero: Hero) {
+    use std::hash::{Hash, Hasher};
+    let mut cell = hero_cell().write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cell.0 != hero {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hero.hash(&mut hasher);
+        *cell = (hero, hasher.finish());
+    }
+}
+
+fn hero() -> Hero {
+    hero_cell().read().unwrap_or_else(std::sync::PoisonError::into_inner).0.clone()
+}
+
+/// The hero as one number, for tooltip cache keys: a requirement turns
+/// red or white when it changes.
+pub fn hero_key() -> u64 {
+    hero_cell().read().unwrap_or_else(std::sync::PoisonError::into_inner).1
 }
 
 /// Gear, whose last digit is its quality (weapons, armour, helmets,
@@ -5176,6 +5183,48 @@ fn class_satisfies(required: u32, class: u32) -> bool {
 /// The colour of an equipment's name by its quality, the last digit of its
 /// type, as `Conquer.exe` paints it: Refined blue, Unique green, Elite
 /// purple, Super pale gold, else white.
+/// The quality an item's name carries: gear by its last digit (Refined
+/// to Super), gems by theirs (Normal, Refined, Super).
+pub fn quality_label(item_id: u32) -> Option<&'static str> {
+    if (700_000..701_000).contains(&item_id) {
+        return match item_id % 10 {
+            1 => Some("Normal"),
+            2 => Some("Refined"),
+            3 => Some("Super"),
+            _ => None,
+        };
+    }
+    if !is_gear(item_id) {
+        return None;
+    }
+    match item_id % 10 {
+        6 => Some("Refined"),
+        7 => Some("Unique"),
+        8 => Some("Elite"),
+        9 => Some("Super"),
+        _ => None,
+    }
+}
+
+/// `text` in lines of about `width` letters, broken between words.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 fn quality_colour(item_id: u32) -> [u8; 4] {
     match item_id % 10 {
         6 => [0x5e, 0x87, 0xca, 255],
@@ -5212,7 +5261,10 @@ fn classic_item_tooltip(
 
     let fallback = format!("Item {item_id}");
     let name = info.map(|item| item.name.as_str()).unwrap_or(&fallback);
-    let mut title = name.to_owned();
+    let mut title = match quality_label(item_id) {
+        Some(quality) => format!("{quality} {name}"),
+        None => name.to_owned(),
+    };
     if plus > 0 {
         title.push_str(&format!("(+{plus})"));
     }
@@ -5230,15 +5282,39 @@ fn classic_item_tooltip(
     }
     let scale = item_stat_scale(plus, rarity_code);
     if let Some(info) = info {
-        // Requirements the hero does not meet show in red.
-        let (hero_class, hero_level) = hero();
+        // Requirements the hero does not meet show in red (all of them
+        // white before the hero is known).
+        let hero = hero();
+        let known = hero.level > 0;
+        let colour = |met: bool| if met || !known { WHITE } else { RED };
         if info.required_class > 0 {
-            let met = hero_class == 0 || class_satisfies(info.required_class, hero_class);
-            lines.push((format!("Class: {}", required_class_label(info.required_class)), if met { WHITE } else { RED }));
+            let met = class_satisfies(info.required_class, u32::from(hero.class));
+            lines.push((format!("Class: {}", required_class_label(info.required_class)), colour(met)));
+        }
+        if info.required_sex > 0 {
+            let female = info.required_sex == 2;
+            lines.push((format!("Sex: {}", if female { "Female" } else { "Male" }), colour(hero.female == female)));
         }
         if info.level > 0 {
-            let met = hero_level == 0 || hero_level >= info.level;
-            lines.push((format!("Level: {}", info.level), if met { WHITE } else { RED }));
+            lines.push((format!("Level: {}", info.level), colour(u32::from(hero.level) >= info.level)));
+        }
+        if info.required_weapon_skill > 0 {
+            let kind = item_id / 1_000;
+            let have = hero.proficiency.iter().find(|(weapon, _)| *weapon == kind).map_or(0, |(_, level)| *level);
+            let name = if info.item_type.trim().is_empty() { "Weapon".to_owned() } else { info.item_type.trim().to_owned() };
+            lines.push((
+                format!("Proficiency: {name} Level {}", info.required_weapon_skill),
+                colour(have >= info.required_weapon_skill),
+            ));
+        }
+        for ((label, need), have) in ["Strength", "Agility", "Vitality", "Spirit"]
+            .iter()
+            .zip(info.required_attributes)
+            .zip(hero.attributes)
+        {
+            if need > 0 {
+                lines.push((format!("{label}: {need}"), colour(u32::from(have) >= need)));
+            }
         }
         if info.attack_max > 0 {
             let attack = format_attack(Some((info.attack_min, info.attack_max)), scale);
@@ -5256,7 +5332,8 @@ fn classic_item_tooltip(
         if info.mana_add > 0 {
             lines.push((format!("MP: +{}", info.mana_add), WHITE));
         }
-        if info.attack_speed > 0 {
+        // Weapons only: other items carry a default speed nobody uses.
+        if info.attack_speed > 0 && (400_000..600_000).contains(&item_id) {
             lines.push((format!("Attack Rate: {}", info.attack_speed), WHITE));
         }
     }
@@ -5269,6 +5346,9 @@ fn classic_item_tooltip(
                     format!("SocketGem {}:{}", index + 1, gem_code_name(*gem)),
                     GREEN,
                 ));
+                if let Some(effect) = gem_effect(*gem) {
+                    lines.push((effect, GREEN));
+                }
             }
         }
     }
@@ -5287,6 +5367,12 @@ fn classic_item_tooltip(
     for slot in 0..rarity_bonus_slots(rarity_code) {
         let (bonus, value, unit) = rarity_bonus(item_uid, rarity_roll, slot);
         lines.push((format!("{bonus}: +{value}{unit}"), rarity_colour));
+    }
+    // Gems, stones and the like say what they are for.
+    if let Some(info) = info.filter(|_| !is_gear(item_id)) {
+        for line in wrap(&info.description, 40) {
+            lines.push((line, [200, 200, 200, 255]));
+        }
     }
     if let Some(price) = info.map(|item| item.price).filter(|price| *price > 0) {
         lines.push((format!("Price: {}", format_silver(price)), WHITE));
@@ -5367,14 +5453,26 @@ fn gem_code_name(code: u8) -> String {
         "MoonGem",
         "TortoiseGem",
     ];
-    let family = usize::from(code / 10);
-    let tier = code % 10;
-    let name = family_names.get(family).copied().unwrap_or("CustomGem");
-    if tier == 0 {
-        name.to_owned()
-    } else {
-        format!("{name} T{tier}")
-    }
+    family_names.get(usize::from(code / 10)).copied().unwrap_or("CustomGem").to_owned()
+}
+
+/// What a socketed gem gives, as the original lists it under the gem: its
+/// family (tens) and quality (units: 1 Normal, 2 Refined, 3 Super), with
+/// the values of the gems' own descriptions.
+fn gem_effect(code: u8) -> Option<String> {
+    let tier = usize::from(code % 10).checked_sub(1).filter(|tier| *tier < 3)?;
+    let (label, values): (&str, [u32; 3]) = match code / 10 {
+        0 => ("Magic Attack", [5, 10, 15]),
+        1 => ("Attack", [5, 10, 15]),
+        2 => ("Accuracy", [5, 10, 15]),
+        3 => ("Experience", [10, 15, 25]),
+        4 => ("Durability", [50, 100, 200]),
+        5 => ("Proficiency Gain", [30, 50, 100]),
+        6 => ("Skill Experience", [15, 30, 50]),
+        7 => return Some(format!("Damage -{}%", [2, 4, 6][tier])),
+        _ => return None,
+    };
+    Some(format!("{label} +{}%", values[tier]))
 }
 
 fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemInfo> {
@@ -5414,6 +5512,10 @@ fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemIn
                 attack_range: number(31),
                 price: number(12),
                 item_type: fields[37].replace('~', " "),
+                required_weapon_skill: number(3),
+                required_sex: number(5),
+                required_attributes: [number(6), number(7), number(8), number(9)],
+                description: fields.get(38).filter(|text| **text != "None").map_or_else(String::new, |text| text.replace('~', " ")),
             },
         );
     }
@@ -5959,6 +6061,7 @@ mod icon_tests {
                 item,
                 action,
                 selected_rarity: 0,
+                price: Default::default(),
             };
         }
     }
@@ -5980,12 +6083,15 @@ mod icon_tests {
             enchant_hp: 0,
             color: 0,
         };
+        // A Super item has no next quality: nothing to confirm.
         let panel = super::ItemActionPanel {
             item,
             action: super::ItemContextAction::ImproveQuality,
             selected_rarity: 0,
+            price: crate::forge_rules::ForgePrice::Done,
         };
         assert!(!super::item_action_panel_confirm_enabled(panel, &[]));
+        // MagicArtisan's two DragonBalls: one is not enough.
         let valid = super::ItemActionPanel {
             item: crate::network::OwnedItem {
                 item_type: 410005,
@@ -5993,16 +6099,16 @@ mod icon_tests {
             },
             action: super::ItemContextAction::ImproveQuality,
             selected_rarity: 0,
+            price: crate::forge_rules::ForgePrice::Pay { item_type: 1_088_000, count: 2, result: 410006 },
         };
-        assert!(!super::item_action_panel_confirm_enabled(valid, &[]));
-        let dragon_ball = crate::network::OwnedItem {
+        let dragon_ball = |uid| crate::network::OwnedItem {
+            uid,
             item_type: 1_088_000,
+            position: uid as u8,
             ..item
         };
-        assert!(super::item_action_panel_confirm_enabled(
-            valid,
-            &[dragon_ball]
-        ));
+        assert!(!super::item_action_panel_confirm_enabled(valid, &[dragon_ball(2)]));
+        assert!(super::item_action_panel_confirm_enabled(valid, &[dragon_ball(2), dragon_ball(3)]));
     }
 
     #[test]
@@ -6436,3 +6542,34 @@ mod icon_tests {
     }
 }
 
+
+#[cfg(test)]
+mod requirement_preview {
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox requirement_tooltip_preview`:
+    /// a SunBlade's tooltip for a hero short of strength and proficiency.
+    #[test]
+    fn requirement_tooltip_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        super::set_hero(super::Hero {
+            class: 11,
+            level: 130,
+            attributes: [100, 50, 50, 0],
+            female: false,
+            proficiency: vec![(410, 1)],
+        });
+        let info = super::item_info(&mut assets, 410_205);
+        assert_eq!(info.as_ref().map(|info| (info.required_weapon_skill, info.required_attributes[0])), Some((11, 160)));
+        super::item_tooltip_image(1, 410_205, info.as_ref(), 12, 13, 13, 0, 0, 7, 121)
+            .expect("tooltip")
+            .save(format!("{dir}/tooltip-requirements.png"))
+            .expect("png");
+        for item_id in [410_209, 700_013, 730_008] {
+            let info = super::item_info(&mut assets, item_id);
+            super::item_tooltip_image(1, item_id, info.as_ref(), 0, 0, 0, 0, 0, 0, 0)
+                .expect("tooltip")
+                .save(format!("{dir}/tooltip-{item_id}.png"))
+                .expect("png");
+        }
+    }
+}
