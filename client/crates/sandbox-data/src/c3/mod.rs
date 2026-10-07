@@ -86,6 +86,8 @@ pub struct C3Document {
     /// Lines that sweep a ribbon behind them (`SHAP`, moved by the `SMOT`
     /// after each).
     pub shapes: Vec<C3Shape>,
+    /// Clouds of sprites recorded frame by frame (`PTCL`).
+    pub particles: Vec<C3Particles>,
     pub unknown_chunks: Vec<UnknownChunk>,
 }
 
@@ -118,6 +120,7 @@ impl C3Document {
                 }
                 b"MOTI" => document.motions.push(C3Motion::parse(chunk)?),
                 b"SHAP" => document.shapes.push(C3Shape::parse(chunk)?),
+                b"PTCL" => document.particles.push(C3Particles::parse(chunk)?),
                 b"SMOT" => {
                     if let Some(shape) = document.shapes.last_mut() {
                         shape.frames = C3Shape::parse_motion(chunk)?;
@@ -209,6 +212,66 @@ impl C3Shape {
     }
 }
 
+/// A `PTCL`: a cloud of camera-facing sprites, baked frame by frame. Each
+/// sprite has a place, an age (0 to 1 through its life, which picks its
+/// cell of the `row` by `row` sheet) and a size in world units.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct C3Particles {
+    pub name: String,
+    pub texture: String,
+    /// The texture is `row` by `row` cells, played left to right, top down.
+    pub row: u32,
+    pub frames: Vec<ParticleFrame>,
+}
+
+/// The sprites alive in one frame of a `PTCL`, placed by its matrix.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ParticleFrame {
+    pub positions: Vec<Vector3>,
+    pub ages: Vec<f32>,
+    pub sizes: Vec<f32>,
+    pub matrix: Matrix4,
+}
+
+impl C3Particles {
+    fn parse(bytes: &[u8]) -> Result<Self, ContentError> {
+        let mut reader = SliceReader::new("C3 particles", bytes);
+        let name = read_sized_string(&mut reader)?;
+        let texture = read_sized_string(&mut reader)?;
+        let row = reader.read_u32_le()?;
+        let _most = reader.read_u32_le()?;
+        let frame_count = reader.read_u32_le()?;
+        // Every frame holds at least its count.
+        let frame_count = checked_count(frame_count, 4, reader.remaining())?;
+        let mut frames = Vec::with_capacity(frame_count);
+        for _ in 0..frame_count {
+            let count = reader.read_u32_le()?;
+            // An empty frame has no matrix either.
+            if count == 0 {
+                frames.push(ParticleFrame::default());
+                continue;
+            }
+            let count = checked_count(count, 20, reader.remaining())?;
+            let positions = (0..count).map(|_| read_vector3(&mut reader)).collect::<Result<Vec<_>, _>>()?;
+            let ages = (0..count).map(|_| reader.read_f32_le()).collect::<Result<Vec<_>, _>>()?;
+            let sizes = (0..count).map(|_| reader.read_f32_le()).collect::<Result<Vec<_>, _>>()?;
+            let matrix = read_matrix(&mut reader)?;
+            frames.push(ParticleFrame {
+                positions,
+                ages,
+                sizes,
+                matrix,
+            });
+        }
+        Ok(Self {
+            name,
+            texture,
+            row: row.max(1),
+            frames,
+        })
+    }
+}
+
 fn read_vector2(reader: &mut SliceReader<'_>) -> Result<Vector2, ContentError> {
     Ok(Vector2 {
         x: reader.read_f32_le()?,
@@ -274,6 +337,35 @@ fn invalid(detail: impl Into<String>) -> ContentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_particle_clouds() {
+        // An empty frame, then one sprite: place, age, size, matrix.
+        let mut chunk = Vec::new();
+        for text in [&b"PCloud01"[..], &b"1.tga"[..]] {
+            chunk.extend((text.len() as u32).to_le_bytes());
+            chunk.extend(text);
+        }
+        for value in [4_u32, 1, 2, 0, 1] {
+            chunk.extend(value.to_le_bytes());
+        }
+        for value in [1.0_f32, 2.0, 3.0, 0.5, 9.0] {
+            chunk.extend(value.to_le_bytes());
+        }
+        for value in Matrix4::IDENTITY.values {
+            chunk.extend(value.to_le_bytes());
+        }
+        let mut bytes = b"MAXFILE C3 00001".to_vec();
+        bytes.extend(b"PTCL");
+        bytes.extend((chunk.len() as u32).to_le_bytes());
+        bytes.extend(chunk);
+        let document = C3Document::parse(&bytes).expect("a PTCL parses");
+        let cloud = &document.particles[0];
+        assert_eq!((cloud.name.as_str(), cloud.row, cloud.frames.len()), ("PCloud01", 4, 2));
+        assert!(cloud.frames[0].positions.is_empty());
+        assert_eq!(cloud.frames[1].positions[0], Vector3 { x: 1.0, y: 2.0, z: 3.0 });
+        assert_eq!((cloud.frames[1].ages[0], cloud.frames[1].sizes[0]), (0.5, 9.0));
+    }
 
     #[test]
     fn rejects_non_c3_payloads() {

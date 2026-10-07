@@ -1232,6 +1232,7 @@ impl Renderer {
                                     .chain(mesh.draw_keys.last().map(|key| key.frame as f32))
                             }))
                             .chain(layer.document.shapes.iter().map(|shape| shape.frames.len() as f32))
+                            .chain(layer.document.particles.iter().map(|cloud| cloud.frames.len() as f32))
                     })
                     .fold(1.0_f32, f32::max);
                 (!layers.is_empty()).then(|| {
@@ -1387,6 +1388,42 @@ impl Renderer {
                             vertices.extend([a, b, c, a, c, d]);
                         }
                     }
+                }
+                if !vertices.is_empty() {
+                    draws.push(Draw {
+                        texture: layer.texture.clone(),
+                        vertices,
+                        depth_test: false,
+                        sort_depth,
+                    });
+                }
+            }
+            // Particles: each a square facing the camera, its cell of the
+            // sheet chosen by its age (`PTCL`).
+            for cloud in &layer.document.particles {
+                if flat.is_some() || cloud.frames.is_empty() {
+                    continue;
+                }
+                let sprites = &cloud.frames[frame as usize % cloud.frames.len()];
+                let row = cloud.row as f32;
+                let cells = cloud.row * cloud.row;
+                let mut vertices = Vec::with_capacity(sprites.positions.len() * 6);
+                for ((position, age), size) in sprites.positions.iter().zip(&sprites.ages).zip(&sprites.sizes) {
+                    let p = sprites.matrix.transform_point(*position);
+                    let p = attachment.map_or(p, |matrix| matrix.transform_point(p));
+                    let p = turned(p, yaw);
+                    let centre = [origin[0] + p.x * scale, origin[1] + (p.y * sin + p.z * cos) * scale];
+                    let depth = (0.5 + (p.y * cos - p.z * sin) * scale * 0.0005).clamp(0.001, 0.999);
+                    let half = size * scale / 2.0;
+                    let cell = ((age.clamp(0.0, 1.0) * cells as f32) as u32).min(cells - 1);
+                    let (u, v) = ((cell % cloud.row) as f32 / row, (cell / cloud.row) as f32 / row);
+                    let corner = |dx: f32, dy: f32| Vertex {
+                        position: clip([centre[0] + dx * half, centre[1] + dy * half], depth, viewport),
+                        uv: [u + (dx + 1.0) / 2.0 / row, v + (dy + 1.0) / 2.0 / row],
+                        alpha: 1.0,
+                    };
+                    let (a, b, c, d) = (corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0));
+                    vertices.extend([a, b, c, a, c, d]);
                 }
                 if !vertices.is_empty() {
                     draws.push(Draw {
