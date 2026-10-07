@@ -1051,6 +1051,12 @@ impl NetworkHandle {
         });
     }
 
+    pub fn upgrade_level(&self, character_id: u32, item_uid: u32) {
+        let _ = self.commands.send(NetworkCommand::PlayerShopAction {
+            packet: ItemActionPacket::upgrade_level(character_id, item_uid),
+        });
+    }
+
     pub fn improve_quality(&self, character_id: u32, item_uid: u32) {
         let _ = self.commands.send(NetworkCommand::ImproveQuality {
             character_id,

@@ -8,6 +8,9 @@ pub mod combat;
 pub mod constants;
 pub mod death;
 pub mod dis_city;
+pub mod forge;
+#[cfg(test)]
+mod forge_tests;
 pub mod vitals;
 pub mod drops;
 pub mod entities;

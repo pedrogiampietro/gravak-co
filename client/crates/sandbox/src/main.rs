@@ -6,6 +6,7 @@ mod assets;
 mod audio;
 mod booth;
 mod bounty_board;
+mod forge_rules;
 mod character;
 mod components;
 mod debug_log;
@@ -1332,7 +1333,18 @@ impl ApplicationHandler for App {
                 if self.player.jumping() && self.local_action.is_none() {
                     self.player.action = Action::Jump;
                 }
-                shop::set_hero(self.character.current_class, self.level);
+                shop::set_hero(shop::Hero {
+                    class: self.character.current_class,
+                    level: self.level,
+                    attributes: [
+                        self.character.strength,
+                        self.character.agility,
+                        self.character.vitality,
+                        self.character.spirit,
+                    ],
+                    female: self.character.body_id >= 2_000,
+                    proficiency: self.weapon_skills.iter().map(|(weapon, (level, _))| (*weapon, *level)).collect(),
+                });
                 self.process_pending_booth();
                 if self.compact_inventory_at.is_some_and(|at| elapsed >= at) {
                     self.compact_inventory_at = None;
@@ -7570,9 +7582,10 @@ impl App {
 
         // Classic quality upgrades only apply to Normal through Elite item
         // types. The final digit is independent from the custom rarity.
-        if matches!(item.item_type % 10, 5..=8) {
+        if matches!(item.item_type % 10, 3..=8) {
             actions.push(shop::ItemContextAction::ImproveQuality);
         }
+        actions.push(shop::ItemContextAction::UpgradeLevel);
         // Keep both panels visible even when the required material is not in
         // the container; the panel explains what is missing instead of
         // making the action disappear from the item menu.
@@ -7609,10 +7622,26 @@ impl App {
         } else {
             0
         };
+        // What it costs, as the NPCs ask it (the server's `forge.rs`).
+        let requirement = shop::item_info(&mut self.assets, item.item_type).map_or(0, |info| info.level);
+        // The items the next quality or level could be, that exist.
+        let candidates = (6..=9)
+            .map(|quality| item.item_type / 10 * 10 + quality)
+            .chain((1..10).map(|step| item.item_type + 10 * step));
+        let known: std::collections::HashSet<u32> =
+            candidates.filter(|id| shop::item_info(&mut self.assets, *id).is_some()).collect();
+        let exists = |id: u32| known.contains(&id);
+        let price = match action {
+            shop::ItemContextAction::Upgrade => forge_rules::plus_price(item, &self.inventory),
+            shop::ItemContextAction::ImproveQuality => forge_rules::quality_price(item.item_type, requirement, exists),
+            shop::ItemContextAction::UpgradeLevel => forge_rules::level_price(item.item_type, requirement, exists),
+            _ => forge_rules::ForgePrice::Done,
+        };
         self.item_action_panel = Some(shop::ItemActionPanel {
             item,
             action,
             selected_rarity,
+            price,
         });
         self.network_status = format!("{}: confirme a operação no painel", action.label());
     }
@@ -7725,8 +7754,10 @@ impl App {
                         shop::ItemContextAction::Upgrade if panel.item.plus >= 12 => {
                             "este item já está no nível máximo +12".into()
                         }
-                        shop::ItemContextAction::Upgrade => {
-                            "upgrade indisponível: Meteor insuficiente".into()
+                        shop::ItemContextAction::Upgrade
+                        | shop::ItemContextAction::ImproveQuality
+                        | shop::ItemContextAction::UpgradeLevel => {
+                            panel.price.describe(&self.inventory, panel.item.uid)
                         }
                         shop::ItemContextAction::Rarity if panel.item.rarity >= 4 => {
                             "este item já está na raridade máxima Mythic".into()
@@ -7752,6 +7783,13 @@ impl App {
                     shop::ItemContextAction::ImproveQuality => {
                         self.item_action_panel = None;
                         self.queue_improve_quality(panel.item)
+                    }
+                    shop::ItemContextAction::UpgradeLevel => {
+                        self.item_action_panel = None;
+                        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                            network.upgrade_level(character_id, panel.item.uid);
+                        }
+                        true
                     }
                     shop::ItemContextAction::ApplyRefinery => {
                         self.item_action_panel = None;
@@ -7791,6 +7829,7 @@ impl App {
                 shop::ItemContextAction::Upgrade
                 | shop::ItemContextAction::Rarity
                 | shop::ItemContextAction::ImproveQuality
+                | shop::ItemContextAction::UpgradeLevel
                 | shop::ItemContextAction::GemSocket
                 | shop::ItemContextAction::ApplyRefinery
                 | shop::ItemContextAction::ApplyArtifact => {

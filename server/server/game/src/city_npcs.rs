@@ -1463,11 +1463,12 @@ async fn wuxing_oven(state: &State, actor: &Actor<ActorState>, character: &Chara
             let group = option / 10;
             let position = option % 10;
             let from = 8 + group;
-            let (catalyst, count, name) = match group {
-                1 => (DRAGONBALL, 12, "12 DragonBalls"),
-                2 => (DRAGONBALL, 25, "25 DragonBalls"),
-                _ => (DRAGONBALL_SCROLL, 4, "4 DBScrolls"),
+            // The item menu's UPGRADE asks the same (`forge::plus_price`).
+            let Some((catalyst, count)) = crate::forge::plus_price(from) else {
+                return Ok(());
             };
+            let name = format!("{count} {}", if catalyst == DRAGONBALL { "DragonBalls" } else { "DBScrolls" });
+            let count = count as usize;
             let Some(item) = character.equipment_item(position) else {
                 return say(
                     actor,

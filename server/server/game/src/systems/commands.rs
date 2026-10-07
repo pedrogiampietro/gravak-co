@@ -10,6 +10,65 @@ use std::time::Duration;
 use tq_network::Actor;
 
 /// Moves a character to `map_id` at `location`, with its screen refreshed.
+/// Where `$go` takes a game master: an online player by name, else an NPC,
+/// else a monster's biggest spawn; exact names first, then partial ones.
+async fn find_destination(
+    state: &crate::State,
+    me: &crate::entities::Character,
+    wanted: &str,
+) -> Result<Option<(String, u32, u16, u16)>, Error> {
+    let wanted = wanted.trim();
+    if wanted.is_empty() {
+        return Ok(None);
+    }
+    let lower = wanted.to_lowercase();
+    let players = state
+        .entities()
+        .into_iter()
+        .filter_map(|entity| {
+            let other = entity.as_character()?;
+            (other.id() != me.id()).then(|| {
+                let location = other.entity().location();
+                (other.entity().name().to_owned(), other.entity().map_id(), location.x, location.y)
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some((name, map_id, x, y)) = players.iter().find(|(name, ..)| name.to_lowercase() == lower) {
+        return Ok(Some((format!("{name} (player)"), *map_id, *x, *y)));
+    }
+    let pattern = format!("%{}%", lower.replace('%', "").replace('_', "\\_"));
+    for exact in [true, false] {
+        let npc: Option<(String, i64, i64, i64)> = sqlx::query_as(if exact {
+            "SELECT name, map_id, x, y FROM npcs WHERE lower(name) = $1 ORDER BY id LIMIT 1"
+        } else {
+            "SELECT name, map_id, x, y FROM npcs WHERE lower(name) LIKE $1 ORDER BY length(name), id LIMIT 1"
+        })
+        .bind(if exact { &lower } else { &pattern })
+        .fetch_optional(state.pool())
+        .await?;
+        if let Some((name, map_id, x, y)) = npc {
+            return Ok(Some((format!("{name} (NPC)"), map_id as u32, x as u16, y as u16)));
+        }
+        let monster: Option<(String, i64, i64, i64)> = sqlx::query_as(if exact {
+            "SELECT t.name, s.map_id, s.x, s.y FROM monster_spawns s JOIN monster_types t ON t.id = s.monster_type_id
+             WHERE lower(t.name) = $1 ORDER BY s.amount DESC, s.id LIMIT 1"
+        } else {
+            "SELECT t.name, s.map_id, s.x, s.y FROM monster_spawns s JOIN monster_types t ON t.id = s.monster_type_id
+             WHERE lower(t.name) LIKE $1 ORDER BY length(t.name), s.amount DESC, s.id LIMIT 1"
+        })
+        .bind(if exact { &lower } else { &pattern })
+        .fetch_optional(state.pool())
+        .await?;
+        if let Some((name, map_id, x, y)) = monster {
+            return Ok(Some((format!("{name} (monster)"), map_id as u32, x as u16, y as u16)));
+        }
+    }
+    Ok(players
+        .into_iter()
+        .find(|(name, ..)| name.to_lowercase().contains(&lower))
+        .map(|(name, map_id, x, y)| (format!("{name} (player)"), map_id, x, y)))
+}
+
 async fn move_to(
     state: &crate::State,
     entity: &std::sync::Arc<crate::entities::GameEntity>,
@@ -170,6 +229,33 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                     ))
                     .await?;
             }
+            Ok(())
+        },
+        SubCommands::Go(info) => {
+            let wanted = info.name.join(" ");
+            let Some((what, map_id, x, y)) = find_destination(state, me, &wanted).await? else {
+                actor
+                    .send(MsgTalk::from_system(
+                        me.id(),
+                        TalkChannel::System,
+                        format!("No player, NPC or monster called {wanted}."),
+                    ))
+                    .await?;
+                return Ok(());
+            };
+            let map = state.try_map(map_id)?;
+            map.load().await?;
+            // Beside it rather than on it.
+            let origin = primitives::Location::new(x.saturating_add(2), y.saturating_add(2), 0);
+            let spot = map.nearest_walkable_position(origin, 12).unwrap_or(origin);
+            move_to(state, &actor.entity(), map_id, (spot.x, spot.y)).await?;
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Went to {what} (map {map_id}, {x},{y})."),
+                ))
+                .await?;
             Ok(())
         },
         SubCommands::BountyGo(_) => {
@@ -1048,6 +1134,21 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                 .await?;
             Ok(())
         },
+        SubCommands::Proficiency(info) => {
+            let level = info.level.clamp(1, 20);
+            me.set_weapon_type_proficiency(state.pool(), info.weapon_type, level).await?;
+            for packet in crate::packets::MsgWeaponSkill::for_all(me.weapon_proficiencies()) {
+                actor.send(packet).await?;
+            }
+            actor
+                .send(MsgTalk::from_system(
+                    me.id(),
+                    TalkChannel::System,
+                    format!("Weapon proficiency {} set to level {level}.", info.weapon_type),
+                ))
+                .await?;
+            Ok(())
+        },
         SubCommands::LearnSkill(info) => {
             let Some(skill) = state.skill_catalog().get(info.skill_id) else {
                 actor
@@ -1347,6 +1448,8 @@ enum SubCommands {
     TestTraining(TestTrainingCmd),
     TestHealth(TestHealthCmd),
     TestStun(TestStunCmd),
+    Proficiency(ProficiencyCmd),
+    Go(GoCmd),
     LearnSkill(LearnSkillCmd),
     TestSkillBook(TestSkillBookCmd),
     AddAttribute(AddAttributeCmd),
@@ -1506,6 +1609,15 @@ struct LeaveCmd {}
 #[derive(Debug, Clone, PartialEq, FromArgs)]
 #[argh(subcommand, name = "monster-clear")]
 struct MonsterClearCmd {}
+
+/// Go to a player, an NPC or a monster by name: `$go WuxingOven`.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "go")]
+struct GoCmd {
+    /// the name (or part of it) of a player online, an NPC or a monster
+    #[argh(positional, greedy)]
+    name: Vec<String>,
+}
 
 /// Go to where the monster of your bounty roams.
 #[derive(Debug, Clone, PartialEq, FromArgs)]
@@ -1764,6 +1876,19 @@ struct TestHealthCmd {}
 #[derive(Debug, Clone, PartialEq, FromArgs)]
 #[argh(subcommand, name = "test-stun")]
 struct TestStunCmd {}
+
+/// Set the proficiency of a kind of weapon: `$proficiency 410 12` (blades;
+/// 420 swords, 480 clubs, 500 bows, 421 backswords, 561 wands...).
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "proficiency")]
+struct ProficiencyCmd {
+    /// the weapon kind: the item ID's first three digits (410 blades)
+    #[argh(positional)]
+    weapon_type: u32,
+    /// the level, 1 to 20
+    #[argh(positional)]
+    level: u16,
+}
 
 /// Learn a catalog skill for local progression tests.
 #[derive(Debug, Clone, PartialEq, FromArgs)]
@@ -2048,6 +2173,24 @@ mod tests {
         assert_eq!(
             command.commands,
             SubCommands::UpgradeItem(super::UpgradeItemCmd { item_uid: 1234 })
+        );
+    }
+
+    #[test]
+    fn parses_go_command() {
+        let command = Command::from_args(&["commands"], &["go", "Wuxing", "Oven"]).expect("go");
+        assert_eq!(
+            command.commands,
+            SubCommands::Go(super::GoCmd { name: vec!["Wuxing".into(), "Oven".into()] })
+        );
+    }
+
+    #[test]
+    fn parses_proficiency_command() {
+        let command = Command::from_args(&["commands"], &["proficiency", "410", "12"]).expect("proficiency");
+        assert_eq!(
+            command.commands,
+            SubCommands::Proficiency(super::ProficiencyCmd { weapon_type: 410, level: 12 })
         );
     }
 
