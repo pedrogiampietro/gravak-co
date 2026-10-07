@@ -86,6 +86,8 @@ pub use msg_warehouse::MsgWarehouse;
 mod msg_interact;
 pub use msg_interact::{InteractAction, MsgInteract};
 pub(crate) use msg_interact::reward_monster_defeat;
+#[cfg(test)]
+pub(crate) use msg_interact::{forget_attack_cooldown, forget_training_cooldown};
 
 mod msg_skill_effect;
 pub use msg_skill_effect::{MsgSkillEffect, SkillTarget};

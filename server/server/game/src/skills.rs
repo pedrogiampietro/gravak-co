@@ -227,6 +227,13 @@ impl SkillCatalog {
         self.skills.values().filter(|skill| skill.starter).map(|skill| skill.id)
     }
 
+    /// Every weapon skill, in id order.
+    pub fn weapon_skills(&self) -> Vec<&SkillDefinition> {
+        let mut skills: Vec<_> = self.skills.values().filter(|skill| !skill.weapon.is_empty()).collect();
+        skills.sort_by_key(|skill| skill.id);
+        skills
+    }
+
     /// The weapon skill a weapon of `weapon_type` (item type / 1000) can set
     /// off.
     pub fn weapon_skill(&self, weapon_type: u32) -> Option<&SkillDefinition> {

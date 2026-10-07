@@ -238,6 +238,11 @@ impl Map {
             || self.npcs.values().any(|entity| entity.as_npc().is_some_and(Npc::is_training_goal))
     }
 
+    /// The training dummies here.
+    pub fn training_goals(&self) -> Vec<&Npc> {
+        self.npcs.values().filter_map(|entity| entity.as_npc()).filter(|npc| npc.is_training_goal()).collect()
+    }
+
     pub fn npc(&self, id: u32) -> Option<&Npc> {
         self.npcs.get(&id).and_then(|v| v.as_npc())
     }

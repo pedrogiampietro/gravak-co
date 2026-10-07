@@ -257,6 +257,13 @@ pub enum NetworkEvent {
     StatusTimers(gravak_protocol::StatusTimers),
     /// A `3DEffect.ini` effect played once on an actor (fireworks...).
     RoleEffect { actor_id: u32, effect: String },
+    /// The answer to View Equipment (MsgAction 117): whom, their level and
+    /// nobility rank; their items follow.
+    ViewedPlayer { id: u32, level: u16, nobility_rank: u32 },
+    /// An item the viewed player wears (MsgItemInfo action 4).
+    ViewedItem(OwnedItem),
+    /// An entity's spouse (MsgName 6).
+    Spouse { id: u32, name: String },
     /// Kills counted toward the bounty under way.
     BountyProgress {
         done: u32,
@@ -372,6 +379,8 @@ pub enum NetworkEvent {
         attacker_id: u32,
         target_id: u32,
         skill_id: u16,
+        /// The caster's level of the skill (the server's, from 1).
+        level: u16,
         damage: u32,
         /// The cell the cast was aimed at.
         target_cell: (u16, u16),
@@ -534,6 +543,10 @@ pub(crate) enum NetworkCommand {
     QueryTeamMember {
         character_id: u32,
         member_id: u32,
+    },
+    QueryEquipment {
+        character_id: u32,
+        target_id: u32,
     },
     Ping {
         character_id: u32,
@@ -783,6 +796,9 @@ impl NetworkHandle {
                 | NetworkEvent::HighscoreState(_)
                 | NetworkEvent::StatusTimers(_)
                 | NetworkEvent::RoleEffect { .. }
+                | NetworkEvent::ViewedPlayer { .. }
+                | NetworkEvent::ViewedItem(_)
+                | NetworkEvent::Spouse { .. }
                 | NetworkEvent::ExperienceGain { .. }
                 | NetworkEvent::InventoryItem(_)
                 | NetworkEvent::InventoryItemRemoved(_)
@@ -847,6 +863,11 @@ impl NetworkHandle {
             character_id,
             member_id,
         });
+    }
+
+    /// Asks what player `target_id` wears (View Equipment).
+    pub fn query_equipment(&self, character_id: u32, target_id: u32) {
+        let _ = self.commands.send(NetworkCommand::QueryEquipment { character_id, target_id });
     }
 
     /// A Store request (`StorePacket` constants).
@@ -1605,6 +1626,9 @@ pub(crate) async fn play(
                 }
                 Some(GameEvent::Name(name)) => {
                     let text = name.strings.first().cloned().unwrap_or_default();
+                    if name.action == gravak_protocol::NamePacket::QUERY_MATE {
+                        let _ = events.send(NetworkEvent::Spouse { id: name.uid, name: text.clone() });
+                    }
                     let effect = match name.action {
                         gravak_protocol::NamePacket::FIREWORKS => Some(firework_effect(&text).to_owned()),
                         gravak_protocol::NamePacket::ROLE_EFFECT if !text.is_empty() => Some(text),
@@ -1633,6 +1657,24 @@ pub(crate) async fn play(
                         name: info.character_name,
                         donation: info.donation,
                         rank: info.rank,
+                    }));
+                }
+                Some(GameEvent::ItemInfo(info)) if info.action == 4 => {
+                    let _ = events.send(NetworkEvent::ViewedItem(OwnedItem {
+                        uid: info.item_uid,
+                        item_type: info.item_type,
+                        position: info.position,
+                        durability: info.durability,
+                        max_durability: info.max_durability,
+                        plus: info.plus,
+                        rarity: info.bless,
+                        gem_one: info.gem_one,
+                        gem_two: info.gem_two,
+                        rarity_roll: info.reserved3 as u8,
+                        bless: info.reserved2,
+                        enchant_hp: info.enchant,
+                        color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 6 && info.position == 80 => {
@@ -1801,6 +1843,13 @@ pub(crate) async fn play(
                         direction: action.details as u8,
                     });
                 }
+                Some(GameEvent::Action(action)) if action.action_type == 117 => {
+                    let _ = events.send(NetworkEvent::ViewedPlayer {
+                        id: action.data1,
+                        level: action.data2 as u16,
+                        nobility_rank: u32::from(action.details),
+                    });
+                }
                 Some(GameEvent::Action(action)) if action.action_type == 106 => {
                     let _ = events.send(NetworkEvent::TeamMemberPosition {
                         id: action.character_id,
@@ -1917,6 +1966,7 @@ pub(crate) async fn play(
                             attacker_id: effect.attacker_id,
                             target_id,
                             skill_id: effect.skill_id,
+                            level: effect.level,
                             damage,
                             target_cell,
                             first: index == 0,
@@ -2077,6 +2127,12 @@ pub(crate) async fn play(
                 }) => {
                     session
                         .send(&ActionPacket::query_team_member(character_id, member_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::QueryEquipment { character_id, target_id }) => {
+                    session
+                        .send(&ActionPacket::query_equipment(character_id, target_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

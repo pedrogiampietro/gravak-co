@@ -468,6 +468,21 @@ mod tests {
         assert_eq!(pve_physical_class_percent(100), 100);
     }
 
+    /// A blow takes a fixed number of rolls; whichever one decides a 33%
+    /// chance, it comes out at 33%.
+    #[test]
+    fn every_nth_roll_keeps_the_chance() {
+        for stride in 1..=5 {
+            let tries = 20_000;
+            let hits = (0..tries)
+                .map(|_| (0..stride).map(|_| next_roll()).last().expect("a roll"))
+                .filter(|roll| roll % 100 < 33)
+                .count();
+            let percent = hits as f64 * 100.0 / f64::from(tries);
+            assert!((percent - 33.0).abs() < 1.5, "every {stride}th roll: {percent:.1}%");
+        }
+    }
+
     #[test]
     fn superman_damage_multiplier_matches_classic_paths() {
         assert_eq!(superman_damage_percent(true), 1_000);
@@ -498,10 +513,34 @@ pub fn after_dodge(damage: u32, dodge: u32) -> u32 {
 /// Accuracy and Star of Accuracy raise the hit chance this much.
 pub const ACCURACY_STATUS_BONUS: u32 = 20;
 
+/// A random number for combat, drops and forging. The state steps as a
+/// linear congruential generator, whose low bits repeat in short cycles
+/// (bit k every 2^(k+1) steps), so a `% 100` of it was biased by how many
+/// rolls each blow takes: mixed (MurmurHash3's finaliser), every bit is
+/// usable. The server seeds it from the clock; tests keep a fixed seed.
 pub fn next_roll() -> u32 {
-    ROLL_COUNTER
+    #[cfg(not(test))]
+    {
+        static SEEDED: std::sync::Once = std::sync::Once::new();
+        SEEDED.call_once(|| {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos() as u32);
+            ROLL_COUNTER.store(nanos ^ 0x1357_9bdf, Ordering::Relaxed);
+        });
+    }
+    let state = ROLL_COUNTER
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.wrapping_mul(1_664_525).wrapping_add(1_013_904_223))
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    mix(state)
+}
+
+fn mix(mut value: u32) -> u32 {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x85eb_ca6b);
+    value ^= value >> 13;
+    value = value.wrapping_mul(0xc2b2_ae35);
+    value ^ (value >> 16)
 }

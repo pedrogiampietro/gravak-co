@@ -88,7 +88,7 @@ fn button_frames(button: MainHudButton) -> Option<[&'static str; 2]> {
             "data/main/ScreenMoveChk1.dds",
             "data/main/ScreenMoveChk2.dds",
         ],
-        MainHudButton::Map => ["data/main/MapChk2.dds", "data/main/MapChk1.dds"],
+        MainHudButton::Map => ["data/main/MapChk1.dds", "data/main/MapChk2.dds"],
         // Painted into the atlas itself.
         MainHudButton::Skill => return None,
     })
@@ -294,6 +294,11 @@ pub struct MainHudState<'a> {
     pub kill_mode: u8,
     /// Running rather than walking: the Run checkbox ([Check40]) is ticked.
     pub running: bool,
+    /// The Map and Shift Screen checkboxes are ticked; View Equipment
+    /// waits for a player.
+    pub map_shown: bool,
+    pub shift_screen: bool,
+    pub picking_equipment: bool,
     /// Icon of the selected skill, painted over the "Skill" button.
     pub active_skill_icon: Option<RgbaImage>,
 }
@@ -402,6 +407,9 @@ pub fn draw(
         let rect = button.local_rect();
         let lit = match button {
             MainHudButton::Run => state.running,
+            MainHudButton::Map => state.map_shown,
+            MainHudButton::ScreenMove => state.shift_screen,
+            MainHudButton::NpcEquip => state.picking_equipment || state.hovered_button == Some(*button),
             _ => state.hovered_button == Some(*button),
         };
         let frame = &frames[usize::from(lit)];
@@ -829,7 +837,7 @@ mod tests {
             xp: 0, xp_ready: false, experience: 0.3, hovered_button: None, hovered_chat: None,
             chat_text: "", chat_focused: false, chat_name: "", chat_name_focused: false,
             chat_channel: 0, chat_channel_menu: false, chat_channel_hover: None,
-            kill_mode: 0, running: true, active_skill_icon: None,
+            kill_mode: 0, running: true, map_shown: true, shift_screen: false, picking_equipment: false, active_skill_icon: None,
         };
         draw(&mut img, art, [0, 0], &state, font().expect("font"));
         let crop = imageops::crop_imm(&img, 0, 30, 110, 111).to_image();
@@ -849,7 +857,7 @@ mod tests {
             xp: 0, xp_ready: false, experience: 0.3, hovered_button: None, hovered_chat: None,
             chat_text: "", chat_focused: false, chat_name: "", chat_name_focused: false,
             chat_channel: 0, chat_channel_menu: false, chat_channel_hover: None,
-            kill_mode: 0, running: true, active_skill_icon: None,
+            kill_mode: 0, running: true, map_shown: true, shift_screen: false, picking_equipment: false, active_skill_icon: None,
         };
         draw(&mut img, art, [0, 0], &state, font().expect("font"));
         img.save(format!("{dir}/hud-full.png")).expect("png");

@@ -99,6 +99,8 @@ enum TargetPick {
     Friend,
     Ignore,
     Trade,
+    /// The main bar's View Equipment ([130-1016]).
+    ViewEquipment,
 }
 
 impl TargetPick {
@@ -108,6 +110,7 @@ impl TargetPick {
             Self::Friend => "Click a player to send a friend request (click the ground to cancel)",
             Self::Ignore => "Click a player to add as enemy (click the ground to cancel)",
             Self::Trade => "Click a player to request a trade (click the ground to cancel)",
+            Self::ViewEquipment => "Click a player to view their equipment (click the ground to cancel)",
         }
     }
 }
@@ -370,6 +373,10 @@ struct App {
     battle_power_detail: Option<u8>,
     /// The main bar's Action panel of emotes is open.
     action_panel_open: bool,
+    /// The equipment of the player looked at with View Equipment.
+    viewed_equipment: Option<view_equipment::ViewedEquipment>,
+    /// The bar's Shift Screen checkbox ([130-1023]) is ticked.
+    shift_screen: bool,
     /// An emote pressed on the Action panel, until the button comes up.
     dragging_emote: Option<Action>,
     /// An F key pressed and where, until the button comes up.
@@ -1256,6 +1263,9 @@ impl ApplicationHandler for App {
                         self.player_menu = None;
                         self.pk_menu_open = false;
                     }
+                    PhysicalKey::Code(KeyCode::Escape) if self.viewed_equipment.is_some() => {
+                        self.viewed_equipment = None;
+                    }
                     PhysicalKey::Code(KeyCode::Escape) if self.target_pick.is_some() => {
                         self.target_pick = None;
                         self.network_status = "seleção de alvo cancelada".into();
@@ -1379,8 +1389,23 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let previous_cell = self.player.cell();
-                self.player
-                    .tick(now.duration_since(self.last).as_secs_f32());
+                let frame_seconds = now.duration_since(self.last).as_secs_f32();
+                self.player.tick(frame_seconds);
+                // Shift Screen: with Alt held, the cursor at an edge moves
+                // the view (the original steps each of its frames; 60 a
+                // second here).
+                if self.shift_screen
+                    && self.modifiers.alt_key()
+                    && let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window)
+                {
+                    let size = window.inner_size();
+                    renderer.camera_shift = renderer::shift_screen_step(
+                        renderer.camera_shift,
+                        self.cursor,
+                        [size.width as f32, size.height as f32],
+                        (frame_seconds * 60.0).min(6.0),
+                    );
+                }
                 self.last = now;
                 let elapsed = self.started.elapsed().as_secs_f32();
                 self.fps_frames += 1;
@@ -2016,9 +2041,53 @@ impl App {
             self.held = false;
             return true;
         }
+        // The equipment looked at: close it, and keep clicks on it from
+        // reaching the world.
+        if self.viewed_equipment.is_some() {
+            let [left, top] = view_equipment::position(viewport);
+            let local = [self.cursor[0] - left, self.cursor[1] - top];
+            if view_equipment::close_at(local) {
+                self.viewed_equipment = None;
+                self.held = false;
+                return true;
+            }
+            if view_equipment::covers(local) {
+                self.held = false;
+                return true;
+            }
+        }
         // The Run checkbox: run or walk (as the / key).
         if hud::run_button_at(viewport, self.cursor) {
             self.player.running = !self.player.running;
+            self.held = false;
+            return true;
+        }
+        // View Equipment: the next player clicked shows what they wear.
+        if hud::npc_equip_button_at(viewport, self.cursor) {
+            if self.target_pick == Some(TargetPick::ViewEquipment) {
+                self.target_pick = None;
+            } else {
+                self.target_pick = Some(TargetPick::ViewEquipment);
+            }
+            self.held = false;
+            return true;
+        }
+        // Map: the corner map on or off.
+        if hud::map_button_at(viewport, self.cursor) {
+            if let Some(renderer) = &mut self.renderer {
+                renderer.minimap_shown = !renderer.minimap_shown;
+            }
+            self.held = false;
+            return true;
+        }
+        // Shift Screen: unticked, the view goes back over the hero.
+        if hud::screen_move_button_at(viewport, self.cursor) {
+            self.shift_screen = !self.shift_screen;
+            if !self.shift_screen
+                && let Some(renderer) = &mut self.renderer
+            {
+                renderer.camera_shift = [0.0, 0.0];
+            }
             self.held = false;
             return true;
         }
@@ -2496,6 +2565,7 @@ impl App {
             Some(TargetPick::Friend) => return GameCursor::PickFriend,
             Some(TargetPick::Ignore) => return GameCursor::PickEnemy,
             Some(TargetPick::Trade) => return GameCursor::PickTrade,
+            Some(TargetPick::ViewEquipment) => return GameCursor::PickView,
             None => {}
         }
         if self.ground_loot_at_cursor().is_some() {
@@ -4021,6 +4091,29 @@ impl App {
                     self.quick_panel = Some(shop::QuickPanel::DailyRewards);
                 }
             }
+            NetworkEvent::ViewedPlayer { id, level, nobility_rank } => {
+                let actor = self.remote_actors.get(&id);
+                self.viewed_equipment = Some(view_equipment::ViewedEquipment {
+                    id,
+                    name: actor.map(|actor| actor.name.clone()).unwrap_or_default(),
+                    level,
+                    nobility_rank,
+                    female: actor.is_some_and(|actor| matches!(actor.body, 1 | 2)),
+                    spouse: String::new(),
+                    items: Vec::new(),
+                });
+            }
+            NetworkEvent::ViewedItem(item) => {
+                if let Some(view) = &mut self.viewed_equipment {
+                    view.items.retain(|worn| worn.position != item.position);
+                    view.items.push(item);
+                }
+            }
+            NetworkEvent::Spouse { id, name } => {
+                if let Some(view) = self.viewed_equipment.as_mut().filter(|view| view.id == id) {
+                    view.spouse = name;
+                }
+            }
             NetworkEvent::RoleEffect { actor_id, effect } => {
                 let now = self.started.elapsed().as_secs_f32();
                 if let Some(renderer) = &mut self.renderer {
@@ -4991,16 +5084,16 @@ impl App {
                 attacker_id,
                 target_id,
                 skill_id,
+                level,
                 damage,
                 target_cell,
                 first,
             } => {
                 let now = self.started.elapsed().as_secs_f32();
-                let level = self
-                    .known_skills
-                    .get(&u32::from(skill_id))
-                    .filter(|_| self.network_character_id == Some(attacker_id))
-                    .map_or(0, |(level, _)| *level);
+                // The caster's level picks the art (Phoenix's sword changes
+                // colour with it), for every caster: MagicType counts from 0,
+                // the server from 1.
+                let level = level.saturating_sub(1);
                 self.skill_effects.push(renderer::SkillEffectInstance {
                     attacker_id,
                     target_id,
@@ -5621,6 +5714,7 @@ impl App {
                     self.handle_friends_panel_action(shop::FriendsPanelAction::AddIgnore);
                 }
                 TargetPick::Trade => self.handle_trade_panel_action(shop::TradePanelAction::Request),
+                TargetPick::ViewEquipment => self.query_equipment(id),
             }
         }
         if let Some(window) = &self.window {
@@ -5996,6 +6090,10 @@ impl App {
                 .dragging_emote
                 .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
             running: self.player.running,
+            map_shown: self.renderer.as_ref().is_none_or(|renderer| renderer.minimap_shown),
+            shift_screen: self.shift_screen,
+            picking_equipment: self.target_pick == Some(TargetPick::ViewEquipment),
+            viewed_equipment: self.viewed_equipment.clone(),
             chat_recipient: self.chat_recipient.clone(),
             chat_name_focused: self.chat_name_focused,
             chat_channel: self.chat_channel,
@@ -6820,6 +6918,13 @@ impl App {
         let typed = std::mem::replace(&mut self.chat_text, text);
         self.submit_chat();
         self.chat_text = typed;
+    }
+
+    /// Asks what player `id` wears; the dialog opens on the answer.
+    fn query_equipment(&mut self, id: u32) {
+        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+            network.query_equipment(character_id, id);
+        }
     }
 
     /// With a bow in the right hand, the arrows in the left (0 without),
@@ -9535,6 +9640,8 @@ fn run() -> Result<()> {
         battle_power_open: false,
         battle_power_detail: None,
         action_panel_open: false,
+        viewed_equipment: None,
+        shift_screen: false,
         dragging_emote: None,
         dragging_hotkey: None,
         performance_overlay: false,

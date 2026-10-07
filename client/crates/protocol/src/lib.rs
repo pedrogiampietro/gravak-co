@@ -484,6 +484,8 @@ pub struct NamePacket {
 impl NamePacket {
     /// Fireworks: the string is the firework item's name.
     pub const FIREWORKS: u8 = 1;
+    /// The entity's spouse ("None" when single).
+    pub const QUERY_MATE: u8 = 6;
     /// An effect from `3DEffect.ini` played on the entity.
     pub const ROLE_EFFECT: u8 = 10;
 
@@ -858,6 +860,19 @@ impl ActionPacket {
             data2: 0,
             details: 0,
             action_type: 106,
+        }
+    }
+
+    /// MsgAction 117: asks what player `target_id` wears (the main bar's
+    /// View Equipment).
+    pub fn query_equipment(character_id: u32, target_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: target_id,
+            data2: 0,
+            details: 0,
+            action_type: 117,
         }
     }
 
