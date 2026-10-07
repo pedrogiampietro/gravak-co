@@ -495,6 +495,8 @@ mod tests {
                 attack_speed: 800,
                 health_add: 0,
                 mana_add: 0,
+                accuracy: 0,
+                dodge: 0,
                 price: 1_000,
                 durability: 100,
                 max_durability: 100,
