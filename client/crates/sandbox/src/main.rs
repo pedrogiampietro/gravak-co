@@ -7425,6 +7425,17 @@ impl App {
                 "context requested: inventory uid={} type={} position={} cursor=({:.1},{:.1})",
                 item.uid, item.item_type, item.position, self.cursor[0], self.cursor[1]
             ));
+            let wearable = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
+            // The right button alone does the usual: wears gear, uses the
+            // rest. Shift and the right button bring up the item's menu.
+            if !self.modifiers.shift_key() {
+                self.item_context = None;
+                return if wearable && !shop::is_consumable(item.item_type) {
+                    self.queue_equip_item(item)
+                } else {
+                    self.queue_use_item(item)
+                };
+            }
             // What is not worn is used; the server decides what using it
             // does (scrolls, dyes, books, potions...) and says when nothing.
             let actions = if shop::is_consumable(item.item_type) {
