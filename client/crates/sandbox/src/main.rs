@@ -1924,6 +1924,14 @@ impl App {
         let skill_hud = self.skill_hud();
         if let Some(skill_id) = hud::skill_bar_at(&mut self.assets, viewport, self.cursor, &skill_hud)
         {
+            // The flier's icon: a click lands (the original's CancelFly).
+            if skill_hud.flying.is_some_and(|(fly, _)| fly == skill_id) {
+                if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                    network.cancel_fly(character_id);
+                }
+                self.held = false;
+                return true;
+            }
             self.active_skill = Some(skill_id);
             self.skill_bar_open = false;
             self.network_status = format!("skill selecionada: {skill_id}");
@@ -5542,6 +5550,16 @@ impl App {
             kill_mode: self.kill_mode,
             info: self.info_lines(),
             hovered: None,
+            flying: (self.status_flags & network::FLY_FLAG != 0).then(|| {
+                let now = (hud::unix_now() as i64 + self.server_clock_offset).max(0) as u64;
+                let seconds = self
+                    .status_timers
+                    .iter()
+                    .find(|(flag, _)| *flag == network::FLY_FLAG)
+                    .map_or(0, |(_, end)| end.saturating_sub(now)) as u32;
+                let fly = if self.known_skills.contains_key(&8_002) { 8_002 } else { 8_003 };
+                (fly, seconds)
+            }),
             timers: {
                 let now = (hud::unix_now() as i64 + self.server_clock_offset).max(0) as u64;
                 self.status_timers

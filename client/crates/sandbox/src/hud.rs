@@ -107,6 +107,9 @@ pub struct SkillHud {
     pub hovered: Option<u32>,
     /// Timed statuses: their flag and the seconds left.
     pub timers: Vec<(u64, u32)>,
+    /// Flying: the Fly skill and the seconds left. `Conquer.exe` shows it in
+    /// the XP dialog (189), over the KO counter; a click lands.
+    pub flying: Option<(u32, u32)>,
     /// The Character window's Skills tab: page, scroll and pick.
     pub skill_page: crate::shop::SkillPage,
     /// The Attributes tab shows attack and defence (Details) instead of
@@ -306,14 +309,14 @@ enum StatusIcon {
 }
 
 /// The icon of each timed status flag.
-const STATUS_ICONS: [(u64, StatusIcon); 14] = [
+/// (Fly shows over the KO counter instead, where a click lands it.)
+const STATUS_ICONS: [(u64, StatusIcon); 13] = [
     (1 << 18, StatusIcon::Skill(1_025)), // Superman
     (1 << 23, StatusIcon::Skill(1_110)), // Cyclone
     (1 << 9, StatusIcon::Skill(1_095)),  // Stigma
     (1 << 8, StatusIcon::Skill(1_020)),  // Shield
     (1 << 7, StatusIcon::Skill(1_015)),  // Accuracy
     (1 << 22, StatusIcon::Skill(1_075)), // Invisibility
-    (1 << 27, StatusIcon::Skill(8_002)), // Fly
     (1 << 47, StatusIcon::Skill(9_000)), // Intensify
     (1 << 1, StatusIcon::Skill(5_002)),  // Poisoned
     (1 << 5, StatusIcon::Skill(1_002)),  // Stunned
@@ -438,6 +441,10 @@ fn skill_bar_slots(assets: &mut Assets, viewport: [f32; 2], hud: &SkillHud) -> V
         .map(|(id, _, _)| *id)
         .partition(|id| crate::main_hud::is_xp_skill(assets, *id));
     let mut slots = Vec::new();
+    if let Some((fly, _)) = hud.flying.filter(|_| !hud.xp_ready) {
+        let top = viewport[1] as i32 - 173;
+        slots.push((fly, Rect(viewport[0] as i32 - XP_SLOT, top, XP_SLOT, XP_SLOT)));
+    }
     if hud.xp_ready {
         let shown = xp.len().min(XP_SHOWN) as i32;
         let left = viewport[0] as i32 - shown * XP_SLOT;
@@ -494,13 +501,22 @@ fn draw_skill_bar(
             let size = (rect.2 - 2) as u32;
             let mut icon = imageops::resize(&icon, size, size, imageops::FilterType::Triangle);
             // XP skills stay greyed until the XP circle lights up.
-            if !hud.xp_ready && crate::main_hud::is_xp_skill(assets, id) {
+            let flying = hud.flying.is_some_and(|(fly, _)| fly == id);
+            if !hud.xp_ready && !flying && crate::main_hud::is_xp_skill(assets, id) {
                 for pixel in icon.pixels_mut() {
                     let grey = ((u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 6) as u8;
                     *pixel = image::Rgba([grey, grey, grey, pixel[3]]);
                 }
             }
             imageops::overlay(img, &icon, i64::from(rect.0 + 1), i64::from(rect.1 + 1));
+        }
+        // The flier's time left under its icon.
+        if let Some((_, seconds)) = hud.flying.filter(|(fly, _)| *fly == id) {
+            let label = format!("{seconds}s");
+            let x = rect.0 + (rect.2 - main_hud::text_width(font, &label, 12.0)) / 2;
+            main_hud::text(img, font, &label, 12.0, [x + 1, rect.1 + rect.3 - 14], [0, 0, 0, 220], None);
+            main_hud::text(img, font, &label, 12.0, [x, rect.1 + rect.3 - 15], [255, 255, 255, 255], None);
+            outline(img, rect, [214, 176, 96, 255]);
         }
         if hud.active_skill == Some(id) {
             outline(img, rect, [255, 215, 108, 255]);
