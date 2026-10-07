@@ -1055,6 +1055,9 @@ impl ApplicationHandler for App {
                     {
                         return;
                     }
+                    (MouseButton::Left, ElementState::Pressed) if self.link_item_at_cursor() => {
+                        return;
+                    }
                     (MouseButton::Left, ElementState::Pressed) if self.begin_equipment_drag() => {
                         return;
                     }
@@ -6092,6 +6095,33 @@ impl App {
             "Copy Name" => copy_to_clipboard(&menu.sender),
             _ => copy_to_clipboard(&menu.message),
         }
+    }
+
+    /// Shift and a click on an item of the bag or worn: its name goes into
+    /// the chat line as a link, `[Name(+n)]`, short enough for any message.
+    fn link_item_at_cursor(&mut self) -> bool {
+        if !self.modifiers.shift_key() {
+            return false;
+        }
+        let item = self
+            .inventory_slot_item_at_cursor()
+            .filter(|_| self.inventory_open)
+            .or_else(|| self.equipped_item_at_cursor().filter(|_| self.status_open));
+        let Some(item) = item.filter(|item| item.item_type != 0) else {
+            return false;
+        };
+        let name = shop::item_name(&mut self.assets, item.item_type);
+        let link = if item.plus > 0 { format!("[{name}(+{})]", item.plus) } else { format!("[{name}]") };
+        if self.chat_text.chars().count() + link.chars().count() + 1 <= 120 {
+            if !self.chat_text.is_empty() && !self.chat_text.ends_with(' ') {
+                self.chat_text.push(' ');
+            }
+            self.chat_text.push_str(&link);
+        }
+        self.chat_focused = true;
+        self.chat_name_focused = false;
+        self.held = false;
+        true
     }
 
     /// The chat strip set to whisper `name`, the keys on its line.
