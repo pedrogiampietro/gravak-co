@@ -5057,6 +5057,17 @@ fn draw_durability_indicator(
     if item.max_durability == 0 {
         return;
     }
+    // A pack of arrows counts its arrows instead (its durability is how
+    // many are left), as the original shows them.
+    if item.item_type / 1_000 == 1_050 {
+        if let Ok(font) = labels::font() {
+            let count = item.durability.to_string();
+            let text_x = x + width - crate::daily_rewards_panel::width_of(&font, &count, 11.0).round() as i32;
+            let colour = if item.durability == 0 { [255, 90, 80] } else { [255, 255, 255] };
+            crate::daily_rewards_panel::say(image, &font, &count, colour, text_x, y - 9, 11.0);
+        }
+        return;
+    }
     let ratio = (f32::from(item.durability) / f32::from(item.max_durability)).clamp(0.0, 1.0);
     let color = if item.durability == 0 {
         [204, 55, 55, 255]
@@ -6671,3 +6682,4 @@ mod icon_tests {
         Ok(())
     }
 }
+
