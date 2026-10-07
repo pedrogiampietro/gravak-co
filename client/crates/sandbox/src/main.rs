@@ -5287,9 +5287,12 @@ impl App {
             self.pending_pickup = None;
             return;
         }
-        let target_position = target.map(|value| value as f32);
-        let distance = motion_math::cell_distance(self.player.position, target_position);
-        if distance > 1.5 {
+        // As the original: the hero goes onto the item's own cell to pick
+        // it up (walking or, flying, gliding there); one that cannot be
+        // stood on is picked from beside it.
+        let reachable = self.map.walkable(target);
+        let distance = motion_math::cell_distance(self.player.position, target.map(|value| value as f32));
+        if reachable && self.player.cell() != target || !reachable && distance > 1.5 {
             if self.player.moving() || !self.pending_network_steps.is_empty() {
                 return;
             }
