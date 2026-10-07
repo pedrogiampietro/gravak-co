@@ -41,6 +41,7 @@ mod daily_rewards_panel;
 mod highscores_panel;
 mod nobility_panel;
 mod top_title;
+mod view_equipment;
 mod emblems;
 mod action_panel;
 mod hotkey_menu;
@@ -6045,6 +6046,7 @@ impl App {
                 .unwrap_or(0),
             ko_count: self.ko_count,
             top_flags: self.top_flags,
+            quiver: self.quiver(),
             nobility_rank: self.nobility_rank,
             female: self.character.body_id >= 2_000,
             xp_fire_until: self.xp_fire_until(),
@@ -6818,6 +6820,18 @@ impl App {
         let typed = std::mem::replace(&mut self.chat_text, text);
         self.submit_chat();
         self.chat_text = typed;
+    }
+
+    /// With a bow in the right hand, the arrows in the left (0 without),
+    /// as the original's quiver shows them (`Conquer.exe` 0x4a5021).
+    fn quiver(&self) -> Option<u32> {
+        let bow = self.equipment.iter().any(|item| item.position == 4 && item.item_type / 1_000 % 1_000 == 500);
+        bow.then(|| {
+            self.equipment
+                .iter()
+                .find(|item| item.position == 5 && is_arrow(item.item_type))
+                .map_or(0, |item| u32::from(item.durability))
+        })
     }
 
     /// An F key's object: the first of that item in the bag, used (arrows

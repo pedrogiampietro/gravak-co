@@ -7,6 +7,8 @@ use tq_serde::StringList;
 
 /// Fireworks: the strings hold the firework item's name.
 pub const FIREWORKS: u8 = 1;
+/// The entity's spouse (the view-equipment dialog's Spouse line).
+pub const QUERY_MATE: u8 = 6;
 /// A `3DEffect.ini` effect played on the entity.
 pub const ROLE_EFFECT: u8 = 10;
 

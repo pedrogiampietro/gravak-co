@@ -281,6 +281,41 @@ impl MsgAction {
         Ok(())
     }
 
+    /// The main bar's view-equipment button (`[130-1016]`): `data1` is
+    /// the player looked at. The answer is this action back, naming them,
+    /// then every item they wear (`MsgItemInfo` action 4).
+    #[tracing::instrument(skip_all)]
+    async fn handle_query_equipment(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
+        let entity = actor.try_entity()?;
+        let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        let Some(target) = state.entity(self.data1) else {
+            return Ok(());
+        };
+        let Some(other) = target.as_character() else {
+            return Ok(());
+        };
+        // Only someone in sight.
+        let (here, there) = (me.entity().location(), other.entity().location());
+        if me.entity().map_id() != other.entity().map_id() || !tq_math::in_screen((here.x, here.y), (there.x, there.y)) {
+            return Ok(());
+        }
+        // data2: their level and rebirths, details: their nobility rank
+        // (for the dialog's Battle Power).
+        let mut answer = self.clone();
+        answer.character_id = other.id();
+        answer.data1 = other.id();
+        answer.data2 = u32::from(other.entity().level()) | u32::from(other.rebirths()) << 16;
+        answer.details = other.nobility_status().rank as u16;
+        actor.send(answer).await?;
+        for item in other.equipment_items() {
+            actor.send(super::MsgItemInfo::worn_by_other(item)).await?;
+        }
+        actor
+            .send(super::msg_name::MsgName::new(other.id(), super::msg_name::QUERY_MATE, other.spouse()))
+            .await?;
+        Ok(())
+    }
+
     #[tracing::instrument(skip_all)]
     async fn handle_jump(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
         let new_x = self.data1.lo();
@@ -631,6 +666,7 @@ impl PacketProcess for MsgAction {
             },
             ActionType::LoginCompeleted => self.handle_login_completed(state, actor).await,
             ActionType::Jump => self.handle_jump(state, actor).await,
+            ActionType::QueryEquipment => self.handle_query_equipment(state, actor).await,
             ActionType::ChangeFacing => self.handle_change_facing(actor).await,
             ActionType::ChangeAction => self.handle_change_action(actor).await,
             ActionType::QueryTeamMember => self.handle_query_team_member(state, actor).await,

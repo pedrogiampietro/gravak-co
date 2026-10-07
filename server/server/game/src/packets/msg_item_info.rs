@@ -54,6 +54,12 @@ impl MsgItemInfo {
         }
     }
 
+    /// An item another player wears, for the window that views their
+    /// equipment (`OtherPlayerEquipement`).
+    pub fn worn_by_other(item: crate::entities::InventoryItem) -> Self {
+        Self { action: ItemInfoAction::OtherPlayerEquipement as u8, ..Self::inventory_item(item) }
+    }
+
     pub fn inventory_item(item: crate::entities::InventoryItem) -> Self {
         Self {
             character_id: item.uid,

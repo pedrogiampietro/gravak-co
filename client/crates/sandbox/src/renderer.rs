@@ -4433,6 +4433,7 @@ impl Renderer {
             skill_hud.weapon_skills.hash(&mut hasher);
             skill_hud.weapon_filter.hash(&mut hasher);
             skill_hud.active_skill.hash(&mut hasher);
+            skill_hud.quiver.hash(&mut hasher);
             skill_hud.skill_page.hash(&mut hasher);
             skill_hud.attribute_details.hash(&mut hasher);
             mana.hash(&mut hasher);

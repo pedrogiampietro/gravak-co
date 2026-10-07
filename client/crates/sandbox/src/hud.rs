@@ -98,6 +98,8 @@ pub struct SkillHud {
     pub ko_count: u32,
     /// The Top titles the hero holds (`top_title::PROFESSIONS` flags).
     pub top_flags: u32,
+    /// With a bow in hand, the arrows worn (0 without), for the quiver.
+    pub quiver: Option<u32>,
     /// The hero's nobility rank (the server's id) and sex, for its icon.
     pub nobility_rank: u32,
     pub female: bool,
@@ -583,6 +585,22 @@ pub fn skill_bar_at(
         .into_iter()
         .find(|(_, rect)| rect.contains(cursor))
         .map(|(id, _)| id)
+}
+
+/// The quiver with a bow in hand (`Conquer.exe` 0x4aa6c8): `[NoArrow]`
+/// of `ani/common.ani` 135 from the bar's left and 126 over the bottom,
+/// and the arrows worn
+/// in white over it, with a black shadow a pixel up and left.
+fn draw_quiver(img: &mut RgbaImage, assets: &mut Assets, font: &fontdue::Font, viewport: [f32; 2], arrows: u32) {
+    // 135 from the bar's left (the original's bar spans its 1024 pixels;
+    // ours is centred in wider windows).
+    let [x, y] = [hud_origin(viewport)[0] + 135, viewport[1] as i32 - 126];
+    if let Ok(icon) = assets.image("data/pic/arrow.dds") {
+        image::imageops::overlay(img, &icon, i64::from(x), i64::from(y));
+    }
+    let count = arrows.to_string();
+    crate::main_hud::text(img, font, &count, 12.0, [x - 1, y - 1], [0, 0, 0, 255], None);
+    crate::main_hud::text(img, font, &count, 12.0, [x, y], [255, 255, 255, 255], None);
 }
 
 fn draw_skill_bar(
@@ -1300,6 +1318,9 @@ pub fn image(
         font,
     );
     draw_skill_bar(&mut img, assets, font, viewport, skills);
+    if let Some(arrows) = skills.quiver {
+        draw_quiver(&mut img, assets, font, viewport, arrows);
+    }
     // Cyclone or Superman: their KOs in the big red count ("<n> æ–©"),
     // otherwise the kills of the last kind of monster in the small blue one.
     let in_xp_skill = skills.timers.iter().any(|(flag, _)| *flag & XP_SKILL_FLAGS != 0);
@@ -1558,6 +1579,7 @@ mod tests {
                     active_skill: Some(1_001),
                     kill_count: 7,
                     ko_count: 37,
+                    quiver: Some(457),
                     xp_fire_until: None,
                     hovered: Some(1_000),
                     info: Some(InfoBar { map: "Twin City".into(), cell: [430, 380], fps: 144, ping: Some(12) }),
