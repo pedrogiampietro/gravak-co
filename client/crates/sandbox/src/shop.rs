@@ -2640,6 +2640,7 @@ pub fn status_equipment_items(
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             });
         }
     }
@@ -6027,6 +6028,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 702,
@@ -6042,6 +6044,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
         ];
         assert_eq!(
@@ -6115,6 +6118,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         for action in actions {
             let [left, top] = super::item_action_panel_position(viewport, action);
@@ -6182,6 +6186,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         // A Super item has no next quality: nothing to confirm.
         let panel = super::ItemActionPanel {
@@ -6241,6 +6246,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         assert_eq!(super::battle_power(24, 1, &[], 0), 29);
         // Super armor (+4), plus 3, one normal and one super gem (+3).
@@ -6394,6 +6400,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         let [left, top] = inventory_position(viewport);
         let cursor = [
@@ -6565,6 +6572,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 2,
@@ -6580,6 +6588,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 3,
@@ -6595,6 +6604,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 4,
@@ -6610,6 +6620,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 5,
@@ -6625,6 +6636,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
         ];
         inventory_image(

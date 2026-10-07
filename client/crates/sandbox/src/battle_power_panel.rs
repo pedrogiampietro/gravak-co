@@ -194,6 +194,7 @@ mod tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         let equipment = [
             item(1, 118_309, 1, 3, 13, 0),

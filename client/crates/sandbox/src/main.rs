@@ -1779,17 +1779,19 @@ impl App {
             .find(|item| item.position == 1)
             .map(|item| character::dyed(item.item_type, item.color))
             .unwrap_or(0);
+        // A weapon in a skin wears the skin's look.
+        let look = |item: &network::OwnedItem| if item.skin != 0 { item.skin } else { item.item_type };
         let right_weapon = self
             .equipment
             .iter()
             .find(|item| item.position == 4)
-            .map(|item| item.item_type)
+            .map(look)
             .unwrap_or(0);
         let left_weapon = self
             .equipment
             .iter()
             .find(|item| item.position == 5)
-            .map(|item| character::dyed(item.item_type, item.color))
+            .map(|item| character::dyed(look(item), item.color))
             .unwrap_or(0);
         debug_log::write(format_args!(
             "refresh world model: helmet={} armor_or_garment={} right_weapon={} left_weapon={} equipment_count={}",

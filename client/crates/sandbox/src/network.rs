@@ -82,6 +82,8 @@ pub struct OwnedItem {
     pub enchant_hp: u8,
     /// Tinter dye (3-9; 0 is the default).
     pub color: u8,
+    /// A weapon's skin: the item type whose look it wears (0 its own).
+    pub skin: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1460,6 +1462,7 @@ pub(crate) async fn play(
                             bless: 0,
                             enchant_hp: 0,
                             color: 0,
+                            skin: 0,
                         },
                     });
                 }
@@ -1614,6 +1617,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.position >= 80 && info.action == 5 => {
@@ -1656,6 +1660,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.position >= 40 && info.action == 5 => {
@@ -1684,6 +1689,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 9 => {
@@ -1715,6 +1721,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 1 => {
@@ -1736,6 +1743,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 5 => {
