@@ -96,6 +96,11 @@ pub struct SkillHud {
     pub kill_count: u32,
     /// KOs of the current Cyclone or Superman.
     pub ko_count: u32,
+    /// The Top titles the hero holds (`top_title::PROFESSIONS` flags).
+    pub top_flags: u32,
+    /// The hero's nobility rank (the server's id) and sex, for its icon.
+    pub nobility_rank: u32,
+    pub female: bool,
     /// When the fire along the bottom burns out (unix ms): a lit XP
     /// circle's 20 seconds, then the XP skill's time.
     pub xp_fire_until: Option<u64>,
@@ -197,6 +202,66 @@ fn status_slot_rect(column: usize, top: i32) -> crate::ui::UiRect {
     crate::ui::UiRect::new(CORNER[0] + column as i32 * STATUS_STEP, top, STATUS_SLOT, STATUS_SLOT)
 }
 
+/// The plate's place: as wide as the map's name or the details line,
+/// whichever is wider.
+fn info_plate_rect(info: &InfoBar) -> crate::ui::UiRect {
+    use crate::daily_rewards_panel::width_of;
+    let (Ok(ui), Ok(cinzel)) = (crate::labels::font(), crate::labels::decorative_font()) else {
+        return crate::ui::UiRect::new(CORNER[0], CORNER[1], 220, PLATE_HEIGHT);
+    };
+    let width = |text: &str| width_of(&ui, text, 11.0).round() as i32;
+    // Place, frames and ping, each in a fixed slot 18 pixels apart.
+    let line_width = width("0000, 0000") + 18 + width("0000") + 4 + width("FPS") + 18 + 14 + width("0000 ms");
+    let text_width = (width_of(&cinzel, &info.map, 14.0).round() as i32).max(line_width);
+    crate::ui::UiRect::new(CORNER[0], CORNER[1], 52 + text_width + 14, PLATE_HEIGHT)
+}
+
+/// The Nobility Rank button beside the plate (in the corner without one):
+/// the empire's gold medallion in a framed square. Left, top, width and
+/// height in window pixels.
+pub fn nobility_button_rect(skills: &SkillHud) -> [f32; 4] {
+    const SIZE: i32 = 32;
+    let (x, y) = match &skills.info {
+        Some(info) => {
+            let plate = info_plate_rect(info);
+            (plate.x + plate.width + 8, plate.y + (plate.height - SIZE) / 2)
+        }
+        None => (CORNER[0], CORNER[1]),
+    };
+    [x as f32, y as f32, SIZE as f32, SIZE as f32]
+}
+
+/// The Nobility Rank button: the original's nobility status icon for the
+/// hero's rank (`ini/StatusTips.ini` 36-43, clickable, `ani/effect.ani`
+/// `KnightIcon_*`), a commoner's too.
+fn draw_nobility_button(img: &mut RgbaImage, assets: &mut Assets, skills: &SkillHud) {
+    let [x, y, width, _] = nobility_button_rect(skills);
+    let path = format!("Data/Pic/Contribute/KnightIcon_{}.dds", knight_icon(skills.nobility_rank, skills.female));
+    if let Ok(icon) = assets.image(&path) {
+        let icon = if icon.width() == width as u32 {
+            icon
+        } else {
+            image::imageops::resize(&icon, width as u32, width as u32, image::imageops::FilterType::Triangle)
+        };
+        image::imageops::overlay(img, &icon, x as i64, y as i64);
+    }
+}
+
+/// The status icon of a nobility rank: 平民 commoner, 勋爵 Knight, 子爵
+/// Baron, 伯爵 Earl, 侯爵 Duke, 公爵 Prince, 王 King and 女王 Queen.
+fn knight_icon(rank: u32, female: bool) -> &'static str {
+    match rank {
+        12 if female => "vw",
+        12 => "w",
+        9 => "gj",
+        7 => "hj",
+        5 => "bj",
+        3 => "zj",
+        1 => "xj",
+        _ => "pm",
+    }
+}
+
 /// The plate: a compass badge, the map's name, and under it the cell, the
 /// frames a second and the ping with its signal bars. Its bottom.
 fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
@@ -205,10 +270,16 @@ fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
     let (Ok(ui), Ok(cinzel)) = (crate::labels::font(), crate::labels::decorative_font()) else {
         return;
     };
-    let ping_text = info.ping.map_or_else(|| "-".to_owned(), |ping| format!("{ping} ms"));
-    let detail = format!("{}, {}   Â·   {} FPS   Â·   {ping_text}", info.cell[0], info.cell[1], info.fps);
-    let text_width = width_of(&cinzel, &info.map, 14.0).max(width_of(&ui, &detail, 11.0) + 20.0).round() as i32;
-    let plate = crate::ui::UiRect::new(CORNER[0], CORNER[1], 52 + text_width + 14, PLATE_HEIGHT);
+    // The details line in three fixed slots (place, frames, ping), so the
+    // plate keeps its width as the numbers change.
+    const SIZE: f32 = 11.0;
+    const GAP: i32 = 18;
+    let value_colour = [234, 238, 232];
+    let label_colour = [132, 156, 160];
+    let width = |text: &str| width_of(&ui, text, SIZE).round() as i32;
+    let place_slot = width("0000, 0000");
+    let fps_slot = width("0000") + 4 + width("FPS");
+    let plate = info_plate_rect(info);
     let shape = rounded(plate, 10.0);
     glow_in(img, plate, &shape, 6.0, paint::hex(0x000000), 0.35);
     let (y0, height) = (plate.y as f32, plate.height as f32);
@@ -230,8 +301,30 @@ fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
 
     // The map, and the details under it.
     let left = plate.x + 52;
+    let line = plate.y + 27;
     say(img, &cinzel, &info.map, [255, 226, 143], left, plate.y + 6, 14.0);
-    say(img, &ui, &detail, [196, 204, 200], left, plate.y + 27, 11.0);
+    say(img, &ui, &format!("{}, {}", info.cell[0], info.cell[1]), value_colour, left, line, SIZE);
+    // A small gold diamond between the slots.
+    let diamond = |img: &mut RgbaImage, x: i32| {
+        let centre = [x as f32, line as f32 + 7.0];
+        let bounds = crate::ui::UiRect::new(x - 3, line + 4, 7, 7);
+        paint_in(img, bounds, 1, |px, py| (px - centre[0]).abs() + (py - centre[1]).abs() - 2.6, |_, _| GOLD_DARK, 1.0);
+    };
+    let fps_left = left + place_slot + GAP;
+    diamond(img, fps_left - GAP / 2);
+    let fps = info.fps.to_string();
+    say(img, &ui, &fps, value_colour, fps_left, line, SIZE);
+    say(img, &ui, "FPS", label_colour, fps_left + width(&fps) + 4, line, SIZE);
+    let ping_left = fps_left + fps_slot + GAP;
+    diamond(img, ping_left - GAP / 2);
+    match info.ping {
+        Some(ping) => {
+            let value = ping.to_string();
+            say(img, &ui, &value, value_colour, ping_left + 14, line, SIZE);
+            say(img, &ui, "ms", label_colour, ping_left + 14 + width(&value) + 3, line, SIZE);
+        }
+        None => say(img, &ui, "-", label_colour, ping_left + 14, line, SIZE),
+    }
     // The signal bars, coloured by the ping.
     let colour = match info.ping {
         Some(ping) if ping < 80 => paint::hex(0x6fd36f),
@@ -245,7 +338,8 @@ fn draw_info_plate(img: &mut RgbaImage, info: &InfoBar) {
         Some(_) => 1,
         None => 0,
     };
-    let bars_left = left + width_of(&ui, &detail, 11.0).round() as i32 + 6;
+    // The signal bars lead the ping.
+    let bars_left = ping_left;
     for bar in 0..3 {
         let bar_height = 4 + bar * 3;
         let rect = crate::ui::UiRect::new(bars_left + bar * 4, plate.y + 38 - bar_height, 3, bar_height);
@@ -629,6 +723,7 @@ pub fn revive_countdown_image(remaining: u32) -> crate::assets::Result<RgbaImage
 }
 
 /// Size of a revive button.
+#[cfg(test)]
 pub const REVIVE_BUTTON: [u32; 2] = [136, 40];
 
 /// A button in the style of the HUD's "Skill" button: the HUD's diamond
@@ -691,8 +786,105 @@ pub fn hud_style_panel(assets: &mut Assets, width: u32, height: u32, frame: [u8;
 }
 
 /// The revive buttons: ornate plates like the Store's.
-pub fn revive_button(assets: &mut Assets, label: &str) -> crate::assets::Result<RgbaImage> {
-    crate::ornate::plate(Some(assets), REVIVE_BUTTON, label, crate::ornate::GRAVAK, crate::ornate::Look::Normal, None)
+/// The original revive plates (`data/main/Relive01.dds`, lit
+/// `Relive02.dds`, the art of `[XpSkillType5]` in `ani/Magic.Ani`).
+/// The art says "Revive Here"; plain Revive is the same plate with "Here"
+/// taken away and "Revive" moved to the middle. A Revive Here the player
+/// cannot use (no Heaven's Blessing) is dimmed.
+pub fn revive_plate(assets: &mut Assets, here: bool, lit: bool, usable: bool) -> crate::assets::Result<RgbaImage> {
+    let art = assets.image(if lit { "data/main/Relive02.dds" } else { "data/main/Relive01.dds" })?;
+    let mut plate = crate::original_ui::visible_part(&art)?;
+    if !here {
+        only_first_line(&mut plate);
+    }
+    if !usable {
+        for pixel in plate.pixels_mut() {
+            let grey = (u16::from(pixel.0[0]) + u16::from(pixel.0[1]) + u16::from(pixel.0[2])) / 3;
+            for channel in 0..3 {
+                pixel.0[channel] = ((u16::from(pixel.0[channel]) + grey) / 4) as u8;
+            }
+        }
+    }
+    Ok(plate)
+}
+
+/// Keeps the first line of a plate's two-line caption, centred: the
+/// caption's pixels (bright, with their dark outline) are lifted out, the
+/// plate under them is filled in from around, and the first line is put
+/// back in the middle.
+fn only_first_line(plate: &mut RgbaImage) {
+    let (width, height) = (plate.width() as i32, plate.height() as i32);
+    // The frame and its corner pieces stay as they are.
+    let border = 5;
+    let inside = |x: i32, y: i32| x >= border && y >= border && x < width - border && y < height - border;
+    let bright = |pixel: &image::Rgba<u8>| {
+        pixel.0[3] > 0 && (u16::from(pixel.0[0]) + u16::from(pixel.0[1]) + u16::from(pixel.0[2])) / 3 > 95
+    };
+    let mut rows = vec![0; height as usize];
+    let mut mask = vec![false; (width * height) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            if inside(x, y) && bright(plate.get_pixel(x as u32, y as u32)) {
+                rows[y as usize] += 1;
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        if inside(x + dx, y + dy) {
+                            mask[((y + dy) * width + x + dx) as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let Some(top) = (border..height - border).find(|y| rows[*y as usize] >= 2) else {
+        return;
+    };
+    let end = (top..height - border).find(|y| rows[*y as usize] == 0).unwrap_or(height - border) - 1;
+    let line: Vec<(i32, i32, image::Rgba<u8>)> = (top - 2..=end + 2)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .filter(|(x, y)| inside(*x, *y) && mask[(y * width + x) as usize])
+        .map(|(x, y)| (x, y, *plate.get_pixel(x as u32, y as u32)))
+        .collect();
+    // Fill the caption's place from its edges inwards.
+    let mut todo: Vec<(i32, i32)> = (0..width * height)
+        .filter(|index| mask[*index as usize])
+        .map(|index| (index % width, index / width))
+        .collect();
+    while !todo.is_empty() {
+        let mut filled = Vec::new();
+        for &(x, y) in &todo {
+            let (mut sum, mut count) = ([0u32; 4], 0);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx >= 0 && ny >= 0 && nx < width && ny < height && !mask[(ny * width + nx) as usize] {
+                        let pixel = plate.get_pixel(nx as u32, ny as u32);
+                        for channel in 0..4 {
+                            sum[channel] += u32::from(pixel.0[channel]);
+                        }
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                filled.push((x, y, image::Rgba(sum.map(|total| (total / count) as u8))));
+            }
+        }
+        if filled.is_empty() {
+            break;
+        }
+        for &(x, y, pixel) in &filled {
+            plate.put_pixel(x as u32, y as u32, pixel);
+            mask[(y * width + x) as usize] = false;
+        }
+        todo.retain(|(x, y)| mask[(y * width + x) as usize]);
+    }
+    let shift = (height - 1 - top - end) / 2;
+    for (x, y, pixel) in line {
+        if inside(x, y + shift) {
+            plate.put_pixel(x as u32, (y + shift) as u32, pixel);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -915,6 +1107,9 @@ fn draw_hotkeys(
         let binding = slot.binding();
         let art = match &binding {
             Some(crate::action_bar::Binding::Item(item_type)) => crate::shop::item_icon_image(assets, *item_type).ok(),
+            // A skill's art is wherever `ani/Magic.Ani` names it (Scatter is
+            // skill29.dds), already cropped.
+            Some(crate::action_bar::Binding::Skill(id)) if slot.icon.is_none() => crate::main_hud::skill_icon(assets, *id),
             // Skill textures keep their artwork in a larger transparent
             // canvas; crop it so the icon fills the slot like the original.
             _ => slot
@@ -1131,6 +1326,7 @@ pub fn image(
     }
     if let Some(info) = &skills.info {
         draw_info_plate(&mut img, info);
+        draw_nobility_button(&mut img, assets, skills);
     }
     let mut badges_top = status_row_top(skills);
     // Timed statuses in framed slots with the time left on a pill under
@@ -1300,7 +1496,7 @@ mod tests {
                 channel: 2000,
                 sender_name: "CloudStrider".into(),
                 recipient_name: "ALLUSERS".into(),
-                message: "OlÃ¡, Twin City!".into(),
+                message: "Olá, Twin City!".into(),
             },
             crate::network::ChatMessage {
                 channel: 2001,
@@ -1324,7 +1520,7 @@ mod tests {
                 65,
                 40,
                 Some(1),
-                "OlÃ¡, Twin City!",
+                "Olá, Twin City!",
             ),
             ("hud-1024.png", 1024, 768, 25, 0, Some(HOVER_ORB), ""),
             ("hud-1704.png", 1704, 960, 100, 100, Some(HOVER_SLOT), ""),
@@ -1375,5 +1571,27 @@ mod tests {
             .save(output.join(name))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod revive_plate_preview {
+    /// Paints the four revive plates side by side into GRAVAK_PREVIEW_OUT.
+    #[test]
+    #[ignore = "Needs the 5065 installation"]
+    fn revive_plates() {
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).unwrap();
+        let plates: Vec<_> = [(false, false, true), (false, true, true), (true, false, true), (true, true, true), (true, false, false)]
+            .into_iter()
+            .map(|(here, lit, usable)| super::revive_plate(&mut assets, here, lit, usable).unwrap())
+            .collect();
+        assert!(plates.iter().all(|plate| plate.dimensions() == plates[0].dimensions()));
+        let (width, height) = plates[0].dimensions();
+        let mut sheet = image::RgbaImage::from_pixel((width + 4) * plates.len() as u32, height, image::Rgba([40, 60, 40, 255]));
+        for (index, plate) in plates.iter().enumerate() {
+            image::imageops::overlay(&mut sheet, plate, i64::from((width + 4) * index as u32), 0);
+        }
+        let out = std::env::var("GRAVAK_PREVIEW_OUT").unwrap_or_else(|_| ".".into());
+        sheet.save(std::path::Path::new(&out).join("revive-plates.png")).unwrap();
     }
 }

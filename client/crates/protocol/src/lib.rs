@@ -1674,6 +1674,64 @@ pub struct NobilityInfo {
     pub rank: u32,
     pub remaining: u64,
     pub title_id: u32,
+    /// The place among the donors (0: none).
+    pub position: u32,
+    /// The Top titles the hero holds.
+    pub top_flags: u32,
+}
+
+/// The Nobility window's Donate: `donation` silver (MsgNobility 2064,
+/// action 1).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2064)]
+pub struct NobilityDonatePacket {
+    pub action: u32,
+    pub character_id: u32,
+    pub donation: u64,
+    pub rank: u32,
+    pub remaining: u64,
+    pub title_id: u32,
+    pub position: u32,
+    pub top_flags: u32,
+}
+
+impl NobilityDonatePacket {
+    /// Asks for the hero's status (action 4); the server answers with it.
+    pub fn query(character_id: u32) -> Self {
+        Self { action: 4, ..Self::new(character_id, 0, false) }
+    }
+
+    /// Action 1 pays in silver, 2 in CPs (one per 50,000 silver).
+    pub fn new(character_id: u32, amount: u64, in_cps: bool) -> Self {
+        let action = if in_cps { 2 } else { 1 };
+        Self { action, character_id, donation: amount, rank: 0, remaining: 0, title_id: 0, position: 0, top_flags: 0 }
+    }
+}
+
+/// Asks for the nobility ranking (MsgNobilityRanking 2065, action 2); the
+/// server answers with a clear (action 3) and a row per seat (action 1).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 2065)]
+pub struct NobilityRankingRequest {
+    pub action: u32,
+    pub position: u32,
+    pub character_id: u32,
+    pub donation: u64,
+    pub rank: u32,
+    pub list_count: u8,
+    pub character_name: String,
+}
+
+impl NobilityRankingRequest {
+    pub fn new() -> Self {
+        Self { action: 2, position: 0, character_id: 0, donation: 0, rank: 0, list_count: 0, character_name: String::new() }
+    }
+}
+
+impl Default for NobilityRankingRequest {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]

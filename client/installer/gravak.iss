@@ -3,7 +3,10 @@
 ;   ISCC.exe installer\gravak.iss
 
 #define AppName "Gravak"
-#define AppVersion "0.1.0"
+; tools\package-client.ps1 passes the workspace version (client\Cargo.toml).
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 #define AppExe "Gravak.exe"
 
 [Setup]

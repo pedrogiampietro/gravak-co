@@ -170,11 +170,6 @@ fn say(image: &mut RgbaImage, text: &str, at: [i32; 2], colour: [u8; 4], width: 
     Ok(())
 }
 
-fn icon(assets: &mut Assets, path: &str, size: u32) -> Option<RgbaImage> {
-    let image = crate::original_ui::visible_part(&assets.image(path).ok()?).ok()?;
-    Some(imageops::resize(&image, size, size, imageops::FilterType::Triangle))
-}
-
 /// The popup with the cell under `hover` lit.
 pub fn image(assets: &mut Assets, view: &HotkeyPopupView, hover: Option<usize>) -> Result<RgbaImage> {
     let (rect, cells) = layout(view);
@@ -205,7 +200,8 @@ pub fn image(assets: &mut Assets, view: &HotkeyPopupView, hover: Option<usize>) 
                 outline(&mut image, frame, if hover == Some(index) { LIT } else { [70, 64, 50, 255] });
                 let size = (frame.width - 4) as u32;
                 let art = if skills {
-                    icon(assets, &crate::action_bar::skill_icon(view.skills[index]), size)
+                    crate::main_hud::skill_icon(assets, view.skills[index])
+                        .map(|art| imageops::resize(&art, size, size, imageops::FilterType::Triangle))
                 } else {
                     crate::shop::item_icon_image(assets, view.objects[index].0)
                         .ok()

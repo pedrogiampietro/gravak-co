@@ -230,8 +230,12 @@ pub enum NetworkEvent {
         rank: u32,
         remaining: u64,
         title_id: u32,
+        position: u32,
+        top_flags: u32,
     },
     NobilityRanking(NobilityEntry),
+    /// The ranking is about to be sent again, whole.
+    NobilityRankingClear,
     /// The bounty Task Board.
     Bounty(gravak_protocol::BountyState),
     /// One product of the Store catalog.
@@ -450,6 +454,10 @@ pub struct RemoteActor {
     /// How a slain monster dies: 0 falling, 1 flung away, 2 flung a short
     /// way (Conquer.exe 0x4d687a).
     pub flung: u8,
+    /// The Top titles a player holds (`top_title::PROFESSIONS` flags).
+    pub top_flags: u32,
+    /// A player's nobility rank (the server's id; 0 none).
+    pub nobility_rank: u32,
 }
 
 pub(crate) enum NetworkCommand {
@@ -470,6 +478,15 @@ pub(crate) enum NetworkCommand {
         profession: u32,
         page: u32,
     },
+    /// The Nobility window's Donate, in silver or in CPs.
+    NobilityDonate {
+        amount: u64,
+        in_cps: bool,
+    },
+    /// The nobility ranking, asked for.
+    NobilityRanking,
+    /// The hero's own nobility, asked for.
+    NobilityStatus,
     /// A bounty Task Board action.
     Bounty {
         action: u32,
@@ -753,6 +770,7 @@ impl NetworkHandle {
                 | NetworkEvent::Attributes { .. }
                 | NetworkEvent::Nobility { .. }
                 | NetworkEvent::NobilityRanking(_)
+                | NetworkEvent::NobilityRankingClear
                 | NetworkEvent::Bounty(_)
                 | NetworkEvent::BountyProgress { .. }
                 | NetworkEvent::StoreProduct(_)
@@ -839,6 +857,21 @@ impl NetworkHandle {
     /// A Highscores page.
     pub fn send_highscores(&self, category: u32, profession: u32, page: u32) {
         let _ = self.commands.send(NetworkCommand::Highscores { category, profession, page });
+    }
+
+    /// Donates `amount` silver for nobility, paid in CPs when `in_cps`.
+    pub fn donate_nobility(&self, amount: u64, in_cps: bool) {
+        let _ = self.commands.send(NetworkCommand::NobilityDonate { amount, in_cps });
+    }
+
+    /// Asks for the nobility ranking.
+    pub fn request_nobility_ranking(&self) {
+        let _ = self.commands.send(NetworkCommand::NobilityRanking);
+    }
+
+    /// Asks for the hero's own nobility (rank, seat, Top titles).
+    pub fn request_nobility_status(&self) {
+        let _ = self.commands.send(NetworkCommand::NobilityStatus);
     }
 
     /// A Reward Shrine request (`DailyRewardPacket` constants).
@@ -1539,6 +1572,8 @@ pub(crate) async fn play(
                         rank: info.rank,
                         remaining: info.remaining,
                         title_id: info.title_id,
+                        position: info.position,
+                        top_flags: info.top_flags,
                     });
                 }
                 Some(GameEvent::StoreProduct(product)) => {
@@ -1587,6 +1622,9 @@ pub(crate) async fn play(
                         done: packet.param,
                         required: packet.extra,
                     });
+                }
+                Some(GameEvent::NobilityRanking(info)) if info.action == 3 => {
+                    let _ = events.send(NetworkEvent::NobilityRankingClear);
                 }
                 Some(GameEvent::NobilityRanking(info)) if info.action == 1 => {
                     let _ = events.send(NetworkEvent::NobilityRanking(NobilityEntry {
@@ -2054,6 +2092,24 @@ pub(crate) async fn play(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
+                Some(NetworkCommand::NobilityDonate { amount, in_cps }) => {
+                    session
+                        .send(&gravak_protocol::NobilityDonatePacket::new(local_character_id, amount, in_cps))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::NobilityStatus) => {
+                    session
+                        .send(&gravak_protocol::NobilityDonatePacket::query(local_character_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::NobilityRanking) => {
+                    session
+                        .send(&gravak_protocol::NobilityRankingRequest::new())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 Some(NetworkCommand::Highscores { category, profession, page }) => {
                     session
                         .send(&gravak_protocol::HighscoresPacket::new(category, profession, page))
@@ -2322,6 +2378,9 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         ko_count: 0,
         jumping: false,
         flung: 0,
+        // The Top titles ride in reserved2.
+        top_flags: player.reserved2.max(0) as u32,
+        nobility_rank: player.nobility_rank.max(0) as u32,
     }
 }
 
@@ -2367,6 +2426,8 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         ko_count: 0,
         jumping: false,
         flung: 0,
+        top_flags: 0,
+        nobility_rank: 0,
     }
 }
 

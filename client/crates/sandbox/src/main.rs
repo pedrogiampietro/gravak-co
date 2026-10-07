@@ -39,6 +39,8 @@ mod shop;
 mod store_panel;
 mod daily_rewards_panel;
 mod highscores_panel;
+mod nobility_panel;
+mod top_title;
 mod emblems;
 mod action_panel;
 mod hotkey_menu;
@@ -50,6 +52,9 @@ mod showcase;
 mod ui;
 mod ui_theme;
 mod validation;
+mod updater;
+mod vault;
+mod worlds;
 use action::Action;
 use assets::{Assets, Result};
 use motion_math::{direction_towards, walk_delta};
@@ -297,6 +302,8 @@ struct App {
     player: movement::Player,
     audio: Option<audio::MovementAudio>,
     window: Option<Arc<Window>>,
+    /// The login screens' window, until `resumed` takes it as the game's.
+    login_window: Option<Arc<Window>>,
     renderer: Option<renderer::Renderer>,
     cursor: [f32; 2],
     started: Instant,
@@ -334,6 +341,21 @@ struct App {
     nobility_remaining: u64,
     equipped_title: u32,
     nobility_ranking: Vec<network::NobilityEntry>,
+    /// The hero's seat (0: none), and the Nobility window's Donate box and
+    /// Donation Rank page.
+    nobility_position: u32,
+    /// The Top titles the hero holds.
+    top_flags: u32,
+    /// The hero's rank came once already (its fiery name was shown).
+    nobility_shown: bool,
+    nobility_amount: String,
+    nobility_amount_focused: bool,
+    nobility_page: usize,
+    /// The Contribution Rank is shown; the line under the ranks' buttons;
+    /// a donation waiting to be paid in CPs (Donate again to pay).
+    nobility_full_list: bool,
+    nobility_note: String,
+    nobility_in_cps: Option<u64>,
     status_flags: u64,
     status_open: bool,
     status_tab: shop::StatusTab,
@@ -572,14 +594,24 @@ impl ApplicationHandler for App {
             return;
         }
         let result = (|| -> Result<_> {
-            let window = Arc::new(
-                event_loop.create_window(
-                    Window::default_attributes()
-                        .with_title("Gravak")
-                        .with_window_icon(window_icon())
-                        .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768)),
-                )?,
-            );
+            let window = match self.login_window.take() {
+                // Entering from the login screens: the same window, grown to
+                // the game's size unless the player has maximised it.
+                Some(window) => {
+                    if !window.is_maximized() {
+                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(1366, 768));
+                    }
+                    window
+                }
+                None => Arc::new(
+                    event_loop.create_window(
+                        Window::default_attributes()
+                            .with_title("Gravak")
+                            .with_window_icon(window_icon())
+                            .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768)),
+                    )?,
+                ),
+            };
             let mut renderer = pollster::block_on(renderer::Renderer::new(window.clone()))?;
             renderer.prime_static_map_cache(&self.map);
             Ok((window, renderer))
@@ -708,6 +740,32 @@ impl ApplicationHandler for App {
                                 for digit in text.chars().filter(char::is_ascii_digit) {
                                     self.booth.type_digit(digit);
                                 }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.nobility_amount_focused && self.quick_panel == Some(shop::QuickPanel::Nobility) =>
+            {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            self.handle_nobility_action(nobility_panel::NobilityAction::Donate);
+                        }
+                        PhysicalKey::Code(KeyCode::Escape) => self.nobility_amount_focused = false,
+                        PhysicalKey::Code(KeyCode::Backspace) => {
+                            self.nobility_amount.pop();
+                        }
+                        _ => {
+                            if let Some(text) = event.text.as_ref() {
+                                let mut view = nobility_panel::NobilityView {
+                                    amount: std::mem::take(&mut self.nobility_amount),
+                                    ..Default::default()
+                                };
+                                view.type_text(text);
+                                self.nobility_amount = view.amount;
                             }
                         }
                     }
@@ -1142,6 +1200,15 @@ impl ApplicationHandler for App {
                 if self
                     .renderer
                     .as_ref()
+                    .is_some_and(|renderer| renderer.nobility_icon_at(self.cursor))
+                {
+                    self.toggle_nobility();
+                    self.held = false;
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
                     .is_some_and(|renderer| renderer.bounty_tracker_at(self.cursor))
                 {
                     self.toggle_bounty_board();
@@ -1304,6 +1371,7 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyB) => self.toggle_bounty_board(),
                     PhysicalKey::Code(KeyCode::KeyP) => self.toggle_store(),
                     PhysicalKey::Code(KeyCode::KeyH) => self.toggle_highscores(),
+                    PhysicalKey::Code(KeyCode::KeyN) => self.toggle_nobility(),
                     _ => {}
                 }
             }
@@ -1494,6 +1562,7 @@ impl ApplicationHandler for App {
                         None => renderer.chat_log = None,
                     }
                 }
+                let nobility_view = (self.quick_panel == Some(shop::QuickPanel::Nobility)).then(|| self.nobility_view_lit());
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1575,6 +1644,7 @@ impl ApplicationHandler for App {
                         self.store.as_ref(),
                         self.daily_rewards.as_ref(),
                         self.highscores.as_ref(),
+                        nobility_view.as_ref(),
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -2045,6 +2115,18 @@ impl App {
                     return true;
                 }
             }
+            if self.quick_panel == Some(shop::QuickPanel::Nobility) {
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Nobility);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                let action = nobility_panel::action_at(&self.nobility_view(), local);
+                // A click anywhere else in the window leaves the box.
+                self.nobility_amount_focused = action == Some(nobility_panel::NobilityAction::FocusAmount);
+                if let Some(action) = action {
+                    self.handle_nobility_action(action);
+                    self.held = false;
+                    return true;
+                }
+            }
             if self.quick_panel == Some(shop::QuickPanel::Highscores)
                 && let Some(view) = &self.highscores
             {
@@ -2220,17 +2302,9 @@ impl App {
             if self.status_tab == shop::StatusTab::Reputation
                 && shop::status_reputation_donate_at(viewport, self.cursor)
             {
-                if let (Some(network), Some(character_id)) =
-                    (&self.network, self.network_character_id)
-                {
-                    network.send_chat(
-                        character_id,
-                        &self.character.name,
-                        "$nobility-donate 3000000",
-                    );
-                    self.network_status = "online: doação de 3.000.000 silver enviada".into();
-                } else {
-                    self.network_status = "doação requer conexão online".into();
+                // The Reputation tab's button opens the Nobility window.
+                if self.quick_panel != Some(shop::QuickPanel::Nobility) {
+                    self.toggle_nobility();
                 }
                 self.held = false;
                 return true;
@@ -3009,6 +3083,118 @@ impl App {
 
     /// H (or the Ranking button) opens and closes the Highscores, at the
     /// hero's own page of the last category looked at.
+    /// N (or the Reputation tab) opens and closes the Nobility window, with
+    /// the ranking asked for afresh.
+    fn toggle_nobility(&mut self) {
+        if self.quick_panel == Some(shop::QuickPanel::Nobility) {
+            self.quick_panel = None;
+            self.nobility_amount_focused = false;
+            return;
+        }
+        if let Some(network) = &self.network {
+            network.request_nobility_status();
+            network.request_nobility_ranking();
+        }
+        self.quick_panel = Some(shop::QuickPanel::Nobility);
+        self.nobility_amount_focused = true;
+        self.nobility_full_list = false;
+        self.nobility_note.clear();
+        self.nobility_in_cps = None;
+    }
+
+    /// What the Nobility window shows.
+    fn nobility_view(&self) -> nobility_panel::NobilityView {
+        nobility_panel::NobilityView {
+            donation: self.nobility_donation,
+            rank: self.nobility_rank,
+            position: self.nobility_position,
+            remaining: self.nobility_remaining,
+            own_name: self.character.name.clone(),
+            female: self.character.body_id >= 2_000,
+            silver: u64::from(self.silver),
+            cps: u64::from(self.cps),
+            ranking: self.nobility_ranking.clone(),
+            amount: self.nobility_amount.clone(),
+            amount_focused: self.nobility_amount_focused,
+            full_list: self.nobility_full_list,
+            page: self.nobility_page,
+            note: self.nobility_note.clone(),
+            hover: None,
+        }
+    }
+
+    /// The Nobility window as drawn: with the control under the cursor lit.
+    fn nobility_view_lit(&self) -> nobility_panel::NobilityView {
+        let mut view = self.nobility_view();
+        if let Some(viewport) = self.viewport() {
+            let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Nobility);
+            view.hover = nobility_panel::action_at(&view, [self.cursor[0] - left, self.cursor[1] - top]);
+        }
+        view
+    }
+
+    fn handle_nobility_action(&mut self, action: nobility_panel::NobilityAction) {
+        use nobility_panel::NobilityAction;
+        if action != NobilityAction::Donate {
+            self.nobility_in_cps = None;
+        }
+        match action {
+            NobilityAction::FocusAmount => self.nobility_amount_focused = true,
+            NobilityAction::Query(rank) => {
+                // StrRes 11094.
+                let needed = self.nobility_view().needed_for(rank);
+                let name = nobility_panel::rank_name(rank, self.character.body_id >= 2_000);
+                self.nobility_note =
+                    format!("To be {name}, you need to donate {} silver at least.", store_panel::thousands(needed));
+                self.nobility_amount = needed.to_string();
+                self.nobility_amount_focused = true;
+            }
+            NobilityAction::More => {
+                self.nobility_full_list = true;
+                self.nobility_page = 0;
+                if let Some(network) = &self.network {
+                    network.request_nobility_ranking();
+                }
+            }
+            NobilityAction::Back => self.nobility_full_list = false,
+            NobilityAction::Page(page) => self.nobility_page = page,
+            NobilityAction::Close => {
+                self.quick_panel = None;
+                self.nobility_amount_focused = false;
+            }
+            NobilityAction::Donate => {
+                let amount: u64 = self.nobility_amount.parse().unwrap_or(0);
+                let cps = amount.div_ceil(nobility_panel::SILVER_PER_CP);
+                if amount < nobility_panel::MIN_DONATION {
+                    // StrRes 11098.
+                    self.nobility_note = "You need to donate at least 3,000,000 silver.".into();
+                } else if amount <= u64::from(self.silver) {
+                    if let Some(network) = &self.network {
+                        network.donate_nobility(amount, false);
+                        self.nobility_amount.clear();
+                        self.nobility_note.clear();
+                    }
+                } else if self.nobility_in_cps == Some(amount) && cps <= u64::from(self.cps) {
+                    if let Some(network) = &self.network {
+                        network.donate_nobility(amount, true);
+                        self.nobility_amount.clear();
+                        self.nobility_note.clear();
+                    }
+                    self.nobility_in_cps = None;
+                } else if cps <= u64::from(self.cps) {
+                    // StrRes 11090: the CPs instead, on a second Donate.
+                    self.nobility_note = format!(
+                        "You don't have {} silver. Donate again to pay {cps} CPs instead.",
+                        store_panel::thousands(amount)
+                    );
+                    self.nobility_in_cps = Some(amount);
+                } else {
+                    self.nobility_note = "You have neither the silver nor the CPs.".into();
+                }
+            }
+        }
+    }
+
     fn toggle_highscores(&mut self) {
         if self.quick_panel == Some(shop::QuickPanel::Highscores) {
             self.quick_panel = None;
@@ -4283,21 +4469,37 @@ impl App {
                 rank,
                 remaining,
                 title_id,
+                position,
+                top_flags,
             } => {
                 if self.network_character_id == Some(character_id) {
+                    // The hero's rank shown once on entering, and on each
+                    // rise (`Conquer.exe` 0x4b8150).
+                    let shown_before = self.nobility_shown;
+                    if (!shown_before || rank > self.nobility_rank)
+                        && let Some((_, once)) = nobility_panel::rank_effects(rank, self.character.body_id >= 2_000)
+                    {
+                        let now = self.started.elapsed().as_secs_f32();
+                        if let Some(renderer) = &mut self.renderer {
+                            for effect in once {
+                                renderer.add_role_effect(character_id, (*effect).to_owned(), now);
+                            }
+                        }
+                    }
+                    self.nobility_shown = true;
                     self.nobility_donation = donation;
                     self.nobility_rank = rank;
                     self.nobility_remaining = remaining;
+                    self.nobility_position = position;
+                    self.top_flags = top_flags;
                     self.equipped_title = title_id;
                     if let Some(renderer) = &mut self.renderer {
                         renderer.invalidate_status();
                     }
                 }
             }
+            NetworkEvent::NobilityRankingClear => self.nobility_ranking.clear(),
             NetworkEvent::NobilityRanking(entry) => {
-                if entry.position == 1 {
-                    self.nobility_ranking.clear();
-                }
                 self.nobility_ranking
                     .retain(|existing| existing.position != entry.position);
                 self.nobility_ranking.push(entry);
@@ -4985,6 +5187,21 @@ impl App {
                     "player"
                 };
                 let id = actor.id;
+                // A noble coming into sight shows their rank's fiery name
+                // once (`Conquer.exe` 0x4c98e3: once per role on screen).
+                if !actor.npc
+                    && self.network_character_id != Some(id)
+                    && !self.remote_actors.contains_key(&id)
+                    && let Some((_, once)) =
+                        nobility_panel::rank_effects(actor.nobility_rank, matches!(actor.body, 1 | 2))
+                {
+                    let now = self.started.elapsed().as_secs_f32();
+                    if let Some(renderer) = &mut self.renderer {
+                        for effect in once {
+                            renderer.add_role_effect(id, (*effect).to_owned(), now);
+                        }
+                    }
+                }
                 if !actor.npc && self.network_character_id == Some(id) {
                     let lit = actor.status_flags & network::XP_CIRCLE_FLAG != 0;
                     if lit && self.status_flags & network::XP_CIRCLE_FLAG == 0 {
@@ -5253,6 +5470,11 @@ impl App {
 
     fn start_jump(&mut self, target: [i32; 2]) {
         if self.selling() {
+            return;
+        }
+        // A ghost cannot jump (the server refuses it): it walks there.
+        if self.dead_since.is_some() {
+            self.player.go(&self.map, target);
             return;
         }
         let current = self.player.cell();
@@ -5822,6 +6044,9 @@ impl App {
                 .copied()
                 .unwrap_or(0),
             ko_count: self.ko_count,
+            top_flags: self.top_flags,
+            nobility_rank: self.nobility_rank,
+            female: self.character.body_id >= 2_000,
             xp_fire_until: self.xp_fire_until(),
             kill_mode: self.kill_mode,
             info: self.info_lines(),
@@ -6110,6 +6335,14 @@ impl App {
             self.network_status = format!("skill {skill_id} ainda não possui ação no cliente");
             return;
         };
+        // A skill cast on a target or a place (Scatter, Rapid Fire, a
+        // heal...) becomes the Skill button's, as in the original: the right
+        // click casts it where it is wanted.
+        if skill.requires_target || action_bar::is_aimed_skill(skill.id) || action_bar::is_support_skill(skill.id) {
+            self.active_skill = Some(skill.id);
+            self.network_status = format!("{} selected: right-click to use it", skill.name);
+            return;
+        }
         self.cast_skill(skill);
     }
 
@@ -6747,6 +6980,11 @@ impl App {
     /// Asks the server to revive, in town or (`here`, under Heaven's
     /// Blessing) where the body lies; it refuses before the delay.
     fn request_revive(&mut self, here: bool) {
+        // Revive Here is Heaven's Blessing's (status bit 49).
+        if here && self.status_flags & (1 << 49) == 0 {
+            self.system_line("Revive Here needs Heaven's Blessing.");
+            return;
+        }
         if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
             network.revive(character_id, here);
             self.network_status = "online: reviving".into();
@@ -8795,6 +9033,8 @@ fn run() -> Result<()> {
     let mut username = None;
     let mut password = "123456".to_owned();
     let mut realm = "Gravak".to_owned();
+    // Where the updater looks for new files; none in development.
+    let mut update_url = None;
     let mut character_name = None;
     // The installed client: `gravak.ini` beside it names the game data and
     // the server, and it goes straight to the login screens.
@@ -8802,6 +9042,7 @@ fn run() -> Result<()> {
         root = config.assets;
         auth_address = config.auth.unwrap_or(auth_address);
         realm = config.realm.unwrap_or(realm);
+        update_url = config.update;
         online = true;
     }
     while let Some(arg) = args.next() {
@@ -8871,6 +9112,15 @@ fn run() -> Result<()> {
                     .ok_or("Invalid password")?
                     .to_owned();
             }
+            "--update" => {
+                update_url = Some(
+                    args.next()
+                        .ok_or("--update requires a URL")?
+                        .to_str()
+                        .ok_or("Invalid update URL")?
+                        .to_owned(),
+                );
+            }
             "--realm" => {
                 realm = args
                     .next()
@@ -8909,6 +9159,8 @@ fn run() -> Result<()> {
     let mut network = None;
     let mut server_ready = None;
     let mut event_loop = None;
+    // The login screens' window, which the game takes over.
+    let mut login_window = None;
     if online {
         let handle = match username {
             Some(username) => NetworkHandle::start(NetworkConfig {
@@ -8920,14 +9172,22 @@ fn run() -> Result<()> {
             }),
             None => {
                 let mut screens = EventLoop::new()?;
-                let Some(handle) = launcher::run(&mut screens, &mut assets, auth_address, realm)? else {
+                // `servers.ini` lists the worlds; without it, the one server
+                // of `gravak.ini` or `--auth`.
+                let fallback = worlds::World::new(realm.clone(), auth_address.clone(), realm.clone());
+                let worlds = worlds::load(fallback);
+                let Some((handle, window)) = launcher::run(&mut screens, &mut assets, worlds, update_url)? else {
                     return Ok(());
                 };
                 event_loop = Some(screens);
+                login_window = Some(window);
                 handle
             }
         };
         let ready = handle.wait_ready()?;
+        // What came before the world was ready is gone; the nobility (rank,
+        // seat, Top titles) is asked for again.
+        handle.request_nobility_status();
         if map_id.is_none() {
             map_id = Some(ready.map_id);
         }
@@ -9207,6 +9467,7 @@ fn run() -> Result<()> {
         player,
         audio,
         window: None,
+        login_window,
         renderer: None,
         cursor: [0.0; 2],
         started: Instant::now(),
@@ -9237,6 +9498,15 @@ fn run() -> Result<()> {
         nobility_remaining: 0,
         equipped_title: 0,
         nobility_ranking: Vec::new(),
+        nobility_position: 0,
+        top_flags: 0,
+        nobility_shown: false,
+        nobility_amount: String::new(),
+        nobility_amount_focused: false,
+        nobility_page: 0,
+        nobility_full_list: false,
+        nobility_note: String::new(),
+        nobility_in_cps: None,
         status_flags: 0,
         status_open: benchmark_character,
         // The Character benchmark measures the equipment tab.

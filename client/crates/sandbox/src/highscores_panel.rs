@@ -158,7 +158,7 @@ fn fitted(image: &mut RgbaImage, font: &Font, text: &str, colour: [u8; 3], [x, y
 }
 
 /// A medal for the first three: gold, silver, bronze.
-fn medal(image: &mut RgbaImage, cinzel: &Font, centre: [f32; 2], radius: f32, rank: u32) {
+fn medal(image: &mut RgbaImage, centre: [f32; 2], radius: f32, rank: u32) {
     let (light, mid, dark): (Colour, Colour, Colour) = match rank {
         1 => (GOLD_LIGHT, GOLD, GOLD_DARK),
         2 => (paint::hex(0xf2f4f6), paint::hex(0xa9b3bb), paint::hex(0x56616a)),
@@ -174,8 +174,42 @@ fn medal(image: &mut RgbaImage, cinzel: &Font, centre: [f32; 2], radius: f32, ra
         1.0,
     );
     paint_in(image, bounds, 1, |x, y| paint::circle(x, y, centre, radius - 2.5).abs() - 0.5, |_, _| dark, 0.9);
-    let size = (radius * 1.05).max(9.0);
-    centred(image, cinzel, &rank.to_string(), [30, 20, 6], centre[0] as i32, (centre[1] - size * 0.62) as i32, size);
+    // The rank struck into the metal: a lining serif (Cinzel's numerals
+    // are old-style hooks), dark, with a light edge below, centred on the
+    // glyphs' own box.
+    let Ok(font) = crate::main_hud::label_font() else { return };
+    let size = (radius * 1.6).round();
+    let glyphs: Vec<_> = rank.to_string().chars().map(|c| font.rasterize(c, size)).collect();
+    let width: i32 = glyphs.iter().map(|(metrics, _)| metrics.advance_width.round() as i32).sum();
+    let top = glyphs.iter().map(|(m, _)| m.ymin + m.height as i32).max().unwrap_or(0);
+    let bottom = glyphs.iter().map(|(m, _)| m.ymin).min().unwrap_or(0);
+    // One pixel wider: each glyph is struck twice, a pixel apart.
+    let left = (centre[0] - (width + 1) as f32 / 2.0).round() as i32;
+    // Baseline so the glyphs' box sits on the centre.
+    let baseline = (centre[1] + (top + bottom) as f32 / 2.0).round() as i32;
+    let ink = |colour: Colour| colour.map(|c| (c * 255.0).clamp(0.0, 255.0) as u8);
+    let (edge, face) = (ink(light), ink(dark).map(|c| c / 2));
+    for (offset, bold, colour) in [(1, 0, edge), (1, 1, edge), (0, 0, face), (0, 1, face)] {
+        let mut x = left + bold;
+        for (metrics, bitmap) in &glyphs {
+            for row in 0..metrics.height {
+                for column in 0..metrics.width {
+                    let coverage = bitmap[row * metrics.width + column];
+                    let px = x + metrics.xmin + column as i32;
+                    let py = baseline - metrics.ymin - metrics.height as i32 + row as i32 + offset;
+                    if coverage == 0 || px < 0 || py < 0 || px >= image.width() as i32 || py >= image.height() as i32 {
+                        continue;
+                    }
+                    let pixel = image.get_pixel_mut(px as u32, py as u32);
+                    let alpha = u16::from(coverage);
+                    for channel in 0..3 {
+                        pixel.0[channel] = ((u16::from(pixel.0[channel]) * (255 - alpha) + u16::from(colour[channel]) * alpha) / 255) as u8;
+                    }
+                }
+            }
+            x += metrics.advance_width.round() as i32;
+        }
+    }
 }
 
 /// A face portrait in a small slot; the slot alone when the face is missing.
@@ -240,6 +274,8 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&Highscores
     let (Ok(ui), Ok(cinzel)) = (labels::font(), labels::decorative_font()) else {
         return;
     };
+    // Numbers in a lining serif: Cinzel's numerals are old-style hooks.
+    let numerals: &Font = crate::main_hud::label_font().unwrap_or(&cinzel);
     let Some((view, state)) = view.and_then(|view| Some((view, view.state.as_ref()?))) else {
         say(image, &ui, "Loading the highscores...", ui_theme::TEXT_MUTED, 24, 56, 14.0);
         return;
@@ -304,9 +340,9 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&Highscores
         }
         let middle = rect.y + rect.height / 2;
         if row.rank <= 3 {
-            medal(image, &cinzel, [(rect.x + 18) as f32, middle as f32], 9.0, row.rank);
+            medal(image, [(rect.x + 18) as f32, middle as f32], 9.0, row.rank);
         } else {
-            centred(image, &cinzel, &row.rank.to_string(), [220, 210, 180], rect.x + 18, middle - 7, 12.0);
+            centred(image, numerals, &row.rank.to_string(), [220, 210, 180], rect.x + 18, middle - 8, 14.0);
         }
         face(image, assets, row.mesh, UiRect::new(rect.x + 40, rect.y + 1, 20, 20));
         let name_colour = if own { [255, 226, 143] } else { [236, 228, 204] };
@@ -332,7 +368,7 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&Highscores
         let colour = if usable { [255, 226, 143] } else { [90, 96, 96] };
         centred(image, &ui, label, colour, rect.x + rect.width / 2, rect.y + 4, 12.0);
     }
-    centred(image, &cinzel, &format!("{page} / {pages}"), [236, 228, 204], 182, PAGER_Y + 3, 13.0);
+    centred(image, numerals, &format!("{page} / {pages}"), [236, 228, 204], 182, PAGER_Y + 2, 15.0);
 
     // The hero's own rank.
     card(image, OWN, state.own_rank > 0, false, false);
@@ -341,7 +377,8 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&Highscores
     face(image, assets, view.own_mesh, UiRect::new(OWN.x + (OWN.width - 46) / 2, OWN.y + 28, 46, 46));
     let rank = if state.own_rank > 0 { format!("#{}", thousands(u64::from(state.own_rank))) } else { "Unranked".to_owned() };
     let rank_size = if state.own_rank > 0 { 20.0 } else { 14.0 };
-    centred(image, &cinzel, &rank, [255, 226, 143], OWN.x + OWN.width / 2, OWN.y + 82, rank_size);
+    let rank_font = if state.own_rank > 0 { numerals } else { &*cinzel };
+    centred(image, rank_font, &rank, [255, 226, 143], OWN.x + OWN.width / 2, OWN.y + 82, rank_size + 2.0);
     if state.own_rank > 0 {
         centred(image, &ui, "Click to see your page", [150, 160, 156], OWN.x + OWN.width / 2, OWN.y + 108, 10.0);
     }
@@ -352,7 +389,7 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&Highscores
     rule(image, PODIUM.x + 10, PODIUM.x + PODIUM.width - 10, PODIUM.y + 28);
     for (index, row) in view.podium.iter().take(3).enumerate() {
         let top = PODIUM.y + 36 + index as i32 * 52;
-        medal(image, &cinzel, [(PODIUM.x + 18) as f32, (top + 20) as f32], 11.0, row.rank);
+        medal(image, [(PODIUM.x + 18) as f32, (top + 20) as f32], 11.0, row.rank);
         face(image, assets, row.mesh, UiRect::new(PODIUM.x + 34, top + 2, 36, 36));
         let room = PODIUM.width - 76 - 8;
         fitted(image, &ui, &row.name, [236, 228, 204], [PODIUM.x + 76, top + 6], room, 12.0);

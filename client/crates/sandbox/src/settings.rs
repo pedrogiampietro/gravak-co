@@ -208,25 +208,146 @@ mod tests {
     }
 }
 
-/// The account last used on the login screen.
-pub fn load_last_account() -> Option<String> {
-    let text = std::fs::read_to_string(login_path()?).ok()?;
-    text.lines()
-        .find_map(|line| line.strip_prefix("account="))
-        .map(|account| account.trim().to_owned())
-        .filter(|account| !account.is_empty())
+/// An account the login screen remembers, on one world.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedAccount {
+    pub world: String,
+    pub account: String,
+    /// Only when the player asked to save it; sealed on disk (`vault`).
+    pub password: Option<String>,
 }
 
-pub fn save_last_account(account: &str) {
+/// The login screen's choices and remembered accounts (`settings/login.ini`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginPrefs {
+    /// The world chosen last, by name.
+    pub world: Option<String>,
+    pub remember_account: bool,
+    pub save_password: bool,
+    /// Shows accounts as `ped***`, for streaming.
+    pub hide_account: bool,
+    /// The most recently used first.
+    pub accounts: Vec<SavedAccount>,
+}
+
+impl Default for LoginPrefs {
+    fn default() -> Self {
+        Self {
+            world: None,
+            remember_account: true,
+            save_password: false,
+            hide_account: false,
+            accounts: Vec::new(),
+        }
+    }
+}
+
+/// How many accounts are kept per world.
+const SAVED_PER_WORLD: usize = 8;
+
+impl LoginPrefs {
+    /// The accounts saved on `world`, most recent first.
+    pub fn accounts_on<'a>(&'a self, world: &'a str) -> impl Iterator<Item = &'a SavedAccount> + 'a {
+        self.accounts.iter().filter(move |saved| saved.world == world)
+    }
+
+    /// Puts `saved` first, replacing that account's older entry.
+    pub fn remember(&mut self, saved: SavedAccount) {
+        self.forget(&saved.world, &saved.account);
+        self.accounts.insert(0, saved);
+        let mut kept = std::collections::HashMap::<String, usize>::new();
+        self.accounts.retain(|saved| {
+            let count = kept.entry(saved.world.clone()).or_default();
+            *count += 1;
+            *count <= SAVED_PER_WORLD
+        });
+    }
+
+    pub fn forget(&mut self, world: &str, account: &str) {
+        self.accounts
+            .retain(|saved| !(saved.world == world && saved.account.eq_ignore_ascii_case(account)));
+    }
+
+    fn format(&self, seal: impl Fn(&str) -> Option<String>) -> String {
+        let mut text = String::from("; The login screen's choices. Passwords are sealed for this Windows user.
+");
+        if let Some(world) = &self.world {
+            text += &format!("world={world}
+");
+        }
+        text += &format!("remember={}
+", u8::from(self.remember_account));
+        text += &format!("save_password={}
+", u8::from(self.save_password));
+        text += &format!("hide={}
+", u8::from(self.hide_account));
+        for saved in &self.accounts {
+            let password = saved.password.as_deref().and_then(&seal).unwrap_or_default();
+            text += &format!("saved={}|{}|{password}
+", saved.world, saved.account);
+        }
+        text
+    }
+
+    fn parse(text: &str, open: impl Fn(&str) -> Option<String>) -> Self {
+        let mut prefs = Self::default();
+        // Before worlds: the last account alone, on whichever world.
+        let mut last_account = None;
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim();
+            match key.trim() {
+                "world" if !value.is_empty() => prefs.world = Some(value.to_owned()),
+                "remember" => prefs.remember_account = value == "1",
+                "save_password" => prefs.save_password = value == "1",
+                "hide" => prefs.hide_account = value == "1",
+                "account" if !value.is_empty() => last_account = Some(value.to_owned()),
+                "saved" => {
+                    let mut parts = value.splitn(3, '|');
+                    let (Some(world), Some(account)) = (parts.next(), parts.next()) else {
+                        continue;
+                    };
+                    if account.is_empty() {
+                        continue;
+                    }
+                    let password = parts.next().filter(|sealed| !sealed.is_empty()).and_then(&open);
+                    prefs.accounts.push(SavedAccount {
+                        world: world.to_owned(),
+                        account: account.to_owned(),
+                        password,
+                    });
+                }
+                _ => {}
+            }
+        }
+        if let Some(account) = last_account
+            && prefs.accounts.is_empty()
+        {
+            prefs.accounts.push(SavedAccount { world: String::new(), account, password: None });
+        }
+        prefs
+    }
+}
+
+pub fn load_login_prefs() -> LoginPrefs {
+    login_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| LoginPrefs::parse(&text, crate::vault::open))
+        .unwrap_or_default()
+}
+
+pub fn save_login_prefs(prefs: &LoginPrefs) {
     let Some(path) = login_path() else {
         return;
     };
     let result = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, format!("account={account}\n")));
+        .and_then(|()| std::fs::write(&path, prefs.format(crate::vault::seal)));
     if let Err(error) = result {
-        eprintln!("Could not save the last account: {error}");
+        eprintln!("Could not save the login settings: {error}");
     }
 }
 
@@ -250,6 +371,8 @@ pub struct ClientConfig {
     pub assets: Option<PathBuf>,
     pub auth: Option<String>,
     pub realm: Option<String>,
+    /// The folder URL of the update manifest (`updater`).
+    pub update: Option<String>,
 }
 
 pub fn load_client_config() -> Option<ClientConfig> {
@@ -272,6 +395,7 @@ fn parse_client_config(text: &str, dir: &std::path::Path) -> ClientConfig {
             "assets" => config.assets = Some(dir.join(value)),
             "auth" => config.auth = Some(value.to_owned()),
             "realm" => config.realm = Some(value.to_owned()),
+            "update" => config.update = Some(value.to_owned()),
             _ => {}
         }
     }
@@ -281,6 +405,30 @@ fn parse_client_config(text: &str, dir: &std::path::Path) -> ClientConfig {
 #[cfg(test)]
 mod client_config_tests {
     use super::*;
+
+    #[test]
+    fn login_prefs_survive_a_round_trip() {
+        let mut prefs = LoginPrefs { world: Some("Gravak".into()), hide_account: true, ..LoginPrefs::default() };
+        prefs.remember(SavedAccount { world: "Gravak".into(), account: "hero".into(), password: None });
+        prefs.remember(SavedAccount { world: "Test".into(), account: "alt".into(), password: Some("pw".into()) });
+        prefs.remember(SavedAccount { world: "Gravak".into(), account: "HERO".into(), password: Some("s3cret".into()) });
+        assert_eq!(prefs.accounts.len(), 2);
+        // A stand-in seal: reversed text.
+        let seal = |text: &str| Some(text.chars().rev().collect::<String>());
+        let text = prefs.format(seal);
+        assert!(!text.contains("s3cret"));
+        let loaded = LoginPrefs::parse(&text, seal);
+        assert_eq!(loaded, prefs);
+        assert_eq!(loaded.accounts_on("Gravak").next().unwrap().password.as_deref(), Some("s3cret"));
+        // A seal that no longer opens keeps the account, without its password.
+        let loaded = LoginPrefs::parse(&text, |_| None);
+        assert_eq!(loaded.accounts_on("Test").next().unwrap().password, None);
+        // The old file: the last account only.
+        let old = LoginPrefs::parse("account=pedro3
+", seal);
+        assert_eq!(old.accounts[0].account, "pedro3");
+        assert!(old.remember_account);
+    }
 
     #[test]
     fn reads_the_installers_ini() {

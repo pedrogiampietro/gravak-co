@@ -554,6 +554,8 @@ pub enum QuickPanel {
     DailyRewards,
     /// The Highscores (H, or the Ranking button).
     Highscores,
+    /// The Nobility window (N, or the Reputation tab).
+    Nobility,
 }
 
 pub use crate::original_panels::SettingsAction as SettingsPanelAction;
@@ -647,6 +649,7 @@ impl QuickPanel {
             Self::Vip => "VIP",
             Self::DailyRewards => "DAILY REWARDS",
             Self::Highscores => "HIGHSCORES",
+            Self::Nobility => "NOBILITY",
             Self::Settings => "SETTINGS",
         }
     }
@@ -917,9 +920,16 @@ pub fn quick_panel_image(
     store: Option<&crate::store_panel::StoreView>,
     daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
     highscores: Option<&crate::highscores_panel::HighscoresView>,
+    nobility: Option<&crate::nobility_panel::NobilityView>,
 ) -> Result<RgbaImage> {
     if panel == QuickPanel::Market {
         return crate::booth::image(assets, booth, own_character_id);
+    }
+    if panel == QuickPanel::Nobility {
+        let [width, height] = crate::nobility_panel::SIZE;
+        let mut image = RgbaImage::new(width, height);
+        crate::nobility_panel::draw(&mut image, assets, nobility);
+        return Ok(image);
     }
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(
@@ -1473,6 +1483,7 @@ pub fn quick_panel_image(
         QuickPanel::Store => crate::store_panel::draw(&mut image, assets, store),
         QuickPanel::DailyRewards => crate::daily_rewards_panel::draw(&mut image, assets, daily),
         QuickPanel::Highscores => crate::highscores_panel::draw(&mut image, assets, highscores),
+        QuickPanel::Nobility => {}
         // Drawn over its original art by `original_panels`.
         QuickPanel::Vip => {}
         QuickPanel::Settings => {
@@ -2078,18 +2089,27 @@ pub fn status_dynamic_image(
             }
         }
         StatusTab::Equipment => {
-            // [135-1619]: nobility rank above the character model.
-            let rank = nobility_rank_label(nobility_rank);
-            let rank_width = crate::main_hud::text_width(font, rank, 13.0);
-            crate::main_hud::text(
-                &mut image,
-                font,
-                rank,
-                13.0,
-                [paper[0] + 82 - rank_width / 2, paper[1] + 6],
-                [255, 236, 150, 255],
-                None,
-            );
+            // [135-1566] the rank's medal at the left, [135-1619] its
+            // name in gold above the model (`nob_<rank>64`, `nob_<Rank>Font64`).
+            if nobility_rank > 0 {
+                let female = character.body_id >= 2_000;
+                for (path, [x, y, width, height]) in crate::nobility_panel::rank_art_paths(nobility_rank, female, 64)
+                    .into_iter()
+                    .zip([[5, 25, 40, 50], [52, 4, 60, 40]])
+                {
+                    let Ok(art) = assets.image(&path) else { continue };
+                    let Ok(art) = crate::original_ui::visible_part(&art) else { continue };
+                    let scale = (width as f32 / art.width() as f32).min(height as f32 / art.height() as f32);
+                    let size = [(art.width() as f32 * scale).round() as u32, (art.height() as f32 * scale).round() as u32];
+                    let art = image::imageops::resize(&art, size[0].max(1), size[1].max(1), image::imageops::FilterType::Triangle);
+                    image::imageops::overlay(
+                        &mut image,
+                        &art,
+                        i64::from(paper[0] + x + (width - size[0] as i32) / 2),
+                        i64::from(paper[1] + y + (height - size[1] as i32) / 2),
+                    );
+                }
+            }
         }
         StatusTab::Weapon => {
             let mut rows = weapon_skills
@@ -4313,18 +4333,6 @@ pub fn is_consumable(item_type: u32) -> bool {
         || mana_recovery_for_item(item_type).is_some()
         || consumable_bundle_for_item(item_type).is_some()
         || temporary_effect_for_item(item_type)
-}
-
-fn nobility_rank_label(rank: u32) -> &'static str {
-    match rank {
-        1 => "Knight",
-        3 => "Baron",
-        5 => "Earl",
-        7 => "Duke",
-        9 => "Prince",
-        12 => "King",
-        _ => "Serf",
-    }
 }
 
 pub fn inventory_slot_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<u8> {

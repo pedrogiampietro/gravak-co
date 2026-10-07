@@ -115,6 +115,8 @@ impl State {
         }
 
         let guild_manager = GuildManager::load(&pool).await?;
+        let donors = crate::nobility::load(&pool).await?;
+        tracing::info!(donors, "Loaded the nobility board");
         let drop_catalog = DropCatalog::load(&pool).await?;
         tracing::info!(drops = drop_catalog.len(), "Loaded monster drop catalog");
         let state = Self {

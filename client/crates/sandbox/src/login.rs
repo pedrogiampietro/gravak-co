@@ -5,6 +5,7 @@
 //! login is the same one [`crate::network::play`] keeps using in game.
 
 use crate::network::{NetworkEvent, NetworkHandle};
+use crate::worlds::World;
 use gravak_protocol::{
     AuthResponse, ForwardedGameServer, GameEvent, GameSession, RegisterAccountResult,
     RegisterCharacter, UserInfo, authenticate, register_account,
@@ -21,10 +22,12 @@ const LOGIN_CHANNEL: u16 = 2101;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginCommand {
     Register {
+        world: World,
         username: String,
         password: String,
     },
     Login {
+        world: World,
         username: String,
         password: String,
     },
@@ -85,7 +88,7 @@ pub struct LoginClient {
 }
 
 impl LoginClient {
-    pub fn start(auth_address: String, realm: String) -> Self {
+    pub fn start() -> Self {
         let (events_tx, events) = mpsc::channel();
         let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
         thread::Builder::new()
@@ -101,7 +104,7 @@ impl LoginClient {
                         return;
                     }
                 };
-                runtime.block_on(serve(auth_address, realm, events_tx, commands_rx));
+                runtime.block_on(serve(events_tx, commands_rx));
             })
             .expect("login thread should start");
         Self { commands, events }
@@ -138,8 +141,6 @@ enum Login {
 }
 
 async fn serve(
-    auth: String,
-    realm: String,
     events: Sender<LoginEvent>,
     mut commands: UnboundedReceiver<LoginCommand>,
 ) {
@@ -147,11 +148,13 @@ async fn serve(
         let _ = events.send(event);
     };
     let mut phase = Phase::Idle;
+    // The world of the last login: a new character logs in there again.
+    let mut world = World::new("", "", "");
     while let Some(command) = commands.recv().await {
         match command {
-            LoginCommand::Register { username, password } => {
+            LoginCommand::Register { world, username, password } => {
                 send(LoginEvent::Status("creating account".into()));
-                send(match register_account(&auth, &username, &password).await {
+                send(match register_account(&world.auth, &username, &password).await {
                     Ok(RegisterAccountResult::Created) => LoginEvent::Registered(username),
                     Ok(result) => LoginEvent::RegisterFailed(register_message(result).into()),
                     Err(error) => {
@@ -159,10 +162,11 @@ async fn serve(
                     }
                 });
             }
-            LoginCommand::Login { username, password } => {
+            LoginCommand::Login { world: chosen, username, password } => {
                 phase = Phase::Idle;
+                world = chosen;
                 send(LoginEvent::Status("authenticating".into()));
-                match login(&auth, &username, &password, &realm, &send).await {
+                match login(&world.auth, &username, &password, &world.realm, &send).await {
                     Ok(Login::NeedsCharacter(session, token)) => {
                         phase = Phase::Creating {
                             session,
@@ -197,7 +201,7 @@ async fn serve(
                         // The server ends the registration session; log in
                         // again to load the new character.
                         drop(session);
-                        match login(&auth, &username, &password, &realm, &send).await {
+                        match login(&world.auth, &username, &password, &world.realm, &send).await {
                             Ok(Login::Character(session, user)) => {
                                 send(LoginEvent::Character(CharacterSummary::from_user(&user)));
                                 phase = Phase::Selected { session, user };
@@ -373,16 +377,17 @@ mod smoke {
         let auth = std::env::var("GRAVAK_AUTH").unwrap_or_else(|_| "127.0.0.1:9958".into());
         let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 1_000_000;
         let account = format!("smoke{suffix}");
-        let client = LoginClient::start(auth, "Gravak".into());
+        let world = World::new("Gravak", auth, "Gravak");
+        let client = LoginClient::start();
 
-        client.send(LoginCommand::Register { username: account.clone(), password: "pass1234".into() });
+        client.send(LoginCommand::Register { world: world.clone(), username: account.clone(), password: "pass1234".into() });
         assert!(matches!(next(&client), LoginEvent::Registered(name) if name == account));
-        client.send(LoginCommand::Register { username: account.clone(), password: "pass1234".into() });
+        client.send(LoginCommand::Register { world: world.clone(), username: account.clone(), password: "pass1234".into() });
         assert!(matches!(next(&client), LoginEvent::RegisterFailed(_)));
 
-        client.send(LoginCommand::Login { username: account.clone(), password: "wrong".into() });
+        client.send(LoginCommand::Login { world: world.clone(), username: account.clone(), password: "wrong".into() });
         assert!(matches!(next(&client), LoginEvent::LoginFailed(_)));
-        client.send(LoginCommand::Login { username: account.clone(), password: "pass1234".into() });
+        client.send(LoginCommand::Login { world: world.clone(), username: account.clone(), password: "pass1234".into() });
         assert!(matches!(next(&client), LoginEvent::NeedsCharacter));
 
         client.send(LoginCommand::CreateCharacter { name: "x".into(), mesh: 2001, class: 40, coat_dye: 3, avatar: 205, hair: 742 });

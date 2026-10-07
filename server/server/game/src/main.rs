@@ -93,6 +93,8 @@ pub enum Handler {
     MsgStore,
     MsgDailyReward,
     MsgHighscores,
+    MsgNobility,
+    MsgNobilityRanking,
     MsgBroadcast,
 }
 
@@ -132,6 +134,7 @@ async fn main() -> Result<(), Error> {
             game::guild_war::tick(ai_state).await;
             game::mining::tick(ai_state).await;
             game::pets::tick(ai_state).await;
+            game::top_classes::tick(ai_state).await;
             game::systems::monster_ai::tick(ai_state).await;
             if let Err(error) = game::packets::expire_trades(ai_state).await {
                 tracing::warn!(%error, "trade timeout cleanup failed");

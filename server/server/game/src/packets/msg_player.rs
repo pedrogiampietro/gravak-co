@@ -67,6 +67,10 @@ impl From<&Character> for MsgPlayer {
             left_hand: c.worn_look(5) as i32,
             // Helmet, armor and shield dyes (Tinter).
             reserved1: c.appearance_colors(),
+            nobility_rank: c.nobility_status().rank as i32,
+            // The Top titles (`top_classes`).
+            reserved2: crate::top_classes::flags_of(c.database_id()) as i32,
+            nobility_position: c.nobility_status().position.map_or(0, |position| position as i32),
             ..Default::default()
         }
     }

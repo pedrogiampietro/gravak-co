@@ -110,6 +110,27 @@ gravak-pack -- --assets R:\5065 --content ..\content\build\client --out
 <pasta>\gravak.gpk` (com `GRAVAK_PACK_KEY` definido como no
 `tools\package-client.ps1`; sem ele usa a chave de desenvolvimento).
 
+### Mundos, contas salvas e atualização automática
+
+A tela de login lista os mundos de `servers.ini` (ao lado do executável; uma
+seção por mundo, com `Auth=host:porta` e `Realm=`), cada um com o status
+online e o ping. Sem o arquivo, usa o servidor de `gravak.ini` ou `--auth`.
+Para testar vários mundos no desenvolvimento, coloque um `servers.ini` em
+`client\target\release`.
+
+As contas lembradas ficam em `settings\login.ini`, por mundo. "Save password"
+guarda a senha selada com o DPAPI do Windows (só o mesmo usuário do Windows
+abre); "Hide account" mostra a conta como `ped***`. Nada é salvo antes de o
+servidor aceitar o login. A versão (`client\Cargo.toml`) aparece no rodapé.
+
+Atualização: `package-client.bat -Update https://<host>/gravak` grava o
+endereço no `gravak.ini` do jogador; depois `client\tools\publish-update.ps1`
+monta `client\dist\update` (os arquivos + `manifest.txt` com tamanho e
+SHA-256 de cada um). Suba o conteúdo para esse endereço em qualquer host de
+arquivos estáticos. Ao abrir, o cliente baixa só o que mudou, confere o hash,
+troca os arquivos e reinicia sozinho; se o servidor de update estiver fora,
+avisa e deixa jogar. Para testar localmente: `--update http://127.0.0.1:8000`.
+
 ## Servidor
 
 O servidor exige Rust nightly; a versão está fixada em `server\rust-toolchain.toml`. O banco é Postgres, num container Docker durante o desenvolvimento; o game server aplica as migrations ao iniciar, e o `run-server.bat` sobe o container sozinho:

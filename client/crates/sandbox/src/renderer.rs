@@ -34,6 +34,17 @@ const PREVIEW_SORT: f32 = f32::MAX;
 /// the trade partner card included, so a name never shows through a window.
 const WORLD_OVERLAY_SORT: f32 = f32::MAX / 2.0;
 
+/// How high a rank's fiery name plays over the hero's feet: above the
+/// name (152) and the VIP title over it.
+const NOBILITY_LETTER_LIFT: f32 = 200.0;
+
+/// Where a noble's insignia plays: just right of their name.
+fn insignia_beside_name(origin: [f32; 2], name: &str) -> [f32; 2] {
+    let half = crate::labels::name_width(name) * 0.5;
+    [origin[0] + half + 16.0, origin[1] - 144.0]
+}
+
+
 struct Draw {
     texture: String,
     vertices: Vec<Vertex>,
@@ -362,6 +373,7 @@ enum UiTextureJob {
         store: Option<crate::store_panel::StoreView>,
         daily: Option<crate::daily_rewards_panel::DailyRewardsView>,
         highscores: Option<crate::highscores_panel::HighscoresView>,
+        nobility: Option<crate::nobility_panel::NobilityView>,
     },
     ShopBase {
         path: String,
@@ -645,6 +657,7 @@ impl UiTextureJob {
                 store,
                 daily,
                 highscores,
+                nobility,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -672,6 +685,7 @@ impl UiTextureJob {
                 store.as_ref(),
                 daily.as_ref(),
                 highscores.as_ref(),
+                nobility.as_ref(),
             ),
         };
         image.map_err(|error| error.to_string())
@@ -764,6 +778,8 @@ pub struct Renderer {
     /// Where the Store icon was drawn, for clicks.
     store_icon_rect: Option<[f32; 4]>,
     ranking_icon_rect: Option<[f32; 4]>,
+    /// The Nobility Rank button beside the map plate.
+    nobility_icon_rect: Option<[f32; 4]>,
     /// Where the revive buttons were drawn (and whether each revives
     /// here), for clicks.
     revive_rects: Vec<([f32; 4], bool)>,
@@ -1022,6 +1038,7 @@ impl Renderer {
             bounty_tracker_rect: None,
             store_icon_rect: None,
             ranking_icon_rect: None,
+            nobility_icon_rect: None,
             revive_rects: Vec::new(),
             souls: Vec::new(),
             arrows: Vec::new(),
@@ -2267,6 +2284,71 @@ impl Renderer {
             .map(|(_, here)| *here)
     }
 
+    /// A Top title circling a hero (`top_title`): the ring, the bent
+    /// words with their halo and glint, sparks and embers, the aura on the
+    /// ground; what passes behind the hero is drawn behind them.
+    fn push_top_title(&mut self, flags: u32, origin: [f32; 2], depth: f32, time: f32, viewport: [f32; 2], draws: &mut Vec<Draw>) {
+        use crate::top_title::{self, Piece};
+        let Some(profession) = top_title::profession(flags, time) else {
+            return;
+        };
+        let key = |piece: &Piece| {
+            let added = if piece.added() { crate::magic::ADDITIVE_SUFFIX } else { "" };
+            match piece {
+                Piece::Word(word) => format!("@top-word-{profession}-{word}"),
+                Piece::Glow(word) => format!("@top-glow-{profession}-{word}{added}"),
+                Piece::Shine(word, frame) => format!("@top-shine-{profession}-{word}-{frame}{added}"),
+                Piece::Ring => format!("@top-ring-{profession}{added}"),
+                Piece::Spark => format!("@top-spark-{profession}{added}"),
+                Piece::Aura => format!("@top-aura-{profession}{added}"),
+            }
+        };
+        // The words' art first: the layout bends them by their size.
+        for word in ["Top", profession] {
+            let word_key = key(&Piece::Word(word.to_owned()));
+            if !self.textures.contains_key(&word_key) {
+                self.upload(&word_key, top_title::word_art(word, profession));
+            }
+        }
+        let sizes: HashMap<String, [f32; 2]> = ["Top", profession]
+            .into_iter()
+            .filter_map(|word| Some((word.to_owned(), self.textures.get(&key(&Piece::Word(word.to_owned())))?.size)))
+            .collect();
+        let quads = top_title::quads(profession, origin, time, |word| sizes.get(word).copied().unwrap_or([80.0, 40.0]));
+        // Pieces sharing a texture and a depth go out as one draw (the
+        // ring's segments, a word's strips).
+        let mut batches: Vec<(String, f32, Vec<Vertex>)> = Vec::new();
+        for quad in quads {
+            let texture = key(&quad.piece);
+            if !self.textures.contains_key(&texture) {
+                let image = match &quad.piece {
+                    Piece::Word(word) => top_title::word_art(word, profession),
+                    Piece::Glow(word) => top_title::word_glow(word, profession),
+                    Piece::Shine(word, frame) => top_title::word_shine(word, profession, *frame),
+                    Piece::Ring => top_title::ring_art(profession),
+                    Piece::Spark => top_title::spark_art(profession),
+                    Piece::Aura => top_title::aura_art(profession),
+                };
+                self.upload(&texture, image);
+            }
+            let layer = f32::from(quad.piece.layer()) * 0.001;
+            let sort_depth = match quad.piece {
+                Piece::Aura => depth - 0.04,
+                _ if quad.front => depth + 0.03 + layer,
+                _ => depth - 0.03 + layer,
+            };
+            let vertices = [0, 1, 2, 0, 2, 3]
+                .map(|index| Vertex { position: clip(quad.corners[index], 0.9, viewport), uv: quad.uv[index], alpha: quad.alpha.clamp(0.0, 1.0) });
+            match batches.iter_mut().find(|(key, depth, _)| *key == texture && *depth == sort_depth) {
+                Some((_, _, batch)) => batch.extend(vertices),
+                None => batches.push((texture, sort_depth, vertices.to_vec())),
+            }
+        }
+        for (texture, sort_depth, vertices) in batches {
+            draws.push(Draw { texture, vertices, depth_test: false, sort_depth });
+        }
+    }
+
     /// The VIP title centred over a name whose top is at `name_top`.
     fn push_vip_tag(&mut self, name_top: [f32; 2], viewport: [f32; 2], draws: &mut Vec<Draw>) -> Result<()> {
         const KEY: &str = "@vip-tag";
@@ -2531,6 +2613,13 @@ impl Renderer {
     }
 
     /// Whether `position` is on the Ranking button.
+    /// Whether `position` is on the Nobility Rank button.
+    pub fn nobility_icon_at(&self, position: [f32; 2]) -> bool {
+        self.nobility_icon_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
     pub fn ranking_icon_at(&self, position: [f32; 2]) -> bool {
         self.ranking_icon_rect.is_some_and(|[left, top, width, height]| {
             (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
@@ -2639,6 +2728,7 @@ impl Renderer {
         store: Option<&crate::store_panel::StoreView>,
         daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
         highscores: Option<&crate::highscores_panel::HighscoresView>,
+        nobility: Option<&crate::nobility_panel::NobilityView>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -3013,7 +3103,9 @@ impl Renderer {
             HashMap::<(u64, usize, i8, usize, u32), Arc<Vec<([f32; 3], [f32; 2])>>>::new();
         let mut remote_monster_pose_cache =
             HashMap::<(u32, u8, i8, u32), Arc<Vec<([f32; 3], [f32; 2])>>>::new();
-        let mut remote_pose_build_budget = 1usize;
+        // Poses are cheap now that bones are blended once per pose; one a
+        // frame left every walking monster but one sliding in its stand.
+        let mut remote_pose_build_budget = 16usize;
         // Players have few parts and are few on screen; give them their own
         // budget so walking monsters cannot freeze them in the idle pose.
         let mut remote_player_pose_budget = 4usize;
@@ -3442,6 +3534,13 @@ impl Renderer {
                 if !actor.npc && !monster {
                     let over_name = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
                     self.push_ko_tag(assets, actor.ko_count, actor.status_flags, [origin[0], over_name], viewport, &mut draws);
+                    let depth = actor.position[0] + actor.position[1];
+                    self.push_top_title(actor.top_flags, origin, depth, time, viewport, &mut draws);
+                    // The rank's insignia stays beside the noble's name.
+                    if let Some((effect, _)) = crate::nobility_panel::rank_effects(actor.nobility_rank, matches!(actor.body, 1 | 2)) {
+                        let beside = insignia_beside_name(origin, &actor.name);
+                        self.push_looping_effect(assets, effect, beside, time, WORLD_OVERLAY_SORT, viewport, &mut draws);
+                    }
                 }
             }
         }
@@ -3630,7 +3729,12 @@ impl Renderer {
                 .map(|actor| actor.position)
                 .unwrap_or(player.position);
             let projected = map.project(position);
-            let origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            let mut origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            // A rank's fiery name rises over the name and its titles
+            // (`3DEffect.ini` lifts the letters 145 over the hero).
+            if effect.starts_with("letter") {
+                origin[1] -= NOBILITY_LETTER_LIFT;
+            }
             let playing = elapsed < 20.0
                 && self.push_effect(assets, &effect, origin, elapsed, position[0] + position[1] + 0.08, viewport, &mut draws);
             if !playing {
@@ -3864,6 +3968,11 @@ impl Renderer {
         )?;
         let over_name = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
         self.push_ko_tag(assets, skill_hud.ko_count, status_flags, [origin[0], over_name], viewport, &mut draws);
+        self.push_top_title(skill_hud.top_flags, origin, actor_depth, time, viewport, &mut draws);
+        if let Some((effect, _)) = crate::nobility_panel::rank_effects(skill_hud.nobility_rank, skill_hud.female) {
+            let beside = insignia_beside_name(origin, &character.name);
+            self.push_looping_effect(assets, effect, beside, time, WORLD_OVERLAY_SORT, viewport, &mut draws);
+        }
         if minimap_visible && self.minimap_map != Some(map.id) {
             self.minimap_map = Some(map.id);
             self.minimap = None;
@@ -4071,49 +4180,64 @@ impl Renderer {
                 });
             }
         }
-        // Dead: the revive countdown above the KO counter, then the buttons
-        // there: Revive, and Revive here under Heaven's Blessing.
+        // Dead: the revive countdown above the KO counter, then the
+        // original plates side by side there: Revive, and Revive Here,
+        // which only Heaven's Blessing lets the player use.
         self.revive_rects.clear();
-        let mut revive_keys: Vec<(String, Option<bool>)> = Vec::new();
+        let [right, bottom] = crate::hud::revive_anchor(viewport);
+        let mut live_keys: Vec<String> = Vec::new();
         match revive {
-            Some((remaining, _)) if remaining > 0 => revive_keys.push((format!("@revive-{remaining}"), None)),
-            Some((_, here)) => {
-                revive_keys.push(("@revive-button".to_owned(), Some(false)));
-                if here {
-                    revive_keys.push(("@revive-here-button".to_owned(), Some(true)));
+            Some((remaining, _)) if remaining > 0 => {
+                let key = format!("@revive-{remaining}");
+                if !self.textures.contains_key(&key) {
+                    self.upload(&key, crate::hud::revive_countdown_image(remaining)?);
                 }
-            },
-            None => {},
-        }
-        let [right, mut bottom] = crate::hud::revive_anchor(viewport);
-        for (key, button) in &revive_keys {
-            if !self.textures.contains_key(key) {
-                let image = match (button, revive) {
-                    (None, Some((remaining, _))) => crate::hud::revive_countdown_image(remaining)?,
-                    (Some(true), _) => crate::hud::revive_button(assets, "Revive here")?,
-                    _ => crate::hud::revive_button(assets, "Revive")?,
-                };
-                self.upload(key, image);
-            }
-            if let Some(texture) = self.textures.get(key) {
-                let position = [right - texture.size[0], bottom - texture.size[1]];
-                if let Some(here) = button {
-                    self.revive_rects.push(([position[0], position[1], texture.size[0], texture.size[1]], *here));
+                if let Some(texture) = self.textures.get(&key) {
+                    draws.push(Draw {
+                        texture: key.clone(),
+                        vertices: quad([right - texture.size[0], bottom - texture.size[1]], texture.size, viewport),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
                 }
-                draws.push(Draw {
-                    texture: key.clone(),
-                    vertices: quad(position, texture.size, viewport),
-                    depth_test: false,
-                    sort_depth: f32::INFINITY,
-                });
-                bottom = position[1] - 6.0;
+                live_keys.push(key);
             }
+            Some((_, blessed)) => {
+                // From the right: Revive Here, then Revive to its left.
+                let mut left = right;
+                for here in [true, false] {
+                    let usable = !here || blessed;
+                    let base = format!("@revive-plate-{here}-{usable}");
+                    let hovered = self.textures.get(&format!("{base}-false")).is_some_and(|texture| {
+                        let [width, height] = texture.size;
+                        (left - width..left).contains(&cursor[0]) && (bottom - height..bottom).contains(&cursor[1])
+                    });
+                    let lit = hovered && usable;
+                    for lit in [false, lit] {
+                        let key = format!("{base}-{lit}");
+                        if !self.textures.contains_key(&key) {
+                            self.upload(&key, crate::hud::revive_plate(assets, here, lit, usable)?);
+                        }
+                        live_keys.push(key);
+                    }
+                    let key = format!("{base}-{lit}");
+                    if let Some(texture) = self.textures.get(&key) {
+                        let position = [left - texture.size[0], bottom - texture.size[1]];
+                        self.revive_rects.push(([position[0], position[1], texture.size[0], texture.size[1]], here));
+                        draws.push(Draw {
+                            texture: key,
+                            vertices: quad(position, texture.size, viewport),
+                            depth_test: false,
+                            sort_depth: f32::INFINITY,
+                        });
+                        left = position[0] - 4.0;
+                    }
+                }
+            }
+            None => {}
         }
-        let countdown_key = revive_keys
-            .iter()
-            .find(|(_, button)| button.is_none())
-            .map(|(key, _)| key.as_str());
-        self.prune_textures("@revive-", &[countdown_key, Some("@revive-button"), Some("@revive-here-button")]);
+        let live: Vec<Option<&str>> = live_keys.iter().map(|key| Some(key.as_str())).collect();
+        self.prune_textures("@revive-", &live);
         // The bounty under way, counted under the minimap.
         // The icon shows even before the board arrives.
         let tracker = Some(bounty.map_or(
@@ -4200,6 +4324,7 @@ impl Renderer {
         // The Ranking button, beside the Store's.
         let [left, top, width, height] = crate::hud::ranking_button_rect(viewport);
         self.ranking_icon_rect = Some([left, top, width, height]);
+        self.nobility_icon_rect = skill_hud.info.is_some().then(|| crate::hud::nobility_button_rect(skill_hud));
         let ranking_hovered = self.ranking_icon_at(cursor);
         let ranking_key = if ranking_hovered { "@ranking-button-hover" } else { "@ranking-button" };
         if !self.textures.contains_key(ranking_key) {
@@ -4694,6 +4819,9 @@ impl Renderer {
             if panel == crate::shop::QuickPanel::Quest {
                 bounty.hash(&mut hasher);
             }
+            if panel == crate::shop::QuickPanel::Nobility {
+                nobility.hash(&mut hasher);
+            }
             if panel == crate::shop::QuickPanel::Highscores {
                 highscores.hash(&mut hasher);
                 // "Last update" reads in minutes.
@@ -4760,6 +4888,7 @@ impl Renderer {
                         store: store.cloned(),
                         daily: daily.cloned(),
                         highscores: highscores.cloned(),
+                        nobility: nobility.cloned(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);
@@ -5693,6 +5822,7 @@ impl Renderer {
             if !self.textures.contains_key(&key) {
                 let art = match slot.binding() {
                     Some(crate::action_bar::Binding::Item(item_type)) => crate::shop::item_icon_image(assets, item_type).ok(),
+                    Some(crate::action_bar::Binding::Skill(id)) if slot.icon.is_none() => crate::main_hud::skill_icon(assets, id),
                     _ => slot
                         .icon_path()
                         .and_then(|path| assets.image(&path).ok())
@@ -6478,4 +6608,5 @@ mod transient_tests {
         }
     }
 }
+
 

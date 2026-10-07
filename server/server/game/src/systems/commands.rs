@@ -493,59 +493,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             Ok(())
         },
         SubCommands::NobilityDonate(info) => {
-            let outcome = me.donate_nobility(state.pool(), info.amount).await?;
-            match outcome {
-                crate::nobility::DonateOutcome::Donated(status) => {
-                    actor.send(MsgUserInfo::from(me)).await?;
-                    actor
-                        .send(MsgNobility::status(me.id(), status, me.equipped_title()))
-                        .await?;
-                    crate::packets::send_nobility_ranking(state, actor).await?;
-                    actor
-                        .send(MsgTalk::from_system(
-                            me.id(),
-                            TalkChannel::System,
-                            format!(
-                                "Donated {} silver. Nobility: {} ({} total).",
-                                info.amount,
-                                status.rank.label(),
-                                status.donation
-                            ),
-                        ))
-                        .await?;
-                },
-                crate::nobility::DonateOutcome::InvalidLevel => {
-                    actor
-                        .send(MsgTalk::from_system(
-                            me.id(),
-                            TalkChannel::System,
-                            format!("Nobility requires level {}.", crate::nobility::MIN_LEVEL),
-                        ))
-                        .await?;
-                },
-                crate::nobility::DonateOutcome::InvalidAmount => {
-                    actor
-                        .send(MsgTalk::from_system(
-                            me.id(),
-                            TalkChannel::System,
-                            format!(
-                                "Nobility donations require at least {} silver.",
-                                crate::nobility::MIN_DONATION
-                            ),
-                        ))
-                        .await?;
-                },
-                crate::nobility::DonateOutcome::InsufficientSilver => {
-                    actor
-                        .send(MsgTalk::from_system(
-                            me.id(),
-                            TalkChannel::System,
-                            "Not enough silver for that nobility donation.",
-                        ))
-                        .await?;
-                },
-            }
-            Ok(())
+            crate::packets::donate_nobility(state, actor, me, info.amount, false).await
         },
         SubCommands::TitleStatus(_) => {
             actor
