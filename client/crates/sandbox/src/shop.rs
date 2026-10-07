@@ -5588,7 +5588,40 @@ fn gem_effect(code: u8) -> Option<String> {
     Some(format!("{label} +{}%", values[tier]))
 }
 
-fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemInfo> {
+/// The Character window's equipment slots for the website: each server
+/// position and its frame in window pixels, and the paper the hero
+/// stands on.
+#[cfg(test)]
+pub(crate) fn status_equipment_layout() -> (Vec<(u8, [i32; 4])>, [i32; 4], [u32; 2]) {
+    let slots = (0..StatusLayout::SLOT_POSITIONS.len())
+        .filter_map(|slot| {
+            let rect = StatusLayout::slot_rect(slot);
+            let position = StatusLayout::slot_position(slot);
+            (position != 0 && rect.width > 0).then_some((
+                position,
+                [StatusLayout::PAPER_X + rect.x, StatusLayout::PAPER_Y + rect.y, rect.width, rect.height],
+            ))
+        })
+        .collect();
+    let paper = [StatusLayout::PAPER_X, StatusLayout::PAPER_Y, StatusLayout::PAPER_WIDTH, StatusLayout::PAPER_HEIGHT];
+    (slots, paper, [STATUS_STANDARD_WIDTH, STATUS_STANDARD_HEIGHT])
+}
+
+/// Every item id `itemtype.dat` lists (the website's item catalogue).
+#[cfg(test)]
+pub(crate) fn all_item_ids(assets: &mut Assets) -> Vec<u32> {
+    let Ok(mut bytes) = assets.read("ini/itemtype.dat") else {
+        return Vec::new();
+    };
+    decrypt_itemtype(&mut bytes);
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_ascii_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+pub(crate) fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemInfo> {
     let requested = item_ids.iter().copied().collect::<HashSet<_>>();
     let Ok(mut bytes) = assets.read("ini/itemtype.dat") else {
         return HashMap::new();

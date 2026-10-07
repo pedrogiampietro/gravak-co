@@ -167,6 +167,12 @@ pub fn required(level: u8) -> u64 {
     LEVEL_EXP.get(usize::from(level.max(1)) - 1).map_or(0, |(exp, _)| *exp)
 }
 
+/// Experience over all levels: every level left behind, and what `level`
+/// holds so far (the Powergamers ranking compares these).
+pub fn total_experience(level: u8, experience: u64) -> u64 {
+    (1..level).map(required).sum::<u64>().saturating_add(experience)
+}
+
 fn up_level_time(level: u8) -> u32 {
     LEVEL_EXP.get(usize::from(level.max(1)) - 1).map_or(0, |(_, time)| *time)
 }

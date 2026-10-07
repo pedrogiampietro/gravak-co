@@ -931,13 +931,14 @@ pub fn hud_style_button(assets: &mut Assets, label: &str) -> crate::assets::Resu
     Ok(image)
 }
 
-/// The Store button: round, after the client's round buttons over the orb
-/// (`Run`, `NpcEquip`, `ScreenMove`, `Map`), a little larger than they.
-/// Left, top, width and height in window pixels, its glow's room included.
+/// The Store button: round, past the original's quiver (which shows from
+/// 137 to 167 of the bar with a bow in hand, `draw_quiver`) and before the
+/// skill bar's ten slots (from 300). Left, top, width and height in window
+/// pixels, its glow's room included.
 pub fn store_button_rect(viewport: [f32; 2]) -> [f32; 4] {
     let [x, y] = layout::main_hud_position(viewport);
     let [width, height] = crate::emblems::ROUND_BUTTON;
-    [x + 96.0, y + 14.0, width as f32, height as f32]
+    [x + 170.0, y + 14.0, width as f32, height as f32]
 }
 
 /// The Ranking button, beside the Store's.

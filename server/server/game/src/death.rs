@@ -185,6 +185,22 @@ pub async fn kill_character(
         victim.save(state).await?;
         return Ok(());
     }
+    // The website's death list and Killers ranking (`character_deaths`).
+    let recorded = sqlx::query(
+        "INSERT INTO character_deaths (character_id, level, killer_name, killer_id, killer_level, map_id)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(i64::from(victim.database_id()))
+    .bind(i32::from(victim.entity().level()))
+    .bind(&killer_name)
+    .bind(killer.filter(|killer| killer.id() != victim.id()).map(|killer| i64::from(killer.database_id())))
+    .bind(killer.map(|killer| i32::from(killer.entity().level())))
+    .bind(i64::from(map_id))
+    .execute(state.pool())
+    .await;
+    if let Err(error) = recorded {
+        tracing::warn!(target: "pk", %error, "The death was not recorded");
+    }
     let map_flags = state.try_map(map_id).map(|map| map.flags()).unwrap_or_default();
     let mut dropped = Vec::new();
     for item in victim.inventory_items() {

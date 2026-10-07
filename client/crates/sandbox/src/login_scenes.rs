@@ -59,6 +59,13 @@ pub fn view(assets: &mut crate::assets::Assets, map: &crate::map::Map, cell: [f3
 }
 
 /// The map's tiles and scenery around `cell`, first animation frames only.
+/// The world at `cell` without the login screens' blur, for the website.
+pub fn sharp_view(assets: &mut crate::assets::Assets, map: &crate::map::Map, cell: [f32; 2], size: [u32; 2]) -> RgbaImage {
+    let mut view = compose(assets, map, cell, size);
+    grade(&mut view);
+    view
+}
+
 fn compose(assets: &mut crate::assets::Assets, map: &crate::map::Map, cell: [f32; 2], size: [u32; 2]) -> RgbaImage {
     let [width, height] = size;
     let centre = map.project(cell);
