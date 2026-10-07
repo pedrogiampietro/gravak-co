@@ -4118,7 +4118,8 @@ impl Renderer {
                 }
                 if let Some(item) = hovered_equipment {
                     let tooltip_key = format!(
-                        "@status-equipment-tooltip-{}-{}-{}-{}-{}-{}-{}-{}-{}",
+                        "@status-equipment-tooltip-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}",
+                        crate::shop::hero_key(),
                         item.position,
                         item.item_type,
                         item.durability,
@@ -4632,7 +4633,7 @@ impl Renderer {
             }
             if let Some(index) = shop.hover.or(shop.selected) {
                 if let Some(item_id) = shop.items.get(index) {
-                    let tooltip_key = format!("@shop-tooltip-{item_id}");
+                    let tooltip_key = format!("@shop-tooltip-{item_id}-{}", crate::shop::hero_key());
                     if !self.textures.contains_key(&tooltip_key) {
                         self.upload(
                             &tooltip_key,
@@ -4841,7 +4842,8 @@ impl Renderer {
             }
 
             let tooltip_key = format!(
-                "@inventory-tooltip-{}-{}-{}-{}-{}-{}-{}",
+                "@inventory-tooltip-{}-{}-{}-{}-{}-{}-{}-{}",
+                crate::shop::hero_key(),
                 item.uid,
                 item.plus,
                 item.gem_one,
@@ -5036,7 +5038,8 @@ impl Renderer {
             };
             if item_hovered {
                 let tooltip_key = format!(
-                    "@action-item-tooltip-{}-{}-{}-{}-{}-{}-{}",
+                    "@action-item-tooltip-{}-{}-{}-{}-{}-{}-{}-{}",
+                    crate::shop::hero_key(),
                     panel.item.uid,
                     panel.item.plus,
                     panel.item.gem_one,

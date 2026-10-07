@@ -1337,6 +1337,7 @@ impl ApplicationHandler for App {
                 if self.player.jumping() && self.local_action.is_none() {
                     self.player.action = Action::Jump;
                 }
+                shop::set_hero(self.character.current_class, self.level);
                 if self.compact_inventory_at.is_some_and(|at| elapsed >= at) {
                     self.compact_inventory_at = None;
                     self.compact_inventory();
