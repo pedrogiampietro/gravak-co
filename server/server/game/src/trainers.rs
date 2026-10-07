@@ -15,9 +15,22 @@ const EMERALD: u32 = 1_080_001;
 const METEOR: u32 = 1_088_001;
 const DRAGONBALL: u32 = 1_088_000;
 const MOONBOX: u32 = 721_020;
-const POISON_BLADE: u32 = 410_077;
-const RAINBOW_GEM: u32 = 700_031;
-const UNIQUE_ARMOR: u32 = 130_087;
+
+// Promotion awards (co.99.com "Promotion"); the bound flag, the garment,
+// the steed and the Super Refinery Pack do not exist in 5065.
+const PRAYING_STONE_S: u32 = 1_200_000;
+const EXP_POTION: u32 = 723_017;
+/// The ExpPill: triple experience for two hours.
+const TRIPLE_EXP_POTION: u32 = 720_393;
+const EXP_BALL: u32 = 723_700;
+const PLUS_TWO_STONE: u32 = 730_002;
+const DRAGON_GEM: u32 = 700_011;
+const PHOENIX_GEM: u32 = 700_001;
+
+/// Item qualities, the last digit of an equipment id.
+const UNIQUE: u32 = 7;
+const ELITE: u32 = 8;
+const SUPER: u32 = 9;
 
 // Skill ids (`Redux.Enum.SkillID`).
 const THUNDER: u32 = 1_000;
@@ -111,6 +124,8 @@ pub struct Student {
     pub rebirths: u8,
     pub items: Vec<u32>,
     pub skills: Vec<(u32, u16)>,
+    /// Empty slots in the bag, for the awards.
+    pub free_slots: usize,
 }
 
 impl Student {
@@ -380,27 +395,73 @@ fn promote(family: Family, student: &Student, fire: Option<bool>) -> Reply {
         },
         _ => reply().text("You have been promoted!"),
     };
-    if let Some(item) = requirement(family, tier).and_then(|requirement| requirement.5) {
+    let taken = requirement(family, tier).and_then(|requirement| requirement.5);
+    if let Some(item) = taken {
         reply = reply.effect(Effect::Take(item));
     }
-    let give = |item_type| Effect::Give {
-        item_type,
-        open_socket: false,
-    };
-    reply = match tier {
-        1 if student.rebirths == 1 => reply
-            .text("I've given you a special item to help commemorate the occasion!")
-            .effect(give(POISON_BLADE)),
-        2 => reply.effect(give(METEOR)),
-        3 if student.rebirths == 0 => reply.effect(give(RAINBOW_GEM)),
-        3 => reply.effect(Effect::Give {
-            item_type: UNIQUE_ARMOR,
-            open_socket: true,
-        }),
-        4 => reply.effect(give(DRAGONBALL)),
-        _ => reply,
-    };
+    let awards = awards(family, tier, student.rebirths);
+    if awards.len() > student.free_slots + usize::from(taken.is_some()) {
+        return refuse("Your inventory is too full for the promotion award. Make some room first.");
+    }
+    if !awards.is_empty() {
+        reply = reply.text(" Take this award to commemorate the occasion!");
+    }
+    for item_type in awards {
+        reply = reply.effect(Effect::Give {
+            item_type,
+            open_socket: false,
+        });
+    }
     reply.effect(Effect::SetClass(next_class)).option(255, "Thank you!")
+}
+
+/// The award of the promotion out of tier `tier`, by rebirths, as the
+/// official guide gives them (every class alike).
+fn awards(family: Family, tier: u8, rebirths: u8) -> Vec<u32> {
+    match (tier, rebirths) {
+        (0, _) => vec![PRAYING_STONE_S],
+        (1, 0) => vec![EXP_POTION],
+        (1, 1) => equipment_set(family, 40, UNIQUE).to_vec(),
+        (1, _) => equipment_set(family, 40, ELITE).to_vec(),
+        (2, 0) => vec![equipment_set(family, 70, SUPER)[0]],
+        (2, 1) => equipment_set(family, 70, ELITE).to_vec(),
+        (2, _) => equipment_set(family, 70, SUPER).to_vec(),
+        (3, 0) if family == Family::Taoist => vec![PHOENIX_GEM],
+        (3, 0) => vec![DRAGON_GEM],
+        // The Super Refinery Pack of the first rebirth is not in 5065.
+        (3, _) => vec![DRAGONBALL],
+        (4, 0) => vec![
+            EXP_BALL,
+            EXP_BALL,
+            EXP_BALL,
+            TRIPLE_EXP_POTION,
+            TRIPLE_EXP_POTION,
+            TRIPLE_EXP_POTION,
+            PLUS_TWO_STONE,
+        ],
+        (4, _) => vec![DRAGONBALL],
+        _ => Vec::new(),
+    }
+}
+
+/// Weapon, headgear and armor of the class at `level` (40 or 70) in
+/// `quality`: the strongest of each the level can wear.
+fn equipment_set(family: Family, level: u16, quality: u32) -> [u32; 3] {
+    let set: [u32; 3] = match (family, level >= 70) {
+        // Cutlass, SteelCoronet, GothicPlate / SparrowBlade, WarCoronet, RageArmor.
+        (Family::Trojan, false) => [410_070, 118_030, 130_030],
+        (Family::Trojan, true) => [410_130, 118_060, 130_060],
+        // Cutlass, ShiningHelmet, SteelArmor / SparrowBlade, GoldHelmet, LightArmor.
+        (Family::Warrior, false) => [410_070, 111_030, 131_030],
+        (Family::Warrior, true) => [410_130, 111_060, 131_060],
+        // ScarletBow, CatHat, FoxCoat / GooseBow, LeopardHat, ApeCoat.
+        (Family::Archer, false) => [500_060, 113_010, 133_010],
+        (Family::Archer, true) => [500_120, 113_030, 133_040],
+        // EndBacksword, StoneCap, StarRobe / GreatBacksword, SharkCap, CraneVestment.
+        (Family::Taoist, false) => [421_070, 114_030, 134_030],
+        (Family::Taoist, true) => [421_130, 114_060, 134_060],
+    };
+    set.map(|item| item + quality)
 }
 
 /// Learns `skills` when `level` is reached, as the "learn" options do.
@@ -611,6 +672,7 @@ fn student(character: &Character) -> Student {
         vitality: character.vitality(),
         spirit: character.spirit(),
         rebirths: character.rebirths(),
+        free_slots: 40usize.saturating_sub(character.inventory_items().len()),
         items: character.inventory_items().iter().map(|item| item.item_type).collect(),
         skills: character
             .skills()
@@ -683,6 +745,7 @@ mod tests {
         Student {
             class,
             level,
+            free_slots: 40,
             ..Student::default()
         }
     }
@@ -705,6 +768,10 @@ mod tests {
             [
                 Effect::Learn(ACCURACY),
                 Effect::Learn(CYCLONE),
+                Effect::Give {
+                    item_type: PRAYING_STONE_S,
+                    open_socket: false
+                },
                 Effect::SetClass(11)
             ]
         );
@@ -722,13 +789,34 @@ mod tests {
             script(Family::Archer, &archer, 2).expect("promotion").effects,
             [
                 Effect::Take(EMERALD),
+                // The Super GooseBow.
                 Effect::Give {
-                    item_type: METEOR,
+                    item_type: 500_129,
                     open_socket: false
                 },
                 Effect::SetClass(43)
             ]
         );
+    }
+
+    #[test]
+    fn awards_follow_the_rebirths() {
+        assert_eq!(awards(Family::Trojan, 1, 0), [EXP_POTION]);
+        assert_eq!(awards(Family::Taoist, 1, 1), [421_077, 114_037, 134_037]);
+        assert_eq!(awards(Family::Warrior, 2, 2), [410_139, 111_069, 131_069]);
+        assert_eq!(awards(Family::Taoist, 3, 0), [PHOENIX_GEM]);
+        assert_eq!(awards(Family::Archer, 4, 0).len(), 7);
+        assert_eq!(awards(Family::Archer, 4, 1), [DRAGONBALL]);
+        assert!(awards(Family::Archer, 5, 0).is_empty());
+    }
+
+    #[test]
+    fn a_full_bag_holds_the_promotion() {
+        let mut archer = student(40, 15);
+        archer.free_slots = 0;
+        let reply = script(Family::Archer, &archer, 2).expect("refusal");
+        assert!(reply.lines[0].starts_with("Your inventory is too full"));
+        assert!(reply.effects.is_empty());
     }
 
     #[test]
