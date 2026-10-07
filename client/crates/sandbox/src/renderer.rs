@@ -686,6 +686,9 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     sprites: wgpu::RenderPipeline,
     actor: wgpu::RenderPipeline,
+    /// Additive effects: their light is added to what is behind them
+    /// (D3D SRCALPHA, ONE), never darkening it.
+    glow: wgpu::RenderPipeline,
     depth: wgpu::TextureView,
     vertex_buffer: wgpu::Buffer,
     vertex_buffer_capacity: usize,
@@ -812,6 +815,12 @@ impl Renderer {
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or("No surface format")?;
+        // Blend as the original's Direct3D did, on the stored values (not in
+        // linear light): its additive glows add up to their full brightness.
+        let plain = config.format.remove_srgb_suffix();
+        if surface.get_capabilities(&adapter).formats.contains(&plain) {
+            config.format = plain;
+        }
         let requested_present_mode = std::env::var("GRAVAK_PRESENT_MODE")
             .unwrap_or_default()
             .to_ascii_lowercase();
@@ -863,7 +872,20 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |actor| {
+        // Light added onto the scene, as the original's additive effects.
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let pipeline = |actor, blend: wgpu::BlendState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: None,
                 layout: Some(&pipeline_layout),
@@ -883,7 +905,7 @@ impl Renderer {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: config.format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend: Some(blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -907,8 +929,9 @@ impl Renderer {
                 cache: None,
             })
         };
-        let sprites = pipeline(false);
-        let actor = pipeline(true);
+        let sprites = pipeline(false, wgpu::BlendState::ALPHA_BLENDING);
+        let actor = pipeline(true, wgpu::BlendState::ALPHA_BLENDING);
+        let glow = pipeline(false, additive);
         let depth = depth(&device, &config);
         let vertex_buffer_capacity = 64 * 1024;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -926,6 +949,7 @@ impl Renderer {
             layout,
             sprites,
             actor,
+            glow,
             depth,
             vertex_buffer,
             vertex_buffer_capacity,
@@ -2165,7 +2189,7 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
@@ -5748,7 +5772,7 @@ impl Renderer {
             });
             // State changes only when it differs from the draw before.
             let mut current_clip: Option<bool> = None;
-            let mut current_pipeline: Option<bool> = None;
+            let mut current_pipeline: Option<(bool, bool)> = None;
             let mut current_texture: Option<&str> = None;
             for (draw, (start, end)) in draws.iter().zip(&ranges) {
                 let Some(texture) = self.textures.get(&draw.texture) else {
@@ -5767,13 +5791,16 @@ impl Renderer {
                     }
                     current_clip = Some(clip);
                 }
-                if current_pipeline != Some(draw.depth_test) {
+                let glow = !draw.depth_test && draw.texture.ends_with(crate::magic::ADDITIVE_SUFFIX);
+                if current_pipeline != Some((draw.depth_test, glow)) {
                     pass.set_pipeline(if draw.depth_test {
                         &self.actor
+                    } else if glow {
+                        &self.glow
                     } else {
                         &self.sprites
                     });
-                    current_pipeline = Some(draw.depth_test);
+                    current_pipeline = Some((draw.depth_test, glow));
                 }
                 if current_texture != Some(draw.texture.as_str()) {
                     pass.set_bind_group(0, &texture.bind, &[]);
