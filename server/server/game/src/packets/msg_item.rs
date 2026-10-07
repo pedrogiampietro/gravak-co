@@ -228,9 +228,10 @@ impl PacketProcess for MsgItem {
                         .await?;
                     return Ok(());
                 };
+                let cps = self.action_type == ItemActionType::BoothAddCPs as u32;
                 match state
                     .player_shop_manager()
-                    .add_item(character.id(), item.uid, self.amount)
+                    .add_item(character.id(), item.uid, self.amount, cps)
                 {
                     Ok(listing) => {
                         crate::player_shop::save_listing(state.pool(), character.database_id(), listing).await?;
@@ -243,14 +244,7 @@ impl PacketProcess for MsgItem {
                         );
                         actor.send(self.clone()).await?;
                         actor
-                            .send(super::MsgVendorItem::new(character.id(), item, self.amount))
-                            .await?;
-                        actor
-                            .send(MsgTalk::from_system(
-                                character.id(),
-                                TalkChannel::System,
-                                "Item added to player shop.",
-                            ))
+                            .send(super::MsgVendorItem::new(character.id(), item, listing))
                             .await?;
                     },
                     Err(error) => {
@@ -338,7 +332,7 @@ impl PacketProcess for MsgItem {
                         .find(|item| item.uid == listing.item_uid)
                     {
                         actor
-                            .send(super::MsgVendorItem::new(owner_id, item, listing.price))
+                            .send(super::MsgVendorItem::new(owner_id, item, listing))
                             .await?;
                     }
                 }
@@ -395,8 +389,10 @@ impl PacketProcess for MsgItem {
                         .await?;
                     return Ok(());
                 };
+                let (silver, cps) = if listing.cps { (0, listing.price) } else { (listing.price, 0) };
+                let currency = if listing.cps { "CPs" } else { "silver" };
                 match seller
-                    .complete_trade(state.pool(), buyer, &[item.uid], &[], 0, listing.price, 0, 0)
+                    .complete_trade(state.pool(), buyer, &[item.uid], &[], 0, silver, 0, cps)
                     .await?
                 {
                     Some(transfer) => {
@@ -410,19 +406,31 @@ impl PacketProcess for MsgItem {
                         }
                         seller.owner().send(MsgUserInfo::from(seller)).await?;
                         actor.send(MsgUserInfo::from(buyer)).await?;
+                        // Both windows let the item go (the seller's own
+                        // booth and the buyer's view of it).
+                        let sold = MsgItem {
+                            character_id: seller.id(),
+                            param0: item.uid,
+                            action_type: ItemActionType::BoothDel as u32,
+                            client_timestamp: 0,
+                            amount: 0,
+                            param1: seller.id(),
+                        };
+                        seller.owner().send(sold.clone()).await?;
+                        actor.send(sold).await?;
                         seller
                             .owner()
                             .send(MsgTalk::from_system(
                                 seller.id(),
                                 TalkChannel::System,
-                                format!("Your player shop sold item {}.", item.item_type),
+                                format!("{} bought an item from your booth for {} {currency}.", buyer.entity().name(), listing.price),
                             ))
                             .await?;
                         actor
                             .send(MsgTalk::from_system(
                                 buyer.id(),
                                 TalkChannel::System,
-                                format!("Purchased item {} for {} silver.", item.item_type, listing.price),
+                                format!("You bought an item for {} {currency}.", listing.price),
                             ))
                             .await?;
                     },
@@ -432,7 +440,11 @@ impl PacketProcess for MsgItem {
                             .send(MsgTalk::from_system(
                                 buyer.id(),
                                 TalkChannel::System,
-                                "Player shop purchase rejected: inventory or silver changed.",
+                                if listing.cps {
+                                    "You cannot buy it: not enough CPs or no room in your inventory."
+                                } else {
+                                    "You cannot buy it: not enough silver or no room in your inventory."
+                                },
                             ))
                             .await?;
                     },

@@ -107,7 +107,7 @@ fn place_name(map_id: u32) -> &'static str {
 }
 
 /// Everyone online hears it in the middle of the screen.
-async fn announce(state: &State, text: String) {
+pub(crate) async fn announce(state: &State, text: String) {
     let talk = MsgTalk::from_system(0, TalkChannel::Center, text);
     for entity in state.entities() {
         if let Some(character) = entity.as_character() {
@@ -116,7 +116,7 @@ async fn announce(state: &State, text: String) {
     }
 }
 
-async fn monster_type(state: &State, id: u32) -> Result<Option<tq_db::monster::MonsterType>, Error> {
+pub(crate) async fn monster_type(state: &State, id: u32) -> Result<Option<tq_db::monster::MonsterType>, Error> {
     Ok(sqlx::query_as::<_, tq_db::monster::MonsterType>(
         "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance \
          FROM monster_types WHERE id = $1",

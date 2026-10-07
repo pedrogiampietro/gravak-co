@@ -73,6 +73,10 @@ impl PacketProcess for MsgWalk {
             return Ok(());
         }
         me.set_active_shop_id(0);
+        // A seller stays at their booth until they leave it.
+        if super::msg_action::selling(state, actor, me).await? {
+            return Ok(());
+        }
         me.set_active_storage_id(0);
         let current_location = me.entity().location();
         let offset = ((WALK_XCOORDS[direction] as u16), (WALK_YCOORDS[direction] as u16));

@@ -346,13 +346,8 @@ enum UiTextureJob {
         selected_target_name: Option<String>,
         inventory: Vec<crate::network::OwnedItem>,
         trade: crate::network::TradeView,
-        player_shop_items: Vec<crate::network::PlayerShopItem>,
+        booth: crate::booth::BoothView,
         own_character_id: Option<u32>,
-        player_shop_open: bool,
-        player_shop_price: String,
-        player_shop_price_focused: bool,
-        player_shop_name: String,
-        player_shop_name_focused: bool,
         hud_config: crate::hud::HudConfig,
         bounty: Option<crate::bounty_board::BountyView>,
         store: Option<crate::store_panel::StoreView>,
@@ -619,13 +614,8 @@ impl UiTextureJob {
                 selected_target_name,
                 inventory,
                 trade,
-                player_shop_items,
+                booth,
                 own_character_id,
-                player_shop_open,
-                player_shop_price,
-                player_shop_price_focused,
-                player_shop_name,
-                player_shop_name_focused,
                 hud_config,
                 bounty,
                 store,
@@ -651,13 +641,8 @@ impl UiTextureJob {
                 selected_target_name.as_deref(),
                 &inventory,
                 &trade,
-                &player_shop_items,
+                &booth,
                 own_character_id,
-                player_shop_open,
-                &player_shop_price,
-                player_shop_price_focused,
-                &player_shop_name,
-                player_shop_name_focused,
                 hud_config,
                 bounty.as_ref(),
                 store.as_ref(),
@@ -1533,30 +1518,47 @@ impl Renderer {
     /// redrawn image that are no longer shown.
     /// The bubble over `name` while they speak, up to the left of their
     /// name (drawn centred on `origin[0]` from `name_top` down), its tail
-    /// ending at the name's left, as the original's.
+    /// ending at the name's left, as the original's. A seller who is not
+    /// speaking shows the line their booth hawks in it.
     fn push_speech(
         &mut self,
         speech: &[(String, String)],
         name: &str,
+        hawk: Option<&str>,
         origin: [f32; 2],
         name_top: f32,
         viewport: [f32; 2],
         draws: &mut Vec<Draw>,
     ) -> Result<()> {
-        let Some((_, line)) = speech.iter().find(|(speaker, _)| speaker.eq_ignore_ascii_case(name)) else {
+        let spoken = speech
+            .iter()
+            .find(|(speaker, _)| speaker.eq_ignore_ascii_case(name))
+            .map(|(_, line)| line.as_str());
+        let hawked = hawk.filter(|line| spoken.is_none() && !line.trim().is_empty());
+        let Some(line) = spoken.or(hawked) else {
             return Ok(());
         };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(line, &mut hasher);
-        let key = format!("@speech-{}", std::hash::Hasher::finish(&hasher));
+        let kind = if hawked.is_some() { "hawk" } else { "say" };
+        let key = format!("@speech-{kind}-{}", std::hash::Hasher::finish(&hasher));
         if !self.textures.contains_key(&key) {
-            self.upload(&key, crate::labels::speech_bubble_image(line)?);
+            let bubble = if hawked.is_some() {
+                crate::labels::booth_bubble_image(line)?
+            } else {
+                crate::labels::speech_bubble_image(line)?
+            };
+            self.upload(&key, bubble);
         }
         if let Some(texture) = self.textures.get(&key) {
             // As the original: the tip just under the life bar, a little in
-            // from its left end.
-            let _ = name_top;
-            let tip = [origin[0] - 16.0, origin[1] - 107.0];
+            // from its left end. A booth's call stands above the name
+            // instead, so the seller's name stays in sight.
+            let tip = if hawked.is_some() {
+                [origin[0] - 16.0, name_top - 4.0]
+            } else {
+                [origin[0] - 16.0, origin[1] - 107.0]
+            };
             let [from_right, from_bottom] = crate::labels::SPEECH_TIP.map(|value| value as f32);
             draws.push(Draw {
                 texture: key,
@@ -2169,27 +2171,6 @@ impl Renderer {
         self.effect_scale = 0.75;
     }
 
-    /// A booth's name on a small ornate plate, above `name_top`.
-    fn push_booth_sign(&mut self, booth: &str, name_top: [f32; 2], viewport: [f32; 2], draws: &mut Vec<Draw>) -> Result<()> {
-        let key = format!("@booth-{booth}");
-        if !self.textures.contains_key(&key) {
-            self.upload(&key, crate::ornate::booth_sign(booth)?);
-        }
-        if let Some(sign) = self.textures.get(&key) {
-            draws.push(Draw {
-                texture: key,
-                vertices: quad(
-                    [(name_top[0] - sign.size[0] * 0.5).round(), (name_top[1] - sign.size[1]).round()],
-                    sign.size,
-                    viewport,
-                ),
-                depth_test: false,
-                sort_depth: WORLD_OVERLAY_SORT,
-            });
-        }
-        Ok(())
-    }
-
     /// Plays `effect` once on `actor_id` (fireworks, effects of events...).
     pub fn add_role_effect(&mut self, actor_id: u32, effect: String, now: f32) {
         self.role_effects.push((actor_id, effect, now));
@@ -2404,12 +2385,7 @@ impl Renderer {
         quick_panel: Option<crate::shop::QuickPanel>,
         hud_config: crate::hud::HudConfig,
         network_character_id: Option<u32>,
-        player_shop_items: &[crate::network::PlayerShopItem],
-        player_shop_open: bool,
-        player_shop_price: &str,
-        player_shop_price_focused: bool,
-        player_shop_name: &str,
-        player_shop_name_focused: bool,
+        booth: &crate::booth::BoothView,
         bounty: Option<&crate::bounty_board::BountyView>,
         store: Option<&crate::store_panel::StoreView>,
         daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
@@ -3060,12 +3036,20 @@ impl Renderer {
                 }
             }
             if !actor.npc && !monster && !actor.name.is_empty() {
-                self.push_speech(&skill_hud.speech, &actor.name, origin, origin[1] - 152.0 + 2.0, viewport, &mut draws)?;
+                self.push_speech(
+                    &skill_hud.speech,
+                    &actor.name,
+                    actor.booth.as_deref(),
+                    origin,
+                    origin[1] - 152.0 + 2.0,
+                    viewport,
+                    &mut draws,
+                )?;
             }
             // A hovered player shows their face, name and health instead
             // of the plain name.
             if hovered_player == Some(actor.id) && !actor.npc && !monster && !actor.name.is_empty() {
-                let name_colour = crate::labels::name_colour(actor.status_flags);
+                let name_colour = crate::labels::vendor_or_name_colour(actor.status_flags, actor.booth.is_some());
                 let key = format!(
                     "@player-plate-{}-{}-{}-{}-{:?}",
                     actor.id, actor.mesh, actor.health, actor.maximum_health, name_colour
@@ -3105,7 +3089,11 @@ impl Renderer {
             {
                 // NPCs' names in green, as the original's.
                 let name_colour =
-                    if actor.npc { NPC_NAME } else { crate::labels::name_colour(actor.status_flags) };
+                    if actor.npc {
+                        NPC_NAME
+                    } else {
+                        crate::labels::vendor_or_name_colour(actor.status_flags, actor.booth.is_some())
+                    };
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
                 let bounty_target = monster
@@ -3162,10 +3150,6 @@ impl Renderer {
                 if !actor.npc && !monster {
                     let over_name = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
                     self.push_ko_tag(assets, actor.ko_count, actor.status_flags, [origin[0], over_name], viewport, &mut draws);
-                }
-                if let Some(booth) = actor.booth.as_deref().filter(|_| !actor.npc && !monster) {
-                    let top = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
-                    self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
                 }
             }
         }
@@ -3476,7 +3460,7 @@ impl Renderer {
             }
         }
         let world_phase_finished = Instant::now();
-        let name_colour = crate::labels::name_colour(status_flags);
+        let name_colour = crate::labels::vendor_or_name_colour(status_flags, character.booth.is_some());
         let label_key = format!(
             "@label-{}-{}-{}-{:?}",
             character.name, character.health, character.maximum_health, name_colour
@@ -3506,13 +3490,17 @@ impl Renderer {
         if status_flags & VIP_FLAG != 0 {
             self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
         }
-        self.push_speech(&skill_hud.speech, &character.name, origin, origin[1] - 152.0 + 13.0, viewport, &mut draws)?;
+        self.push_speech(
+            &skill_hud.speech,
+            &character.name,
+            character.booth.as_deref(),
+            origin,
+            origin[1] - 152.0 + 13.0,
+            viewport,
+            &mut draws,
+        )?;
         let over_name = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
         self.push_ko_tag(assets, skill_hud.ko_count, status_flags, [origin[0], over_name], viewport, &mut draws);
-        if let Some(booth) = character.booth.as_deref() {
-            let top = origin[1] - 152.0 - if status_flags & VIP_FLAG != 0 { 24.0 } else { 0.0 };
-            self.push_booth_sign(booth, [origin[0], top], viewport, &mut draws)?;
-        }
         if minimap_visible && self.minimap_map != Some(map.id) {
             self.minimap_map = Some(map.id);
             self.minimap = None;
@@ -3931,6 +3919,21 @@ impl Renderer {
             character.hair_id.hash(&mut hasher);
             character.right_weapon_id.hash(&mut hasher);
             character.left_weapon_id.hash(&mut hasher);
+            // Everything else the panel writes: a promotion changes only the
+            // class, and the texture is keyed by this signature.
+            character.helmet_id.hash(&mut hasher);
+            character.guild.hash(&mut hasher);
+            character.guild_rank.hash(&mut hasher);
+            character.strength.hash(&mut hasher);
+            character.agility.hash(&mut hasher);
+            character.vitality.hash(&mut hasher);
+            character.spirit.hash(&mut hasher);
+            character.attribute_points.hash(&mut hasher);
+            character.current_class.hash(&mut hasher);
+            character.previous_class.hash(&mut hasher);
+            character.rebirths.hash(&mut hasher);
+            character.kill_points.hash(&mut hasher);
+            character.spouse.hash(&mut hasher);
             status_equipment.hash(&mut hasher);
             status_tab.hash(&mut hasher);
             let mut status_skills = known_skills
@@ -4318,12 +4321,8 @@ impl Renderer {
             trade.editing.hash(&mut hasher);
             trade.own_confirmed.hash(&mut hasher);
             trade.peer_confirmed.hash(&mut hasher);
-            player_shop_items.hash(&mut hasher);
-            player_shop_open.hash(&mut hasher);
-            player_shop_price.hash(&mut hasher);
-            player_shop_price_focused.hash(&mut hasher);
-            player_shop_name.hash(&mut hasher);
-            player_shop_name_focused.hash(&mut hasher);
+            booth.hash(&mut hasher);
+            network_character_id.hash(&mut hasher);
             hud_config.hash(&mut hasher);
             if panel == crate::shop::QuickPanel::Quest {
                 bounty.hash(&mut hasher);
@@ -4387,13 +4386,8 @@ impl Renderer {
                         selected_target_name: selected_target_name.map(str::to_owned),
                         inventory: inventory.to_vec(),
                         trade: trade.clone(),
-                        player_shop_items: player_shop_items.to_vec(),
+                        booth: booth.clone(),
                         own_character_id: network_character_id,
-                        player_shop_open,
-                        player_shop_price: player_shop_price.to_owned(),
-                        player_shop_price_focused,
-                        player_shop_name: player_shop_name.to_owned(),
-                        player_shop_name_focused,
                         hud_config,
                         bounty: bounty.cloned(),
                         store: store.cloned(),
@@ -4414,6 +4408,54 @@ impl Renderer {
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });
+            }
+            // A booth's item under the cursor: its tooltip, with the price.
+            if panel == crate::shop::QuickPanel::Market
+                && let Some(listing) = crate::booth::item_at(viewport, cursor, booth, network_character_id)
+            {
+                let item = listing.item;
+                let tooltip_key = format!(
+                    "@booth-tooltip-{}-{}-{}-{}-{}-{}",
+                    crate::shop::hero_key(),
+                    item.uid,
+                    item.item_type,
+                    item.plus,
+                    item.gem_one,
+                    item.gem_two
+                );
+                if !self.textures.contains_key(&tooltip_key) {
+                    let info = crate::shop::item_info(assets, item.item_type);
+                    self.upload(
+                        &tooltip_key,
+                        crate::shop::item_tooltip_image(
+                            item.uid,
+                            item.item_type,
+                            info.as_ref(),
+                            item.plus,
+                            item.gem_one,
+                            item.gem_two,
+                            item.rarity,
+                            item.rarity_roll,
+                            item.bless,
+                            item.enchant_hp,
+                        )?,
+                    );
+                }
+                if let Some(texture) = self.textures.get(&tooltip_key) {
+                    let mut position = [cursor[0] + 14.0, cursor[1] + 14.0];
+                    if position[0] + texture.size[0] > viewport[0] {
+                        position[0] = cursor[0] - texture.size[0] - 14.0;
+                    }
+                    if position[1] + texture.size[1] > viewport[1] {
+                        position[1] = cursor[1] - texture.size[1] - 14.0;
+                    }
+                    draws.push(Draw {
+                        texture: tooltip_key,
+                        vertices: quad(position, texture.size, viewport),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
             }
             // Beside the trade window: who the trade is with.
             if panel == crate::shop::QuickPanel::Trade
@@ -5573,7 +5615,8 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 17] = [
+const TRANSIENT_PREFIXES: [&str; 18] = [
+    "@booth-tooltip-",
     "@sell-all-",
     "@speech-",
     "@whisper-",

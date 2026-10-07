@@ -7,6 +7,12 @@ Itens marcados `[x]` estão implementados e aguardando teste no jogo.
 - [x] Stamina, círculo de XP, skills de XP, arcos e flechas, armas de duas mãos
 - [x] NPCs do Market: ProficiencyGod, GodlyArtisan, WeaponMaster, MillionaireLee, LadyLuck, Alex (1º renascimento)
 - [x] Labirinto (Simon, Old Explorers) e Moon Box Quest
+- [x] Dis City (`dis_city.rs`, migração 72): Solar Saint em Ape City (nível 110, uma vez por semana), Hell Gate
+      (5 SoulStones), Hell Hall (Slayer Points 400 / Archer 600 / Taoist 300), Hell Cloister (9 Hell Wraiths em
+      ordem), Battle Formation (4 Syrens = Pluto Token, Ultimate Pluto, tesouro); Dark Horn e Star Sword trocados
+      no Solar Saint
+- [x] Recompensas de promoção do guia oficial (PrayingStone, ExpPotion, sets Unique/Elite/Super 40 e 70, gemas,
+      ExpBalls, DragonBall)
 - [x] Guild War: pólo e portões, placar, vencedora, portões, GateKeeper, conductresses, Warden, horário (sábado 20h–22h), `$gw start|end`
 - [x] EXP real: tabela `levexp` do Redux, EXP por golpe, taxa ×5, ExpBall (723700) usável, virtude ao upar novatos
 - [x] NPCs das cidades: GeneralPeace, Barber, ArenaGuard, Captain, CaptainLi, assistentes das minas + MineAdmin,

@@ -144,6 +144,14 @@ const BLACK_NAME: u64 = 1 << 15;
 /// The name colour the status flags give a player: black or red by PK
 /// points, and while flashing (after an attack or a kill) blue blinking
 /// twice a second against red, or against black for a black name.
+/// A seller's name while their booth is open.
+pub const VENDOR_NAME: [u8; 3] = [255, 128, 208];
+
+/// The name's colour: pink while selling, else by PK state.
+pub fn vendor_or_name_colour(status_flags: u64, selling: bool) -> [u8; 3] {
+    if selling { VENDOR_NAME } else { name_colour(status_flags) }
+}
+
 pub fn name_colour(status_flags: u64) -> [u8; 3] {
     let blink_on = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -540,6 +548,45 @@ mod tests {
 /// the words in yellow with a black shadow from the top left. Edges are
 /// smoothed. The tail's tip is [`SPEECH_TIP`] from the image's bottom right.
 pub fn speech_bubble_image(message: &str) -> Result<RgbaImage> {
+    bubble(message, &SPEECH)
+}
+
+/// The bubble over an open booth, with the line its seller hawks: the
+/// speech bubble's shape, smaller, in warm amber glass with a gold edge
+/// and pale gold words, so a shop's call reads apart from what is said.
+pub fn booth_bubble_image(message: &str) -> Result<RgbaImage> {
+    bubble(message, &BOOTH)
+}
+
+struct BubbleStyle {
+    min_size: [u32; 2],
+    /// Opacity of the outer dark edge, the inner light edge and the glass.
+    alpha: [f32; 3],
+    edge: [f32; 3],
+    light: [f32; 3],
+    glass: [f32; 3],
+    text: [u8; 3],
+}
+
+const SPEECH: BubbleStyle = BubbleStyle {
+    min_size: [153, 71],
+    alpha: [0.42, 0.36, 0.13],
+    edge: [0.0; 3],
+    light: [236.0, 236.0, 242.0],
+    glass: [0.0; 3],
+    text: [255, 255, 0],
+};
+
+const BOOTH: BubbleStyle = BubbleStyle {
+    min_size: [96, 30],
+    alpha: [0.7, 0.85, 0.62],
+    edge: [36.0, 22.0, 4.0],
+    light: [226.0, 178.0, 84.0],
+    glass: [44.0, 26.0, 8.0],
+    text: [255, 228, 150],
+};
+
+fn bubble(message: &str, style: &BubbleStyle) -> Result<RgbaImage> {
     const MAX_WIDTH: f32 = 190.0;
     const LINE: u32 = 15;
     const TAIL: u32 = 18;
@@ -559,7 +606,8 @@ pub fn speech_bubble_image(message: &str) -> Result<RgbaImage> {
     }
     lines.truncate(6);
     let text_width = lines.iter().map(|line| width(&font, line)).fold(0.0_f32, f32::max);
-    let (w, h) = ((text_width.ceil() as u32 + 18).max(153), (lines.len() as u32 * LINE + 14).max(71));
+    let [min_width, min_height] = style.min_size;
+    let (w, h) = ((text_width.ceil() as u32 + 18).max(min_width), (lines.len() as u32 * LINE + 14).max(min_height));
     let mut image = RgbaImage::new(w, h + TAIL);
     let (wf, hf) = (w as f32, h as f32);
     // The tail: feet on the bottom edge, the tip down by the right corner.
@@ -575,19 +623,24 @@ pub fn speech_bubble_image(message: &str) -> Result<RgbaImage> {
             let dark = inside(0.0) - inside(1.0);
             let light = inside(1.0) - inside(2.0);
             let glass = inside(2.0);
-            let alpha = dark * 0.42 + light * 0.36 + glass * 0.13;
+            let [a_dark, a_light, a_glass] = style.alpha;
+            let alpha = dark * a_dark + light * a_light + glass * a_glass;
             if alpha <= 0.0 {
                 continue;
             }
-            let white = light * 0.36 * 236.0 / alpha;
-            let tone = white.round().clamp(0.0, 255.0) as u8;
-            image.put_pixel(x, y, Rgba([tone, tone, tone.saturating_add(6), (alpha * 255.0).round() as u8]));
+            let colour: [u8; 3] = std::array::from_fn(|channel| {
+                ((dark * a_dark * style.edge[channel] + light * a_light * style.light[channel] + glass * a_glass * style.glass[channel])
+                    / alpha)
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            });
+            image.put_pixel(x, y, Rgba([colour[0], colour[1], colour[2], (alpha * 255.0).round() as u8]));
         }
     }
     for (index, line) in lines.iter().enumerate() {
         let y = 6.0 + (index as u32 * LINE) as f32;
         text(&mut image, &font, &[(line.as_str(), [0, 0, 0])], [9.0, y + 1.0]);
-        text(&mut image, &font, &[(line.as_str(), [255, 255, 0])], [8.0, y]);
+        text(&mut image, &font, &[(line.as_str(), style.text)], [8.0, y]);
     }
     Ok(image)
 }
@@ -633,5 +686,11 @@ mod speech_preview {
         image::imageops::overlay(&mut sheet, &short, 10, 10);
         image::imageops::overlay(&mut sheet, &long, 140, 10);
         sheet.save(format!("{dir}/speech.png")).expect("png");
+        let mut booth = image::RgbaImage::from_pixel(460, 90, image::Rgba([150, 150, 150, 255]));
+        let short = super::booth_bubble_image("VENDO BALLS EXP").expect("bubble");
+        let long = super::booth_bubble_image("Cheap gear! DragonBalls for CPs, Meteors and +2 stones").expect("bubble");
+        image::imageops::overlay(&mut booth, &short, 10, 10);
+        image::imageops::overlay(&mut booth, &long, 160, 10);
+        booth.save(format!("{dir}/booth-bubble.png")).expect("png");
     }
 }

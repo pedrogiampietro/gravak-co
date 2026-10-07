@@ -218,6 +218,9 @@ impl PacketProcess for MsgTaskDialog {
             if near && crate::quest_npcs::answer(_state, actor, character, npc.id(), self.option_id).await? {
                 return Ok(());
             }
+            if near && crate::dis_city::answer(_state, actor, character, npc.id(), self.option_id).await? {
+                return Ok(());
+            }
             if near && crate::guild_war::answer(_state, actor, character, npc.id(), self.option_id).await? {
                 return Ok(());
             }

@@ -606,16 +606,6 @@ pub enum TradePanelAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayerShopPanelAction {
-    Open,
-    Close,
-    QueryTarget,
-    AddSelectedItem,
-    Buy(usize),
-    Remove(usize),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuildPanelAction {
     /// Gives this much silver to the guild fund.
     Donate(u32),
@@ -671,59 +661,10 @@ pub fn trade_panel_action_at(
     crate::original_panels::trade_action_at(viewport, cursor, trade)
 }
 
-pub fn player_shop_panel_action_at(
-    viewport: [f32; 2],
-    cursor: [f32; 2],
-    open: bool,
-    listings: &[crate::network::PlayerShopItem],
-    own_character_id: Option<u32>,
-    has_selected_target: bool,
-) -> Option<PlayerShopPanelAction> {
-    let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
-    let x = cursor[0] - left;
-    let y = cursor[1] - top;
-    if !(18.0..=502.0).contains(&x) {
-        return None;
-    }
-    if (112.0..140.0).contains(&y) {
-        if open {
-            return Some(if x < 260.0 {
-                PlayerShopPanelAction::Close
-            } else {
-                PlayerShopPanelAction::AddSelectedItem
-            });
-        }
-        return (x < 260.0).then_some(PlayerShopPanelAction::Open);
-    }
-    if has_selected_target && (146.0..174.0).contains(&y) && x < 260.0 {
-        return Some(PlayerShopPanelAction::QueryTarget);
-    }
-    for (index, listing) in listings.iter().take(5).enumerate() {
-        let row = 190.0 + index as f32 * 26.0;
-        if (row..row + 22.0).contains(&y) {
-            return Some(if own_character_id == Some(listing.owner_id) {
-                PlayerShopPanelAction::Remove(index)
-            } else {
-                PlayerShopPanelAction::Buy(index)
-            });
-        }
-    }
-    None
-}
-
-/// The booth name field, right of the Query button.
-pub fn player_shop_name_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
-    (left + 268.0..=left + 500.0).contains(&cursor[0]) && (top + 144.0..=top + 172.0).contains(&cursor[1])
-}
-
-pub fn player_shop_price_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
-    let [left, top] = quick_panel_position(viewport, QuickPanel::Market);
-    (left + 268.0..=left + 420.0).contains(&cursor[0])
-        && (top + 76.0..=top + 104.0).contains(&cursor[1])
-}
-
 pub fn quick_panel_position(viewport: [f32; 2], panel: QuickPanel) -> [f32; 2] {
+    if panel == QuickPanel::Market {
+        return crate::booth::position(viewport);
+    }
     crate::original_panels::position(panel, viewport).unwrap_or([
         ((viewport[0] - QUICK_PANEL_WIDTH as f32) * 0.5).max(8.0),
         ((viewport[1] - QUICK_PANEL_HEIGHT as f32) * 0.5).max(8.0),
@@ -731,6 +672,10 @@ pub fn quick_panel_position(viewport: [f32; 2], panel: QuickPanel) -> [f32; 2] {
 }
 
 pub fn quick_panel_at(viewport: [f32; 2], cursor: [f32; 2], panel: QuickPanel) -> bool {
+    // The booth's own windows are hit-tested with its state (`booth`).
+    if panel == QuickPanel::Market {
+        return crate::booth::window_at(viewport, cursor, &crate::booth::BoothView::default());
+    }
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::panel_at(panel, viewport, cursor);
     }
@@ -742,6 +687,10 @@ pub fn quick_panel_at(viewport: [f32; 2], cursor: [f32; 2], panel: QuickPanel) -
 }
 
 pub fn quick_panel_close_at(viewport: [f32; 2], cursor: [f32; 2], panel: QuickPanel) -> bool {
+    // The booth closes through its own Close (it also takes the booth down).
+    if panel == QuickPanel::Market {
+        return false;
+    }
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::close_at(panel, viewport, cursor);
     }
@@ -962,19 +911,17 @@ pub fn quick_panel_image(
     selected_target_name: Option<&str>,
     inventory: &[crate::network::OwnedItem],
     trade: &crate::network::TradeView,
-    player_shop_items: &[crate::network::PlayerShopItem],
+    booth: &crate::booth::BoothView,
     own_character_id: Option<u32>,
-    player_shop_open: bool,
-    player_shop_price: &str,
-    player_shop_price_focused: bool,
-    player_shop_name: &str,
-    player_shop_name_focused: bool,
     hud_config: crate::hud::HudConfig,
     bounty: Option<&crate::bounty_board::BountyView>,
     store: Option<&crate::store_panel::StoreView>,
     daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
     highscores: Option<&crate::highscores_panel::HighscoresView>,
 ) -> Result<RgbaImage> {
+    if panel == QuickPanel::Market {
+        return crate::booth::image(assets, booth, own_character_id);
+    }
     if crate::original_panels::is_original(panel) {
         return crate::original_panels::image(
             assets,
@@ -1411,6 +1358,8 @@ pub fn quick_panel_image(
                 );
             }
         }
+        // Drawn by `booth` above.
+        QuickPanel::Market => {}
         QuickPanel::Mail => {
             labels::text(
                 &mut image,
@@ -1424,131 +1373,6 @@ pub fn quick_panel_image(
                 &[("Your mailbox is empty", [220, 210, 175])],
                 [24.0, 98.0],
             );
-        }
-        QuickPanel::Market => {
-            labels::text(
-                &mut image,
-                &font,
-                &[("Banca de jogadores", [255, 224, 146])],
-                [24.0, 64.0],
-            );
-            let target = selected_target_name.unwrap_or("nenhum alvo");
-            labels::text(
-                &mut image,
-                &font,
-                &[(target, [220, 210, 175])],
-                [24.0, 84.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[("Preço", [255, 224, 146])],
-                [268.0, 64.0],
-            );
-            let price_colour = if player_shop_price_focused {
-                [255, 255, 255]
-            } else {
-                [220, 210, 175]
-            };
-            labels::text(
-                &mut image,
-                &font,
-                &[(player_shop_price, price_colour)],
-                [268.0, 84.0],
-            );
-            if player_shop_open {
-                labels::text(
-                    &mut image,
-                    &font,
-                    &[("Sua banca está aberta", [140, 225, 165])],
-                    [24.0, 104.0],
-                );
-                team_button(&mut image, &font, 24, 112, "FECHAR BANCA");
-                team_button(&mut image, &font, 268, 112, "ADICIONAR ITEM");
-            } else {
-                // Beside the button, which sits where this line was.
-                labels::text(
-                    &mut image,
-                    &font,
-                    &[("Preço padrão: 1000 silver", [170, 164, 143])],
-                    [268.0, 116.0],
-                );
-                team_button(&mut image, &font, 24, 112, "ABRIR BANCA");
-            }
-            // The booth's name: shown over the seller while open, kept for
-            // the next time. Enter saves it.
-            labels::text(&mut image, &font, &[("Nome da banca", [255, 224, 146])], [268.0, 146.0]);
-            let shown_name = if player_shop_name.is_empty() && !player_shop_name_focused {
-                "clique e digite; Enter salva"
-            } else {
-                player_shop_name
-            };
-            let name_colour = if player_shop_name_focused {
-                [255, 255, 255]
-            } else if player_shop_name.is_empty() {
-                [150, 150, 150]
-            } else {
-                [220, 210, 175]
-            };
-            let caret = if player_shop_name_focused { "_" } else { "" };
-            labels::text(
-                &mut image,
-                &font,
-                &[(shown_name, name_colour), (caret, [255, 255, 255])],
-                [268.0, 162.0],
-            );
-            if selected_target_name.is_some() {
-                team_button(&mut image, &font, 24, 146, "CONSULTAR ALVO");
-            } else {
-                labels::text(
-                    &mut image,
-                    &font,
-                    &[(
-                        "Selecione um jogador próximo para consultar",
-                        [150, 150, 150],
-                    )],
-                    [24.0, 154.0],
-                );
-            }
-            labels::text(
-                &mut image,
-                &font,
-                &[(
-                    "Itens anunciados — clique para comprar/remover",
-                    [255, 224, 146],
-                )],
-                [24.0, 178.0],
-            );
-            if player_shop_items.is_empty() {
-                labels::text(
-                    &mut image,
-                    &font,
-                    &[("Nenhum anúncio carregado", [150, 150, 150])],
-                    [24.0, 204.0],
-                );
-            } else {
-                for (index, listing) in player_shop_items.iter().take(5).enumerate() {
-                    let row = 190 + index as u32 * 26;
-                    let action = if own_character_id == Some(listing.owner_id) {
-                        "REMOVER"
-                    } else {
-                        "COMPRAR"
-                    };
-                    let line = format!("{}  | {} silver", listing.item.item_type, listing.price);
-                    labels::text(
-                        &mut image,
-                        &font,
-                        &[(line.as_str(), [220, 210, 175])],
-                        [24.0, row as f32],
-                    );
-                    labels::text(
-                        &mut image,
-                        &font,
-                        &[(action, [255, 224, 146])],
-                        [410.0, row as f32],
-                    );
-                }
-            }
         }
         QuickPanel::Team => {
             labels::text(
@@ -5862,11 +5686,11 @@ mod icon_tests {
         INVENTORY_FILTER_HEIGHT, INVENTORY_FILTER_STEP_X, INVENTORY_FILTER_WIDTH,
         INVENTORY_FILTER_X, INVENTORY_FILTER_Y, INVENTORY_SLOT_SIZE, INVENTORY_SLOT_STEP_X,
         INVENTORY_SLOT_STEP_Y, INVENTORY_SLOT_X, INVENTORY_SLOT_Y, INVENTORY_WIDTH,
-        InventoryFilter, PlayerShopPanelAction, STATUS_STANDARD_HEIGHT, StatusLayout, StatusTab,
+        InventoryFilter, STATUS_STANDARD_HEIGHT, StatusLayout, StatusTab,
         animation_frame, consumable_bundle_for_item, health_recovery_for_item, inventory_close_at,
         inventory_filter_at, inventory_image, inventory_item_at, inventory_organize_at,
         inventory_panel_at, inventory_position, inventory_slot_at, inventory_slot_position,
-        is_consumable, mana_recovery_for_item, player_shop_panel_action_at, player_shop_price_at,
+        is_consumable, mana_recovery_for_item,
         status_base_image, status_character_clip, status_close_at, status_dynamic_image,
         status_equipment_items, status_equipment_overlay_image, status_equipment_slot_at,
         status_position, status_reputation_donate_at, status_tab_at, status_title_at,
@@ -6434,77 +6258,6 @@ mod icon_tests {
         assert_eq!(team_health_fraction(50, 100), 0.5);
         assert_eq!(team_health_fraction(150, 100), 1.0);
         assert_eq!(team_health_fraction(10, 0), 0.0);
-    }
-
-    #[test]
-    fn player_shop_panel_actions_keep_open_query_and_listing_zones_stable() {
-        let viewport = [1000.0, 800.0];
-        let [left, top] = super::quick_panel_position(viewport, super::QuickPanel::Market);
-        assert!(player_shop_price_at(viewport, [left + 300.0, top + 90.0]));
-        assert!(!player_shop_price_at(viewport, [left + 300.0, top + 120.0]));
-        let listings = vec![crate::network::PlayerShopItem {
-            owner_id: 7,
-            price: 1_000,
-            item: crate::network::OwnedItem {
-                uid: 42,
-                item_type: 410003,
-                position: 0,
-                durability: 100,
-                max_durability: 100,
-                plus: 0,
-                rarity: 0,
-                gem_one: 0,
-                gem_two: 0,
-                rarity_roll: 0,
-                bless: 0,
-                enchant_hp: 0,
-                color: 0,
-            },
-        }];
-        assert_eq!(
-            player_shop_panel_action_at(
-                viewport,
-                [left + 30.0, top + 125.0],
-                false,
-                &[],
-                Some(9),
-                false,
-            ),
-            Some(PlayerShopPanelAction::Open)
-        );
-        assert_eq!(
-            player_shop_panel_action_at(
-                viewport,
-                [left + 30.0, top + 158.0],
-                true,
-                &[],
-                Some(9),
-                true,
-            ),
-            Some(PlayerShopPanelAction::QueryTarget)
-        );
-        assert_eq!(
-            player_shop_panel_action_at(
-                viewport,
-                [left + 30.0, top + 195.0],
-                true,
-                &listings,
-                Some(9),
-                false,
-            ),
-            Some(PlayerShopPanelAction::Buy(0))
-        );
-        assert_eq!(
-            player_shop_panel_action_at(
-                viewport,
-                [left + 30.0, top + 195.0],
-                true,
-                &listings,
-                Some(7),
-                false,
-            ),
-            Some(PlayerShopPanelAction::Remove(0))
-        );
     }
 
     #[test]

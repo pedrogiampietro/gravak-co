@@ -184,25 +184,7 @@ impl MsgAction {
     async fn handle_leave_booth(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
         let entity = actor.try_entity()?;
         let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
-        state.player_shop_manager().close(character.id());
-        if character.booth_name().is_some() {
-            character.set_booth_name(None);
-            let sign = MsgTalk::booth(character, "");
-            actor.send(sign.clone()).await?;
-            actor.screen().send_message(sign).await?;
-        }
-        // Remove Player from Booth.
-        let myscreen = actor.screen();
-        myscreen.clear()?;
-        myscreen.load_surroundings(state).await?;
-        actor
-            .send(MsgTalk::from_system(
-                character.id(),
-                TalkChannel::System,
-                "Player shop closed.",
-            ))
-            .await?;
-        Ok(())
+        leave_booth(state, actor, character).await
     }
 
     #[tracing::instrument(skip_all)]
@@ -219,6 +201,28 @@ impl MsgAction {
                     character.id(),
                     TalkChannel::System,
                     "Player shops are not available on this map.",
+                ))
+                .await?;
+            return Ok(());
+        }
+        // One booth a flag: someone may already sit where this one would.
+        let here = character.entity().location();
+        let taken = state.player_shop_manager().owners().into_iter().any(|owner| {
+            owner != character.id()
+                && state.entity(owner).is_some_and(|entity| {
+                    entity.as_character().is_some_and(|seller| {
+                        seller.entity().map_id() == character.entity().map_id()
+                            && seller.entity().location().x == here.x
+                            && seller.entity().location().y == here.y
+                    })
+                })
+        });
+        if taken {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::System,
+                    "Someone is already selling at this flag.",
                 ))
                 .await?;
             return Ok(());
@@ -248,7 +252,7 @@ impl MsgAction {
                     match item {
                         Some(item) if state.player_shop_manager().restore_item(character.id(), listing).is_ok() => {
                             actor
-                                .send(super::MsgVendorItem::new(character.id(), *item, listing.price))
+                                .send(super::MsgVendorItem::new(character.id(), *item, listing))
                                 .await?;
                             restored += 1;
                         },
@@ -285,6 +289,10 @@ impl MsgAction {
         let current_y = self.data2.hi();
         let entity = actor.try_entity()?;
         let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
+        // A seller stays at their booth until they leave it.
+        if selling(state, actor, me).await? {
+            return Ok(());
+        }
         let loc = me.entity().location();
         let mymap_id = me.entity().map_id();
         // Starting to validate this jump.
@@ -717,4 +725,55 @@ mod tests {
         // Mostly -y with a little +x is still -y.
         assert_eq!(walk_direction((100, 100), (102, 90)), 4);
     }
+}
+
+/// Takes `character`'s booth down: the listings end (the items never left
+/// the bag), the sign over it goes, and the people around see them stand.
+/// Whether `character` sells at an open booth, in which case a step or a
+/// jump is refused: they stay put until they leave it.
+pub(crate) async fn selling(
+    state: &State,
+    actor: &Actor<ActorState>,
+    character: &crate::entities::Character,
+) -> Result<bool, Error> {
+    if state.player_shop_manager().view(character.id()).is_none() {
+        return Ok(false);
+    }
+    character.kick_back().await?;
+    actor
+        .send(MsgTalk::from_system(
+            character.id(),
+            TalkChannel::System,
+            "You are selling: leave your booth to go.",
+        ))
+        .await?;
+    Ok(true)
+}
+
+pub(crate) async fn leave_booth(
+    state: &State,
+    actor: &Actor<ActorState>,
+    character: &crate::entities::Character,
+) -> Result<(), Error> {
+    if state.player_shop_manager().close(character.id()).is_none() {
+        return Ok(());
+    }
+    if character.booth_name().is_some() {
+        character.set_booth_name(None);
+        let sign = MsgTalk::booth(character, "");
+        actor.send(sign.clone()).await?;
+        actor.screen().send_message(sign).await?;
+    }
+    // Remove Player from Booth.
+    let myscreen = actor.screen();
+    myscreen.clear()?;
+    myscreen.load_surroundings(state).await?;
+    actor
+        .send(MsgTalk::from_system(
+            character.id(),
+            TalkChannel::System,
+            "Player shop closed.",
+        ))
+        .await?;
+    Ok(())
 }

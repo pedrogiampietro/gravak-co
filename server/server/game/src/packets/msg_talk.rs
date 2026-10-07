@@ -346,8 +346,8 @@ pub async fn send_chat_history(
     Ok(())
 }
 
-/// Names a character's booth, kept for next time; an open booth shows it at
-/// once.
+/// The line a character's booth hawks, kept for next time; an open booth
+/// shows it at once.
 async fn rename_booth(
     state: &State,
     actor: &tq_network::Actor<crate::ActorState>,
@@ -365,7 +365,7 @@ async fn rename_booth(
         actor.screen().send_message(sign).await?;
     }
     actor
-        .send(MsgTalk::from_system(me.id(), TalkChannel::System, format!("Your booth is called {name}.")))
+        .send(MsgTalk::from_system(me.id(), TalkChannel::System, format!("Your booth now hawks: {name}")))
         .await?;
     Ok(())
 }

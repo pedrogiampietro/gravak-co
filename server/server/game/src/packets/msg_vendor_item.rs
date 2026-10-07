@@ -20,16 +20,20 @@ pub struct MsgVendorItem {
     pub reserved: u8,
 }
 
+/// How a listing is paid (`view_type`): silver or CPs.
+pub const COST_SILVER: u16 = 1;
+pub const COST_CPS: u16 = 3;
+
 impl MsgVendorItem {
-    pub fn new(owner_id: u32, item: InventoryItem, price: u32) -> Self {
+    pub fn new(owner_id: u32, item: InventoryItem, listing: crate::player_shop::ShopListing) -> Self {
         Self {
             item_uid: item.uid,
             owner_id,
-            price,
+            price: listing.price,
             item_type: item.item_type,
             durability: item.durability,
             max_durability: item.max_durability,
-            view_type: 1,
+            view_type: if listing.cps { COST_CPS } else { COST_SILVER },
             position: item.position,
             gem_one: item.gem_one,
             gem_two: item.gem_two,
