@@ -231,6 +231,13 @@ impl Map {
             .map(|[x, y]| Location::new(x as u16, y as u16, origin.direction))
     }
 
+    /// Whether there is anything to fight here besides players: monsters
+    /// or the training dummies.
+    pub fn has_foes(&self) -> bool {
+        !self.monsters.is_empty()
+            || self.npcs.values().any(|entity| entity.as_npc().is_some_and(Npc::is_training_goal))
+    }
+
     pub fn npc(&self, id: u32) -> Option<&Npc> {
         self.npcs.get(&id).and_then(|v| v.as_npc())
     }
