@@ -779,6 +779,9 @@ pub struct Renderer {
     /// The facing an effect is drawn turned by (a weapon's swing turns
     /// with its wielder); `None` for effects that face the camera.
     effect_yaw: Option<f32>,
+    /// Where an effect bound to a weapon hangs (the weapon's posed bone);
+    /// `None` for effects placed at the actor's feet.
+    effect_attachment: Option<Matrix4>,
     /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
     /// the hero), the effect and when it began.
     weapon_flashes: Vec<(Option<u32>, String, f32)>,
@@ -786,8 +789,9 @@ pub struct Renderer {
     /// (their animation start), so each starts its flash once.
     last_hero_swing: u64,
     last_remote_swing: HashMap<u32, f32>,
-    /// `Action3DEffect.ini`: weapon type and item (`<type>.<item % 1000>`)
-    /// to the effect its blow plays.
+    /// `Action3DEffect.ini`: action, weapon type and item
+    /// (`<action>.<type>.<item % 1000>`) to its effect: 401 a blow's flash,
+    /// 999 what a Super weapon always shows.
     swing_effects: Option<HashMap<String, String>>,
     last_hud_key: Option<String>,
 }
@@ -998,6 +1002,7 @@ impl Renderer {
             effect_scale: 0.75,
             current_trail: (0.0, Vec::new()),
             effect_yaw: None,
+            effect_attachment: None,
             weapon_flashes: Vec::new(),
             last_hero_swing: 0,
             last_remote_swing: HashMap::new(),
@@ -1012,6 +1017,11 @@ impl Renderer {
     /// The swing effect a weapon's blow plays (`Action3DEffect.ini`, the
     /// attack motion 401: `999.401.<type>.<item % 1000>`).
     fn swing_effect(&mut self, assets: &mut Assets, weapon: u32) -> Option<String> {
+        self.weapon_effect(assets, "401", weapon)
+    }
+
+    /// A weapon's effect in `action` (`Action3DEffect.ini`, any body).
+    fn weapon_effect(&mut self, assets: &mut Assets, action: &str, weapon: u32) -> Option<String> {
         if weapon == 0 {
             return None;
         }
@@ -1021,12 +1031,13 @@ impl Renderer {
                 .filter_map(|line| {
                     let (key, effect) = line.trim().split_once('=')?;
                     let mut parts = key.split('.');
-                    let (_body, action, kind, item) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
-                    (action == "401" && effect != "none").then(|| (format!("{kind}.{item}"), effect.trim().to_owned()))
+                    let (body, action, kind, item) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+                    let effect = effect.trim();
+                    (body == "999" && effect != "none").then(|| (format!("{action}.{kind}.{item}"), effect.to_owned()))
                 })
                 .collect()
         });
-        catalog.get(&format!("{}.{:03}", weapon / 1_000, weapon % 1_000)).cloned()
+        catalog.get(&format!("{action}.{}.{:03}", weapon / 1_000, weapon % 1_000)).cloned()
     }
 
     /// Draws the swings of `who` at its feet, turned by its facing; the
@@ -1061,6 +1072,32 @@ impl Renderer {
         // Flashes of others drawn later this frame stay.
         kept.extend(std::mem::take(&mut self.weapon_flashes));
         self.weapon_flashes = kept;
+    }
+
+    /// What Super weapons always show (`Action3DEffect.ini` 999.999),
+    /// bound to each weapon where it is held.
+    #[allow(clippy::too_many_arguments)]
+    fn push_weapon_auras(
+        &mut self,
+        assets: &mut Assets,
+        weapons: Vec<(u32, Matrix4)>,
+        origin: [f32; 2],
+        facing: f32,
+        time: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        for (weapon, matrix) in weapons {
+            let Some(name) = self.weapon_effect(assets, "999", weapon) else {
+                continue;
+            };
+            self.effect_yaw = Some(facing);
+            self.effect_attachment = Some(matrix);
+            self.push_looping_effect(assets, &name, origin, time, sort_depth, viewport, draws);
+            self.effect_attachment = None;
+            self.effect_yaw = None;
+        }
     }
 
     /// Plays an effect over and over (status effects): the time wraps at
@@ -1191,6 +1228,7 @@ impl Renderer {
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         let scale = self.effect_scale;
         let yaw = self.effect_yaw;
+        let attachment = self.effect_attachment;
         // A flat effect (a status flag) is moved by its own animation far
         // from its origin: centre it on its slot by the box it fills.
         let centre = flat.map(|_| {
@@ -1239,7 +1277,7 @@ impl Renderer {
                         let p = mesh.transformed_vertex_position(
                             vertex,
                             motion,
-                            Matrix4::IDENTITY,
+                            attachment.unwrap_or(Matrix4::IDENTITY),
                             frame,
                         );
                         let p = turned(p, yaw);
@@ -1289,6 +1327,7 @@ impl Renderer {
                     trail_point(trail, when).unwrap_or(origin)
                 };
                 let project = |p: sandbox_data::c3::Vector3, origin: [f32; 2]| {
+                    let p = attachment.map_or(p, |matrix| matrix.transform_point(p));
                     let p = turned(p, yaw);
                     let screen_y = (p.y * sin + p.z * cos) * scale;
                     let depth = (p.y * cos - p.z * sin) * scale;
@@ -2859,6 +2898,14 @@ impl Renderer {
                 sort_depth: actor_depth,
             });
         }
+        if local_ghost.is_none() {
+            let weapons = if local_idle {
+                character.weapon_matrices(0.0, Action::Idle, None)
+            } else {
+                character.weapon_matrices(time, player.action, player.progress().or(action_progress))
+            };
+            self.push_weapon_auras(assets, weapons, origin, player.facing, time, actor_depth + 0.04, viewport, &mut draws);
+        }
         if time < hit_until {
             if !self.textures.contains_key("@hit-flash") {
                 self.upload("@hit-flash", crate::labels::hit_flash_image()?);
@@ -3184,6 +3231,12 @@ impl Renderer {
                         sort_depth: depth,
                     });
                 }
+                let weapons = if posed {
+                    remote_character.weapon_matrices(time, action, action_progress)
+                } else {
+                    remote_character.weapon_matrices(0.0, Action::Idle, None)
+                };
+                self.push_weapon_auras(assets, weapons, origin, facing, time, depth + 0.04, viewport, &mut draws);
             }
             if !actor.npc && !monster && !actor.name.is_empty() {
                 self.push_speech(

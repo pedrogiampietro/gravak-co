@@ -16,6 +16,8 @@ pub struct Part {
     /// Empty, or `None` in an action, keeps `local`.
     actions_local: Vec<Option<C3Motion>>,
     track: usize,
+    /// The weapon this part is (its item type), 0 for the rest.
+    pub item: u32,
 }
 #[derive(Clone)]
 pub struct Character {
@@ -244,6 +246,7 @@ impl Character {
             local: None,
             actions_local: Vec::new(),
             track: index,
+            item: 0,
         }];
 
         if hair != 0 {
@@ -291,6 +294,7 @@ impl Character {
             ) {
                 let mut part = part;
                 part.actions_local = weapon_action_motions(assets, weapon, &action_codes);
+                part.item = weapon;
                 parts.push(part);
             }
         }
@@ -403,17 +407,35 @@ impl Character {
         Self::project(part, &palette, facing)
     }
 
+    /// The weapons held and where the hand holds each now (its dummy,
+    /// `v_r_weapon` or `v_l_weapon`, posed as `vertices` poses it): the
+    /// effects of a weapon hang there, in the dummy's own units.
+    pub fn weapon_matrices(&self, seconds: f32, action: Action, progress: Option<f32>) -> Vec<(u32, Matrix4)> {
+        self.parts
+            .iter()
+            .filter(|part| part.item != 0)
+            .map(|part| {
+                let track = &self.actions[action.index()].motions[part.track];
+                (part.item, track.matrix_at(0, self.frame(track, seconds, action, progress)))
+            })
+            .collect()
+    }
+
+    /// The frame of `track` at `seconds` into `action`, or at `progress`
+    /// through it.
+    fn frame(&self, track: &C3Motion, seconds: f32, action: Action, progress: Option<f32>) -> f32 {
+        let frames = track.frame_count.max(1) as f32;
+        progress.map_or_else(
+            || (seconds * 1000.0 / self.intervals[action.index()]) % frames,
+            |p| (p.clamp(0.0, 1.0) * frames).min(frames - f32::EPSILON),
+        )
+    }
+
     /// Each bone's transform of `part` in `action`.
     fn palette(&self, part: &Part, seconds: f32, action: Action, progress: Option<f32>) -> Vec<Matrix4> {
+        let track = &self.actions[action.index()].motions[part.track];
+        let frame = self.frame(track, seconds, action, progress);
         let action = action.index();
-        let track = &self.actions[action].motions[part.track];
-        let frame = progress.map_or_else(
-            || (seconds * 1000.0 / self.intervals[action]) % track.frame_count.max(1) as f32,
-            |p| {
-                (p.clamp(0.0, 1.0) * track.frame_count.max(1) as f32)
-                    .min(track.frame_count.max(1) as f32 - f32::EPSILON)
-            },
-        );
         // A weapon's motion for this action runs over the body's: the
         // bow's string is drawn and let go within the shot.
         let action_local = part.actions_local.get(action).and_then(Option::as_ref);
@@ -865,6 +887,7 @@ fn load_dyed_attachment(
                 .map_or_else(|| part.motions.first().cloned().ok_or("Part motion missing"), Ok)?,
         ),
         track,
+        item: 0,
     })
 }
 
@@ -915,3 +938,4 @@ fn weapon_motions(assets: &mut Assets, weapon: u32, codes: &[Option<u32>]) -> Ve
         })
         .collect()
 }
+
