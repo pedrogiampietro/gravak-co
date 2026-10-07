@@ -1196,15 +1196,22 @@ pub fn image(
         });
         if let Some(name) = name.as_deref() {
             let frame = hotkey_rect(viewport, index);
-            tooltip(
-                &mut img,
-                font,
-                &[
-                    (name, [255, 255, 255, 255]),
-                    (&slot.hotkey, [200, 200, 200, 255]),
-                ],
-                [frame.0, frame.1 - 4],
-            );
+            // A skill shows its level and experience, as in the skill list.
+            let progress = match slot.binding() {
+                Some(crate::action_bar::Binding::Skill(id)) => {
+                    skills.skills.iter().find(|(skill, _, _)| *skill == id).map(|(_, level, experience)| {
+                        (format!("Level: {level}"), format!("Experience: {experience}"))
+                    })
+                }
+                _ => None,
+            };
+            let mut lines: Vec<(&str, [u8; 4])> = vec![(name, [255, 255, 0, 255])];
+            if let Some((level, experience)) = &progress {
+                lines.push((level, [255, 255, 255, 255]));
+                lines.push((experience, [255, 255, 255, 255]));
+            }
+            lines.push((&slot.hotkey, [200, 200, 200, 255]));
+            tooltip(&mut img, font, &lines, [frame.0, frame.1 - 4]);
         }
     }
     Ok(img)
