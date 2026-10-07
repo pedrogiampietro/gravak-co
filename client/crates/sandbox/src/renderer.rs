@@ -776,6 +776,19 @@ pub struct Renderer {
     /// The trail of the actor whose status effects are being drawn, in
     /// screen pixels, newest first, and the time it is drawn at.
     current_trail: (f32, Vec<(f32, [f32; 2])>),
+    /// The facing an effect is drawn turned by (a weapon's swing turns
+    /// with its wielder); `None` for effects that face the camera.
+    effect_yaw: Option<f32>,
+    /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
+    /// the hero), the effect and when it began.
+    weapon_flashes: Vec<(Option<u32>, String, f32)>,
+    /// The last swing seen of the hero (its action instance) and of others
+    /// (their animation start), so each starts its flash once.
+    last_hero_swing: u64,
+    last_remote_swing: HashMap<u32, f32>,
+    /// `Action3DEffect.ini`: weapon type and item (`<type>.<item % 1000>`)
+    /// to the effect its blow plays.
+    swing_effects: Option<HashMap<String, String>>,
     last_hud_key: Option<String>,
 }
 impl Renderer {
@@ -984,11 +997,70 @@ impl Renderer {
             trail_history: HashMap::new(),
             effect_scale: 0.75,
             current_trail: (0.0, Vec::new()),
+            effect_yaw: None,
+            weapon_flashes: Vec::new(),
+            last_hero_swing: 0,
+            last_remote_swing: HashMap::new(),
+            swing_effects: None,
             last_hud_key: None,
             chat_log: None,
             chat_log_rect: [0; 4],
             chat_menu: None,
         })
+    }
+
+    /// The swing effect a weapon's blow plays (`Action3DEffect.ini`, the
+    /// attack motion 401: `999.401.<type>.<item % 1000>`).
+    fn swing_effect(&mut self, assets: &mut Assets, weapon: u32) -> Option<String> {
+        if weapon == 0 {
+            return None;
+        }
+        let catalog = self.swing_effects.get_or_insert_with(|| {
+            let text = assets.read("ini/Action3DEffect.ini").map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
+            text.lines()
+                .filter_map(|line| {
+                    let (key, effect) = line.trim().split_once('=')?;
+                    let mut parts = key.split('.');
+                    let (_body, action, kind, item) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+                    (action == "401" && effect != "none").then(|| (format!("{kind}.{item}"), effect.trim().to_owned()))
+                })
+                .collect()
+        });
+        catalog.get(&format!("{}.{:03}", weapon / 1_000, weapon % 1_000)).cloned()
+    }
+
+    /// Draws the swings of `who` at its feet, turned by its facing; the
+    /// finished ones go.
+    #[allow(clippy::too_many_arguments)]
+    fn push_weapon_flashes(
+        &mut self,
+        assets: &mut Assets,
+        who: Option<u32>,
+        origin: [f32; 2],
+        facing: f32,
+        time: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        let flashes = std::mem::take(&mut self.weapon_flashes);
+        let mut kept = Vec::with_capacity(flashes.len());
+        for (owner, name, started) in flashes {
+            if owner != who {
+                kept.push((owner, name, started));
+                continue;
+            }
+            self.effect_yaw = Some(facing);
+            let playing = self.push_effect(assets, &name, origin, time - started, sort_depth, viewport, draws);
+            self.effect_yaw = None;
+            // A blow's flash lasts its effect; never more than two seconds.
+            if playing && time - started < 2.0 {
+                kept.push((owner, name, started));
+            }
+        }
+        // Flashes of others drawn later this frame stay.
+        kept.extend(std::mem::take(&mut self.weapon_flashes));
+        self.weapon_flashes = kept;
     }
 
     /// Plays an effect over and over (status effects): the time wraps at
@@ -1118,6 +1190,7 @@ impl Renderer {
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         let scale = self.effect_scale;
+        let yaw = self.effect_yaw;
         // A flat effect (a status flag) is moved by its own animation far
         // from its origin: centre it on its slot by the box it fills.
         let centre = flat.map(|_| {
@@ -1169,6 +1242,7 @@ impl Renderer {
                             Matrix4::IDENTITY,
                             frame,
                         );
+                        let p = turned(p, yaw);
                         let (screen, depth) = match (flat, centre) {
                             (Some(size), Some((middle, span))) => {
                                 let unit = size / span;
@@ -1215,6 +1289,7 @@ impl Renderer {
                     trail_point(trail, when).unwrap_or(origin)
                 };
                 let project = |p: sandbox_data::c3::Vector3, origin: [f32; 2]| {
+                    let p = turned(p, yaw);
                     let screen_y = (p.y * sin + p.z * cos) * scale;
                     let depth = (p.y * cos - p.z * sin) * scale;
                     ([origin[0] + p.x * scale, origin[1] + screen_y], (0.5 + depth * 0.0005).clamp(0.001, 0.999))
@@ -2586,6 +2661,14 @@ impl Renderer {
         };
         let origin = [ground[0] + recoil_x, ground[1] - player.height - player.hover + recoil_y];
         let actor_depth = player.position[0] + player.position[1];
+        // Each blow sweeps the weapon's flash (Action3DEffect.ini).
+        if player.action == Action::Attack && player.action_instance != self.last_hero_swing {
+            self.last_hero_swing = player.action_instance;
+            if let Some(name) = self.swing_effect(assets, character.right_weapon_id) {
+                self.weapon_flashes.push((None, name, time));
+            }
+        }
+        self.push_weapon_flashes(assets, None, origin, player.facing, time, actor_depth + 0.05, viewport, &mut draws);
         // The world character stays visible while the Character panel is open;
         // the paper doll in the panel is a separate preview on the left.
         if time < level_up_until {
@@ -2870,6 +2953,20 @@ impl Renderer {
             }
             let depth = actor.position[0] + actor.position[1];
             let facing = -f32::from((actor.direction % 8) + 1) * std::f32::consts::FRAC_PI_4;
+            // Another player's blow sweeps their weapon's flash too.
+            if !actor.npc
+                && actor.action == 140
+                && time < actor.animation_until
+                && self.last_remote_swing.get(&actor.id) != Some(&actor.animation_started)
+            {
+                self.last_remote_swing.insert(actor.id, actor.animation_started);
+                if let Some(name) = self.swing_effect(assets, actor.right_weapon) {
+                    self.weapon_flashes.push((Some(actor.id), name, time));
+                }
+            }
+            if !actor.npc {
+                self.push_weapon_flashes(assets, Some(actor.id), origin, facing, time, depth + 0.05, viewport, &mut draws);
+            }
             // "Full" shadows (Options window): players and monsters get the
             // hero's ground shadow; "Simple" keeps it under the hero only.
             if hud_config.full_shadows
@@ -5720,6 +5817,16 @@ fn show_feedback(status: &str) -> bool {
         || !["online:", "online ", "loading", "connecting", "Network"]
             .iter()
             .any(|prefix| status.starts_with(prefix))
+}
+
+/// A point of an effect turned by its wielder's facing, as the character's
+/// own vertices are (`Character::project`).
+fn turned(p: sandbox_data::c3::Vector3, yaw: Option<f32>) -> sandbox_data::c3::Vector3 {
+    let Some(yaw) = yaw else {
+        return p;
+    };
+    let (s, c) = yaw.sin_cos();
+    sandbox_data::c3::Vector3 { x: p.x * c - p.y * s, y: p.x * s + p.y * c, z: p.z }
 }
 
 /// Client-side remote action codes: a dead player (the 401 fall, its last
