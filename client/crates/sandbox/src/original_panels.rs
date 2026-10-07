@@ -1128,6 +1128,11 @@ fn text(image: &mut RgbaImage, value: &str, x: i32, y: i32, colour: [u8; 4], wid
     }
 }
 
+/// A one-pixel frame around `rect`.
+pub fn outline_rect(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
+    outline(image, rect, colour);
+}
+
 fn outline(image: &mut RgbaImage, rect: [i32; 4], colour: [u8; 4]) {
     let [x, y, width, height] = rect;
     let mut put = |px: i32, py: i32| {

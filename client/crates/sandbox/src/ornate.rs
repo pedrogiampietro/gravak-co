@@ -275,16 +275,6 @@ pub fn plate(
     Ok(image)
 }
 
-/// The sign over an open booth: its name on a small plate as wide as it
-/// needs.
-pub fn booth_sign(name: &str) -> crate::assets::Result<RgbaImage> {
-    let font = crate::labels::decorative_font()?;
-    let size = 12.0;
-    let width = paint::text_width(&font, &name.to_uppercase(), size, size * 0.09);
-    let width = (width + 30.0).clamp(70.0, 260.0) as u32;
-    plate(None, [width, 24], name, GRAVAK, Look::Normal, None)
-}
-
 /// The VIP title shown over a VIP's name, at `scale` (1 over the name,
 /// larger in the VIP window): "VIP" in gold Cinzel with a dark outline,
 /// leaf wings on both sides, a diamond above, a warm glow and sparks.

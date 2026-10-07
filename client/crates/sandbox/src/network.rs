@@ -61,7 +61,7 @@ pub struct ReadyState {
     pub kill_points: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OwnedItem {
     pub uid: u32,
     pub item_type: u32,
@@ -88,6 +88,8 @@ pub struct OwnedItem {
 pub struct PlayerShopItem {
     pub owner_id: u32,
     pub price: u32,
+    /// Priced in CPs rather than silver.
+    pub cps: bool,
     pub item: OwnedItem,
 }
 
@@ -296,8 +298,11 @@ pub enum NetworkEvent {
     VendorItem {
         owner_id: u32,
         price: u32,
+        cps: bool,
         item: OwnedItem,
     },
+    /// A booth listing gone (sold, or taken back): MsgItem 23 from the server.
+    BoothItemGone(u32),
     Guild {
         action: u32,
         data: u32,
@@ -499,6 +504,10 @@ pub(crate) enum NetworkCommand {
     Action {
         character_id: u32,
         action: u32,
+    },
+    Booth {
+        character_id: u32,
+        open: bool,
     },
     QueryTeamMember {
         character_id: u32,
@@ -730,6 +739,7 @@ impl NetworkHandle {
                 | NetworkEvent::Trade { .. }
                 | NetworkEvent::TradeItem(_)
                 | NetworkEvent::VendorItem { .. }
+                | NetworkEvent::BoothItemGone(_)
                 | NetworkEvent::Guild { .. }
                 | NetworkEvent::GuildMember(_) => {}
                 NetworkEvent::Silver(_)
@@ -851,17 +861,11 @@ impl NetworkHandle {
     }
 
     pub fn create_player_shop(&self, character_id: u32) {
-        let _ = self.commands.send(NetworkCommand::Action {
-            character_id,
-            action: 111,
-        });
+        let _ = self.commands.send(NetworkCommand::Booth { character_id, open: true });
     }
 
     pub fn close_player_shop(&self, character_id: u32) {
-        let _ = self.commands.send(NetworkCommand::Action {
-            character_id,
-            action: 114,
-        });
+        let _ = self.commands.send(NetworkCommand::Booth { character_id, open: false });
     }
 
     /// Asks to revive after death (MsgAction 94).
@@ -890,10 +894,14 @@ impl NetworkHandle {
         });
     }
 
-    pub fn player_shop_add(&self, character_id: u32, item_uid: u32, price: u32) {
-        let _ = self.commands.send(NetworkCommand::PlayerShopAction {
-            packet: ItemActionPacket::booth_add(character_id, item_uid, price),
-        });
+    /// Lists an item in the own booth, for `price` silver or CPs.
+    pub fn player_shop_add(&self, character_id: u32, item_uid: u32, price: u32, cps: bool) {
+        let mut packet = ItemActionPacket::booth_add(character_id, item_uid, price);
+        if cps {
+            // MsgItem 29, `BoothAddCPs`.
+            packet.action_type = 29;
+        }
+        let _ = self.commands.send(NetworkCommand::PlayerShopAction { packet });
     }
 
     pub fn player_shop_remove(&self, character_id: u32, item_uid: u32) {
@@ -1430,6 +1438,8 @@ pub(crate) async fn play(
                     let _ = events.send(NetworkEvent::VendorItem {
                         owner_id: packet.owner_id,
                         price: packet.price,
+                        // The view type: 1 silver, 3 CPs.
+                        cps: packet.view_type == 3,
                         item: OwnedItem {
                             uid: packet.item_uid,
                             item_type: packet.item_type,
@@ -1912,6 +1922,8 @@ pub(crate) async fn play(
                     let word = |at: usize| u32::from_le_bytes([body[at], body[at + 1], body[at + 2], body[at + 3]]);
                     if word(8) == 27 {
                         let _ = events.send(NetworkEvent::Pong(word(12)));
+                    } else if word(8) == 23 {
+                        let _ = events.send(NetworkEvent::BoothItemGone(word(4)));
                     }
                 }
                 Some(_) => {}
@@ -1980,6 +1992,12 @@ pub(crate) async fn play(
                 Some(NetworkCommand::KillMode { character_id, mode }) => {
                     session
                         .send(&ActionPacket::set_kill_mode(character_id, u32::from(mode)))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Booth { character_id, open }) => {
+                    session
+                        .send(&ActionPacket::booth(character_id, open))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

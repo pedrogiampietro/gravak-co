@@ -861,6 +861,19 @@ impl ActionPacket {
         }
     }
 
+    /// Sets up the booth (MsgAction 111, `CreateBooth`) or takes it down
+    /// (114, `LeaveBooth`).
+    pub fn booth(character_id: u32, open: bool) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: 0,
+            details: 0,
+            action_type: if open { 111 } else { 114 },
+        }
+    }
+
     pub fn change_action(character_id: u32, action: u32) -> Self {
         Self {
             client_timestamp: unix_timestamp(),

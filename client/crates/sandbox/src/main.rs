@@ -4,6 +4,7 @@ mod action_bar;
 mod cursors;
 mod assets;
 mod audio;
+mod booth;
 mod bounty_board;
 mod character;
 mod components;
@@ -480,14 +481,9 @@ struct App {
     pending_trade_items: Vec<u32>,
     /// The trade opened the inventory, so ending it closes it again.
     trade_opened_inventory: bool,
-    player_shop_items: Vec<network::PlayerShopItem>,
-    player_shop_open: bool,
-    player_shop_price: String,
-    player_shop_price_focused: bool,
-    /// The booth name being typed in the player shop window.
-    player_shop_name: String,
-    player_shop_name_focused: bool,
-    /// Open booths around, by their seller's name: the booth's name.
+    /// The own booth and the one being looked at, with their windows.
+    booth: booth::BoothView,
+    /// Open booths around, by their seller's name: the line they hawk.
     booths: HashMap<String, String>,
     /// The hero's statuses and when each ends, on the server's clock.
     status_timers: Vec<(u64, u64)>,
@@ -661,23 +657,47 @@ impl ApplicationHandler for App {
                 self.chat_focused = false;
                 self.player.stop();
             }
-            WindowEvent::KeyboardInput { event, .. } if self.player_shop_name_focused => {
+            // The booth's hawk box takes the keyboard while open.
+            WindowEvent::KeyboardInput { event, .. } if self.booth.hawk_editing => {
                 if event.state == ElementState::Pressed {
                     match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Escape) => self.player_shop_name_focused = false,
+                        PhysicalKey::Code(KeyCode::Escape) => self.booth.hawk_editing = false,
                         PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
-                            self.player_shop_name_focused = false;
-                            self.send_booth_name();
+                            self.handle_booth_action(booth::BoothAction::HawkOk);
                         }
                         PhysicalKey::Code(KeyCode::Backspace) => {
-                            self.player_shop_name.pop();
+                            self.booth.hawk.pop();
                         }
                         _ => {
                             if let Some(text) = event.text.as_ref() {
-                                for ch in text.chars().filter(|ch| !ch.is_control()) {
-                                    if self.player_shop_name.chars().count() < 24 {
-                                        self.player_shop_name.push(ch);
-                                    }
+                                self.booth.type_hawk(text);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            // And its price box: digits, Tab between silver and CPs.
+            WindowEvent::KeyboardInput { event, .. } if self.booth.pricing.is_some() => {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => {
+                            self.handle_booth_action(booth::BoothAction::PriceCancel);
+                        }
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            self.handle_booth_action(booth::BoothAction::PriceOk);
+                        }
+                        PhysicalKey::Code(KeyCode::Tab) => {
+                            self.booth.price_field = match self.booth.price_field {
+                                booth::PriceField::Silver => booth::PriceField::Cps,
+                                booth::PriceField::Cps => booth::PriceField::Silver,
+                            };
+                        }
+                        PhysicalKey::Code(KeyCode::Backspace) => self.booth.erase_digit(),
+                        _ => {
+                            if let Some(text) = event.text.as_ref() {
+                                for digit in text.chars().filter(char::is_ascii_digit) {
+                                    self.booth.type_digit(digit);
                                 }
                             }
                         }
@@ -685,33 +705,22 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if self.warehouse_amount_focused || self.player_shop_price_focused =>
-            {
+            WindowEvent::KeyboardInput { event, .. } if self.warehouse_amount_focused => {
                 if event.state == ElementState::Pressed {
                     match event.physical_key {
                         PhysicalKey::Code(
                             KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter,
                         ) => {
                             self.warehouse_amount_focused = false;
-                            self.player_shop_price_focused = false;
                         }
                         PhysicalKey::Code(KeyCode::Backspace) => {
-                            if self.warehouse_amount_focused {
-                                self.warehouse_amount.pop();
-                            } else {
-                                self.player_shop_price.pop();
-                            }
+                            self.warehouse_amount.pop();
                         }
                         _ => {
                             if let Some(text) = event.text.as_ref() {
                                 for ch in text.chars().filter(char::is_ascii_digit) {
-                                    if self.warehouse_amount_focused {
-                                        if self.warehouse_amount.len() < 10 {
-                                            self.warehouse_amount.push(ch);
-                                        }
-                                    } else if self.player_shop_price.len() < 10 {
-                                        self.player_shop_price.push(ch);
+                                    if self.warehouse_amount.len() < 10 {
+                                        self.warehouse_amount.push(ch);
                                     }
                                 }
                             }
@@ -938,25 +947,6 @@ impl ApplicationHandler for App {
                     });
                     if !inside_amount {
                         self.warehouse_amount_focused = false;
-                    }
-                    let inside_price = self.window.as_ref().is_some_and(|window| {
-                        let size = window.inner_size();
-                        self.quick_panel == Some(shop::QuickPanel::Market)
-                            && shop::player_shop_price_at(
-                                [size.width as f32, size.height as f32],
-                                self.cursor,
-                            )
-                    });
-                    if !inside_price {
-                        self.player_shop_price_focused = false;
-                    }
-                    let inside_name = self.window.as_ref().is_some_and(|window| {
-                        let size = window.inner_size();
-                        self.quick_panel == Some(shop::QuickPanel::Market)
-                            && shop::player_shop_name_at([size.width as f32, size.height as f32], self.cursor)
-                    });
-                    if !inside_name {
-                        self.player_shop_name_focused = false;
                     }
                 }
                 // A release can be consumed by a UI drag below, so clear the
@@ -1549,12 +1539,7 @@ impl ApplicationHandler for App {
                         self.quick_panel,
                         self.hud_config,
                         self.network_character_id,
-                        &self.player_shop_items,
-                        self.player_shop_open,
-                        &self.player_shop_price,
-                        self.player_shop_price_focused,
-                        &self.player_shop_name,
-                        self.player_shop_name_focused,
+                        &self.booth,
                         self.bounty.as_ref(),
                         self.store.as_ref(),
                         self.daily_rewards.as_ref(),
@@ -1972,20 +1957,10 @@ impl App {
                 return true;
             }
             if self.quick_panel == Some(shop::QuickPanel::Market)
-                && shop::player_shop_name_at(viewport, self.cursor)
+                && let Some(action) =
+                    booth::action_at(viewport, self.cursor, &self.booth, self.network_character_id)
             {
-                self.warehouse_amount_focused = false;
-                self.player_shop_price_focused = false;
-                self.player_shop_name_focused = true;
-                self.held = false;
-                return true;
-            }
-            if self.quick_panel == Some(shop::QuickPanel::Market)
-                && shop::player_shop_price_at(viewport, self.cursor)
-            {
-                self.warehouse_amount_focused = false;
-                self.player_shop_name_focused = false;
-                self.player_shop_price_focused = true;
+                self.handle_booth_action(action);
                 self.held = false;
                 return true;
             }
@@ -1994,7 +1969,6 @@ impl App {
                 .is_some_and(|panel| shop::quick_panel_close_at(viewport, self.cursor, panel))
             {
                 self.quick_panel = None;
-                self.player_shop_price_focused = false;
                 self.held = false;
                 return true;
             }
@@ -2120,21 +2094,6 @@ impl App {
                 }
                 if let Some(action) = action {
                     self.handle_trade_panel_action(action);
-                    self.held = false;
-                    return true;
-                }
-            }
-            if self.quick_panel == Some(shop::QuickPanel::Market) {
-                let has_selected_target = self.selected_player_target().is_some();
-                if let Some(action) = shop::player_shop_panel_action_at(
-                    viewport,
-                    self.cursor,
-                    self.player_shop_open,
-                    &self.player_shop_items,
-                    self.network_character_id,
-                    has_selected_target,
-                ) {
-                    self.handle_player_shop_panel_action(action);
                     self.held = false;
                     return true;
                 }
@@ -3619,97 +3578,136 @@ impl App {
         }
     }
 
-    /// Sends the typed booth name; the server keeps it for the next opening.
+    /// Sends the line the booth hawks; the server keeps it for next time.
     fn send_booth_name(&mut self) {
-        let name = self.player_shop_name.trim().to_owned();
-        if name.is_empty() {
+        let line = self.booth.hawk.trim().to_owned();
+        if line.is_empty() {
             return;
         }
         if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
-            network.send_booth_name(character_id, &self.character.name, &name);
+            network.send_booth_name(character_id, &self.character.name, &line);
         }
     }
 
-    fn handle_player_shop_panel_action(&mut self, action: shop::PlayerShopPanelAction) {
-        let Some(network) = &self.network else {
-            self.network_status = "banca indisponível: servidor offline".into();
+    /// Sets up the own booth by a flag: the server opens it, its window
+    /// shows what it sells.
+    fn open_own_booth(&mut self) {
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
+            self.network_status = "Booths need the server.".into();
             return;
         };
-        let Some(character_id) = self.network_character_id else {
-            self.network_status = "banca indisponível: personagem ainda não carregado".into();
+        network.create_player_shop(character_id);
+        self.booth.open = true;
+        self.booth.viewing = None;
+        self.booth.page = 0;
+        self.quick_panel = Some(shop::QuickPanel::Market);
+    }
+
+    /// Looks at the booth of `seller` (a click on them): the server sends
+    /// what it sells.
+    fn open_booth_of(&mut self, seller: u32, name: String) {
+        let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) else {
             return;
         };
+        let own = Some(character_id);
+        self.booth.listings.retain(|listing| Some(listing.owner_id) == own);
+        self.booth.viewing = Some((seller, name));
+        self.booth.page = 0;
+        self.booth.pricing = None;
+        self.booth.hawk_editing = false;
+        network.player_shop_query(character_id, seller);
+        self.quick_panel = Some(shop::QuickPanel::Market);
+    }
+
+    /// The own booth is down: its listings and windows go.
+    fn leave_booth(&mut self) {
+        let own = self.network_character_id;
+        self.booth.open = false;
+        self.booth.listings.retain(|listing| Some(listing.owner_id) != own);
+        self.booth.pricing = None;
+        self.booth.hawk_editing = false;
+        self.booth.page = 0;
+        if self.booth.viewing.is_none() && self.quick_panel == Some(shop::QuickPanel::Market) {
+            self.quick_panel = None;
+        }
+    }
+
+    fn handle_booth_action(&mut self, action: booth::BoothAction) {
+        use booth::BoothAction as A;
+        let own = self.network_character_id;
         match action {
-            shop::PlayerShopPanelAction::Open => {
-                network.create_player_shop(character_id);
-                self.player_shop_open = true;
-                self.network_status = "online: abrindo banca neste mapa".into();
+            A::Nothing => {}
+            // Close only hides the window: the own booth keeps selling
+            // (the Market button shows it again).
+            A::Close => {
+                self.booth.viewing = None;
+                // What other booths listed is not kept.
+                self.booth.listings.retain(|listing| Some(listing.owner_id) == own);
+                self.booth.pricing = None;
+                self.booth.hawk_editing = false;
+                self.booth.page = 0;
+                self.quick_panel = None;
             }
-            shop::PlayerShopPanelAction::Close => {
-                network.close_player_shop(character_id);
-                self.player_shop_open = false;
-                self.player_shop_items
-                    .retain(|listing| listing.owner_id != character_id);
-                self.network_status = "online: fechando banca".into();
+            // Leave takes the booth down: its listings end (the items never
+            // left the bag) and the hero gets up.
+            A::Leave => {
+                if let (Some(network), Some(character_id)) = (&self.network, own) {
+                    network.close_player_shop(character_id);
+                }
+                self.leave_booth();
+                if self.held_pose.is_some_and(|(pose, _)| pose == Action::Sit) {
+                    self.perform_emote(Action::Sit);
+                }
             }
-            shop::PlayerShopPanelAction::QueryTarget => {
-                let Some((target_id, target_name)) = self.selected_player_target() else {
-                    self.network_status = "selecione um jogador próximo primeiro".into();
-                    return;
-                };
-                self.player_shop_items
-                    .retain(|listing| listing.owner_id == character_id);
-                network.player_shop_query(character_id, target_id);
-                self.network_status = format!("online: consultando a banca de {target_name}");
-            }
-            shop::PlayerShopPanelAction::AddSelectedItem => {
-                let Some(price) = self
-                    .player_shop_price
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|price| *price > 0)
-                else {
-                    self.network_status = "informe um preço maior que zero".into();
-                    return;
-                };
-                let Some(uid) = self.selected_inventory_uid else {
-                    self.network_status = "selecione um item do inventário primeiro".into();
-                    return;
-                };
-                if self
-                    .player_shop_items
-                    .iter()
-                    .any(|listing| listing.owner_id == character_id && listing.item.uid == uid)
+            A::Hawk => {
+                if self.booth.hawk.is_empty()
+                    && let Some(line) = self.booths.get(&self.character.name)
                 {
-                    self.network_status = "este item já está anunciado".into();
-                    return;
+                    self.booth.hawk = line.clone();
                 }
-                network.player_shop_add(character_id, uid, price);
-                self.network_status = format!("online: anunciando item {uid} por {price} silver");
+                self.booth.hawk_editing = true;
             }
-            shop::PlayerShopPanelAction::Buy(index) => {
-                let Some(listing) = self.player_shop_items.get(index).cloned() else {
+            A::HawkClose => self.booth.hawk_editing = false,
+            A::HawkOk => {
+                self.booth.hawk_editing = false;
+                self.send_booth_name();
+            }
+            A::PageUp => self.booth.page = self.booth.page.saturating_sub(1),
+            A::PageDown => self.booth.page = (self.booth.page + 1).min(self.booth.pages(own) - 1),
+            A::Remove(slot) => {
+                let (Some(listing), Some(network), Some(character_id)) =
+                    (self.booth.at_slot(own, slot), &self.network, own)
+                else {
                     return;
                 };
-                if listing.owner_id == character_id {
-                    return;
-                }
-                network.player_shop_buy(character_id, listing.item.uid, listing.owner_id);
-                self.network_status = format!("online: comprando item {}", listing.item.item_type);
-            }
-            shop::PlayerShopPanelAction::Remove(index) => {
-                let Some(listing) = self.player_shop_items.get(index).cloned() else {
-                    return;
-                };
-                if listing.owner_id != character_id {
-                    return;
-                }
                 network.player_shop_remove(character_id, listing.item.uid);
-                self.player_shop_items.retain(|candidate| {
+                self.booth.listings.retain(|candidate| {
                     candidate.owner_id != character_id || candidate.item.uid != listing.item.uid
                 });
-                self.network_status =
-                    format!("online: removendo anúncio {}", listing.item.item_type);
+                self.booth.page = self.booth.page.min(self.booth.pages(own) - 1);
+            }
+            A::Buy(slot) => {
+                let (Some(listing), Some(network), Some(character_id)) =
+                    (self.booth.at_slot(own, slot), &self.network, own)
+                else {
+                    return;
+                };
+                network.player_shop_buy(character_id, listing.item.uid, listing.owner_id);
+            }
+            A::PriceField(field) => self.booth.price_field = field,
+            A::PriceCancel => self.booth.pricing = None,
+            A::PriceOk => {
+                let Some(item) = self.booth.pricing else {
+                    return;
+                };
+                let Some((price, cps)) = self.booth.price() else {
+                    self.network_status = "Type a price in silver or in CPs.".into();
+                    return;
+                };
+                if let (Some(network), Some(character_id)) = (&self.network, own) {
+                    network.player_shop_add(character_id, item.uid, price, cps);
+                }
+                self.booth.pricing = None;
             }
         }
     }
@@ -3999,18 +3997,25 @@ impl App {
             NetworkEvent::VendorItem {
                 owner_id,
                 price,
+                cps,
                 item,
             } => {
-                self.player_shop_items
-                    .retain(|listing| listing.owner_id != owner_id || listing.item.uid != item.uid);
-                self.player_shop_items.push(network::PlayerShopItem {
-                    owner_id,
-                    price,
-                    item,
-                });
-                self.player_shop_items.sort_by_key(|listing| listing.price);
-                self.network_status =
-                    format!("online: player shop listing received from {owner_id}");
+                let listing = network::PlayerShopItem { owner_id, price, cps, item };
+                // A listing already shown keeps its box.
+                match self
+                    .booth
+                    .listings
+                    .iter_mut()
+                    .find(|shown| shown.owner_id == owner_id && shown.item.uid == item.uid)
+                {
+                    Some(shown) => *shown = listing,
+                    None => self.booth.listings.push(listing),
+                }
+            }
+            NetworkEvent::BoothItemGone(uid) => {
+                self.booth.listings.retain(|listing| listing.item.uid != uid);
+                let pages = self.booth.pages(self.network_character_id);
+                self.booth.page = self.booth.page.min(pages - 1);
             }
             NetworkEvent::Friend {
                 friend_id,
@@ -4167,7 +4172,7 @@ impl App {
                 self.character.kill_points = ready.kill_points;
                 self.confirmed_network_cell = Some(ready.position);
                 self.pending_network_steps.clear();
-                self.player_shop_items.clear();
+                self.booth = booth::BoothView::default();
                 self.network_status =
                     format!("online: char {} map {}", ready.character_id, ready.map_id);
             }
@@ -4410,12 +4415,10 @@ impl App {
                 {
                     self.network_status = message.clone();
                 }
-                if message.contains("Player shop opened") {
-                    self.player_shop_open = true;
-                } else if message.contains("Player shop closed")
+                if message.contains("Player shop closed")
                     || message.contains("Player shops are not available")
                 {
-                    self.player_shop_open = false;
+                    self.leave_booth();
                 }
                 let trade_rejected = [
                     "Only inventory items can be traded.",
@@ -5129,7 +5132,33 @@ impl App {
 
     /// Goes to `target`: on foot, or flying, a level glide there (a flier
     /// only jumps, as in the original).
+    /// A line from the client itself on the System channel, unless it is
+    /// the last one already.
+    fn system_line(&mut self, text: &str) {
+        if self.chat_history.back().is_some_and(|last| last.channel == 2007 && last.message == text) {
+            return;
+        }
+        self.chat_history.push_back(network::ChatMessage {
+            channel: 2007,
+            sender_name: "SYSTEM".into(),
+            recipient_name: "ALLUSERS".into(),
+            message: text.to_owned(),
+        });
+        self.chat_log.arrived();
+    }
+
+    /// A seller stays at their booth until they Leave it.
+    fn selling(&mut self) -> bool {
+        if self.booth.open {
+            self.system_line("You are selling: click Leave in your booth to go.");
+        }
+        self.booth.open
+    }
+
     fn travel(&mut self, target: [i32; 2]) {
+        if self.selling() {
+            return;
+        }
         if self.player.flying {
             if !self.player.moving() && self.pending_network_steps.is_empty() {
                 self.start_jump(target);
@@ -5140,6 +5169,9 @@ impl App {
     }
 
     fn start_jump(&mut self, target: [i32; 2]) {
+        if self.selling() {
+            return;
+        }
         let current = self.player.cell();
         let Some(target) =
             self.player
@@ -5239,6 +5271,16 @@ impl App {
         if npc && npc_kind == BOOTH_FLAG {
             if let Some(flag) = self.remote_actors.get(&id) {
                 let spot = [flag.position[0].round() as i32 + 2, flag.position[1].round() as i32];
+                // A flag already taken: someone sits at its booth.
+                let taken = self.remote_actors.values().any(|actor| {
+                    !actor.npc
+                        && self.booths.contains_key(&actor.name)
+                        && [actor.position[0].round() as i32, actor.position[1].round() as i32] == spot
+                });
+                if taken {
+                    self.system_line("Someone is already selling at this flag.");
+                    return true;
+                }
                 self.pending_booth = Some(spot);
                 self.travel(spot);
                 self.network_status = "Setting up a booth by the flag...".into();
@@ -5258,6 +5300,10 @@ impl App {
             self.network_status = format!("online: approaching {label} ({id})");
         } else if !npc {
             self.selected_target = Some(id);
+            // A seller's booth opens at a click on them.
+            if name != self.character.name && self.booths.contains_key(&name) {
+                self.open_booth_of(id, name.clone());
+            }
         }
         self.network_status = format!("online: selected {kind} {label} ({id})");
         if !npc && !monster && let Some(pick) = self.target_pick.take() {
@@ -6153,8 +6199,7 @@ impl App {
             return;
         }
         self.face_towards([spot[0] - 2, spot[1]]);
-        self.handle_player_shop_panel_action(shop::PlayerShopPanelAction::Open);
-        self.quick_panel = Some(shop::QuickPanel::Market);
+        self.open_own_booth();
         if self.held_pose.is_none() {
             self.perform_emote(Action::Sit);
         }
@@ -7894,28 +7939,25 @@ impl App {
             self.shop.is_some(),
             self.warehouse.is_some(),
         ));
+        // Dropped on the own booth: its price box asks what it costs.
         if self.quick_panel == Some(shop::QuickPanel::Market)
-            && self.player_shop_open
-            && shop::quick_panel_at(viewport, self.cursor, shop::QuickPanel::Market)
+            && booth::window_at(viewport, self.cursor, &self.booth)
         {
-            if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id)
+            let own = self.network_character_id;
+            if !self.booth.open || self.booth.viewing.is_some() {
+                self.network_status = "Items go in your own booth.".into();
+            } else if self.booth.pricing.is_some() {
+            } else if self
+                .booth
+                .listings
+                .iter()
+                .any(|listing| Some(listing.owner_id) == own && listing.item.uid == item.uid)
             {
-                let Some(price) = self
-                    .player_shop_price
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|price| *price > 0)
-                else {
-                    self.network_status = "informe um preço maior que zero".into();
-                    return true;
-                };
-                network.player_shop_add(character_id, item.uid, price);
-                self.network_status = format!(
-                    "online: anunciando item {} por {price} silver",
-                    item.item_type
-                );
+                self.network_status = "That item is already in your booth.".into();
+            } else if self.booth.shown(own).len() >= 10 {
+                self.network_status = "A booth holds ten items at most.".into();
             } else {
-                self.network_status = "banca indisponível: servidor offline".into();
+                self.booth.ask_price(item);
             }
             return true;
         }
@@ -8510,9 +8552,9 @@ fn is_war_structure(kind: u16) -> bool {
 }
 
 /// A large life shown on the u16 health bar: thousandths of the maximum.
-/// The "G" emblem for the title bar and the taskbar.
+/// Gravak's crest for the title bar and the taskbar.
 pub fn window_icon() -> Option<winit::window::Icon> {
-    let image = image::load_from_memory(include_bytes!("ui_assets/gravak-icon.png")).ok()?.to_rgba8();
+    let image = logo::crest_icon(64);
     let (width, height) = image.dimensions();
     winit::window::Icon::from_rgba(image.into_raw(), width, height).ok()
 }
@@ -9106,12 +9148,7 @@ fn run() -> Result<()> {
         trade: network::TradeView::default(),
         pending_trade_items: Vec::new(),
         trade_opened_inventory: false,
-        player_shop_items: Vec::new(),
-        player_shop_open: false,
-        player_shop_price: "1000".into(),
-        player_shop_price_focused: false,
-        player_shop_name: String::new(),
-        player_shop_name_focused: false,
+        booth: booth::BoothView::default(),
         booths: HashMap::new(),
         status_timers: Vec::new(),
         server_clock_offset: 0,
