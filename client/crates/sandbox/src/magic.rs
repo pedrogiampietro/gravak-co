@@ -377,7 +377,11 @@ pub fn effect(assets: &mut Assets, name: &str) -> Option<EffectDefinition> {
         .filter_map(|index| {
             let mesh = section.get(&format!("effectid{index}"))?.parse::<u32>().ok()?;
             let texture = section.get(&format!("textureid{index}"))?.parse::<u32>().ok()?;
-            let additive = section.get(&format!("adb{index}")).is_some_and(|value| value.trim() == "2");
+            // The destination kept whole: ONE (2), or DESTALPHA (7), which
+            // on the alpha-less back buffer is one too. Both add light.
+            let additive = section
+                .get(&format!("adb{index}"))
+                .is_some_and(|value| matches!(value.trim(), "2" | "7"));
             Some(EffectLayer {
                 mesh: tables.meshes.get(&mesh)?.clone(),
                 texture: tables.textures.get(&texture)?.clone(),
