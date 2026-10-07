@@ -4736,6 +4736,11 @@ impl App {
                 }
                 let now = self.started.elapsed().as_secs_f32();
                 self.play_attack_motion(id, now);
+                // A blow that lands shows on its target the hit of the
+                // attacker's kind of weapon, and sounds it (WeaponEffect.ini).
+                if action != 2 && action != 14 && value > 0 {
+                    self.play_weapon_hit(id, target_id, now);
+                }
                 self.network_status =
                     format!("online: combat {id} -> {target_id}, hit {value} (action {action})");
                 // A physical blow of 0 missed: it shows "Miss". A death
@@ -4782,9 +4787,15 @@ impl App {
                         self.shoot_arrow_fan(attacker_id, target_cell);
                     }
                 }
-                // One motion for the cast, not one per target.
+                // One motion and one sound (MagicType) for the cast, not one
+                // per target.
                 if first {
                     self.play_attack_motion(attacker_id, now);
+                    if let Some(sound) = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
+                        .and_then(|magic| magic.sound.clone())
+                    {
+                        self.play_sound(&sound);
+                    }
                 }
                 self.play_blow_on_player(attacker_id, target_id, now);
                 self.network_status =
@@ -5440,6 +5451,39 @@ impl App {
         }
     }
 
+    /// The hit of `attacker_id`'s weapon on `target_id`: its effect and its
+    /// sound. Monsters strike with their own blows, not weapons.
+    fn play_weapon_hit(&mut self, attacker_id: u32, target_id: u32, now: f32) {
+        let weapon = if self.network_character_id == Some(attacker_id) {
+            self.equipment.iter().find(|item| item.position == 4).map_or(0, |item| item.item_type)
+        } else {
+            match self.remote_actors.get(&attacker_id) {
+                Some(actor) if !actor.npc && !(400_001..=499_999).contains(&attacker_id) => actor.right_weapon,
+                _ => return,
+            }
+        };
+        let Some((effect, sound)) = crate::magic::weapon_hit(&mut self.assets, weapon) else {
+            return;
+        };
+        if !effect.is_empty()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.add_role_effect(target_id, effect, now);
+        }
+        if !sound.is_empty()
+            && let Some(audio) = &mut self.audio
+        {
+            audio.play_once(&mut self.assets, &sound);
+        }
+    }
+
+    /// Plays a sound the tables name (`sound\bow1.wav`, `bow`) once.
+    fn play_sound(&mut self, name: &str) {
+        if let Some(audio) = &mut self.audio {
+            audio.play_once(&mut self.assets, &crate::magic::sound_path(name));
+        }
+    }
+
     /// The player is hit, or strikes; in the air the jump keeps its motion.
     fn play_blow_on_player(&mut self, attacker_id: u32, target_id: u32, now: f32) {
         let action = if self.network_character_id == Some(target_id) {
@@ -5499,6 +5543,9 @@ impl App {
             return;
         }
         let angle = toward[1].atan2(toward[0]);
+        if let Some(sound) = &flying.sound {
+            self.play_sound(sound);
+        }
         let now = self.started.elapsed().as_secs_f32();
         if let Some(renderer) = self.renderer.as_mut() {
             for spread in [-0.5_f32, -0.25, 0.0, 0.25, 0.5] {
@@ -5519,6 +5566,9 @@ impl App {
         let Some(flying) = crate::magic::flying_object(&mut self.assets, bow, arrows) else {
             return;
         };
+        if let Some(sound) = &flying.sound {
+            self.play_sound(sound);
+        }
         let now = self.started.elapsed().as_secs_f32();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.add_arrow(

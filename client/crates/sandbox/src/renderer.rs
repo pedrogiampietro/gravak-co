@@ -100,6 +100,8 @@ const ARROW_CELLS_PER_SECOND: f32 = 24.0;
 const ARROW_FROM_LIFT: f32 = 46.0;
 const ARROW_TO_LIFT: f32 = 50.0;
 const ARROW_SCALE: f32 = 0.6;
+/// How fast a skill's projectile (`MagicType` fly effect) crosses the map.
+const SPELL_CELLS_PER_SECOND: f32 = 14.0;
 
 /// How long a soul lingers over the body, then how long it flies.
 const SOUL_RISE_SECONDS: f32 = 1.0;
@@ -3530,20 +3532,52 @@ impl Renderer {
                     }
                 }
             }
-            for (name, actor) in [
-                (magic.intone_effect.as_deref(), effect.attacker_id),
-                // The bow skills show their arrows, not the table's blast.
-                (
-                    magic
-                        .target_effect
-                        .as_deref()
-                        .filter(|_| effect.target_id != 0 && !crate::action_bar::is_bow_skill(effect.skill_id)),
-                    effect.target_id,
-                ),
+            // What travels to the target before it is struck: a bow skill's
+            // arrow, or the skill's own projectile (MagicType fly effect).
+            let caster = position_of(effect.attacker_id);
+            let struck = effect.target_id != 0 && effect.target_id != effect.attacker_id;
+            let target = position_of(effect.target_id);
+            let cells = (target[0] - caster[0]).hypot(target[1] - caster[1]);
+            let bow = crate::action_bar::is_bow_skill(effect.skill_id);
+            let flight = if !struck {
+                0.0
+            } else if bow {
+                ARROW_RELEASE_SECONDS + (cells / ARROW_CELLS_PER_SECOND).clamp(0.08, 0.9)
+            } else if magic.fly_effect.is_some() {
+                (cells / SPELL_CELLS_PER_SECOND).clamp(0.1, 1.2)
+            } else {
+                0.0
+            };
+            if let Some(fly) = magic.fly_effect.as_deref().filter(|_| struck && elapsed < flight) {
+                let t = (elapsed / flight).clamp(0.0, 1.0);
+                let start = map.project(caster);
+                let end = map.project(target);
+                let start = [start[0], start[1] - ARROW_FROM_LIFT];
+                let end = [end[0], end[1] - ARROW_TO_LIFT];
+                let origin = [
+                    start[0] + (end[0] - start[0]) * t - camera[0],
+                    start[1] + (end[1] - start[1]) * t - camera[1],
+                ];
+                if world_point_visible(origin, viewport, 256.0) {
+                    let depth = caster[0] + caster[1] + (target[0] + target[1] - caster[0] - caster[1]) * t + 0.09;
+                    self.push_looping_effect(assets, fly, origin, elapsed, depth, viewport, &mut draws);
+                }
+            }
+            for (name, actor, delay) in [
+                (magic.intone_effect.as_deref(), effect.attacker_id, 0.0),
+                // Once per cast, on the caster as the skill leaves it.
+                (magic.sender_effect.as_deref().filter(|_| effect.trail), effect.attacker_id, 0.0),
+                // On the target once what flies to it arrives (Scatter's
+                // fire-bomb where each arrow lands).
+                (magic.target_effect.as_deref().filter(|_| struck), effect.target_id, flight),
             ] {
                 let Some(name) = name else {
                     continue;
                 };
+                let since = elapsed - delay;
+                if since < 0.0 {
+                    continue;
+                }
                 let position = position_of(actor);
                 let projected = map.project(position);
                 let origin = [projected[0] - camera[0], projected[1] - camera[1]];
@@ -3554,7 +3588,7 @@ impl Renderer {
                     assets,
                     name,
                     origin,
-                    elapsed,
+                    since,
                     position[0] + position[1] + 0.05,
                     viewport,
                     &mut draws,
