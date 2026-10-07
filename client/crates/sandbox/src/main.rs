@@ -41,6 +41,7 @@ mod emblems;
 mod action_panel;
 mod hotkey_menu;
 mod whisper;
+mod leveling;
 mod chat_log;
 mod battle_power_panel;
 mod showcase;
@@ -372,6 +373,8 @@ struct App {
     /// When the bag closes its gaps (seconds since start): a little after
     /// items leave it, so several leaving at once close in one pass.
     compact_inventory_at: Option<f32>,
+    /// An ExpBall waiting for the player's yes, with what it would give.
+    exp_ball_confirm: Option<network::OwnedItem>,
     pending_inventory_drop: Option<network::OwnedItem>,
     silver: u32,
     mana: u32,
@@ -2624,6 +2627,30 @@ impl App {
     /// The popup for a received team invite, a request to join the hero's
     /// team, or a trade request.
     fn prompt(&self) -> Option<shop::PromptDialog> {
+        if self.exp_ball_confirm.is_some() {
+            let size = self.window.as_ref()?.inner_size();
+            let (level, experience) = (self.level, self.experience);
+            let (to_level, to_experience) = leveling::exp_ball(level, experience, leveling::EXP_BALL_SECONDS);
+            // The experience it brings, across the levels it crosses.
+            let gained = ((level..to_level).map(leveling::required).sum::<u64>() + to_experience).saturating_sub(experience);
+            let percent = |level: u8, experience: u64| {
+                let need = leveling::required(level).max(1);
+                experience as f64 * 100.0 / need as f64
+            };
+            return Some(
+                shop::PromptDialog::new(
+                    [size.width as f32, size.height as f32],
+                    "Use ExpBall",
+                    format!("+{gained} experience"),
+                    format!(
+                        "Level {level} ({:.1}%) to level {to_level} ({:.1}%)",
+                        percent(level, experience),
+                        percent(to_level, to_experience)
+                    ),
+                )
+                .with_buttons(["Use", "Cancel"]),
+            );
+        }
         if self.bounty_confirm.is_some() {
             let task = self.bounty.as_ref()?.board.active()?;
             let size = self.window.as_ref()?.inner_size();
@@ -2673,6 +2700,12 @@ impl App {
     }
 
     fn answer_prompt(&mut self, accept: bool) {
+        if let Some(item) = self.exp_ball_confirm.take() {
+            if accept {
+                self.use_item_now(item);
+            }
+            return;
+        }
         if let Some(difficulty) = self.bounty_confirm.take() {
             if accept && let Some(network) = &self.network {
                 network.send_bounty(gravak_protocol::BountyPacket::REROLL, difficulty);
@@ -7106,6 +7139,15 @@ impl App {
     }
 
     fn queue_use_item(&mut self, item: network::OwnedItem) -> bool {
+        // An ExpBall asks first, showing the experience and level it brings.
+        if item.item_type == leveling::EXP_BALL && self.exp_ball_confirm.is_none() {
+            self.exp_ball_confirm = Some(item);
+            return true;
+        }
+        self.use_item_now(item)
+    }
+
+    fn use_item_now(&mut self, item: network::OwnedItem) -> bool {
         let worn = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
         if worn && !shop::is_consumable(item.item_type) {
             self.network_status = "Equipamentos se vestem, não se usam".into();
@@ -8886,6 +8928,7 @@ fn run() -> Result<()> {
         pending_inventory_sort: None,
         pending_inventory_sort_move: None,
         compact_inventory_at: None,
+        exp_ball_confirm: None,
         pending_inventory_drop: None,
         silver: server_ready
             .as_ref()
