@@ -1330,9 +1330,10 @@ impl ApplicationHandler for App {
                 if self.player.jumping() && self.local_action.is_none() {
                     self.player.action = Action::Jump;
                 }
-                // Flying (status bit 27): hover, and the flying pose at rest.
+                // Flying (status bit 27): hover, and the flying pose at rest
+                // and on every glide (a flier's jump is no leap).
                 self.player.flying = self.status_flags & network::FLY_FLAG != 0 && self.dead_since.is_none();
-                if self.player.flying && self.player.action == Action::Idle {
+                if self.player.flying && matches!(self.player.action, Action::Idle | Action::Jump) {
                     self.player.action = Action::Fly;
                 }
                 if self.held_pose.is_some() && self.player.moving() {
