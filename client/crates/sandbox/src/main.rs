@@ -5559,11 +5559,13 @@ impl App {
     /// The bow and arrows `attacker_id` holds, when it holds both.
     fn bow_and_arrows(&self, attacker_id: u32) -> Option<(u32, u32)> {
         let (bow, arrows) = if self.network_character_id == Some(attacker_id) {
+            // What the hero shows: a bow in a skin shoots the skin's arrows,
+            // as others see them (the original keys them on the look).
             let held = |position: u8| {
                 self.equipment
                     .iter()
                     .find(|item| item.position == position)
-                    .map_or(0, |item| item.item_type)
+                    .map_or(0, |item| if item.skin != 0 { item.skin } else { item.item_type })
             };
             (held(4), held(5))
         } else {

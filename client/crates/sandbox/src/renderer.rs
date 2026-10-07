@@ -5944,10 +5944,12 @@ fn clipped_to_character(draw: &Draw) -> bool {
 /// How long a damage number shows (`Conquer.exe` 0x4d49cd: 250 ms coming
 /// in, 1200 ms rising away).
 pub const COMBAT_NUMBER_SECONDS: f32 = 1.45;
-/// The space each digit takes at full size, and a digit's size (the 64
-/// pixel `CountB` sprites on their 92 by 122 unit quad).
+/// The space each digit takes at full size, and a digit's size: the 64
+/// pixel `CountB` sprites on their 92 by 122 unit quad, seen from 45
+/// degrees and not shrunk as the world is (0.3 of it shows a 26 pixel
+/// tall digit every 19 pixels, as the original).
 const COUNT_SPACING: f32 = 64.0;
-const COUNT_DIGIT: [f32; 2] = [69.0, 65.0];
+const COUNT_DIGIT: [f32; 2] = [92.0, 86.0];
 
 /// How a damage number is drawn `elapsed` milliseconds in, as the original:
 /// first it shrinks from full size to 0.3 as it comes in (alpha 32 to 255),
