@@ -442,6 +442,8 @@ struct App {
     /// Deaths waiting for the arrows that dealt them to strike (slayer,
     /// slain, when).
     pending_falls: Vec<(u32, u32, f32)>,
+    /// The last blow each target took, for how hard it falls.
+    last_blows: HashMap<u32, u32>,
     skill_effects: Vec<renderer::SkillEffectInstance>,
     known_skills: HashMap<u32, (u16, u32)>,
     /// Weapon proficiency by weapon type: (level, experience).
@@ -4767,6 +4769,9 @@ impl App {
                 // A physical blow of 0 missed: it shows "Miss". A death
                 // carries no damage.
                 let number = (action != 14 && (value > 0 || action == 2)).then_some(value);
+                if action != 14 && value > 0 {
+                    self.last_blows.insert(target_id, value);
+                }
                 if let Some(at) = arrow {
                     self.arrow_blows.push((id, target_id, number, at));
                     if self.network_character_id == Some(id) {
@@ -4808,6 +4813,9 @@ impl App {
                 // Scatter an arrow at each target struck, RapidFire a volley
                 // 150 ms apart sharing the damage; each arrow carries its
                 // damage until it strikes.
+                if damage > 0 {
+                    self.last_blows.insert(target_id, damage);
+                }
                 let arrows = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
                     .and_then(|magic| magic.arrows);
                 let struck = target_id != 0 && target_id != attacker_id;
@@ -5536,9 +5544,17 @@ impl App {
         {
             renderer.add_soul(monster.position, slayer, now);
         }
+        let slayer_at = if self.network_character_id == Some(slayer) {
+            Some(self.player.position)
+        } else {
+            self.remote_actors.get(&slayer).map(|actor| actor.position)
+        };
+        let blow = self.last_blows.remove(&slain).unwrap_or(0);
+        let roll = (now.to_bits() ^ slain.wrapping_mul(2_654_435_761)) % 100;
+        let map = &self.map;
         if let Some(actor) = self.remote_actors.get_mut(&slain) {
-            actor.health = 0;
             let player = !actor.npc && !(400001..=499999).contains(&slain);
+            actor.health = 0;
             if player {
                 actor.action = renderer::REMOTE_DEAD;
                 actor.animation_started = now;
@@ -5547,7 +5563,34 @@ impl App {
                 actor.action = renderer::REMOTE_FADING;
                 // A death ends any respawn effect still playing.
                 actor.respawn_until = 0.0;
-                actor.animation_until = now + 1.2;
+                actor.animation_started = now;
+                actor.flung = 0;
+                let mut lying = 1.2;
+                // A blow far past its life flings a monster 4, 6 or 8 cells
+                // away from its slayer, as the original (0x4be8bd, 0x4d6b4e).
+                if let (Some(cells), Some(slayer_at)) = (fling_cells(blow, actor.maximum_health, roll), slayer_at) {
+                    let here = [actor.position[0].round() as i32, actor.position[1].round() as i32];
+                    let away = [
+                        (actor.position[0] - slayer_at[0]).signum() as i32,
+                        (actor.position[1] - slayer_at[1]).signum() as i32,
+                    ];
+                    if away != [0, 0] {
+                        let steps = (1..=cells)
+                            .take_while(|step| map.walkable([here[0] + away[0] * step, here[1] + away[1] * step]))
+                            .count() as i32;
+                        if steps > 0 {
+                            let to = [(here[0] + away[0] * steps) as f32, (here[1] + away[1] * steps) as f32];
+                            let flight = 0.25 + 0.06 * steps as f32;
+                            actor.movement_from = actor.position;
+                            actor.movement_to = to;
+                            actor.movement_started = now;
+                            actor.movement_until = now + flight;
+                            actor.flung = if steps * 2 <= cells { 2 } else { 1 };
+                            lying = 1.2_f32.max(flight + 0.9);
+                        }
+                    }
+                }
+                actor.animation_until = now + lying;
             }
         }
     }
@@ -8661,6 +8704,31 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
+/// How far a blow of `blow` flings a monster of `life` that it slays, as
+/// the original picks its death (Conquer.exe 0x4be8bd): by how far the blow
+/// passes its life, `roll` (0..100) deciding the close calls. `None`: it
+/// only falls.
+fn fling_cells(blow: u32, life: u16, roll: u32) -> Option<i32> {
+    if life == 0 {
+        return None;
+    }
+    let past = blow.saturating_mul(100) / u32::from(life);
+    let kind = match past {
+        0..30 => 1,
+        30..70 => 1 + u32::from(roll < 30),
+        70..100 => 1 + u32::from(roll < 50),
+        100..200 => 2,
+        200..400 => 3,
+        _ => 4,
+    };
+    match kind {
+        2 => Some(4),
+        3 => Some(6),
+        4 => Some(8),
+        _ => None,
+    }
+}
+
 /// NPC type 16: a ShopFlag, where a booth is set up (Redux `RoleBoothFlag`).
 const BOOTH_FLAG: u16 = 16;
 
@@ -9263,6 +9331,7 @@ fn run() -> Result<()> {
         combat_numbers: Vec::new(),
         arrow_blows: Vec::new(),
         pending_falls: Vec::new(),
+        last_blows: HashMap::new(),
         skill_effects: Vec::new(),
         known_skills: HashMap::new(),
         weapon_skills: Default::default(),
@@ -9351,7 +9420,18 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::frame_interval_for;
+    use super::{fling_cells, frame_interval_for};
+
+    #[test]
+    fn blows_far_past_the_life_fling_the_slain() {
+        assert_eq!(fling_cells(10, 100, 0), None, "a blow of a tenth only fells");
+        assert_eq!(fling_cells(150, 100, 99), Some(4), "past it by half: four cells");
+        assert_eq!(fling_cells(300, 100, 99), Some(6));
+        assert_eq!(fling_cells(5_000, 35, 99), Some(8), "a level 130 on a Pheasant");
+        assert_eq!(fling_cells(80, 100, 10), Some(4), "close calls by the roll");
+        assert_eq!(fling_cells(80, 100, 90), None);
+        assert_eq!(fling_cells(80, 0, 0), None);
+    }
 
     #[test]
     fn frame_pacing_supports_the_documented_fps_caps() {

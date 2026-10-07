@@ -61,7 +61,12 @@ pub struct NpcModel {
     motion: Option<C3Motion>,
     walk_motion: Option<C3Motion>,
     attack_motion: Option<C3Motion>,
+    /// How a monster dies (`3dmotion.ini`): falling (330) and then lying
+    /// (331); flung away (340), or a short way (370), before lying.
     death_motion: Option<C3Motion>,
+    lie_motion: Option<C3Motion>,
+    fly_motion: Option<C3Motion>,
+    short_fly_motion: Option<C3Motion>,
 }
 
 #[derive(Clone)]
@@ -570,7 +575,10 @@ impl NpcModel {
         // movement actions map to 110/120 in 3dmotion.ini.
         let walk_motion = load_motion("110").or_else(|| load_motion("101"));
         let attack_motion = load_motion("401");
-        let death_motion = load_motion("101");
+        let death_motion = load_motion("330");
+        let lie_motion = load_motion("331");
+        let fly_motion = load_motion("340");
+        let short_fly_motion = load_motion("370");
         let mesh = document
             .meshes
             .first()
@@ -610,6 +618,9 @@ impl NpcModel {
             walk_motion,
             attack_motion,
             death_motion,
+            lie_motion,
+            fly_motion,
+            short_fly_motion,
         })
     }
 
@@ -704,6 +715,9 @@ impl NpcModel {
             walk_motion: None,
             attack_motion: None,
             death_motion: None,
+            lie_motion: None,
+            fly_motion: None,
+            short_fly_motion: None,
         })
     }
 
@@ -745,12 +759,26 @@ impl NpcModel {
         )
     }
 
-    pub fn vertices_death(&self, seconds: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
-        self.vertices_with_motion(
-            self.death_motion.as_ref().or(self.motion.as_ref()),
-            seconds,
-            facing,
-        )
+    /// `elapsed` seconds into a death (`flung`: 0 falling, 1 flung away, 2
+    /// flung a short way): its motion played once, then lying still.
+    pub fn vertices_dying(&self, flung: u8, elapsed: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        let dying = match flung {
+            1 => self.fly_motion.as_ref().or(self.death_motion.as_ref()),
+            2 => self.short_fly_motion.as_ref().or(self.fly_motion.as_ref()).or(self.death_motion.as_ref()),
+            _ => self.death_motion.as_ref(),
+        };
+        let Some(dying) = dying else {
+            return self.vertices_with_motion(self.motion.as_ref(), 0.0, facing);
+        };
+        let frames = dying.frame_count.max(1) as f32;
+        let frame = elapsed.max(0.0) * 30.0;
+        if frame < frames {
+            return self.vertices_at_frame(Some(dying), frame, facing);
+        }
+        match &self.lie_motion {
+            Some(lying) => self.vertices_at_frame(Some(lying), 0.0, facing),
+            None => self.vertices_at_frame(Some(dying), frames - 1.0, facing),
+        }
     }
 
     fn vertices_with_motion(
@@ -762,6 +790,15 @@ impl NpcModel {
         let frame = motion.map_or(0.0, |motion| {
             (seconds * 30.0) % motion.frame_count.max(1) as f32
         });
+        self.vertices_at_frame(motion, frame, facing)
+    }
+
+    fn vertices_at_frame(
+        &self,
+        motion: Option<&C3Motion>,
+        frame: f32,
+        facing: f32,
+    ) -> Vec<([f32; 3], [f32; 2])> {
         let (s, c) = facing.sin_cos();
         let (ts, tc) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         self.mesh
@@ -938,4 +975,5 @@ fn weapon_motions(assets: &mut Assets, weapon: u32, codes: &[Option<u32>]) -> Ve
         })
         .collect()
 }
+
 

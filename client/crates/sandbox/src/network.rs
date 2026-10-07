@@ -447,6 +447,9 @@ pub struct RemoteActor {
     /// The current movement is a jump: they stay in the air until it
     /// lands, even when they shoot or are hit on the way.
     pub jumping: bool,
+    /// How a slain monster dies: 0 falling, 1 flung away, 2 flung a short
+    /// way (Conquer.exe 0x4d687a).
+    pub flung: u8,
 }
 
 pub(crate) enum NetworkCommand {
@@ -2318,6 +2321,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         booth: None,
         ko_count: 0,
         jumping: false,
+        flung: 0,
     }
 }
 
@@ -2362,6 +2366,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         booth: None,
         ko_count: 0,
         jumping: false,
+        flung: 0,
     }
 }
 

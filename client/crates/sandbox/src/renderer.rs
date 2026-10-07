@@ -3167,7 +3167,12 @@ impl Renderer {
                 let vertices: Arc<Vec<([f32; 3], [f32; 2])>> = if let Some(kind) = dynamic_kind {
                     let (model_id, _) = monster.static_vertices_key(facing);
                     let facing_sector = (facing / std::f32::consts::FRAC_PI_4).round() as i8;
-                    let frame_bucket = (time.max(0.0) * 30.0).floor() as u32;
+                    // A death plays from its own start, not the clock's.
+                    let (kind, frame_bucket) = if kind == 0 {
+                        (10 + actor.flung, ((time - actor.animation_started).max(0.0) * 30.0).floor() as u32)
+                    } else {
+                        (kind, (time.max(0.0) * 30.0).floor() as u32)
+                    };
                     let key = (model_id, kind, facing_sector, frame_bucket);
                     if let Some(vertices) = remote_monster_pose_cache.get(&key) {
                         Arc::clone(vertices)
@@ -3181,7 +3186,7 @@ impl Renderer {
                             self.cached_static_npc_vertices(monster, facing)
                                 .unwrap_or_else(|| {
                                     Arc::new(match kind {
-                                        0 => monster.vertices_death(time, facing),
+                                        10.. => monster.vertices_dying(actor.flung, time - actor.animation_started, facing),
                                         1 => monster.vertices_walk(time, facing),
                                         _ => monster.vertices_attack(time, facing),
                                     })
@@ -3189,7 +3194,7 @@ impl Renderer {
                         } else {
                             remote_pose_build_budget -= 1;
                             let vertices = Arc::new(match kind {
-                                0 => monster.vertices_death(time, facing),
+                                10.. => monster.vertices_dying(actor.flung, time - actor.animation_started, facing),
                                 1 => monster.vertices_walk(time, facing),
                                 _ => monster.vertices_attack(time, facing),
                             });
@@ -3369,6 +3374,8 @@ impl Renderer {
                 }
             } else if !actor.name.is_empty()
                 && (hud_config.show_names || monster)
+                // The slain show neither name nor life.
+                && !(monster && (actor.health == 0 || actor.action == REMOTE_FADING))
                 // ShopFlags (type 16) stand nameless, as in the original.
                 && !(actor.npc && actor.npc_kind == 16)
             {
