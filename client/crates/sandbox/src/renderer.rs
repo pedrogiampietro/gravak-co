@@ -82,8 +82,6 @@ struct Soul {
 struct Arrow {
     attacker_id: u32,
     target_id: u32,
-    /// A cell the arrow flies to instead of an actor (Scatter's fan).
-    to_cell: Option<[f32; 2]>,
     /// Whether the archer or the target is the player, who is not among
     /// the remote actors.
     from_player: bool,
@@ -95,10 +93,15 @@ struct Arrow {
 /// The arrow leaves the bow this long into the shot, flies this many cells
 /// a second, from about the hands to about the chest (pixels above the
 /// feet), drawn at this size of the models.
-const ARROW_RELEASE_SECONDS: f32 = 0.2;
-const ARROW_CELLS_PER_SECOND: f32 = 24.0;
-const ARROW_FROM_LIFT: f32 = 46.0;
-const ARROW_TO_LIFT: f32 = 50.0;
+/// As the original's arrows (`Conquer.exe` 0x4a23c8, 0x4a251b): loosed
+/// 800 ms after the shot (the bow drawn), then 1600 pixels a second in a
+/// straight line, from 25 pixels ahead of the archer 60 above the ground
+/// to 60 above the target.
+const ARROW_RELEASE_SECONDS: f32 = 0.8;
+const ARROW_PIXELS_PER_SECOND: f32 = 1_600.0;
+const ARROW_LEAD: f32 = 25.0;
+const ARROW_FROM_LIFT: f32 = 60.0;
+const ARROW_TO_LIFT: f32 = 60.0;
 const ARROW_SCALE: f32 = 0.6;
 /// How fast a skill's projectile (`MagicType` fly effect) crosses the map.
 const SPELL_CELLS_PER_SECOND: f32 = 14.0;
@@ -2446,21 +2449,9 @@ impl Renderer {
         flying: crate::magic::FlyingObject,
         now: f32,
     ) {
-        self.arrows.push(Arrow { attacker_id, target_id, to_cell: None, from_player, to_player, flying, started: now });
+        self.arrows.push(Arrow { attacker_id, target_id, from_player, to_player, flying, started: now });
     }
 
-    /// `attacker_id` shoots `flying` at the cell `to`.
-    pub fn add_arrow_to(&mut self, attacker_id: u32, from_player: bool, to: [f32; 2], flying: crate::magic::FlyingObject, now: f32) {
-        self.arrows.push(Arrow {
-            attacker_id,
-            target_id: 0,
-            to_cell: Some(to),
-            from_player,
-            to_player: false,
-            flying,
-            started: now,
-        });
-    }
 
     /// The arrow model `flying` at screen point `origin`, pointing along
     /// the screen direction `direction`.
@@ -3538,11 +3529,12 @@ impl Renderer {
             let struck = effect.target_id != 0 && effect.target_id != effect.attacker_id;
             let target = position_of(effect.target_id);
             let cells = (target[0] - caster[0]).hypot(target[1] - caster[1]);
-            let bow = crate::action_bar::is_bow_skill(effect.skill_id);
+            // A bow skill's branch of the original shoots arrows and skips
+            // the table's sender, projectile and target effects.
+            let bow = magic.arrows.is_some();
+            let struck = struck && !bow;
             let flight = if !struck {
                 0.0
-            } else if bow {
-                ARROW_RELEASE_SECONDS + (cells / ARROW_CELLS_PER_SECOND).clamp(0.08, 0.9)
             } else if magic.fly_effect.is_some() {
                 (cells / SPELL_CELLS_PER_SECOND).clamp(0.1, 1.2)
             } else {
@@ -3566,7 +3558,7 @@ impl Renderer {
             for (name, actor, delay) in [
                 (magic.intone_effect.as_deref(), effect.attacker_id, 0.0),
                 // Once per cast, on the caster as the skill leaves it.
-                (magic.sender_effect.as_deref().filter(|_| effect.trail), effect.attacker_id, 0.0),
+                (magic.sender_effect.as_deref().filter(|_| effect.trail && !bow), effect.attacker_id, 0.0),
                 // On the target once what flies to it arrives (Scatter's
                 // fire-bomb where each arrow lands).
                 (magic.target_effect.as_deref().filter(|_| struck), effect.target_id, flight),
@@ -3650,14 +3642,18 @@ impl Renderer {
                     remote_actors.get(&id).map(|actor| actor.position)
                 }
             };
-            let to = arrow.to_cell.or_else(|| place(arrow.to_player, arrow.target_id));
+            let to = place(arrow.to_player, arrow.target_id);
             let (Some(from), Some(to)) = (place(arrow.from_player, arrow.attacker_id), to) else {
                 continue;
             };
             let elapsed = time - arrow.started - ARROW_RELEASE_SECONDS;
-            let cells = (to[0] - from[0]).hypot(to[1] - from[1]);
-            let duration = (cells / ARROW_CELLS_PER_SECOND).clamp(0.08, 0.9);
+            let (start, end) = arrow_path(map.project(from), map.project(to));
+            let duration = arrow_seconds(start, end);
             if elapsed >= duration {
+                // Struck: the arrow's own effect on whom it hit.
+                if let Some(effect) = arrow.flying.target_effect.clone() {
+                    self.role_effects.push((arrow.target_id, effect, time));
+                }
                 continue;
             }
             flying.push(arrow.clone());
@@ -3665,10 +3661,6 @@ impl Renderer {
                 continue;
             }
             let t = elapsed / duration;
-            let start = map.project(from);
-            let end = map.project(to);
-            let start = [start[0], start[1] - ARROW_FROM_LIFT];
-            let end = [end[0], end[1] - ARROW_TO_LIFT];
             let origin = [
                 start[0] + (end[0] - start[0]) * t - camera[0],
                 start[1] + (end[1] - start[1]) * t - camera[1],
@@ -5921,6 +5913,29 @@ impl Renderer {
 /// paper doll), which the encoder sets as a scissor.
 fn clipped_to_character(draw: &Draw) -> bool {
     draw.depth_test && draw.sort_depth == f32::INFINITY
+}
+
+/// Where an arrow flies, from the archer's and the target's ground points:
+/// 25 pixels ahead of the archer, both 60 pixels up.
+fn arrow_path(from: [f32; 2], to: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let length = dx.hypot(dy).max(1.0);
+    (
+        [from[0] + dx / length * ARROW_LEAD, from[1] + dy / length * ARROW_LEAD - ARROW_FROM_LIFT],
+        [to[0], to[1] - ARROW_TO_LIFT],
+    )
+}
+
+/// How long an arrow flies between two screen points.
+fn arrow_seconds(start: [f32; 2], end: [f32; 2]) -> f32 {
+    ((end[0] - start[0]).hypot(end[1] - start[1]) / ARROW_PIXELS_PER_SECOND).max(0.02)
+}
+
+/// When an arrow loosed now from `from` strikes `to` (ground points on the
+/// screen): what it carries (the damage, the blow) lands then.
+pub fn arrow_arrival(from: [f32; 2], to: [f32; 2]) -> f32 {
+    let (start, end) = arrow_path(from, to);
+    ARROW_RELEASE_SECONDS + arrow_seconds(start, end)
 }
 
 /// Merges neighbours of the sorted list that the GPU can draw in one call:

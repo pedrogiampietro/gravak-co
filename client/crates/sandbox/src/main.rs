@@ -436,6 +436,9 @@ struct App {
     /// Players drawn as ghosts, through `remote_monsters`.
     ghost_actors: HashSet<u32>,
     combat_numbers: Vec<(u32, u32, f32)>,
+    /// What arrows carry until they strike, as the original: the damage
+    /// and the blow (attacker, target, damage or none, when it lands).
+    arrow_blows: Vec<(u32, u32, Option<u32>, f32)>,
     skill_effects: Vec<renderer::SkillEffectInstance>,
     known_skills: HashMap<u32, (u16, u32)>,
     /// Weapon proficiency by weapon type: (level, experience).
@@ -1605,6 +1608,17 @@ impl ApplicationHandler for App {
         // look like they teleport or freeze between updates.
         let now = self.started.elapsed().as_secs_f32();
         self.combat_numbers.retain(|(_, _, expires)| *expires > now);
+        // Arrows that struck: their damage shows and their target reels.
+        let (landed, flying): (Vec<_>, Vec<_>) = self.arrow_blows.drain(..).partition(|(_, _, _, at)| *at <= now);
+        self.arrow_blows = flying;
+        for (attacker_id, target_id, damage, _) in landed {
+            if let Some(damage) = damage {
+                self.combat_numbers.push((target_id, damage, now + 1.0));
+            }
+            if self.network_character_id == Some(target_id) {
+                self.play_blow_on_player(attacker_id, target_id, now);
+            }
+        }
         self.speech.retain(|_, (_, until)| *until > now);
         self.skill_effects.retain(|effect| effect.expires > now);
         for slot in &mut self.action_bar.slots {
@@ -4730,10 +4744,9 @@ impl App {
                         self.pending_skill_attack = None;
                     }
                 }
-                // A bow's blow flies to its target as an arrow.
-                if action == 2 {
-                    self.shoot_arrow(id, target_id);
-                }
+                // A bow's blow flies to its target as an arrow, which carries
+                // the damage and the blow until it strikes.
+                let arrow = if action == 2 { self.shoot_arrow(id, target_id, 0.0) } else { None };
                 let now = self.started.elapsed().as_secs_f32();
                 self.play_attack_motion(id, now);
                 // A blow that lands shows on its target the hit of the
@@ -4745,10 +4758,18 @@ impl App {
                     format!("online: combat {id} -> {target_id}, hit {value} (action {action})");
                 // A physical blow of 0 missed: it shows "Miss". A death
                 // carries no damage.
-                if action != 14 && (value > 0 || action == 2) {
-                    self.combat_numbers.push((target_id, value, now + 1.0));
+                let number = (action != 14 && (value > 0 || action == 2)).then_some(value);
+                if let Some(at) = arrow {
+                    self.arrow_blows.push((id, target_id, number, at));
+                    if self.network_character_id == Some(id) {
+                        self.play_blow_on_player(id, target_id, now);
+                    }
+                } else {
+                    if let Some(value) = number {
+                        self.combat_numbers.push((target_id, value, now + 1.0));
+                    }
+                    self.play_blow_on_player(id, target_id, now);
                 }
-                self.play_blow_on_player(id, target_id, now);
             }
             NetworkEvent::SkillEffect {
                 attacker_id,
@@ -4775,17 +4796,32 @@ impl App {
                     target_cell,
                     trail: first,
                 });
-                if damage > 0 {
-                    self.combat_numbers.push((target_id, damage, now + 1.0));
-                }
-                // The bow skills shoot their arrows: one at each target, or
-                // Scatter's fan toward the aimed cell when it hit nothing.
-                if action_bar::is_bow_skill(u32::from(skill_id)) {
-                    if target_id != 0 && target_id != attacker_id {
-                        self.shoot_arrow(attacker_id, target_id);
-                    } else if first && u32::from(skill_id) == 8_001 {
-                        self.shoot_arrow_fan(attacker_id, target_cell);
+                // The bow skills shoot as the original (MagicType 0x90):
+                // Scatter an arrow at each target struck, RapidFire a volley
+                // 150 ms apart sharing the damage; each arrow carries its
+                // damage until it strikes.
+                let arrows = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
+                    .and_then(|magic| magic.arrows);
+                let struck = target_id != 0 && target_id != attacker_id;
+                let mut carried = false;
+                if let (Some(sort), true) = (arrows, struck) {
+                    let count = match sort {
+                        crate::magic::ArrowSort::Volley { count } => count,
+                        crate::magic::ArrowSort::EachTarget => 1,
+                    };
+                    for index in 0..count {
+                        let Some(at) = self.shoot_arrow(attacker_id, target_id, index as f32 * 0.15) else {
+                            break;
+                        };
+                        carried = true;
+                        // The last arrow carries what the others' shares leave.
+                        let share = damage / count;
+                        let part = if index + 1 == count { damage - share * (count - 1) } else { share };
+                        self.arrow_blows.push((attacker_id, target_id, (part > 0).then_some(part), at));
                     }
+                }
+                if !carried && damage > 0 {
+                    self.combat_numbers.push((target_id, damage, now + 1.0));
                 }
                 // One motion and one sound (MagicType) for the cast, not one
                 // per target.
@@ -4797,7 +4833,13 @@ impl App {
                         self.play_sound(&sound);
                     }
                 }
-                self.play_blow_on_player(attacker_id, target_id, now);
+                if carried {
+                    if self.network_character_id == Some(attacker_id) {
+                        self.play_blow_on_player(attacker_id, target_id, now);
+                    }
+                } else {
+                    self.play_blow_on_player(attacker_id, target_id, now);
+                }
                 self.network_status =
                     format!("online: skill {skill_id} {attacker_id} -> {target_id}, hit {damage}");
             }
@@ -5520,56 +5562,30 @@ impl App {
         (bow / 1_000 == 500 && arrows / 1_000 == 1_050).then_some((bow, arrows))
     }
 
-    /// Scatter that hit nothing: five arrows fanned out toward `cell`.
-    fn shoot_arrow_fan(&mut self, attacker_id: u32, cell: (u16, u16)) {
-        let Some((bow, arrows)) = self.bow_and_arrows(attacker_id) else {
-            return;
-        };
-        let Some(flying) = crate::magic::flying_object(&mut self.assets, bow, arrows) else {
-            return;
-        };
-        let local = self.network_character_id == Some(attacker_id);
-        let from = if local {
-            self.player.position
-        } else {
-            match self.remote_actors.get(&attacker_id) {
-                Some(actor) => actor.position,
-                None => return,
-            }
-        };
-        let toward = [f32::from(cell.0) - from[0], f32::from(cell.1) - from[1]];
-        let length = toward[0].hypot(toward[1]);
-        if length < 0.5 {
-            return;
-        }
-        let angle = toward[1].atan2(toward[0]);
-        if let Some(sound) = &flying.sound {
-            self.play_sound(sound);
-        }
-        let now = self.started.elapsed().as_secs_f32();
-        if let Some(renderer) = self.renderer.as_mut() {
-            for spread in [-0.5_f32, -0.25, 0.0, 0.25, 0.5] {
-                let (sin, cos) = (angle + spread).sin_cos();
-                let end = [from[0] + cos * SCATTER_REACH, from[1] + sin * SCATTER_REACH];
-                renderer.add_arrow_to(attacker_id, local, end, flying.clone(), now);
-            }
-        }
-    }
 
     /// Sends an arrow from `attacker_id` to `target_id` when the attacker
     /// holds a bow and arrows (`ini/3DFlyingObj.ini`).
-    fn shoot_arrow(&mut self, attacker_id: u32, target_id: u32) {
+    /// `attacker_id` looses an arrow at `target_id` `delay` seconds from
+    /// now (its bow's and arrows' own, 3DFlyingObj.ini); when it strikes.
+    fn shoot_arrow(&mut self, attacker_id: u32, target_id: u32, delay: f32) -> Option<f32> {
         let local = self.network_character_id;
-        let Some((bow, arrows)) = self.bow_and_arrows(attacker_id) else {
-            return;
+        let (bow, arrows) = self.bow_and_arrows(attacker_id)?;
+        let flying = crate::magic::flying_object(&mut self.assets, bow, arrows)?;
+        let place = |id: u32| {
+            if local == Some(id) {
+                Some(self.player.position)
+            } else {
+                self.remote_actors.get(&id).map(|actor| actor.position)
+            }
         };
-        let Some(flying) = crate::magic::flying_object(&mut self.assets, bow, arrows) else {
-            return;
-        };
-        if let Some(sound) = &flying.sound {
+        let (from, to) = (place(attacker_id)?, place(target_id)?);
+        if delay <= 0.0
+            && let Some(sound) = &flying.sound
+        {
             self.play_sound(sound);
         }
-        let now = self.started.elapsed().as_secs_f32();
+        let now = self.started.elapsed().as_secs_f32() + delay;
+        let arrival = now + renderer::arrow_arrival(self.map.project(from), self.map.project(to));
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.add_arrow(
                 attacker_id,
@@ -5580,6 +5596,7 @@ impl App {
                 now,
             );
         }
+        Some(arrival)
     }
 
     /// Jumping, or the jump not yet confirmed: as in the original, nothing
@@ -9209,6 +9226,7 @@ fn run() -> Result<()> {
         ghosts_requested: false,
         ghost_actors: HashSet::new(),
         combat_numbers: Vec::new(),
+        arrow_blows: Vec::new(),
         skill_effects: Vec::new(),
         known_skills: HashMap::new(),
         weapon_skills: Default::default(),
@@ -9288,9 +9306,6 @@ fn run() -> Result<()> {
     }
     Ok(())
 }
-/// How far Scatter's fan of arrows flies when it hits nothing, in cells.
-const SCATTER_REACH: f32 = 8.0;
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("Sandbox: {error}");

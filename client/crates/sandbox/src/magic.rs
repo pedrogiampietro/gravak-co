@@ -19,6 +19,11 @@ const SENDER_EFFECT: usize = 792;
 /// What flies from the caster to the target (Bolt's `dianjian`, FireRing's
 /// `fireball-fly2`).
 const FLY_EFFECT: usize = 1508;
+/// How a bow skill shoots (`Conquer.exe` 0x4e7114): 800 a volley at one
+/// target (RapidFire), 801 an arrow at each target struck (Scatter).
+const ARROW_SORT: usize = 0x90;
+/// RapidFire's arrows beyond the first two.
+const ARROW_EXTRA: usize = 0x28;
 const TARGET_EFFECT: usize = 1120;
 const TARGET_SOUND: usize = 1184;
 /// A trail of effects along the cast, `ini/tme/<name>` (FastBlade's
@@ -36,6 +41,8 @@ pub struct MagicType {
     pub kind: String,
     /// Effect played on the caster while casting (for example "Intone-1").
     pub intone_effect: Option<String>,
+    /// How a bow skill shoots its arrows, `None` for the rest.
+    pub arrows: Option<ArrowSort>,
     /// Played on the caster as the skill leaves it.
     pub sender_effect: Option<String>,
     /// Flies from the caster to the target, which the target effect
@@ -48,6 +55,17 @@ pub struct MagicType {
     pub need_exp: u32,
     /// The `.tme` trail drawn along the cast, if any.
     pub trail: Option<String>,
+}
+
+/// How the original shoots a bow skill's arrows (MagicType 0x90).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrowSort {
+    /// 800: `count` arrows at the one target, 150 ms apart, the damage
+    /// shared between them (RapidFire).
+    Volley { count: u32 },
+    /// 801: an arrow at each target struck, and nothing when none is
+    /// (Scatter).
+    EachTarget,
 }
 
 /// One effect of a trail: played `delay_ms` after the cast, `along` units
@@ -143,6 +161,18 @@ pub fn parse_magic_types(bytes: &[u8]) -> Vec<MagicType> {
                 name: field(record, NAME).unwrap_or_default(),
                 kind: field(record, KIND).unwrap_or_default(),
                 intone_effect: field(record, INTONE_EFFECT),
+                arrows: {
+                    let number = |offset: usize| {
+                        record
+                            .get(offset..offset + 4)
+                            .map_or(0, |value| u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+                    };
+                    match number(ARROW_SORT) {
+                        800 => Some(ArrowSort::Volley { count: number(ARROW_EXTRA).min(8) + 2 }),
+                        801 => Some(ArrowSort::EachTarget),
+                        _ => None,
+                    }
+                },
                 sender_effect: field(record, SENDER_EFFECT),
                 fly_effect: field(record, FLY_EFFECT),
                 target_effect: field(record, TARGET_EFFECT),
@@ -365,6 +395,8 @@ pub struct FlyingObject {
     pub effect: Option<String>,
     /// What it sounds as it leaves the bow (`FlyingSound`, `bow`).
     pub sound: Option<String>,
+    /// Played on whom it strikes (`TargetEffect`).
+    pub target_effect: Option<String>,
 }
 
 /// The arrow `bow` shoots with arrows `arrow`: their own entry
@@ -398,8 +430,14 @@ pub fn flying_object(assets: &mut Assets, bow: u32, arrow: u32) -> Option<Flying
             .map(str::trim)
             .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
             .map(str::to_owned);
+        let target_effect = section
+            .first("TargetEffect")
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+            .map(str::to_owned);
         Some(FlyingObject {
             sound,
+            target_effect,
             mesh: models.get(mesh)?.as_str().to_owned(),
             texture: textures.get(texture)?.as_str().to_owned(),
             effect,
@@ -466,7 +504,9 @@ mod tests {
     fn scatter_and_bolt_leave_their_casters() {
         let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
         let scatter = magic_type(&mut assets, 8_001, 0).expect("Scatter");
-        assert_eq!(scatter.target_effect.as_deref(), Some("fire-bomb"));
+        assert_eq!(scatter.arrows, Some(ArrowSort::EachTarget), "an arrow at each target");
+        let rapid = magic_type(&mut assets, 8_000, 0).expect("RapidFire");
+        assert_eq!(rapid.arrows, Some(ArrowSort::Volley { count: 2 }), "two arrows at one target");
         let bolt = magic_type(&mut assets, 1_002, 0).or_else(|| magic_type(&mut assets, 10_020, 0));
         if let Some(bolt) = bolt {
             assert!(bolt.fly_effect.is_some() || bolt.sender_effect.is_some() || bolt.target_effect.is_some());

@@ -78,11 +78,6 @@ pub struct SkillAction {
 /// Skills aimed at a spot rather than locked on a target: FastBlade and
 /// ScentSword strike along a line, Scatter in a fan, toward the clicked
 /// cell, once per click (what is not in the way is not hit).
-/// The archer's skills shot from the bow: each hit flies as an arrow.
-pub fn is_bow_skill(skill_id: u32) -> bool {
-    matches!(skill_id, 8_000 | 8_001)
-}
-
 pub fn is_aimed_skill(skill_id: u32) -> bool {
     matches!(skill_id, 1_045 | 1_046 | 8_001)
 }
