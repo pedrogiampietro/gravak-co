@@ -279,12 +279,12 @@ impl Talisman {
     }
 }
 
-/// Raises a hit on the task's monster by the talisman's damage bonus, never
-/// past the life the monster had.
+/// Raises a hit on the task's monster by the talisman's damage bonus. The
+/// blow shows all it does, as the original, even past the monster's life.
 pub fn empower(talisman: &Talisman, monster_name: &str, outcome: &mut crate::combat::DamageOutcome, life_before: u32) {
-    let damage = talisman.boost(monster_name, outcome.damage).min(life_before);
+    let damage = talisman.boost(monster_name, outcome.damage);
     outcome.damage = damage;
-    outcome.remaining_health = life_before - damage;
+    outcome.remaining_health = life_before.saturating_sub(damage);
     outcome.defeated = outcome.remaining_health == 0;
 }
 

@@ -170,8 +170,10 @@ pub const CHARACTER_CANVAS_HEIGHT: f32 = CHARACTER_DIALOG_HEIGHT;
 pub const INVENTORY_WIDTH: f32 = 270.0;
 pub const INVENTORY_HEIGHT: f32 = 502.0;
 
-pub const INVENTORY_GRID: [f32; 4] = [26.0, 28.0, 40.0, 40.0];
-pub const INVENTORY_GRID_STEP: [f32; 2] = [42.0, 42.0];
+// The slot frames of the bag's art: 40px inside their bright edges, the
+// first at (28, 28), one every 43px across and down.
+pub const INVENTORY_GRID: [f32; 4] = [28.0, 28.0, 40.0, 40.0];
+pub const INVENTORY_GRID_STEP: [f32; 2] = [43.0, 43.0];
 pub const INVENTORY_ICON_SIZE: f32 = 38.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -306,11 +308,11 @@ mod tests {
     fn inventory_slot_geometry_is_shared() {
         assert_eq!(
             inventory_slot_rect([1024.0, 768.0], 0),
-            Rect::new(780.0, 161.0, 40.0, 40.0)
+            Rect::new(782.0, 161.0, 40.0, 40.0)
         );
         assert_eq!(
             inventory_slot_rect([1024.0, 768.0], 6),
-            Rect::new(822.0, 203.0, 40.0, 40.0)
+            Rect::new(825.0, 204.0, 40.0, 40.0)
         );
     }
 

@@ -1010,7 +1010,8 @@ impl MsgInteract {
             }
             if let Some(monster) = target.as_monster() {
                 crate::systems::monster_ai::provoke(monster.id(), character.id());
-                bounty_leech(state, character, monster, outcome.damage).await?;
+                // Life is leeched from what the monster had, not past it.
+                bounty_leech(state, character, monster, outcome.damage.min(u32::from(health_before.current))).await?;
                 hit_experience += crate::leveling::combat_experience(
                     character.entity().level(),
                     u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
@@ -1598,7 +1599,7 @@ impl PacketProcess for MsgInteract {
         target_entity.apply_damage(outcome.damage);
         if let Some(monster) = target.as_monster() {
             crate::systems::monster_ai::provoke(monster.id(), character.id());
-            bounty_leech(state, character, monster, outcome.damage).await?;
+            bounty_leech(state, character, monster, outcome.damage.min(life_before)).await?;
         }
         if let Some(victim) = target.as_character() {
             crate::death::check_crime(state, character, victim).await?;

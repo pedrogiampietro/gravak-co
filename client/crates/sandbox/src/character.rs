@@ -16,6 +16,8 @@ pub struct Part {
     /// Empty, or `None` in an action, keeps `local`.
     actions_local: Vec<Option<C3Motion>>,
     track: usize,
+    /// The weapon this part is (its item type), 0 for the rest.
+    pub item: u32,
 }
 #[derive(Clone)]
 pub struct Character {
@@ -59,7 +61,12 @@ pub struct NpcModel {
     motion: Option<C3Motion>,
     walk_motion: Option<C3Motion>,
     attack_motion: Option<C3Motion>,
+    /// How a monster dies (`3dmotion.ini`): falling (330) and then lying
+    /// (331); flung away (340), or a short way (370), before lying.
     death_motion: Option<C3Motion>,
+    lie_motion: Option<C3Motion>,
+    fly_motion: Option<C3Motion>,
+    short_fly_motion: Option<C3Motion>,
 }
 
 #[derive(Clone)]
@@ -244,6 +251,7 @@ impl Character {
             local: None,
             actions_local: Vec::new(),
             track: index,
+            item: 0,
         }];
 
         if hair != 0 {
@@ -291,6 +299,7 @@ impl Character {
             ) {
                 let mut part = part;
                 part.actions_local = weapon_action_motions(assets, weapon, &action_codes);
+                part.item = weapon;
                 parts.push(part);
             }
         }
@@ -403,17 +412,35 @@ impl Character {
         Self::project(part, &palette, facing)
     }
 
+    /// The weapons held and where the hand holds each now (its dummy,
+    /// `v_r_weapon` or `v_l_weapon`, posed as `vertices` poses it): the
+    /// effects of a weapon hang there, in the dummy's own units.
+    pub fn weapon_matrices(&self, seconds: f32, action: Action, progress: Option<f32>) -> Vec<(u32, Matrix4)> {
+        self.parts
+            .iter()
+            .filter(|part| part.item != 0)
+            .map(|part| {
+                let track = &self.actions[action.index()].motions[part.track];
+                (part.item, track.matrix_at(0, self.frame(track, seconds, action, progress)))
+            })
+            .collect()
+    }
+
+    /// The frame of `track` at `seconds` into `action`, or at `progress`
+    /// through it.
+    fn frame(&self, track: &C3Motion, seconds: f32, action: Action, progress: Option<f32>) -> f32 {
+        let frames = track.frame_count.max(1) as f32;
+        progress.map_or_else(
+            || (seconds * 1000.0 / self.intervals[action.index()]) % frames,
+            |p| (p.clamp(0.0, 1.0) * frames).min(frames - f32::EPSILON),
+        )
+    }
+
     /// Each bone's transform of `part` in `action`.
     fn palette(&self, part: &Part, seconds: f32, action: Action, progress: Option<f32>) -> Vec<Matrix4> {
+        let track = &self.actions[action.index()].motions[part.track];
+        let frame = self.frame(track, seconds, action, progress);
         let action = action.index();
-        let track = &self.actions[action].motions[part.track];
-        let frame = progress.map_or_else(
-            || (seconds * 1000.0 / self.intervals[action]) % track.frame_count.max(1) as f32,
-            |p| {
-                (p.clamp(0.0, 1.0) * track.frame_count.max(1) as f32)
-                    .min(track.frame_count.max(1) as f32 - f32::EPSILON)
-            },
-        );
         // A weapon's motion for this action runs over the body's: the
         // bow's string is drawn and let go within the shot.
         let action_local = part.actions_local.get(action).and_then(Option::as_ref);
@@ -548,7 +575,10 @@ impl NpcModel {
         // movement actions map to 110/120 in 3dmotion.ini.
         let walk_motion = load_motion("110").or_else(|| load_motion("101"));
         let attack_motion = load_motion("401");
-        let death_motion = load_motion("101");
+        let death_motion = load_motion("330");
+        let lie_motion = load_motion("331");
+        let fly_motion = load_motion("340");
+        let short_fly_motion = load_motion("370");
         let mesh = document
             .meshes
             .first()
@@ -588,6 +618,9 @@ impl NpcModel {
             walk_motion,
             attack_motion,
             death_motion,
+            lie_motion,
+            fly_motion,
+            short_fly_motion,
         })
     }
 
@@ -682,6 +715,9 @@ impl NpcModel {
             walk_motion: None,
             attack_motion: None,
             death_motion: None,
+            lie_motion: None,
+            fly_motion: None,
+            short_fly_motion: None,
         })
     }
 
@@ -723,12 +759,26 @@ impl NpcModel {
         )
     }
 
-    pub fn vertices_death(&self, seconds: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
-        self.vertices_with_motion(
-            self.death_motion.as_ref().or(self.motion.as_ref()),
-            seconds,
-            facing,
-        )
+    /// `elapsed` seconds into a death (`flung`: 0 falling, 1 flung away, 2
+    /// flung a short way): its motion played once, then lying still.
+    pub fn vertices_dying(&self, flung: u8, elapsed: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        let dying = match flung {
+            1 => self.fly_motion.as_ref().or(self.death_motion.as_ref()),
+            2 => self.short_fly_motion.as_ref().or(self.fly_motion.as_ref()).or(self.death_motion.as_ref()),
+            _ => self.death_motion.as_ref(),
+        };
+        let Some(dying) = dying else {
+            return self.vertices_with_motion(self.motion.as_ref(), 0.0, facing);
+        };
+        let frames = dying.frame_count.max(1) as f32;
+        let frame = elapsed.max(0.0) * 30.0;
+        if frame < frames {
+            return self.vertices_at_frame(Some(dying), frame, facing);
+        }
+        match &self.lie_motion {
+            Some(lying) => self.vertices_at_frame(Some(lying), 0.0, facing),
+            None => self.vertices_at_frame(Some(dying), frames - 1.0, facing),
+        }
     }
 
     fn vertices_with_motion(
@@ -740,6 +790,15 @@ impl NpcModel {
         let frame = motion.map_or(0.0, |motion| {
             (seconds * 30.0) % motion.frame_count.max(1) as f32
         });
+        self.vertices_at_frame(motion, frame, facing)
+    }
+
+    fn vertices_at_frame(
+        &self,
+        motion: Option<&C3Motion>,
+        frame: f32,
+        facing: f32,
+    ) -> Vec<([f32; 3], [f32; 2])> {
         let (s, c) = facing.sin_cos();
         let (ts, tc) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         self.mesh
@@ -865,6 +924,7 @@ fn load_dyed_attachment(
                 .map_or_else(|| part.motions.first().cloned().ok_or("Part motion missing"), Ok)?,
         ),
         track,
+        item: 0,
     })
 }
 
@@ -915,3 +975,5 @@ fn weapon_motions(assets: &mut Assets, weapon: u32, codes: &[Option<u32>]) -> Ve
         })
         .collect()
 }
+
+

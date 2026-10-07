@@ -402,6 +402,7 @@ mod tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         }
     }
 

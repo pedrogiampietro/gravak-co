@@ -14,6 +14,8 @@ pub struct MovementAudio {
     paths: [Option<String>; Action::COUNT],
     clips: HashMap<String, SamplesBuffer>,
     voices: HashMap<String, rodio::Player>,
+    /// Sounds playing once (hits), kept alive until they end.
+    one_offs: Vec<rodio::Player>,
     last_action: Option<(Action, u64)>,
     /// Sound effect volume, 0.0..=1.0.
     sound_volume: f32,
@@ -101,6 +103,7 @@ impl MovementAudio {
             paths,
             clips,
             voices: HashMap::new(),
+            one_offs: Vec::new(),
             last_action: None,
             sound_volume: 0.8,
             music: MusicPlayer {
@@ -219,6 +222,29 @@ impl MovementAudio {
         voice.set_volume(self.sound_volume);
         voice.append(clip.clone());
         self.voices.insert(path.clone(), voice);
+    }
+
+    /// Plays `path` once at the sound volume (a blow's hit); its clip is
+    /// kept for the next time.
+    pub fn play_once(&mut self, assets: &mut Assets, path: &str) {
+        let Some(device) = &self.device else { return };
+        if !self.clips.contains_key(path) {
+            match assets.read(path).and_then(decode_audio_bytes) {
+                Ok(clip) => {
+                    self.clips.insert(path.to_owned(), clip);
+                }
+                Err(error) => {
+                    eprintln!("Audio: {path}: {error}");
+                    return;
+                }
+            }
+        }
+        let Some(clip) = self.clips.get(path) else { return };
+        let voice = rodio::Player::connect_new(device.mixer());
+        voice.set_volume(self.sound_volume);
+        voice.append(clip.clone());
+        self.one_offs.retain(|voice| !voice.empty());
+        self.one_offs.push(voice);
     }
 
     pub fn check(&self) -> Result<()> {

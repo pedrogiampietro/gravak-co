@@ -202,6 +202,9 @@ pub struct ItemInfo {
     pub required_attributes: [u32; 4],
     /// What the item says of itself (column 38), for gems and the like.
     pub description: String,
+    /// The agility (accuracy) and dodge it adds (columns 17 and 18).
+    pub agility_add: u32,
+    pub dodge_add: u32,
 }
 
 /// Quality tiers used by the item presentation. In the 5065 catalog the final
@@ -485,6 +488,12 @@ pub fn slot_position(viewport: [f32; 2], index: usize) -> [f32; 2] {
 
 pub fn panel_position(viewport: [f32; 2]) -> [f32; 2] {
     [8.0, ((viewport[1] - SHOP_HEIGHT as f32) * 0.5).max(8.0)]
+}
+
+/// Whether `cursor` is over the shop window.
+pub fn panel_contains(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [x, y] = panel_position(viewport);
+    cursor[0] >= x && cursor[1] >= y && cursor[0] < x + PANEL_WIDTH as f32 && cursor[1] < y + SHOP_HEIGHT as f32
 }
 
 pub fn inventory_position(viewport: [f32; 2]) -> [f32; 2] {
@@ -2453,6 +2462,79 @@ fn status_fill(image: &mut RgbaImage, x: i32, y: i32, width: i32, height: i32, c
     }
 }
 
+/// The light the original animates under an item's icon (`Conquer.exe`
+/// 0x45b1ca, frames in `ani/effect.ani`): gear by its quality (Super fire,
+/// Elite red, Unique blue, Refined royal blue), gems golden, DragonBalls
+/// and Meteors (and 1100003/6/9) yellow.
+pub fn item_light(item_type: u32) -> Option<&'static str> {
+    if item_type < 1_000_000 && !(700_000..=800_000).contains(&item_type) {
+        return match item_type % 10 {
+            9 => Some("FireLight"),
+            8 => Some("RedLight"),
+            7 => Some("BlueLight"),
+            6 => Some("RoyalBlueLight"),
+            _ => None,
+        };
+    }
+    match item_type {
+        700_001..=700_063 => Some("GoldEnLight"),
+        1_088_000..=1_088_002 | 1_100_003 | 1_100_006 | 1_100_009 => Some("YellowLight"),
+        _ => None,
+    }
+}
+
+/// The frame of a light `seconds` in: eight, a tenth of a second each.
+pub fn item_light_frame(light: &str, seconds: f32) -> String {
+    format!("Data/Pic/{light}/{:02}.dds", (seconds.max(0.0) * 10.0) as u32 % 8 + 1)
+}
+
+/// The inventory's lights: each and its slot in the window.
+pub fn inventory_lights(inventory: &[crate::network::OwnedItem], filter: InventoryFilter) -> Vec<(&'static str, UiRect)> {
+    inventory
+        .iter()
+        .filter(|item| item.position < 40 && filter.accepts(item.item_type))
+        .filter_map(|item| Some((item_light(item.item_type)?, inventory_slot_rect(item.position))))
+        .collect()
+}
+
+/// The worn gear's lights: each and its slot in the status window.
+pub fn status_equipment_lights(equipment: &[crate::network::OwnedItem]) -> Vec<(&'static str, UiRect)> {
+    (0..StatusLayout::SLOT_POSITIONS.len())
+        .filter_map(|slot| {
+            let rect = StatusLayout::slot_rect(slot);
+            if rect.width <= 0 || rect.height <= 0 {
+                return None;
+            }
+            let position = StatusLayout::slot_position(slot);
+            let item = equipment.iter().find(|item| item.position == position)?;
+            Some((
+                item_light(item.item_type)?,
+                UiRect::new(StatusLayout::PAPER_X + rect.x, StatusLayout::PAPER_Y + rect.y, rect.width, rect.height),
+            ))
+        })
+        .collect()
+}
+
+/// "+12" in the icon's top right corner, gold edged in black, as the
+/// original's equipment shows its plus.
+fn plus_badge(image: &mut RgbaImage, rect: UiRect, plus: u8) {
+    if plus == 0 {
+        return;
+    }
+    let Ok(font) = labels::font() else {
+        return;
+    };
+    let text = format!("+{plus}");
+    let size = if rect.width >= 50 { 15.0 } else { 13.0 };
+    let width = crate::daily_rewards_panel::width_of(&font, &text, size).round() as i32;
+    let x = rect.x + rect.width - width - 3;
+    let y = rect.y + 1;
+    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
+        labels::text_sized(image, &font, &[(text.as_str(), [20, 10, 0])], [(x + dx) as f32, (y + dy) as f32], size);
+    }
+    labels::text_sized(image, &font, &[(text.as_str(), [255, 230, 90])], [x as f32, y as f32], size);
+}
+
 fn quality_outline(image: &mut RgbaImage, rect: UiRect, rarity_code: u8) {
     // Common items keep the plain slot of the original client; only the
     // custom rarity tiers are called out.
@@ -2515,6 +2597,7 @@ pub fn status_equipment_overlay_image(
             let icon_x = absolute.x + 2;
             let icon_y = absolute.y + 2;
             imageops::overlay(&mut image, &icon, i64::from(icon_x), i64::from(icon_y));
+            plus_badge(&mut image, absolute, item.plus);
             draw_durability_indicator(
                 &mut image,
                 absolute.x + 4,
@@ -2563,6 +2646,7 @@ pub fn status_equipment_items(
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             });
         }
     }
@@ -4817,10 +4901,14 @@ pub fn inventory_overlay_image(
             (slot.x as u32 + INVENTORY_ICON_OFFSET).into(),
             (slot.y as u32 + INVENTORY_ICON_OFFSET).into(),
         );
-        // Like the original, durability is only called out once it is low.
-        if item.item_type < 1_000_000
-            && item.max_durability > 0
-            && u32::from(item.durability) * 4 <= u32::from(item.max_durability)
+        plus_badge(&mut image, slot, item.plus);
+        // Like the original, durability is only called out once it is low;
+        // a pack of arrows always counts its arrows.
+        let arrows = item.item_type / 1_000 == 1_050;
+        if arrows
+            || item.item_type < 1_000_000
+                && item.max_durability > 0
+                && u32::from(item.durability) * 4 <= u32::from(item.max_durability)
         {
             draw_durability_indicator(&mut image, slot.x + 4, slot.y + 34, 31, item);
         }
@@ -5252,6 +5340,9 @@ fn classic_item_tooltip(
     const GREEN: [u8; 4] = [0, 255, 0, 255];
     const MAGENTA: [u8; 4] = [255, 64, 255, 255];
     const RED: [u8; 4] = [255, 80, 64, 255];
+    /// Magic Atk and Magic Def, as `Conquer.exe` paints them (0x8ccefd).
+    const LIGHT_BLUE: [u8; 4] = [0x8c, 0xce, 0xfd, 255];
+    const ORANGE: [u8; 4] = [255, 140, 40, 255];
     let rarity = ItemRarity::from_custom_code(rarity_code);
     let rarity_colour = {
         let [r, g, b] = rarity.colour();
@@ -5267,9 +5358,6 @@ fn classic_item_tooltip(
     };
     if plus > 0 {
         title.push_str(&format!("(+{plus})"));
-    }
-    if bless > 0 {
-        title.push_str(&format!(" -{bless}%"));
     }
     if let Some(kind) = info.map(|item| item.item_type.trim()).filter(|kind| !kind.is_empty()) {
         title.push_str(&format!(" ({kind})"));
@@ -5303,7 +5391,7 @@ fn classic_item_tooltip(
             let have = hero.proficiency.iter().find(|(weapon, _)| *weapon == kind).map_or(0, |(_, level)| *level);
             let name = if info.item_type.trim().is_empty() { "Weapon".to_owned() } else { info.item_type.trim().to_owned() };
             lines.push((
-                format!("Proficiency: {name} Level {}", info.required_weapon_skill),
+                format!("Weapon Skill: {name} Level {}", info.required_weapon_skill),
                 colour(have >= info.required_weapon_skill),
             ));
         }
@@ -5316,21 +5404,31 @@ fn classic_item_tooltip(
                 lines.push((format!("{label}: {need}"), colour(u32::from(have) >= need)));
             }
         }
+        // The item's own values (StrRes 10090-10098); what its plus and
+        // rarity add comes below, in magenta, as the original's bonus lines.
         if info.attack_max > 0 {
-            let attack = format_attack(Some((info.attack_min, info.attack_max)), scale);
-            lines.push((format!("Attack: {attack}"), WHITE));
+            lines.push((format!("Attack: {}-{}", info.attack_min, info.attack_max), WHITE));
         }
         if info.defense > 0 {
-            lines.push((
-                format!("Defense: {}", scale_item_value(info.defense, scale)),
-                WHITE,
-            ));
+            lines.push((format!("Defense: +{}", info.defense), WHITE));
+        }
+        if info.magic_attack > 0 {
+            lines.push((format!("Magic Atk: +{}", info.magic_attack), LIGHT_BLUE));
+        }
+        if info.magic_defense > 0 {
+            lines.push((format!("Magic Def: +{}%", info.magic_defense), LIGHT_BLUE));
+        }
+        if info.agility_add > 0 {
+            lines.push((format!("Agility: +{}", info.agility_add), WHITE));
+        }
+        if info.dodge_add > 0 {
+            lines.push((format!("Dodge: +{}", info.dodge_add), WHITE));
         }
         if info.health_add > 0 {
             lines.push((format!("HP: +{}", info.health_add), WHITE));
         }
         if info.mana_add > 0 {
-            lines.push((format!("MP: +{}", info.mana_add), WHITE));
+            lines.push((format!("Magic: +{}", info.mana_add), WHITE));
         }
         // Weapons only: other items carry a default speed nobody uses.
         if info.attack_speed > 0 && (400_000..600_000).contains(&item_id) {
@@ -5343,7 +5441,7 @@ fn classic_item_tooltip(
         for (index, gem) in gems.iter().enumerate() {
             if *gem != 0 && *gem != 255 {
                 lines.push((
-                    format!("SocketGem {}:{}", index + 1, gem_code_name(*gem)),
+                    format!("Socket Gem {}:{}", index + 1, gem_code_name(*gem)),
                     GREEN,
                 ));
                 if let Some(effect) = gem_effect(*gem) {
@@ -5352,17 +5450,36 @@ fn classic_item_tooltip(
             }
         }
     }
+    // Durability in hundredths, as `Conquer.exe` shows it (7000 reads 70).
     if let Some((current, maximum)) = durability.filter(|(_, maximum)| *maximum > 0) {
+        let (current, maximum) = if is_gear(item_id) { (current / 100, maximum / 100) } else { (current, maximum) };
         lines.push((
             format!("Dura.: {current}/{maximum}"),
             if current == 0 { RED } else { WHITE },
         ));
     }
-    if enchant_hp > 0 {
-        lines.push((format!("Enchant: +{enchant_hp} HP"), MAGENTA));
+    // What the plus (and rarity) adds to the item's own values, as the
+    // original's bonus lines: our upgrade raises them by a share.
+    if scale > 100
+        && let Some(info) = info
+    {
+        let added = |value: u32| scale_item_value(value, scale).saturating_sub(value);
+        if info.attack_max > 0 {
+            lines.push((format!("Ph-Damage: +{}-{}", added(info.attack_min), added(info.attack_max)), MAGENTA));
+        }
+        if info.defense > 0 {
+            lines.push((format!("Defense: +{}", added(info.defense)), MAGENTA));
+        }
+        if info.magic_attack > 0 {
+            lines.push((format!("M-Damage: +{}", added(info.magic_attack)), MAGENTA));
+        }
     }
-    if plus > 0 {
-        lines.push((format!("Upgrade: +{}%", u32::from(plus) * 10), MAGENTA));
+    if enchant_hp > 0 {
+        lines.push((format!("HP: +{enchant_hp}"), MAGENTA));
+    }
+    // Blessed: less damage taken.
+    if bless > 0 {
+        lines.push((format!("Damage -{bless}%"), ORANGE));
     }
     for slot in 0..rarity_bonus_slots(rarity_code) {
         let (bonus, value, unit) = rarity_bonus(item_uid, rarity_roll, slot);
@@ -5375,7 +5492,7 @@ fn classic_item_tooltip(
         }
     }
     if let Some(price) = info.map(|item| item.price).filter(|price| *price > 0) {
-        lines.push((format!("Price: {}", format_silver(price)), WHITE));
+        lines.push((format!("Price: {price}"), WHITE));
     }
     classic_tooltip(&lines)
 }
@@ -5428,18 +5545,6 @@ fn item_stat_scale(plus: u8, rarity_code: u8) -> u32 {
 
 fn scale_item_value(value: u32, scale: u32) -> u32 {
     value.saturating_mul(scale) / 100
-}
-
-fn format_attack(values: Option<(u32, u32)>, scale: u32) -> String {
-    match values {
-        Some((0, 0)) | None => "--".to_owned(),
-        Some((min, max)) if min == max => scale_item_value(max, scale).to_string(),
-        Some((min, max)) => format!(
-            "{}-{}",
-            scale_item_value(min, scale),
-            scale_item_value(max, scale)
-        ),
-    }
 }
 
 fn gem_code_name(code: u8) -> String {
@@ -5510,6 +5615,8 @@ fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemIn
                 magic_defense: number(30),
                 attack_speed: number(32),
                 attack_range: number(31),
+                agility_add: number(17),
+                dodge_add: number(18),
                 price: number(12),
                 item_type: fields[37].replace('~', " "),
                 required_weapon_skill: number(3),
@@ -5927,6 +6034,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 702,
@@ -5942,6 +6050,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
         ];
         assert_eq!(
@@ -6015,6 +6124,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         for action in actions {
             let [left, top] = super::item_action_panel_position(viewport, action);
@@ -6082,6 +6192,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         // A Super item has no next quality: nothing to confirm.
         let panel = super::ItemActionPanel {
@@ -6141,6 +6252,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         assert_eq!(super::battle_power(24, 1, &[], 0), 29);
         // Super armor (+4), plus 3, one normal and one super gem (+3).
@@ -6294,6 +6406,7 @@ mod icon_tests {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         let [left, top] = inventory_position(viewport);
         let cursor = [
@@ -6465,6 +6578,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 2,
@@ -6480,6 +6594,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 3,
@@ -6495,6 +6610,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 4,
@@ -6510,6 +6626,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
             crate::network::OwnedItem {
                 uid: 5,
@@ -6525,6 +6642,7 @@ mod icon_tests {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             },
         ];
         inventory_image(

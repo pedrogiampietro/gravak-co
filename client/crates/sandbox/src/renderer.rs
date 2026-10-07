@@ -82,8 +82,6 @@ struct Soul {
 struct Arrow {
     attacker_id: u32,
     target_id: u32,
-    /// A cell the arrow flies to instead of an actor (Scatter's fan).
-    to_cell: Option<[f32; 2]>,
     /// Whether the archer or the target is the player, who is not among
     /// the remote actors.
     from_player: bool,
@@ -95,15 +93,24 @@ struct Arrow {
 /// The arrow leaves the bow this long into the shot, flies this many cells
 /// a second, from about the hands to about the chest (pixels above the
 /// feet), drawn at this size of the models.
-const ARROW_RELEASE_SECONDS: f32 = 0.2;
-const ARROW_CELLS_PER_SECOND: f32 = 24.0;
-const ARROW_FROM_LIFT: f32 = 46.0;
-const ARROW_TO_LIFT: f32 = 50.0;
+/// As the original's arrows (`Conquer.exe` 0x4a23c8, 0x4a251b): loosed
+/// 800 ms after the shot (the bow drawn), then 1600 pixels a second in a
+/// straight line, from 25 pixels ahead of the archer 60 above the ground
+/// to 60 above the target.
+const ARROW_RELEASE_SECONDS: f32 = 0.8;
+const ARROW_PIXELS_PER_SECOND: f32 = 1_600.0;
+const ARROW_LEAD: f32 = 25.0;
+const ARROW_FROM_LIFT: f32 = 60.0;
+const ARROW_TO_LIFT: f32 = 60.0;
 const ARROW_SCALE: f32 = 0.6;
+/// How fast a skill's projectile (`MagicType` fly effect) crosses the map.
+const SPELL_CELLS_PER_SECOND: f32 = 14.0;
 
 /// How long a soul lingers over the body, then how long it flies.
 const SOUL_RISE_SECONDS: f32 = 1.0;
-const SOUL_FLIGHT_SECONDS: f32 = 0.8;
+const SOUL_FLIGHT_SECONDS: f32 = 1.6;
+/// How much larger than the world a soul flies to its slayer.
+const SOUL_SCALE: f32 = 1.5;
 
 /// The original `born` effect (`3DEffect.ini`) over a respawning monster:
 /// 151 frames of 40 ms. The monster itself fades in over the first moments.
@@ -686,6 +693,9 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     sprites: wgpu::RenderPipeline,
     actor: wgpu::RenderPipeline,
+    /// Additive effects: their light is added to what is behind them
+    /// (D3D SRCALPHA, ONE), never darkening it.
+    glow: wgpu::RenderPipeline,
     depth: wgpu::TextureView,
     vertex_buffer: wgpu::Buffer,
     vertex_buffer_capacity: usize,
@@ -776,6 +786,23 @@ pub struct Renderer {
     /// The trail of the actor whose status effects are being drawn, in
     /// screen pixels, newest first, and the time it is drawn at.
     current_trail: (f32, Vec<(f32, [f32; 2])>),
+    /// The facing an effect is drawn turned by (a weapon's swing turns
+    /// with its wielder); `None` for effects that face the camera.
+    effect_yaw: Option<f32>,
+    /// Where an effect bound to a weapon hangs (the weapon's posed bone);
+    /// `None` for effects placed at the actor's feet.
+    effect_attachment: Option<Matrix4>,
+    /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
+    /// the hero), the effect and when it began.
+    weapon_flashes: Vec<(Option<u32>, String, f32)>,
+    /// The last swing seen of the hero (its action instance) and of others
+    /// (their animation start), so each starts its flash once.
+    last_hero_swing: u64,
+    last_remote_swing: HashMap<u32, f32>,
+    /// `Action3DEffect.ini`: action, weapon type and item
+    /// (`<action>.<type>.<item % 1000>`) to its effect: 401 a blow's flash,
+    /// 999 what a Super weapon always shows.
+    swing_effects: Option<HashMap<String, String>>,
     last_hud_key: Option<String>,
 }
 impl Renderer {
@@ -795,6 +822,12 @@ impl Renderer {
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or("No surface format")?;
+        // Blend as the original's Direct3D did, on the stored values (not in
+        // linear light): its additive glows add up to their full brightness.
+        let plain = config.format.remove_srgb_suffix();
+        if surface.get_capabilities(&adapter).formats.contains(&plain) {
+            config.format = plain;
+        }
         let requested_present_mode = std::env::var("GRAVAK_PRESENT_MODE")
             .unwrap_or_default()
             .to_ascii_lowercase();
@@ -846,7 +879,20 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |actor| {
+        // Light added onto the scene, as the original's additive effects.
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let pipeline = |actor, blend: wgpu::BlendState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: None,
                 layout: Some(&pipeline_layout),
@@ -866,7 +912,7 @@ impl Renderer {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: config.format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        blend: Some(blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -890,8 +936,9 @@ impl Renderer {
                 cache: None,
             })
         };
-        let sprites = pipeline(false);
-        let actor = pipeline(true);
+        let sprites = pipeline(false, wgpu::BlendState::ALPHA_BLENDING);
+        let actor = pipeline(true, wgpu::BlendState::ALPHA_BLENDING);
+        let glow = pipeline(false, additive);
         let depth = depth(&device, &config);
         let vertex_buffer_capacity = 64 * 1024;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -909,6 +956,7 @@ impl Renderer {
             layout,
             sprites,
             actor,
+            glow,
             depth,
             vertex_buffer,
             vertex_buffer_capacity,
@@ -984,11 +1032,132 @@ impl Renderer {
             trail_history: HashMap::new(),
             effect_scale: 0.75,
             current_trail: (0.0, Vec::new()),
+            effect_yaw: None,
+            effect_attachment: None,
+            weapon_flashes: Vec::new(),
+            last_hero_swing: 0,
+            last_remote_swing: HashMap::new(),
+            swing_effects: None,
             last_hud_key: None,
             chat_log: None,
             chat_log_rect: [0; 4],
             chat_menu: None,
         })
+    }
+
+    /// The swing effect a weapon's blow plays (`Action3DEffect.ini`, the
+    /// attack motion 401: `999.401.<type>.<item % 1000>`).
+    fn swing_effect(&mut self, assets: &mut Assets, weapon: u32) -> Option<String> {
+        self.weapon_effect(assets, "401", weapon)
+    }
+
+    /// A weapon's effect in `action` (`Action3DEffect.ini`, any body).
+    fn weapon_effect(&mut self, assets: &mut Assets, action: &str, weapon: u32) -> Option<String> {
+        if weapon == 0 {
+            return None;
+        }
+        let catalog = self.swing_effects.get_or_insert_with(|| {
+            let text = assets.read("ini/Action3DEffect.ini").map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
+            text.lines()
+                .filter_map(|line| {
+                    let (key, effect) = line.trim().split_once('=')?;
+                    let mut parts = key.split('.');
+                    let (body, action, kind, item) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+                    let effect = effect.trim();
+                    (body == "999" && effect != "none").then(|| (format!("{action}.{kind}.{item}"), effect.to_owned()))
+                })
+                .collect()
+        });
+        catalog.get(&format!("{action}.{}.{:03}", weapon / 1_000, weapon % 1_000)).cloned()
+    }
+
+    /// Draws the swings of `who` at its feet, turned by its facing; the
+    /// finished ones go.
+    #[allow(clippy::too_many_arguments)]
+    fn push_weapon_flashes(
+        &mut self,
+        assets: &mut Assets,
+        who: Option<u32>,
+        origin: [f32; 2],
+        facing: f32,
+        time: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        let flashes = std::mem::take(&mut self.weapon_flashes);
+        let mut kept = Vec::with_capacity(flashes.len());
+        for (owner, name, started) in flashes {
+            if owner != who {
+                kept.push((owner, name, started));
+                continue;
+            }
+            self.effect_yaw = Some(facing);
+            let playing = self.push_effect(assets, &name, origin, time - started, sort_depth, viewport, draws);
+            self.effect_yaw = None;
+            // A blow's flash lasts its effect; never more than two seconds.
+            if playing && time - started < 2.0 {
+                kept.push((owner, name, started));
+            }
+        }
+        // Flashes of others drawn later this frame stay.
+        kept.extend(std::mem::take(&mut self.weapon_flashes));
+        self.weapon_flashes = kept;
+    }
+
+    /// The original's lights under item icons (`shop::item_light`), each
+    /// over its slot of a window at `origin`.
+    fn push_item_lights(
+        &mut self,
+        assets: &Assets,
+        lights: &[(&'static str, crate::ui::UiRect)],
+        origin: [f32; 2],
+        time: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        for (light, rect) in lights {
+            let frame = crate::shop::item_light_frame(light, time);
+            self.texture(assets, &frame);
+            if self.textures.contains_key(&frame) {
+                draws.push(Draw {
+                    texture: frame,
+                    vertices: quad(
+                        [origin[0] + rect.x as f32, origin[1] + rect.y as f32],
+                        [rect.width as f32, rect.height as f32],
+                        viewport,
+                    ),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+    }
+
+    /// What Super weapons always show (`Action3DEffect.ini` 999.999),
+    /// bound to each weapon where it is held.
+    #[allow(clippy::too_many_arguments)]
+    fn push_weapon_auras(
+        &mut self,
+        assets: &mut Assets,
+        weapons: Vec<(u32, Matrix4)>,
+        origin: [f32; 2],
+        facing: f32,
+        time: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        for (weapon, matrix) in weapons {
+            let Some(name) = self.weapon_effect(assets, "999", weapon) else {
+                continue;
+            };
+            self.effect_yaw = Some(facing);
+            self.effect_attachment = Some(matrix);
+            self.push_looping_effect(assets, &name, origin, time, sort_depth, viewport, draws);
+            self.effect_attachment = None;
+            self.effect_yaw = None;
+        }
     }
 
     /// Plays an effect over and over (status effects): the time wraps at
@@ -1094,6 +1263,7 @@ impl Renderer {
                                     .chain(mesh.draw_keys.last().map(|key| key.frame as f32))
                             }))
                             .chain(layer.document.shapes.iter().map(|shape| shape.frames.len() as f32))
+                            .chain(layer.document.particles.iter().map(|cloud| cloud.frames.len() as f32))
                     })
                     .fold(1.0_f32, f32::max);
                 (!layers.is_empty()).then(|| {
@@ -1118,6 +1288,8 @@ impl Renderer {
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         let scale = self.effect_scale;
+        let yaw = self.effect_yaw;
+        let attachment = self.effect_attachment;
         // A flat effect (a status flag) is moved by its own animation far
         // from its origin: centre it on its slot by the box it fills.
         let centre = flat.map(|_| {
@@ -1166,9 +1338,10 @@ impl Renderer {
                         let p = mesh.transformed_vertex_position(
                             vertex,
                             motion,
-                            Matrix4::IDENTITY,
+                            attachment.unwrap_or(Matrix4::IDENTITY),
                             frame,
                         );
+                        let p = turned(p, yaw);
                         let (screen, depth) = match (flat, centre) {
                             (Some(size), Some((middle, span))) => {
                                 let unit = size / span;
@@ -1215,6 +1388,8 @@ impl Renderer {
                     trail_point(trail, when).unwrap_or(origin)
                 };
                 let project = |p: sandbox_data::c3::Vector3, origin: [f32; 2]| {
+                    let p = attachment.map_or(p, |matrix| matrix.transform_point(p));
+                    let p = turned(p, yaw);
                     let screen_y = (p.y * sin + p.z * cos) * scale;
                     let depth = (p.y * cos - p.z * sin) * scale;
                     ([origin[0] + p.x * scale, origin[1] + screen_y], (0.5 + depth * 0.0005).clamp(0.001, 0.999))
@@ -1244,6 +1419,44 @@ impl Renderer {
                             vertices.extend([a, b, c, a, c, d]);
                         }
                     }
+                }
+                if !vertices.is_empty() {
+                    draws.push(Draw {
+                        texture: layer.texture.clone(),
+                        vertices,
+                        depth_test: false,
+                        sort_depth,
+                    });
+                }
+            }
+            // Particles: each a square facing the camera, its cell of the
+            // sheet chosen by its age (`PTCL`).
+            for cloud in &layer.document.particles {
+                if flat.is_some() || cloud.frames.is_empty() {
+                    continue;
+                }
+                let sprites = &cloud.frames[frame as usize % cloud.frames.len()];
+                let row = cloud.row as f32;
+                let cells = cloud.row * cloud.row;
+                let mut vertices = Vec::with_capacity(sprites.positions.len() * 6);
+                for ((position, age), size) in sprites.positions.iter().zip(&sprites.ages).zip(&sprites.sizes) {
+                    let p = sprites.matrix.transform_point(*position);
+                    let p = attachment.map_or(p, |matrix| matrix.transform_point(p));
+                    let p = turned(p, yaw);
+                    let centre = [origin[0] + p.x * scale, origin[1] + (p.y * sin + p.z * cos) * scale];
+                    let depth = (0.5 + (p.y * cos - p.z * sin) * scale * 0.0005).clamp(0.001, 0.999);
+                    // Each sprite spans its size either side of its place
+                    // (C3_CORE_DLL `Ptcl_Draw`): twice its size across.
+                    let half = size * scale;
+                    let cell = ((age.clamp(0.0, 1.0) * cells as f32) as u32).min(cells - 1);
+                    let (u, v) = ((cell % cloud.row) as f32 / row, (cell / cloud.row) as f32 / row);
+                    let corner = |dx: f32, dy: f32| Vertex {
+                        position: clip([centre[0] + dx * half, centre[1] + dy * half], depth, viewport),
+                        uv: [u + (dx + 1.0) / 2.0 / row, v + (dy + 1.0) / 2.0 / row],
+                        alpha: 1.0,
+                    };
+                    let (a, b, c, d) = (corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0));
+                    vertices.extend([a, b, c, a, c, d]);
                 }
                 if !vertices.is_empty() {
                     draws.push(Draw {
@@ -1985,7 +2198,7 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
@@ -2240,21 +2453,9 @@ impl Renderer {
         flying: crate::magic::FlyingObject,
         now: f32,
     ) {
-        self.arrows.push(Arrow { attacker_id, target_id, to_cell: None, from_player, to_player, flying, started: now });
+        self.arrows.push(Arrow { attacker_id, target_id, from_player, to_player, flying, started: now });
     }
 
-    /// `attacker_id` shoots `flying` at the cell `to`.
-    pub fn add_arrow_to(&mut self, attacker_id: u32, from_player: bool, to: [f32; 2], flying: crate::magic::FlyingObject, now: f32) {
-        self.arrows.push(Arrow {
-            attacker_id,
-            target_id: 0,
-            to_cell: Some(to),
-            from_player,
-            to_player: false,
-            flying,
-            started: now,
-        });
-    }
 
     /// The arrow model `flying` at screen point `origin`, pointing along
     /// the screen direction `direction`.
@@ -2286,12 +2487,7 @@ impl Renderer {
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         let scale = self.effect_scale * ARROW_SCALE;
-        // The ground direction that the screen direction shows: the world
-        // is seen from 45 degrees, so its depth is shortened by sin(45).
-        let ground = [direction[0], -direction[1] / cos];
-        // The model's tip points along -y; turn it about the vertical.
-        let turn = ground[1].atan2(ground[0]) - (-1.0_f32).atan2(0.0);
-        let (turn_sin, turn_cos) = turn.sin_cos();
+        let (turn_sin, turn_cos) = arrow_turn(direction).sin_cos();
         for (mesh_index, mesh) in model.meshes.iter().enumerate() {
             let Some(motion) = model.motions.get(mesh_index).or_else(|| model.motions.first()) else {
                 continue;
@@ -2586,6 +2782,14 @@ impl Renderer {
         };
         let origin = [ground[0] + recoil_x, ground[1] - player.height - player.hover + recoil_y];
         let actor_depth = player.position[0] + player.position[1];
+        // Each blow sweeps the weapon's flash (Action3DEffect.ini).
+        if player.action == Action::Attack && player.action_instance != self.last_hero_swing {
+            self.last_hero_swing = player.action_instance;
+            if let Some(name) = self.swing_effect(assets, character.right_weapon_id) {
+                self.weapon_flashes.push((None, name, time));
+            }
+        }
+        self.push_weapon_flashes(assets, None, origin, player.facing, time, actor_depth + 0.05, viewport, &mut draws);
         // The world character stays visible while the Character panel is open;
         // the paper doll in the panel is a separate preview on the left.
         if time < level_up_until {
@@ -2776,6 +2980,14 @@ impl Renderer {
                 sort_depth: actor_depth,
             });
         }
+        if local_ghost.is_none() {
+            let weapons = if local_idle {
+                character.weapon_matrices(0.0, Action::Idle, None)
+            } else {
+                character.weapon_matrices(time, player.action, player.progress().or(action_progress))
+            };
+            self.push_weapon_auras(assets, weapons, origin, player.facing, time, actor_depth + 0.04, viewport, &mut draws);
+        }
         if time < hit_until {
             if !self.textures.contains_key("@hit-flash") {
                 self.upload("@hit-flash", crate::labels::hit_flash_image()?);
@@ -2870,6 +3082,20 @@ impl Renderer {
             }
             let depth = actor.position[0] + actor.position[1];
             let facing = -f32::from((actor.direction % 8) + 1) * std::f32::consts::FRAC_PI_4;
+            // Another player's blow sweeps their weapon's flash too.
+            if !actor.npc
+                && actor.action == 140
+                && time < actor.animation_until
+                && self.last_remote_swing.get(&actor.id) != Some(&actor.animation_started)
+            {
+                self.last_remote_swing.insert(actor.id, actor.animation_started);
+                if let Some(name) = self.swing_effect(assets, actor.right_weapon) {
+                    self.weapon_flashes.push((Some(actor.id), name, time));
+                }
+            }
+            if !actor.npc {
+                self.push_weapon_flashes(assets, Some(actor.id), origin, facing, time, depth + 0.05, viewport, &mut draws);
+            }
             // "Full" shadows (Options window): players and monsters get the
             // hero's ground shadow; "Simple" keeps it under the hero only.
             if hud_config.full_shadows
@@ -2941,7 +3167,12 @@ impl Renderer {
                 let vertices: Arc<Vec<([f32; 3], [f32; 2])>> = if let Some(kind) = dynamic_kind {
                     let (model_id, _) = monster.static_vertices_key(facing);
                     let facing_sector = (facing / std::f32::consts::FRAC_PI_4).round() as i8;
-                    let frame_bucket = (time.max(0.0) * 30.0).floor() as u32;
+                    // A death plays from its own start, not the clock's.
+                    let (kind, frame_bucket) = if kind == 0 {
+                        (10 + actor.flung, ((time - actor.animation_started).max(0.0) * 30.0).floor() as u32)
+                    } else {
+                        (kind, (time.max(0.0) * 30.0).floor() as u32)
+                    };
                     let key = (model_id, kind, facing_sector, frame_bucket);
                     if let Some(vertices) = remote_monster_pose_cache.get(&key) {
                         Arc::clone(vertices)
@@ -2955,7 +3186,7 @@ impl Renderer {
                             self.cached_static_npc_vertices(monster, facing)
                                 .unwrap_or_else(|| {
                                     Arc::new(match kind {
-                                        0 => monster.vertices_death(time, facing),
+                                        10.. => monster.vertices_dying(actor.flung, time - actor.animation_started, facing),
                                         1 => monster.vertices_walk(time, facing),
                                         _ => monster.vertices_attack(time, facing),
                                     })
@@ -2963,7 +3194,7 @@ impl Renderer {
                         } else {
                             remote_pose_build_budget -= 1;
                             let vertices = Arc::new(match kind {
-                                0 => monster.vertices_death(time, facing),
+                                10.. => monster.vertices_dying(actor.flung, time - actor.animation_started, facing),
                                 1 => monster.vertices_walk(time, facing),
                                 _ => monster.vertices_attack(time, facing),
                             });
@@ -3087,6 +3318,12 @@ impl Renderer {
                         sort_depth: depth,
                     });
                 }
+                let weapons = if posed {
+                    remote_character.weapon_matrices(time, action, action_progress)
+                } else {
+                    remote_character.weapon_matrices(0.0, Action::Idle, None)
+                };
+                self.push_weapon_auras(assets, weapons, origin, facing, time, depth + 0.04, viewport, &mut draws);
             }
             if !actor.npc && !monster && !actor.name.is_empty() {
                 self.push_speech(
@@ -3137,6 +3374,8 @@ impl Renderer {
                 }
             } else if !actor.name.is_empty()
                 && (hud_config.show_names || monster)
+                // The slain show neither name nor life.
+                && !(monster && (actor.health == 0 || actor.action == REMOTE_FADING))
                 // ShopFlags (type 16) stand nameless, as in the original.
                 && !(actor.npc && actor.npc_kind == 16)
             {
@@ -3211,34 +3450,62 @@ impl Renderer {
             if *expires <= time {
                 continue;
             }
-            let position = remote_actors
+            // Yellow when the hero is struck, white otherwise. A target
+            // that is gone shows nothing (never on the hero).
+            let hero = network_character_id == Some(*target_id);
+            let Some(position) = remote_actors
                 .get(target_id)
                 .map(|target| target.position)
-                .unwrap_or(player.position);
+                .or(hero.then_some(player.position))
+            else {
+                continue;
+            };
             let projected = map.project(position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             if !world_point_visible(origin, viewport, 192.0) {
                 continue;
             }
-            let key = format!("@damage-{value}");
-            if !self.textures.contains_key(&key) {
-                self.upload(&key, crate::labels::damage_image(*value)?);
+            // A blow of nothing shows no number: the target only dodges.
+            if *value == 0 {
+                continue;
             }
-            if let Some(texture) = self.textures.get(&key) {
-                let rise = (1.0 - (*expires - time).clamp(0.0, 1.0)) * 28.0;
-                draws.push(Draw {
-                    texture: key,
-                    vertices: quad(
-                        [
-                            origin[0] - texture.size[0] * 0.5,
-                            origin[1] - 115.0 - rise - index as f32 * 4.0,
-                        ],
-                        texture.size,
-                        viewport,
-                    ),
-                    depth_test: false,
-                    sort_depth: WORLD_OVERLAY_SORT,
-                });
+            let elapsed = (time - (*expires - COMBAT_NUMBER_SECONDS)) * 1_000.0;
+            let digits: Vec<u32> = value.to_string().chars().filter_map(|digit| digit.to_digit(10)).collect();
+            let mut keys = Vec::with_capacity(digits.len());
+            for digit in &digits {
+                let key = format!("@count-{digit}-{}", if hero { "yellow" } else { "white" });
+                if !self.textures.contains_key(&key) {
+                    let Ok(image) = assets.image(&format!("c3/effect/CountB/CountB{digit}.dds")) else {
+                        break;
+                    };
+                    let mut image = image;
+                    if hero {
+                        for pixel in image.pixels_mut() {
+                            pixel.0[2] = 0;
+                        }
+                    }
+                    self.upload(&key, image);
+                }
+                keys.push(key);
+            }
+            if keys.len() != digits.len() {
+                continue;
+            }
+            let centre = [origin[0], origin[1] - 115.0 - index as f32 * 4.0];
+            for (scale, rise, alpha) in combat_number_passes(elapsed) {
+                let step = COUNT_SPACING * scale;
+                let left = centre[0] - step * keys.len() as f32 * 0.5;
+                let size = [COUNT_DIGIT[0] * scale, COUNT_DIGIT[1] * scale];
+                for (place, key) in keys.iter().enumerate() {
+                    let x = left + step * (place as f32 + 0.5) - size[0] * 0.5;
+                    let y = centre[1] - rise - size[1] * 0.5;
+                    draws.push(Draw {
+                        texture: key.clone(),
+                        vertices: quad_with_alpha([x, y], size, viewport, alpha),
+                        depth_test: false,
+                        sort_depth: WORLD_OVERLAY_SORT,
+                    });
+                }
             }
         }
         for effect in skill_effects {
@@ -3290,20 +3557,53 @@ impl Renderer {
                     }
                 }
             }
-            for (name, actor) in [
-                (magic.intone_effect.as_deref(), effect.attacker_id),
-                // The bow skills show their arrows, not the table's blast.
-                (
-                    magic
-                        .target_effect
-                        .as_deref()
-                        .filter(|_| effect.target_id != 0 && !crate::action_bar::is_bow_skill(effect.skill_id)),
-                    effect.target_id,
-                ),
+            // What travels to the target before it is struck: a bow skill's
+            // arrow, or the skill's own projectile (MagicType fly effect).
+            let caster = position_of(effect.attacker_id);
+            let struck = effect.target_id != 0 && effect.target_id != effect.attacker_id;
+            let target = position_of(effect.target_id);
+            let cells = (target[0] - caster[0]).hypot(target[1] - caster[1]);
+            // A bow skill's branch of the original shoots arrows and skips
+            // the table's sender, projectile and target effects.
+            let bow = magic.arrows.is_some();
+            let struck = struck && !bow;
+            let flight = if !struck {
+                0.0
+            } else if magic.fly_effect.is_some() {
+                (cells / SPELL_CELLS_PER_SECOND).clamp(0.1, 1.2)
+            } else {
+                0.0
+            };
+            if let Some(fly) = magic.fly_effect.as_deref().filter(|_| struck && elapsed < flight) {
+                let t = (elapsed / flight).clamp(0.0, 1.0);
+                let start = map.project(caster);
+                let end = map.project(target);
+                let start = [start[0], start[1] - ARROW_FROM_LIFT];
+                let end = [end[0], end[1] - ARROW_TO_LIFT];
+                let origin = [
+                    start[0] + (end[0] - start[0]) * t - camera[0],
+                    start[1] + (end[1] - start[1]) * t - camera[1],
+                ];
+                if world_point_visible(origin, viewport, 256.0) {
+                    let depth = caster[0] + caster[1] + (target[0] + target[1] - caster[0] - caster[1]) * t + 0.09;
+                    self.push_looping_effect(assets, fly, origin, elapsed, depth, viewport, &mut draws);
+                }
+            }
+            for (name, actor, delay) in [
+                (magic.intone_effect.as_deref(), effect.attacker_id, 0.0),
+                // Once per cast, on the caster as the skill leaves it.
+                (magic.sender_effect.as_deref().filter(|_| effect.trail && !bow), effect.attacker_id, 0.0),
+                // On the target once what flies to it arrives (Scatter's
+                // fire-bomb where each arrow lands).
+                (magic.target_effect.as_deref().filter(|_| struck), effect.target_id, flight),
             ] {
                 let Some(name) = name else {
                     continue;
                 };
+                let since = elapsed - delay;
+                if since < 0.0 {
+                    continue;
+                }
                 let position = position_of(actor);
                 let projected = map.project(position);
                 let origin = [projected[0] - camera[0], projected[1] - camera[1]];
@@ -3314,7 +3614,7 @@ impl Renderer {
                     assets,
                     name,
                     origin,
-                    elapsed,
+                    since,
                     position[0] + position[1] + 0.05,
                     viewport,
                     &mut draws,
@@ -3361,7 +3661,10 @@ impl Renderer {
             ];
             if world_point_visible(origin, viewport, 128.0) {
                 let depth = soul.from[0] + soul.from[1] + 0.07;
+                let scale = self.effect_scale;
+                self.effect_scale = scale * SOUL_SCALE;
                 self.push_looping_effect(assets, "soul", origin, elapsed, depth, viewport, &mut draws);
+                self.effect_scale = scale;
             }
         }
         // Arrows from the bows to their targets, with the effect some bows
@@ -3376,14 +3679,18 @@ impl Renderer {
                     remote_actors.get(&id).map(|actor| actor.position)
                 }
             };
-            let to = arrow.to_cell.or_else(|| place(arrow.to_player, arrow.target_id));
+            let to = place(arrow.to_player, arrow.target_id);
             let (Some(from), Some(to)) = (place(arrow.from_player, arrow.attacker_id), to) else {
                 continue;
             };
             let elapsed = time - arrow.started - ARROW_RELEASE_SECONDS;
-            let cells = (to[0] - from[0]).hypot(to[1] - from[1]);
-            let duration = (cells / ARROW_CELLS_PER_SECOND).clamp(0.08, 0.9);
+            let (start, end) = arrow_path(map.project(from), map.project(to));
+            let duration = arrow_seconds(start, end);
             if elapsed >= duration {
+                // Struck: the arrow's own effect on whom it hit.
+                if let Some(effect) = arrow.flying.target_effect.clone() {
+                    self.role_effects.push((arrow.target_id, effect, time));
+                }
                 continue;
             }
             flying.push(arrow.clone());
@@ -3391,10 +3698,6 @@ impl Renderer {
                 continue;
             }
             let t = elapsed / duration;
-            let start = map.project(from);
-            let end = map.project(to);
-            let start = [start[0], start[1] - ARROW_FROM_LIFT];
-            let end = [end[0], end[1] - ARROW_TO_LIFT];
             let origin = [
                 start[0] + (end[0] - start[0]) * t - camera[0],
                 start[1] + (end[1] - start[1]) * t - camera[1],
@@ -3405,8 +3708,15 @@ impl Renderer {
             let depth = from[0] + from[1] + (to[0] + to[1] - from[0] - from[1]) * t + 0.09;
             let direction = [end[0] - start[0], end[1] - start[1]];
             self.push_flying_object(assets, &arrow.flying, origin, direction, depth, viewport, &mut draws);
+            // The bow's effect is made about the arrow (its trail along the
+            // shaft): turned and sized as the arrow is.
             if let Some(effect) = &arrow.flying.effect {
+                let scale = self.effect_scale;
+                self.effect_yaw = Some(arrow_turn(direction));
+                self.effect_scale = scale * ARROW_SCALE;
                 self.push_looping_effect(assets, effect, origin, elapsed, depth, viewport, &mut draws);
+                self.effect_scale = scale;
+                self.effect_yaw = None;
             }
         }
         self.arrows = flying;
@@ -4156,6 +4466,8 @@ impl Renderer {
                         },
                     );
                 }
+                let lights = crate::shop::status_equipment_lights(&status_equipment);
+                self.push_item_lights(assets, &lights, crate::shop::status_position(viewport), time, viewport, &mut draws);
                 let overlay_draw_key = if self.textures.contains_key(&overlay_key) {
                     self.last_status_overlay_key = Some(overlay_key.clone());
                     Some(overlay_key.clone())
@@ -4315,6 +4627,8 @@ impl Renderer {
                     sort_depth: f32::INFINITY,
                 });
             }
+            let lights = crate::shop::inventory_lights(inventory, inventory_filter);
+            self.push_item_lights(assets, &lights, crate::shop::inventory_position(viewport), time, viewport, &mut draws);
             let inventory_overlay_draw_key = if self.textures.contains_key(&key) {
                 self.last_inventory_overlay_key = Some(key.clone());
                 Some(key.clone())
@@ -4710,6 +5024,8 @@ impl Renderer {
                     sort_depth: f32::INFINITY,
                 });
             }
+            let lights = crate::shop::inventory_lights(inventory, inventory_filter);
+            self.push_item_lights(assets, &lights, crate::shop::inventory_position(viewport), time, viewport, &mut draws);
             let inventory_overlay_draw_key = if self.textures.contains_key(&inventory_key) {
                 self.last_inventory_overlay_key = Some(inventory_key.clone());
                 Some(inventory_key.clone())
@@ -4819,6 +5135,8 @@ impl Renderer {
                         sort_depth: f32::INFINITY,
                     });
                 }
+                let lights = crate::shop::inventory_lights(inventory, inventory_filter);
+                self.push_item_lights(assets, &lights, crate::shop::inventory_position(viewport), time, viewport, &mut draws);
                 let inventory_overlay_draw_key = if self.textures.contains_key(&inventory_key) {
                     self.last_inventory_overlay_key = Some(inventory_key.clone());
                     Some(inventory_key.clone())
@@ -5524,7 +5842,7 @@ impl Renderer {
             });
             // State changes only when it differs from the draw before.
             let mut current_clip: Option<bool> = None;
-            let mut current_pipeline: Option<bool> = None;
+            let mut current_pipeline: Option<(bool, bool)> = None;
             let mut current_texture: Option<&str> = None;
             for (draw, (start, end)) in draws.iter().zip(&ranges) {
                 let Some(texture) = self.textures.get(&draw.texture) else {
@@ -5543,13 +5861,16 @@ impl Renderer {
                     }
                     current_clip = Some(clip);
                 }
-                if current_pipeline != Some(draw.depth_test) {
+                let glow = !draw.depth_test && draw.texture.ends_with(crate::magic::ADDITIVE_SUFFIX);
+                if current_pipeline != Some((draw.depth_test, glow)) {
                     pass.set_pipeline(if draw.depth_test {
                         &self.actor
+                    } else if glow {
+                        &self.glow
                     } else {
                         &self.sprites
                     });
-                    current_pipeline = Some(draw.depth_test);
+                    current_pipeline = Some((draw.depth_test, glow));
                 }
                 if current_texture != Some(draw.texture.as_str()) {
                     pass.set_bind_group(0, &texture.bind, &[]);
@@ -5638,6 +5959,68 @@ fn clipped_to_character(draw: &Draw) -> bool {
     draw.depth_test && draw.sort_depth == f32::INFINITY
 }
 
+/// How long a damage number shows (`Conquer.exe` 0x4d49cd: 250 ms coming
+/// in, 1200 ms rising away).
+pub const COMBAT_NUMBER_SECONDS: f32 = 1.45;
+/// The space each digit takes at full size, and a digit's size: the 64
+/// pixel `CountB` sprites on their 92 by 122 unit quad, seen from 45
+/// degrees and not shrunk as the world is (0.3 of it shows a 26 pixel
+/// tall digit every 19 pixels, as the original).
+const COUNT_SPACING: f32 = 64.0;
+const COUNT_DIGIT: [f32; 2] = [92.0, 86.0];
+
+/// How a damage number is drawn `elapsed` milliseconds in, as the original:
+/// first it shrinks from full size to 0.3 as it comes in (alpha 32 to 255),
+/// with an echo 1.3 times as large at 30%; then it rises 80 pixels in
+/// 1200 ms, fading away. Each pass: scale, rise, alpha.
+fn combat_number_passes(elapsed: f32) -> Vec<(f32, f32, f32)> {
+    if elapsed < 0.0 {
+        Vec::new()
+    } else if elapsed <= 250.0 {
+        let p = elapsed * 0.004;
+        let scale = 1.0 - 0.7 * p;
+        let alpha = (32.0 + 223.0 * p) / 255.0;
+        vec![(scale * 1.3, 0.0, alpha * 0.3), (scale, 0.0, alpha)]
+    } else if elapsed <= 1_450.0 {
+        let p = (elapsed - 250.0) / 1_200.0;
+        vec![(0.3, p * 80.0, 1.0 - p)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// How far an arrow is turned about the vertical to fly along `direction`
+/// (on the screen): its model's tip points along -y, and the world is seen
+/// from 45 degrees, its depth shortened by cos(45).
+fn arrow_turn(direction: [f32; 2]) -> f32 {
+    let cos = (-std::f32::consts::FRAC_PI_4).cos();
+    let ground = [direction[0], -direction[1] / cos];
+    ground[1].atan2(ground[0]) - (-1.0_f32).atan2(0.0)
+}
+
+/// Where an arrow flies, from the archer's and the target's ground points:
+/// 25 pixels ahead of the archer, both 60 pixels up.
+fn arrow_path(from: [f32; 2], to: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let length = dx.hypot(dy).max(1.0);
+    (
+        [from[0] + dx / length * ARROW_LEAD, from[1] + dy / length * ARROW_LEAD - ARROW_FROM_LIFT],
+        [to[0], to[1] - ARROW_TO_LIFT],
+    )
+}
+
+/// How long an arrow flies between two screen points.
+fn arrow_seconds(start: [f32; 2], end: [f32; 2]) -> f32 {
+    ((end[0] - start[0]).hypot(end[1] - start[1]) / ARROW_PIXELS_PER_SECOND).max(0.02)
+}
+
+/// When an arrow loosed now from `from` strikes `to` (ground points on the
+/// screen): what it carries (the damage, the blow) lands then.
+pub fn arrow_arrival(from: [f32; 2], to: [f32; 2]) -> f32 {
+    let (start, end) = arrow_path(from, to);
+    ARROW_RELEASE_SECONDS + arrow_seconds(start, end)
+}
+
 /// Merges neighbours of the sorted list that the GPU can draw in one call:
 /// same texture, same pipeline and same clipping. Their order is kept, so
 /// what overlaps what does not change; the depths only decided that order.
@@ -5720,6 +6103,16 @@ fn show_feedback(status: &str) -> bool {
         || !["online:", "online ", "loading", "connecting", "Network"]
             .iter()
             .any(|prefix| status.starts_with(prefix))
+}
+
+/// A point of an effect turned by its wielder's facing, as the character's
+/// own vertices are (`Character::project`).
+fn turned(p: sandbox_data::c3::Vector3, yaw: Option<f32>) -> sandbox_data::c3::Vector3 {
+    let Some(yaw) = yaw else {
+        return p;
+    };
+    let (s, c) = yaw.sin_cos();
+    sandbox_data::c3::Vector3 { x: p.x * c - p.y * s, y: p.x * s + p.y * c, z: p.z }
 }
 
 /// Client-side remote action codes: a dead player (the 401 fall, its last
@@ -6085,3 +6478,4 @@ mod transient_tests {
         }
     }
 }
+

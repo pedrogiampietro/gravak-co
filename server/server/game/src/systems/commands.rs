@@ -729,7 +729,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
         SubCommands::GiveItem(info) if info.count > 1 => {
             let mut created = 0;
             for _ in 0..info.count.min(40) {
-                let Some(item) = me.add_ground_item(state.pool(), info.item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), info.item_type, crate::shop::fresh_durability(info.item_type).0, crate::shop::fresh_durability(info.item_type).1).await? else {
                     break;
                 };
                 actor.send(MsgItemInfo::inventory_item(item)).await?;
@@ -745,7 +745,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             Ok(())
         },
         SubCommands::GiveItem(info) => {
-            let Some(item) = me.add_ground_item(state.pool(), info.item_type, 100, 100).await? else {
+            let Some(item) = me.add_ground_item(state.pool(), info.item_type, crate::shop::fresh_durability(info.item_type).0, crate::shop::fresh_durability(info.item_type).1).await? else {
                 actor
                     .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                     .await?;
@@ -806,7 +806,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in TEST_ITEMS {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(
                             me.id(),
@@ -842,7 +842,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             for (item_type, label) in samples {
                 let amount = if item_type == 1_088_000 { 5 } else { 1 };
                 for _ in 0..amount {
-                    let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                    let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                         break;
                     };
                     actor.send(MsgItemInfo::inventory_item(item)).await?;
@@ -865,7 +865,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             let samples = [(410_005_u32, "quality weapon"), (1_088_000_u32, "DragonBall")];
             let mut created = Vec::new();
             for (item_type, label) in samples {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                         .await?;
@@ -893,7 +893,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in samples {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                         .await?;
@@ -922,7 +922,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in samples {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                         .await?;
@@ -1016,7 +1016,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in TEST_ITEMS {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(
                             me.id(),
@@ -1118,7 +1118,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
         },
         SubCommands::TestSkillBook(_) => {
             let item_type = crate::skills::WHIRLWIND_BOOK_ITEM;
-            let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+            let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                 actor
                     .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                     .await?;
@@ -1131,6 +1131,36 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                     TalkChannel::System,
                     format!("Created skill book {} in inventory slot {}.", item_type, item.position),
                 ))
+                .await?;
+            Ok(())
+        },
+        SubCommands::Skin(info) => {
+            let slot = if info.left { 5 } else { 4 };
+            let say = |text: String| MsgTalk::from_system(me.id(), TalkChannel::System, text);
+            let Some(weapon) = me.equipment_item(slot) else {
+                actor.send(say("Wear a weapon in that hand first.".into())).await?;
+                return Ok(());
+            };
+            if info.look != 0
+                && (state.shop_catalog().template(info.look).is_none() || !skin_fits(weapon.item_type, info.look))
+            {
+                actor
+                    .send(say(format!("{} cannot dress {}.", info.look, weapon.item_type)))
+                    .await?;
+                return Ok(());
+            }
+            if let Some(item) = me.skin_item(state.pool(), weapon.uid, info.look).await? {
+                actor.send(MsgItemInfo::equipment_item(item)).await?;
+            }
+            let look = crate::packets::MsgPlayer::from(me);
+            actor.send(look.clone()).await?;
+            actor.screen().send_message(look).await?;
+            actor
+                .send(say(if info.look == 0 {
+                    "The weapon wears its own look again.".into()
+                } else {
+                    format!("The weapon now looks like {}.", info.look)
+                }))
                 .await?;
             Ok(())
         },
@@ -1264,7 +1294,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             const KIT_CPS: u32 = 10_000;
             let mut created = 0;
             for item_type in KIT_ITEMS {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     break;
                 };
                 actor.send(MsgItemInfo::inventory_item(item)).await?;
@@ -1449,6 +1479,7 @@ enum SubCommands {
     TestHealth(TestHealthCmd),
     TestStun(TestStunCmd),
     Proficiency(ProficiencyCmd),
+    Skin(SkinCmd),
     Go(GoCmd),
     LearnSkill(LearnSkillCmd),
     TestSkillBook(TestSkillBookCmd),
@@ -1877,6 +1908,32 @@ struct TestHealthCmd {}
 #[argh(subcommand, name = "test-stun")]
 struct TestStunCmd {}
 
+/// Dress the worn weapon in another weapon's look: `$skin 410339` (the
+/// right hand; `--left` the left), `$skin 0` takes the skin off.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "skin")]
+struct SkinCmd {
+    /// the item type whose look the weapon wears; 0 for its own
+    #[argh(positional)]
+    look: u32,
+    /// the weapon in the left hand
+    #[argh(switch)]
+    left: bool,
+}
+
+/// Whether `look` may dress `weapon`: one-handed over one-handed, two-handed
+/// over two-handed, bows over bows and shields over shields.
+pub(crate) fn skin_fits(weapon: u32, look: u32) -> bool {
+    let kind = |item: u32| match item / 1_000 {
+        500 => Some(2),
+        900 => Some(3),
+        410..=499 => Some(0),
+        501..=599 => Some(1),
+        _ => None,
+    };
+    kind(weapon).is_some() && kind(weapon) == kind(look)
+}
+
 /// Set the proficiency of a kind of weapon: `$proficiency 410 12` (blades;
 /// 420 swords, 480 clubs, 500 bows, 421 backswords, 561 wands...).
 #[derive(Debug, Clone, PartialEq, FromArgs)]
@@ -2151,6 +2208,18 @@ mod tests {
         );
         let command = Command::from_args(&["commands"], &["silver"]).expect("silver without amount should parse");
         assert_eq!(command.commands, SubCommands::GiveSilver(super::GiveSilverCmd { amount: None }));
+    }
+
+    #[test]
+    fn skins_dress_weapons_of_their_kind() {
+        let command = Command::from_args(&["commands"], &["skin", "410339", "--left"]).expect("skin command should parse");
+        assert_eq!(command.commands, SubCommands::Skin(super::SkinCmd { look: 410_339, left: true }));
+        assert!(super::skin_fits(410_039, 420_339), "a blade wears a sword");
+        assert!(super::skin_fits(560_019, 510_339), "a spear wears a glaive");
+        assert!(super::skin_fits(500_009, 500_339), "a bow wears a bow");
+        assert!(!super::skin_fits(500_009, 560_339), "a bow is no spear");
+        assert!(!super::skin_fits(410_039, 560_339), "one hand is not two");
+        assert!(!super::skin_fits(130_009, 130_309), "armor has no skins");
     }
 
     #[test]

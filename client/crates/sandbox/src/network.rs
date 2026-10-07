@@ -82,6 +82,8 @@ pub struct OwnedItem {
     pub enchant_hp: u8,
     /// Tinter dye (3-9; 0 is the default).
     pub color: u8,
+    /// A weapon's skin: the item type whose look it wears (0 its own).
+    pub skin: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -445,6 +447,9 @@ pub struct RemoteActor {
     /// The current movement is a jump: they stay in the air until it
     /// lands, even when they shoot or are hit on the way.
     pub jumping: bool,
+    /// How a slain monster dies: 0 falling, 1 flung away, 2 flung a short
+    /// way (Conquer.exe 0x4d687a).
+    pub flung: u8,
 }
 
 pub(crate) enum NetworkCommand {
@@ -1460,6 +1465,7 @@ pub(crate) async fn play(
                             bless: 0,
                             enchant_hp: 0,
                             color: 0,
+                            skin: 0,
                         },
                     });
                 }
@@ -1614,6 +1620,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.position >= 80 && info.action == 5 => {
@@ -1656,6 +1663,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.position >= 40 && info.action == 5 => {
@@ -1684,6 +1692,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 9 => {
@@ -1715,6 +1724,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 1 => {
@@ -1736,6 +1746,7 @@ pub(crate) async fn play(
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
+                        skin: info.reserved1,
                     }));
                 }
                 Some(GameEvent::ItemInfo(info)) if info.action == 5 => {
@@ -2310,6 +2321,7 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         booth: None,
         ko_count: 0,
         jumping: false,
+        flung: 0,
     }
 }
 
@@ -2354,6 +2366,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         booth: None,
         ko_count: 0,
         jumping: false,
+        flung: 0,
     }
 }
 

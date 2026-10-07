@@ -173,7 +173,7 @@ pub async fn buy(
 
     let mut items = Vec::new();
     for _ in 0..slots_needed {
-        match character.add_ground_item(pool, product.item_type, 100, 100).await? {
+        match character.add_ground_item(pool, product.item_type, crate::shop::fresh_durability(product.item_type).0, crate::shop::fresh_durability(product.item_type).1).await? {
             Some(item) => {
                 crate::audit::item(
                     "store_buy",

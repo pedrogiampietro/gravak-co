@@ -436,6 +436,14 @@ struct App {
     /// Players drawn as ghosts, through `remote_monsters`.
     ghost_actors: HashSet<u32>,
     combat_numbers: Vec<(u32, u32, f32)>,
+    /// What arrows carry until they strike, as the original: the damage
+    /// and the blow (attacker, target, damage or none, when it lands).
+    arrow_blows: Vec<(u32, u32, Option<u32>, f32)>,
+    /// Deaths waiting for the arrows that dealt them to strike (slayer,
+    /// slain, when).
+    pending_falls: Vec<(u32, u32, f32)>,
+    /// The last blow each target took, for how hard it falls.
+    last_blows: HashMap<u32, u32>,
     skill_effects: Vec<renderer::SkillEffectInstance>,
     known_skills: HashMap<u32, (u16, u32)>,
     /// Weapon proficiency by weapon type: (level, experience).
@@ -975,6 +983,17 @@ impl ApplicationHandler for App {
                 if button == MouseButton::Right && state == ElementState::Pressed {
                     // Nothing under the Sell All window is bought or sold.
                     if self.sell_all.as_ref().is_some_and(|view| view.contains(self.cursor)) {
+                        return;
+                    }
+                    // Over the shop the right button buys what it is on, and
+                    // never casts the skill on the right button.
+                    let over_shop = self.shop.is_some()
+                        && self.window.as_ref().is_some_and(|window| {
+                            let size = window.inner_size();
+                            shop::panel_contains([size.width as f32, size.height as f32], self.cursor)
+                        });
+                    if over_shop {
+                        self.buy_shop_item_at_cursor();
                         return;
                     }
                     if self.begin_item_context_menu() {
@@ -1605,6 +1624,23 @@ impl ApplicationHandler for App {
         // look like they teleport or freeze between updates.
         let now = self.started.elapsed().as_secs_f32();
         self.combat_numbers.retain(|(_, _, expires)| *expires > now);
+        // Arrows that struck: their damage shows and their target reels.
+        let (landed, flying): (Vec<_>, Vec<_>) = self.arrow_blows.drain(..).partition(|(_, _, _, at)| *at <= now);
+        self.arrow_blows = flying;
+        for (attacker_id, target_id, damage, _) in landed {
+            if let Some(damage) = damage {
+                self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
+            }
+            if self.network_character_id == Some(target_id) {
+                self.play_blow_on_player(attacker_id, target_id, now);
+            }
+        }
+        // The slain fall once the arrow that slew them strikes.
+        let (falling, waiting): (Vec<_>, Vec<_>) = self.pending_falls.drain(..).partition(|(_, _, at)| *at <= now);
+        self.pending_falls = waiting;
+        for (slayer, slain, _) in falling {
+            self.fall(slayer, slain, now);
+        }
         self.speech.retain(|_, (_, until)| *until > now);
         self.skill_effects.retain(|effect| effect.expires > now);
         for slot in &mut self.action_bar.slots {
@@ -1779,17 +1815,19 @@ impl App {
             .find(|item| item.position == 1)
             .map(|item| character::dyed(item.item_type, item.color))
             .unwrap_or(0);
+        // A weapon in a skin wears the skin's look.
+        let look = |item: &network::OwnedItem| if item.skin != 0 { item.skin } else { item.item_type };
         let right_weapon = self
             .equipment
             .iter()
             .find(|item| item.position == 4)
-            .map(|item| item.item_type)
+            .map(look)
             .unwrap_or(0);
         let left_weapon = self
             .equipment
             .iter()
             .find(|item| item.position == 5)
-            .map(|item| character::dyed(item.item_type, item.color))
+            .map(|item| character::dyed(look(item), item.color))
             .unwrap_or(0);
         debug_log::write(format_args!(
             "refresh world model: helmet={} armor_or_garment={} right_weapon={} left_weapon={} equipment_count={}",
@@ -4694,29 +4732,17 @@ impl App {
                         }
                     }
                     let now = self.started.elapsed().as_secs_f32();
-                    let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
-                    // A slain monster's soul flies to its slayer.
-                    if (400001..=499999).contains(&target_id)
-                        && let (Some(monster), Some(renderer)) =
-                            (self.remote_actors.get(&target_id), self.renderer.as_mut())
-                    {
-                        renderer.add_soul(monster.position, id, now);
-                    }
-                    if let Some(actor) = self.remote_actors.get_mut(&target_id) {
-                        actor.health = 0;
-                        let player = !actor.npc && !(400001..=499999).contains(&target_id);
-                        // Players stay on the ground until they revive;
-                        // monsters fade after their death animation.
-                        if player {
-                            actor.action = renderer::REMOTE_DEAD;
-                            actor.animation_started = now;
-                            actor.animation_until = now + fall;
-                        } else {
-                            actor.action = renderer::REMOTE_FADING;
-                            // A death ends any respawn effect still playing.
-                            actor.respawn_until = 0.0;
-                            actor.animation_until = now + 1.2;
-                        }
+                    // Struck by an arrow still in the air, it falls when the
+                    // arrow strikes, as the original.
+                    let landing = self
+                        .arrow_blows
+                        .iter()
+                        .filter(|(_, target, _, _)| *target == target_id)
+                        .map(|(_, _, _, at)| *at)
+                        .fold(None, |latest: Option<f32>, at| Some(latest.map_or(at, |latest| latest.max(at))));
+                    match landing {
+                        Some(at) if at > now => self.pending_falls.push((id, target_id, at)),
+                        _ => self.fall(id, target_id, now),
                     }
                     if self.pending_attack == Some(target_id) {
                         self.pending_attack = None;
@@ -4728,20 +4754,35 @@ impl App {
                         self.pending_skill_attack = None;
                     }
                 }
-                // A bow's blow flies to its target as an arrow.
-                if action == 2 {
-                    self.shoot_arrow(id, target_id);
-                }
+                // A bow's blow flies to its target as an arrow, which carries
+                // the damage and the blow until it strikes.
+                let arrow = if action == 2 { self.shoot_arrow(id, target_id, 0.0) } else { None };
                 let now = self.started.elapsed().as_secs_f32();
                 self.play_attack_motion(id, now);
+                // A blow that lands shows on its target the hit of the
+                // attacker's kind of weapon, and sounds it (WeaponEffect.ini).
+                if action != 2 && action != 14 && value > 0 {
+                    self.play_weapon_hit(id, target_id, now);
+                }
                 self.network_status =
                     format!("online: combat {id} -> {target_id}, hit {value} (action {action})");
                 // A physical blow of 0 missed: it shows "Miss". A death
                 // carries no damage.
-                if action != 14 && (value > 0 || action == 2) {
-                    self.combat_numbers.push((target_id, value, now + 1.0));
+                let number = (action != 14 && (value > 0 || action == 2)).then_some(value);
+                if action != 14 && value > 0 {
+                    self.last_blows.insert(target_id, value);
                 }
-                self.play_blow_on_player(id, target_id, now);
+                if let Some(at) = arrow {
+                    self.arrow_blows.push((id, target_id, number, at));
+                    if self.network_character_id == Some(id) {
+                        self.play_blow_on_player(id, target_id, now);
+                    }
+                } else {
+                    if let Some(value) = number {
+                        self.combat_numbers.push((target_id, value, now + renderer::COMBAT_NUMBER_SECONDS));
+                    }
+                    self.play_blow_on_player(id, target_id, now);
+                }
             }
             NetworkEvent::SkillEffect {
                 attacker_id,
@@ -4768,23 +4809,53 @@ impl App {
                     target_cell,
                     trail: first,
                 });
+                // The bow skills shoot as the original (MagicType 0x90):
+                // Scatter an arrow at each target struck, RapidFire a volley
+                // 150 ms apart sharing the damage; each arrow carries its
+                // damage until it strikes.
                 if damage > 0 {
-                    self.combat_numbers.push((target_id, damage, now + 1.0));
+                    self.last_blows.insert(target_id, damage);
                 }
-                // The bow skills shoot their arrows: one at each target, or
-                // Scatter's fan toward the aimed cell when it hit nothing.
-                if action_bar::is_bow_skill(u32::from(skill_id)) {
-                    if target_id != 0 && target_id != attacker_id {
-                        self.shoot_arrow(attacker_id, target_id);
-                    } else if first && u32::from(skill_id) == 8_001 {
-                        self.shoot_arrow_fan(attacker_id, target_cell);
+                let arrows = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
+                    .and_then(|magic| magic.arrows);
+                let struck = target_id != 0 && target_id != attacker_id;
+                let mut carried = false;
+                if let (Some(sort), true) = (arrows, struck) {
+                    let count = match sort {
+                        crate::magic::ArrowSort::Volley { count } => count,
+                        crate::magic::ArrowSort::EachTarget => 1,
+                    };
+                    for index in 0..count {
+                        let Some(at) = self.shoot_arrow(attacker_id, target_id, index as f32 * 0.15) else {
+                            break;
+                        };
+                        carried = true;
+                        // The last arrow carries what the others' shares leave.
+                        let share = damage / count;
+                        let part = if index + 1 == count { damage - share * (count - 1) } else { share };
+                        self.arrow_blows.push((attacker_id, target_id, (part > 0).then_some(part), at));
                     }
                 }
-                // One motion for the cast, not one per target.
+                if !carried && damage > 0 {
+                    self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
+                }
+                // One motion and one sound (MagicType) for the cast, not one
+                // per target.
                 if first {
                     self.play_attack_motion(attacker_id, now);
+                    if let Some(sound) = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
+                        .and_then(|magic| magic.sound.clone())
+                    {
+                        self.play_sound(&sound);
+                    }
                 }
-                self.play_blow_on_player(attacker_id, target_id, now);
+                if carried {
+                    if self.network_character_id == Some(attacker_id) {
+                        self.play_blow_on_player(attacker_id, target_id, now);
+                    }
+                } else {
+                    self.play_blow_on_player(attacker_id, target_id, now);
+                }
                 self.network_status =
                     format!("online: skill {skill_id} {attacker_id} -> {target_id}, hit {damage}");
             }
@@ -5438,6 +5509,99 @@ impl App {
         }
     }
 
+    /// The hit of `attacker_id`'s weapon on `target_id`: its effect and its
+    /// sound. Monsters strike with their own blows, not weapons.
+    fn play_weapon_hit(&mut self, attacker_id: u32, target_id: u32, now: f32) {
+        let weapon = if self.network_character_id == Some(attacker_id) {
+            self.equipment.iter().find(|item| item.position == 4).map_or(0, |item| item.item_type)
+        } else {
+            match self.remote_actors.get(&attacker_id) {
+                Some(actor) if !actor.npc && !(400_001..=499_999).contains(&attacker_id) => actor.right_weapon,
+                _ => return,
+            }
+        };
+        let Some((effect, sound)) = crate::magic::weapon_hit(&mut self.assets, weapon) else {
+            return;
+        };
+        if !effect.is_empty()
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.add_role_effect(target_id, effect, now);
+        }
+        if !sound.is_empty()
+            && let Some(audio) = &mut self.audio
+        {
+            audio.play_once(&mut self.assets, &sound);
+        }
+    }
+
+    /// `slain` falls to `slayer`: a monster's soul flies to its slayer and
+    /// it fades after its death; a player stays on the ground.
+    fn fall(&mut self, slayer: u32, slain: u32, now: f32) {
+        let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
+        if (400001..=499999).contains(&slain)
+            && let (Some(monster), Some(renderer)) = (self.remote_actors.get(&slain), self.renderer.as_mut())
+        {
+            renderer.add_soul(monster.position, slayer, now);
+        }
+        let slayer_at = if self.network_character_id == Some(slayer) {
+            Some(self.player.position)
+        } else {
+            self.remote_actors.get(&slayer).map(|actor| actor.position)
+        };
+        let blow = self.last_blows.remove(&slain).unwrap_or(0);
+        let roll = (now.to_bits() ^ slain.wrapping_mul(2_654_435_761)) % 100;
+        let map = &self.map;
+        if let Some(actor) = self.remote_actors.get_mut(&slain) {
+            let player = !actor.npc && !(400001..=499999).contains(&slain);
+            actor.health = 0;
+            if player {
+                actor.action = renderer::REMOTE_DEAD;
+                actor.animation_started = now;
+                actor.animation_until = now + fall;
+            } else {
+                actor.action = renderer::REMOTE_FADING;
+                // A death ends any respawn effect still playing.
+                actor.respawn_until = 0.0;
+                actor.animation_started = now;
+                actor.flung = 0;
+                let mut lying = 1.2;
+                // A blow far past its life flings a monster 4, 6 or 8 cells
+                // away from its slayer, as the original (0x4be8bd, 0x4d6b4e).
+                if let (Some(cells), Some(slayer_at)) = (fling_cells(blow, actor.maximum_health, roll), slayer_at) {
+                    let here = [actor.position[0].round() as i32, actor.position[1].round() as i32];
+                    let away = [
+                        (actor.position[0] - slayer_at[0]).signum() as i32,
+                        (actor.position[1] - slayer_at[1]).signum() as i32,
+                    ];
+                    if away != [0, 0] {
+                        let steps = (1..=cells)
+                            .take_while(|step| map.walkable([here[0] + away[0] * step, here[1] + away[1] * step]))
+                            .count() as i32;
+                        if steps > 0 {
+                            let to = [(here[0] + away[0] * steps) as f32, (here[1] + away[1] * steps) as f32];
+                            let flight = 0.25 + 0.06 * steps as f32;
+                            actor.movement_from = actor.position;
+                            actor.movement_to = to;
+                            actor.movement_started = now;
+                            actor.movement_until = now + flight;
+                            actor.flung = if steps * 2 <= cells { 2 } else { 1 };
+                            lying = 1.2_f32.max(flight + 0.9);
+                        }
+                    }
+                }
+                actor.animation_until = now + lying;
+            }
+        }
+    }
+
+    /// Plays a sound the tables name (`sound\bow1.wav`, `bow`) once.
+    fn play_sound(&mut self, name: &str) {
+        if let Some(audio) = &mut self.audio {
+            audio.play_once(&mut self.assets, &crate::magic::sound_path(name));
+        }
+    }
+
     /// The player is hit, or strikes; in the air the jump keeps its motion.
     fn play_blow_on_player(&mut self, attacker_id: u32, target_id: u32, now: f32) {
         let action = if self.network_character_id == Some(target_id) {
@@ -5460,11 +5624,13 @@ impl App {
     /// The bow and arrows `attacker_id` holds, when it holds both.
     fn bow_and_arrows(&self, attacker_id: u32) -> Option<(u32, u32)> {
         let (bow, arrows) = if self.network_character_id == Some(attacker_id) {
+            // What the hero shows: a bow in a skin shoots the skin's arrows,
+            // as others see them (the original keys them on the look).
             let held = |position: u8| {
                 self.equipment
                     .iter()
                     .find(|item| item.position == position)
-                    .map_or(0, |item| item.item_type)
+                    .map_or(0, |item| if item.skin != 0 { item.skin } else { item.item_type })
             };
             (held(4), held(5))
         } else {
@@ -5474,50 +5640,30 @@ impl App {
         (bow / 1_000 == 500 && arrows / 1_000 == 1_050).then_some((bow, arrows))
     }
 
-    /// Scatter that hit nothing: five arrows fanned out toward `cell`.
-    fn shoot_arrow_fan(&mut self, attacker_id: u32, cell: (u16, u16)) {
-        let Some((bow, arrows)) = self.bow_and_arrows(attacker_id) else {
-            return;
-        };
-        let Some(flying) = crate::magic::flying_object(&mut self.assets, bow, arrows) else {
-            return;
-        };
-        let local = self.network_character_id == Some(attacker_id);
-        let from = if local {
-            self.player.position
-        } else {
-            match self.remote_actors.get(&attacker_id) {
-                Some(actor) => actor.position,
-                None => return,
-            }
-        };
-        let toward = [f32::from(cell.0) - from[0], f32::from(cell.1) - from[1]];
-        let length = toward[0].hypot(toward[1]);
-        if length < 0.5 {
-            return;
-        }
-        let angle = toward[1].atan2(toward[0]);
-        let now = self.started.elapsed().as_secs_f32();
-        if let Some(renderer) = self.renderer.as_mut() {
-            for spread in [-0.5_f32, -0.25, 0.0, 0.25, 0.5] {
-                let (sin, cos) = (angle + spread).sin_cos();
-                let end = [from[0] + cos * SCATTER_REACH, from[1] + sin * SCATTER_REACH];
-                renderer.add_arrow_to(attacker_id, local, end, flying.clone(), now);
-            }
-        }
-    }
 
     /// Sends an arrow from `attacker_id` to `target_id` when the attacker
     /// holds a bow and arrows (`ini/3DFlyingObj.ini`).
-    fn shoot_arrow(&mut self, attacker_id: u32, target_id: u32) {
+    /// `attacker_id` looses an arrow at `target_id` `delay` seconds from
+    /// now (its bow's and arrows' own, 3DFlyingObj.ini); when it strikes.
+    fn shoot_arrow(&mut self, attacker_id: u32, target_id: u32, delay: f32) -> Option<f32> {
         let local = self.network_character_id;
-        let Some((bow, arrows)) = self.bow_and_arrows(attacker_id) else {
-            return;
+        let (bow, arrows) = self.bow_and_arrows(attacker_id)?;
+        let flying = crate::magic::flying_object(&mut self.assets, bow, arrows)?;
+        let place = |id: u32| {
+            if local == Some(id) {
+                Some(self.player.position)
+            } else {
+                self.remote_actors.get(&id).map(|actor| actor.position)
+            }
         };
-        let Some(flying) = crate::magic::flying_object(&mut self.assets, bow, arrows) else {
-            return;
-        };
-        let now = self.started.elapsed().as_secs_f32();
+        let (from, to) = (place(attacker_id)?, place(target_id)?);
+        if delay <= 0.0
+            && let Some(sound) = &flying.sound
+        {
+            self.play_sound(sound);
+        }
+        let now = self.started.elapsed().as_secs_f32() + delay;
+        let arrival = now + renderer::arrow_arrival(self.map.project(from), self.map.project(to));
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.add_arrow(
                 attacker_id,
@@ -5528,6 +5674,7 @@ impl App {
                 now,
             );
         }
+        Some(arrival)
     }
 
     /// Jumping, or the jump not yet confirmed: as in the original, nothing
@@ -8557,6 +8704,31 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
+/// How far a blow of `blow` flings a monster of `life` that it slays, as
+/// the original picks its death (Conquer.exe 0x4be8bd): by how far the blow
+/// passes its life, `roll` (0..100) deciding the close calls. `None`: it
+/// only falls.
+fn fling_cells(blow: u32, life: u16, roll: u32) -> Option<i32> {
+    if life == 0 {
+        return None;
+    }
+    let past = blow.saturating_mul(100) / u32::from(life);
+    let kind = match past {
+        0..30 => 1,
+        30..70 => 1 + u32::from(roll < 30),
+        70..100 => 1 + u32::from(roll < 50),
+        100..200 => 2,
+        200..400 => 3,
+        _ => 4,
+    };
+    match kind {
+        2 => Some(4),
+        3 => Some(6),
+        4 => Some(8),
+        _ => None,
+    }
+}
+
 /// NPC type 16: a ShopFlag, where a booth is set up (Redux `RoleBoothFlag`).
 const BOOTH_FLAG: u16 = 16;
 
@@ -9157,6 +9329,9 @@ fn run() -> Result<()> {
         ghosts_requested: false,
         ghost_actors: HashSet::new(),
         combat_numbers: Vec::new(),
+        arrow_blows: Vec::new(),
+        pending_falls: Vec::new(),
+        last_blows: HashMap::new(),
         skill_effects: Vec::new(),
         known_skills: HashMap::new(),
         weapon_skills: Default::default(),
@@ -9236,9 +9411,6 @@ fn run() -> Result<()> {
     }
     Ok(())
 }
-/// How far Scatter's fan of arrows flies when it hits nothing, in cells.
-const SCATTER_REACH: f32 = 8.0;
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("Sandbox: {error}");
@@ -9248,7 +9420,18 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::frame_interval_for;
+    use super::{fling_cells, frame_interval_for};
+
+    #[test]
+    fn blows_far_past_the_life_fling_the_slain() {
+        assert_eq!(fling_cells(10, 100, 0), None, "a blow of a tenth only fells");
+        assert_eq!(fling_cells(150, 100, 99), Some(4), "past it by half: four cells");
+        assert_eq!(fling_cells(300, 100, 99), Some(6));
+        assert_eq!(fling_cells(5_000, 35, 99), Some(8), "a level 130 on a Pheasant");
+        assert_eq!(fling_cells(80, 100, 10), Some(4), "close calls by the roll");
+        assert_eq!(fling_cells(80, 100, 90), None);
+        assert_eq!(fling_cells(80, 0, 0), None);
+    }
 
     #[test]
     fn frame_pacing_supports_the_documented_fps_caps() {

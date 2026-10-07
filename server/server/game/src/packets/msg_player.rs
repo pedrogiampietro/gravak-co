@@ -62,8 +62,9 @@ impl From<&Character> for MsgPlayer {
             germent: c.equipment_item(9).map_or(0, |item| item.item_type as i32),
             helment: c.equipment_item(1).map_or(0, |item| item.item_type as i32),
             armor: c.equipment_item(3).map_or(0, |item| item.item_type as i32),
-            right_hand: c.equipment_item(4).map_or(0, |item| item.item_type as i32),
-            left_hand: c.equipment_item(5).map_or(0, |item| item.item_type as i32),
+            // A weapon in a skin shows the skin's look.
+            right_hand: c.worn_look(4) as i32,
+            left_hand: c.worn_look(5) as i32,
             // Helmet, armor and shield dyes (Tinter).
             reserved1: c.appearance_colors(),
             ..Default::default()

@@ -16,6 +16,19 @@ pub struct ShopCatalog {
     items: HashMap<u32, ItemTemplate>,
 }
 
+/// A new item's durability, as `itemtype.dat` gives it (its current and
+/// most): a level 127 bow is born 70/70, not the 1/1 of a fixed 100.
+static FRESH_DURABILITY: std::sync::OnceLock<HashMap<u32, (u16, u16)>> = std::sync::OnceLock::new();
+
+/// The durability `item_type` is born with; 100/100 without the item data.
+pub fn fresh_durability(item_type: u32) -> (u16, u16) {
+    FRESH_DURABILITY
+        .get()
+        .and_then(|items| items.get(&item_type).copied())
+        .filter(|(_, most)| *most > 0)
+        .map_or((100, 100), |(now, most)| (now.clamp(1, most), most))
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ItemTemplate {
     pub required_profession: u8,
@@ -91,6 +104,9 @@ impl ShopCatalog {
                 Ok(mut bytes) => {
                     decrypt_itemtype(&mut bytes);
                     catalog.items = parse_item_templates(&bytes);
+                    let _ = FRESH_DURABILITY.set(
+                        catalog.items.iter().map(|(id, item)| (*id, (item.durability, item.max_durability))).collect(),
+                    );
                     tracing::info!(items = catalog.items.len(), path = ?itemtype_path, "Loaded item templates");
                 },
                 Err(error) => tracing::error!(%error, path = ?itemtype_path, "Failed to load item templates"),

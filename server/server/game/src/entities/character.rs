@@ -122,6 +122,8 @@ pub struct InventoryItem {
     pub enchant_hp: u8,
     /// Dye of a helmet, armor or shield (3-9; 0 is the default 3).
     pub color: u8,
+    /// A weapon's skin: the item type whose look it wears (0 its own).
+    pub skin: u32,
 }
 
 /// Quality is encoded by the final digit of the classic equipment type and
@@ -1629,6 +1631,7 @@ impl Character {
                             bless: 0,
                             enchant_hp: 0,
                             color: 0,
+                            skin: 0,
                         })
                     },
                 )
@@ -1675,11 +1678,20 @@ impl Character {
             .filter_map(|(uid, color)| Some((u32::try_from(uid).ok()?, u8::try_from(color).ok()?)))
             .filter(|(uid, _)| uids.contains(uid))
             .collect::<HashMap<_, _>>();
+        let rows = sqlx::query_as::<_, (i64, i64)>("SELECT item_uid, look FROM item_skins")
+            .fetch_all(pool)
+            .await?;
+        let skins = rows
+            .into_iter()
+            .filter_map(|(uid, look)| Some((u32::try_from(uid).ok()?, u32::try_from(look).ok()?)))
+            .filter(|(uid, _)| uids.contains(uid))
+            .collect::<HashMap<_, _>>();
         for items in [&self.inventory, &self.equipment, &self.warehouse] {
             for item in items.lock().iter_mut() {
                 item.bless = blessings.get(&item.uid).copied().unwrap_or(0);
                 item.enchant_hp = enchants.get(&item.uid).copied().unwrap_or(0);
                 item.color = colors.get(&item.uid).copied().unwrap_or(0);
+                item.skin = skins.get(&item.uid).copied().unwrap_or(0);
             }
         }
         Ok(())
@@ -1723,6 +1735,39 @@ impl Character {
             }
         }
         Ok(updated)
+    }
+
+    /// Dresses an owned weapon in the look of `look` (0 takes it off).
+    pub async fn skin_item(&self, pool: &sqlx::PgPool, item_uid: u32, look: u32) -> Result<Option<InventoryItem>, Error> {
+        if look == 0 {
+            sqlx::query("DELETE FROM item_skins WHERE item_uid = $1")
+                .bind(i64::from(item_uid))
+                .execute(pool)
+                .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO item_skins (item_uid, look) VALUES ($1, $2)
+                 ON CONFLICT(item_uid) DO UPDATE SET look = excluded.look",
+            )
+            .bind(i64::from(item_uid))
+            .bind(i64::from(look))
+            .execute(pool)
+            .await?;
+        }
+        let mut updated = None;
+        for items in [&self.inventory, &self.equipment, &self.warehouse] {
+            if let Some(item) = items.lock().iter_mut().find(|item| item.uid == item_uid) {
+                item.skin = look;
+                updated = Some(*item);
+            }
+        }
+        Ok(updated)
+    }
+
+    /// What a worn item looks like to others: its skin, or itself.
+    pub fn worn_look(&self, slot: u8) -> u32 {
+        self.equipment_item(slot)
+            .map_or(0, |item| if item.skin != 0 { item.skin } else { item.item_type })
     }
 
     /// Helmet, armor and shield dyes packed for the spawn packet.
@@ -1820,6 +1865,7 @@ impl Character {
                             bless: 0,
                             enchant_hp: 0,
                             color: 0,
+                            skin: 0,
                         })
                     },
                 )
@@ -3551,6 +3597,7 @@ impl Character {
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
+                skin: 0,
             })
         };
         let mut left_items = Vec::with_capacity(offered_uids.len());
@@ -3856,6 +3903,7 @@ impl Character {
                         bless: 0,
                         enchant_hp: 0,
                         color: 0,
+                        skin: 0,
                     })
                 },
             )
@@ -4498,6 +4546,7 @@ impl Character {
                         bless: 0,
                         enchant_hp: 0,
                         color: 0,
+                        skin: 0,
                     })
                 },
             )
@@ -4603,6 +4652,7 @@ impl Character {
             bless: 0,
             enchant_hp: 0,
             color: 0,
+            skin: 0,
         };
         let withdrawn = InventoryItem { position, ..stored };
         self.inventory.lock().push(withdrawn);

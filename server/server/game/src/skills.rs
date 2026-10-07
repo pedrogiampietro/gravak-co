@@ -138,7 +138,9 @@ impl SkillDefinition {
             if skill.line > 0 {
                 skill.line = u16::try_from(magic.range).unwrap_or(skill.line);
             } else if skill.sector > 0 {
-                skill.sector = u16::try_from(magic.range).unwrap_or(skill.sector);
+                // A fan reaches as far as the skill does (Redux `IsInArc`
+                // with `Distance`: Scatter 15 to 20 cells), not its `Range`.
+                skill.sector = u16::try_from(magic.distance.max(magic.range)).unwrap_or(skill.sector);
             } else if skill.radius > 0.0 {
                 skill.radius = magic.range as f32;
             }
@@ -816,7 +818,7 @@ mod tests {
         let cure = catalog.get(1_005).expect("Cure").at_level(5);
         assert_eq!((cure.mana_cost, cure.heal), (130, 400));
         let scatter = catalog.get(8_001).expect("Scatter").at_level(6);
-        assert_eq!((scatter.power_percent, scatter.sector), (72, 13));
+        assert_eq!((scatter.power_percent, scatter.sector), (72, 20));
         let fast_blade = catalog.get(1_045).expect("FastBlade").at_level(3);
         assert_eq!((fast_blade.line, fast_blade.stamina_cost), (6, 20));
         let phoenix = catalog.get(5_030).expect("Phoenix").at_level(10);

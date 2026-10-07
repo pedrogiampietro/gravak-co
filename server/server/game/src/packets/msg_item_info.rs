@@ -72,6 +72,8 @@ impl MsgItemInfo {
             // classic enchant byte carries the HP enchantment.
             reserved3: u32::from(item.rarity_roll),
             reserved4: u32::from(item.color),
+            // The weapon's skin (the look it wears), 0 for none.
+            reserved1: item.skin,
             ..Self::default()
         }
     }
@@ -96,6 +98,8 @@ impl MsgItemInfo {
             // classic enchant byte carries the HP enchantment.
             reserved3: u32::from(item.rarity_roll),
             reserved4: u32::from(item.color),
+            // The weapon's skin (the look it wears), 0 for none.
+            reserved1: item.skin,
             ..Self::default()
         }
     }
@@ -138,6 +142,8 @@ impl MsgItemInfo {
             // classic enchant byte carries the HP enchantment.
             reserved3: u32::from(item.rarity_roll),
             reserved4: u32::from(item.color),
+            // The weapon's skin (the look it wears), 0 for none.
+            reserved1: item.skin,
             ..Self::default()
         }
     }
@@ -160,6 +166,8 @@ impl MsgItemInfo {
             // classic enchant byte carries the HP enchantment.
             reserved3: u32::from(item.rarity_roll),
             reserved4: u32::from(item.color),
+            // The weapon's skin (the look it wears), 0 for none.
+            reserved1: item.skin,
             ..Self::default()
         }
     }
@@ -192,6 +200,8 @@ impl MsgItemInfo {
             // classic enchant byte carries the HP enchantment.
             reserved3: u32::from(item.rarity_roll),
             reserved4: u32::from(item.color),
+            // The weapon's skin (the look it wears), 0 for none.
+            reserved1: item.skin,
             ..Self::default()
         }
     }
