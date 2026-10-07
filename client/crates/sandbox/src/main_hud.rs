@@ -152,6 +152,8 @@ pub struct MainHudArt {
     base: RgbaImage,
     orb_background: RgbaImage,
     hp: RgbaImage,
+    /// The life's art mirrored, for the mana half of heroes without mana.
+    hp_mirrored: RgbaImage,
     mp: RgbaImage,
     stamina: RgbaImage,
     xp: RgbaImage,
@@ -229,6 +231,7 @@ impl MainHudArt {
             base,
             orb_background: assets.image(ORB_BACKGROUND)?,
             hp: clipped(assets, HP_FILL, HP_CLIP)?,
+            hp_mirrored: imageops::flip_horizontal(&clipped(assets, HP_FILL, HP_CLIP)?),
             mp: clipped(assets, MP_FILL, MP_CLIP)?,
             stamina: assets.image(STAMINA_FILL)?,
             xp: assets.image(XP_FILL)?,
@@ -341,7 +344,13 @@ pub fn draw(
     let [x, y] = at(HP_ORIGIN);
     draw_gauge(img, &art.hp, [x, y], ratio(state.health, state.max_health));
     let [x, y] = at(MP_ORIGIN);
-    draw_gauge(img, &art.mp, [x, y], ratio(state.mana, state.max_mana));
+    // Without mana (Trojans, Warriors, Archers with no spirit) the life
+    // fills the whole orb.
+    if state.max_mana == 0 {
+        draw_gauge(img, &art.hp_mirrored, [x, y], ratio(state.health, state.max_health));
+    } else {
+        draw_gauge(img, &art.mp, [x, y], ratio(state.mana, state.max_mana));
+    }
     let [x, y] = at(STAMINA_ORIGIN);
     draw_gauge(img, &art.stamina, [x, y], ratio(state.stamina, state.max_stamina));
     imageops::overlay(img, &art.base, origin[0], origin[1]);
@@ -800,5 +809,24 @@ mod tests {
         draw_gauge(&mut empty, &fill, [0, 0], 0.0);
         assert!(empty.pixels().all(|pixel| pixel[3] == 0));
         assert_eq!(ratio(5, 0), 0.0);
+    }
+
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox orb_without_mana_preview`
+    #[test]
+    fn orb_without_mana_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let art = MainHudArt::get(&mut assets).expect("art");
+        let mut img = RgbaImage::new(1024, 141);
+        let state = MainHudState {
+            health: 60, max_health: 100, mana: 0, max_mana: 0, stamina: 50, max_stamina: 100,
+            xp: 0, xp_ready: false, experience: 0.3, hovered_button: None, hovered_chat: None,
+            chat_text: "", chat_focused: false, chat_name: "", chat_name_focused: false,
+            chat_channel: 0, chat_channel_menu: false, chat_channel_hover: None,
+            kill_mode: 0, active_skill_icon: None,
+        };
+        draw(&mut img, art, [0, 0], &state, font().expect("font"));
+        let crop = imageops::crop_imm(&img, 0, 30, 110, 111).to_image();
+        imageops::resize(&crop, 330, 333, imageops::FilterType::Nearest).save(format!("{dir}/orb-no-mana.png")).expect("png");
     }
 }
