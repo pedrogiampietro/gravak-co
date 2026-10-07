@@ -5065,6 +5065,19 @@ impl Character {
         self.combat_stats_with_catalog(None)
     }
 
+    /// Dodge and accuracy from the worn items (Redux `CombatStatistics`:
+    /// `DodgeAdd`, `AccuracyAdd`): how often blows miss this hero, and how
+    /// often theirs land.
+    pub fn dodge_and_accuracy(&self, catalog: &ShopCatalog) -> (u32, u32) {
+        self.equipment_items()
+            .into_iter()
+            .filter(|item| item.durability > 0)
+            .filter_map(|item| catalog.template(item.item_type))
+            .fold((0, 0), |(dodge, accuracy), template| {
+                (dodge + u32::from(template.dodge), accuracy + u32::from(template.accuracy))
+            })
+    }
+
     pub fn combat_stats_with_catalog(&self, catalog: Option<&ShopCatalog>) -> CombatStats {
         let strength = u32::from(self.strength());
         let agility = u32::from(self.agility());

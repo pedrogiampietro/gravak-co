@@ -164,6 +164,11 @@ mod tests {
         assert_eq!(super::hit_chance(0, 0), 90);
         assert_eq!(super::hit_chance(0, 35), 100);
         assert_eq!(super::hit_chance(80, 0), 40);
+        // Redux: arrows land 75 - dodge + accuracy, and lose the dodge's share.
+        assert_eq!(super::bow_hit_chance(40, 0), 35);
+        assert_eq!(super::bow_hit_chance(40, 100), 100);
+        assert_eq!(super::after_dodge(100, 40), 60);
+        assert_eq!(super::after_dodge(1, 40), 1);
     }
 
     #[test]
@@ -477,6 +482,17 @@ static ROLL_COUNTER: AtomicU32 = AtomicU32::new(0x1357_9bdf);
 /// `max(40, 90 - dodge + accuracy)` percent of the time.
 pub fn hit_chance(dodge: u32, accuracy: u32) -> u32 {
     (90 + accuracy).saturating_sub(dodge).clamp(40, 100)
+}
+
+/// Redux `CalculateBowDamage`: an arrow lands `75 - dodge + accuracy`
+/// percent of the time (never certain to miss).
+pub fn bow_hit_chance(dodge: u32, accuracy: u32) -> u32 {
+    (75 + accuracy).saturating_sub(dodge).clamp(10, 100)
+}
+
+/// An arrow's damage loses the target's dodge share (Redux).
+pub fn after_dodge(damage: u32, dodge: u32) -> u32 {
+    (damage * 100u32.saturating_sub(dodge.min(90)) / 100).max(u32::from(damage > 0))
 }
 
 /// Accuracy and Star of Accuracy raise the hit chance this much.

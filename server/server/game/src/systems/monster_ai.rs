@@ -376,6 +376,15 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
         life_before,
         next_roll(),
     );
+    // The hero's dodge (worn items) against the monster's accuracy: a blow
+    // lands max(40, 90 - dodge + accuracy) percent of the time (Redux).
+    let (dodge, _) = character.dodge_and_accuracy(state.shop_catalog());
+    if next_roll() % 100 >= crate::combat::hit_chance(dodge, monster.accuracy()) {
+        outcome.damage = 0;
+        outcome.raw_damage = 0;
+        outcome.remaining_health = life_before;
+        outcome.defeated = false;
+    }
     crate::lucky::empower(None, Some(character), &mut outcome, life_before);
     character.entity().apply_damage(outcome.damage);
     // MsgInteract is an effect packet; the local HUD receives its actual life

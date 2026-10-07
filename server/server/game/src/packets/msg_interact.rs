@@ -1556,14 +1556,35 @@ impl PacketProcess for MsgInteract {
         // often pinned it to the minimum value.
         let life_before = u32::from(target_entity.hp().current());
         let mut outcome = resolve_physical_hit(attacker_stats, target_stats, life_before, next_roll());
-        // Fury gems and Accuracy steady the blow; the rest may miss.
-        let accuracy = character.gem_bonus(crate::entities::GemFamily::Fury)
+        // The target's dodge against the hero's accuracy (worn items, Fury
+        // gems, Accuracy): a blow lands max(40, 90 - dodge + accuracy)
+        // percent of the time, an arrow 75 - dodge + accuracy and for the
+        // dodge's share less (Redux).
+        let (_, gear_accuracy) = character.dodge_and_accuracy(state.shop_catalog());
+        let accuracy = gear_accuracy
+            + character.gem_bonus(crate::entities::GemFamily::Fury)
             + if character.has_status(crate::entities::StatusEffect::Accuracy) {
                 crate::combat::ACCURACY_STATUS_BONUS
             } else {
                 0
             };
-        if next_roll() % 100 >= crate::combat::hit_chance(0, accuracy) {
+        let dodge = match (target.as_monster(), target.as_character()) {
+            (Some(monster), _) => monster.dodge(),
+            (_, Some(target)) => target.dodge_and_accuracy(state.shop_catalog()).0,
+            _ => 0,
+        };
+        let chance = if bow {
+            crate::combat::bow_hit_chance(dodge, accuracy)
+        } else {
+            crate::combat::hit_chance(dodge, accuracy)
+        };
+        if bow && outcome.damage > 0 {
+            let damage = crate::combat::after_dodge(outcome.damage, dodge);
+            outcome.remaining_health = life_before.saturating_sub(damage);
+            outcome.damage = damage;
+            outcome.defeated = outcome.remaining_health == 0;
+        }
+        if next_roll() % 100 >= chance {
             outcome.damage = 0;
             outcome.raw_damage = 0;
             outcome.remaining_health = life_before;
