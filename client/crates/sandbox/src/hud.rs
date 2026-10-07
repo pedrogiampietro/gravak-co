@@ -101,6 +101,8 @@ pub struct SkillHud {
     pub xp_fire_until: Option<u64>,
     /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
     pub kill_mode: u8,
+    /// Running rather than walking (the bar's Run checkbox).
+    pub running: bool,
     /// The top-left information lines: map and position, FPS and ping.
     pub info: Option<InfoBar>,
     /// Skill under the cursor in the bar; filled in by the renderer.
@@ -774,6 +776,10 @@ pub fn action_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Action)
 }
 
+pub fn run_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Run)
+}
+
 pub fn status_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Status)
 }
@@ -1091,6 +1097,7 @@ pub fn image(
             chat_channel_menu: skills.chat_channel_menu,
             chat_channel_hover: skills.chat_channel_hover,
             kill_mode: skills.kill_mode,
+            running: skills.running,
             active_skill_icon: skills
                 .active_skill
                 .and_then(|id| crate::main_hud::skill_icon(assets, id)),

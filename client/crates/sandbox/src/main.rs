@@ -1904,6 +1904,12 @@ impl App {
             self.held = false;
             return true;
         }
+        // The Run checkbox: run or walk (as the / key).
+        if hud::run_button_at(viewport, self.cursor) {
+            self.player.running = !self.player.running;
+            self.held = false;
+            return true;
+        }
         if hud::action_button_at(viewport, self.cursor) {
             self.action_panel_open = !self.action_panel_open;
             self.held = false;
@@ -5541,6 +5547,7 @@ impl App {
             dragging_emote: self
                 .dragging_emote
                 .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
+            running: self.player.running,
             chat_recipient: self.chat_recipient.clone(),
             chat_name_focused: self.chat_name_focused,
             chat_channel: self.chat_channel,

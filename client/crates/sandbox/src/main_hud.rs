@@ -292,6 +292,8 @@ pub struct MainHudState<'a> {
     pub chat_channel_hover: Option<u8>,
     /// The kill mode in force, `shop::KILL_MODES` order.
     pub kill_mode: u8,
+    /// Running rather than walking: the Run checkbox ([Check40]) is ticked.
+    pub running: bool,
     /// Icon of the selected skill, painted over the "Skill" button.
     pub active_skill_icon: Option<RgbaImage>,
 }
@@ -398,7 +400,11 @@ pub fn draw(
             _ => frames,
         };
         let rect = button.local_rect();
-        let frame = &frames[usize::from(state.hovered_button == Some(*button))];
+        let lit = match button {
+            MainHudButton::Run => state.running,
+            _ => state.hovered_button == Some(*button),
+        };
+        let frame = &frames[usize::from(lit)];
         let [x, y] = at([rect.x as i64, rect.y as i64]);
         imageops::overlay(img, frame, x, y);
     }
@@ -823,7 +829,7 @@ mod tests {
             xp: 0, xp_ready: false, experience: 0.3, hovered_button: None, hovered_chat: None,
             chat_text: "", chat_focused: false, chat_name: "", chat_name_focused: false,
             chat_channel: 0, chat_channel_menu: false, chat_channel_hover: None,
-            kill_mode: 0, active_skill_icon: None,
+            kill_mode: 0, running: true, active_skill_icon: None,
         };
         draw(&mut img, art, [0, 0], &state, font().expect("font"));
         let crop = imageops::crop_imm(&img, 0, 30, 110, 111).to_image();
