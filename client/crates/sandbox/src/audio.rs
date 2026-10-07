@@ -38,6 +38,18 @@ struct MusicPlayer {
     playing: Option<(String, rodio::Player)>,
     decoded: Option<std::sync::mpsc::Receiver<(String, std::result::Result<SamplesBuffer, String>)>>,
     volume: f32,
+    /// When the playing track started (it rises from silence) and the
+    /// tracks fading out, with when they began to: a cut would click.
+    started: Option<std::time::Instant>,
+    fading: Vec<(rodio::Player, std::time::Instant)>,
+}
+
+/// How long a track takes to rise or to fade away.
+const MUSIC_FADE: f32 = 0.8;
+
+/// The share of the volume `elapsed` into a fade (0 to 1).
+fn fade_share(elapsed: std::time::Duration) -> f32 {
+    (elapsed.as_secs_f32() / MUSIC_FADE).clamp(0.0, 1.0)
 }
 
 fn music_regions(assets: &mut Assets) -> Vec<MusicRegion> {
@@ -123,14 +135,28 @@ impl MovementAudio {
             match decoded {
                 Ok(clip) if music.wanted.as_deref() == Some(track.as_str()) => {
                     let player = rodio::Player::connect_new(device.mixer());
-                    player.set_volume(music.volume);
+                    player.set_volume(0.0);
                     player.append(clip.repeat_infinite());
                     music.playing = Some((track, player));
+                    music.started = Some(std::time::Instant::now());
                 }
                 Ok(_) => {}
                 Err(error) => eprintln!("Music {track}: {error}"),
             }
         }
+        // The new track rises, the old ones fade and stop.
+        let now = std::time::Instant::now();
+        if let (Some((_, player)), Some(started)) = (&music.playing, music.started) {
+            player.set_volume(music.volume * fade_share(now - started));
+        }
+        music.fading.retain(|(player, since)| {
+            let share = 1.0 - fade_share(now - *since);
+            player.set_volume(music.volume * share);
+            if share <= 0.0 {
+                player.stop();
+            }
+            share > 0.0
+        });
         let wanted = music
             .regions
             .iter()
@@ -146,7 +172,7 @@ impl MovementAudio {
         }
         music.wanted = wanted.clone();
         if let Some((_, player)) = music.playing.take() {
-            player.stop();
+            music.fading.push((player, now));
         }
         let Some(track) = wanted else { return };
         let Ok(bytes) = assets.read(&track) else {

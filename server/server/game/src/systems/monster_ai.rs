@@ -258,11 +258,13 @@ fn nearest_target(
 /// The player and their distance, if the monster may go after them.
 fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, view_range: i16) -> Option<(Arc<GameEntity>, i16)> {
     let character = entity.as_character()?;
-    // Dead, invisible or flying players are out of reach.
+    // Dead, invisible or flying players are out of reach; guards still
+    // shoot fliers down (Redux `Monster`: mesh 900).
     let flags = character.entity().flags();
     if character.entity().is_dead()
         || character.revive_protected()
-        || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
+        || flags.contains(crate::entities::Flags::INVISIBILITY)
+        || flags.contains(crate::entities::Flags::FLYING) && !guard
     {
         return None;
     }
@@ -374,6 +376,15 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
         life_before,
         next_roll(),
     );
+    // The hero's dodge (worn items) against the monster's accuracy: a blow
+    // lands max(40, 90 - dodge + accuracy) percent of the time (Redux).
+    let (dodge, _) = character.dodge_and_accuracy(state.shop_catalog());
+    if next_roll() % 100 >= crate::combat::hit_chance(dodge, monster.accuracy()) {
+        outcome.damage = 0;
+        outcome.raw_damage = 0;
+        outcome.remaining_health = life_before;
+        outcome.defeated = false;
+    }
     crate::lucky::empower(None, Some(character), &mut outcome, life_before);
     character.entity().apply_damage(outcome.damage);
     // MsgInteract is an effect packet; the local HUD receives its actual life

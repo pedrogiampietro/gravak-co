@@ -41,6 +41,7 @@ mod emblems;
 mod action_panel;
 mod hotkey_menu;
 mod whisper;
+mod leveling;
 mod chat_log;
 mod battle_power_panel;
 mod showcase;
@@ -369,6 +370,13 @@ struct App {
     /// race its own authoritative item updates.
     pending_inventory_sort: Option<VecDeque<(u32, u8)>>,
     pending_inventory_sort_move: Option<(u32, u8)>,
+    /// When the bag closes its gaps (seconds since start): a little after
+    /// items leave it, so several leaving at once close in one pass.
+    compact_inventory_at: Option<f32>,
+    /// The cell beside a ShopFlag the hero is going to, to set up a booth.
+    pending_booth: Option<[i32; 2]>,
+    /// An ExpBall waiting for the player's yes, with what it would give.
+    exp_ball_confirm: Option<network::OwnedItem>,
     pending_inventory_drop: Option<network::OwnedItem>,
     silver: u32,
     mana: u32,
@@ -1043,9 +1051,13 @@ impl ApplicationHandler for App {
                         if self.warehouse_item_at_cursor()
                             || (self.warehouse.is_some()
                                 && self.deposit_inventory_item_at_cursor())
-                            || self.buy_shop_item_at_cursor()
-                            || self.sell_inventory_item_at_cursor() =>
+                            // Selling is a drag into the shop (or Sell All): the
+                            // right button on the bag uses or wears as always.
+                            || self.buy_shop_item_at_cursor() =>
                     {
+                        return;
+                    }
+                    (MouseButton::Left, ElementState::Pressed) if self.link_item_at_cursor() => {
                         return;
                     }
                     (MouseButton::Left, ElementState::Pressed) if self.begin_equipment_drag() => {
@@ -1329,6 +1341,18 @@ impl ApplicationHandler for App {
                 // A blow struck in the air is over: the jump plays on.
                 if self.player.jumping() && self.local_action.is_none() {
                     self.player.action = Action::Jump;
+                }
+                shop::set_hero(self.character.current_class, self.level);
+                self.process_pending_booth();
+                if self.compact_inventory_at.is_some_and(|at| elapsed >= at) {
+                    self.compact_inventory_at = None;
+                    self.compact_inventory();
+                }
+                // Flying (status bit 27): hover, and the flying pose at rest
+                // and on every glide (a flier's jump is no leap).
+                self.player.flying = self.status_flags & network::FLY_FLAG != 0 && self.dead_since.is_none();
+                if self.player.flying && matches!(self.player.action, Action::Idle | Action::Jump) {
+                    self.player.action = Action::Fly;
                 }
                 if self.held_pose.is_some() && self.player.moving() {
                     self.held_pose = None;
@@ -1886,6 +1910,12 @@ impl App {
             self.held = false;
             return true;
         }
+        // The Run checkbox: run or walk (as the / key).
+        if hud::run_button_at(viewport, self.cursor) {
+            self.player.running = !self.player.running;
+            self.held = false;
+            return true;
+        }
         if hud::action_button_at(viewport, self.cursor) {
             self.action_panel_open = !self.action_panel_open;
             self.held = false;
@@ -1918,6 +1948,14 @@ impl App {
         let skill_hud = self.skill_hud();
         if let Some(skill_id) = hud::skill_bar_at(&mut self.assets, viewport, self.cursor, &skill_hud)
         {
+            // The flier's icon: a click lands (the original's CancelFly).
+            if skill_hud.flying.is_some_and(|(fly, _)| fly == skill_id) {
+                if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                    network.cancel_fly(character_id);
+                }
+                self.held = false;
+                return true;
+            }
             self.active_skill = Some(skill_id);
             self.skill_bar_open = false;
             self.network_status = format!("skill selecionada: {skill_id}");
@@ -2602,6 +2640,30 @@ impl App {
     /// The popup for a received team invite, a request to join the hero's
     /// team, or a trade request.
     fn prompt(&self) -> Option<shop::PromptDialog> {
+        if self.exp_ball_confirm.is_some() {
+            let size = self.window.as_ref()?.inner_size();
+            let (level, experience) = (self.level, self.experience);
+            let (to_level, to_experience) = leveling::exp_ball(level, experience, leveling::EXP_BALL_SECONDS);
+            // The experience it brings, across the levels it crosses.
+            let gained = ((level..to_level).map(leveling::required).sum::<u64>() + to_experience).saturating_sub(experience);
+            let percent = |level: u8, experience: u64| {
+                let need = leveling::required(level).max(1);
+                experience as f64 * 100.0 / need as f64
+            };
+            return Some(
+                shop::PromptDialog::new(
+                    [size.width as f32, size.height as f32],
+                    "Use ExpBall",
+                    format!("+{gained} experience"),
+                    format!(
+                        "Level {level} ({:.1}%) to level {to_level} ({:.1}%)",
+                        percent(level, experience),
+                        percent(to_level, to_experience)
+                    ),
+                )
+                .with_buttons(["Use", "Cancel"]),
+            );
+        }
         if self.bounty_confirm.is_some() {
             let task = self.bounty.as_ref()?.board.active()?;
             let size = self.window.as_ref()?.inner_size();
@@ -2651,6 +2713,12 @@ impl App {
     }
 
     fn answer_prompt(&mut self, accept: bool) {
+        if let Some(item) = self.exp_ball_confirm.take() {
+            if accept {
+                self.use_item_now(item);
+            }
+            return;
+        }
         if let Some(difficulty) = self.bounty_confirm.take() {
             if accept && let Some(network) = &self.network {
                 network.send_bounty(gravak_protocol::BountyPacket::REROLL, difficulty);
@@ -2853,7 +2921,7 @@ impl App {
         let target = actor.position.map(|value| value.round() as i32);
         let here = self.player.cell();
         if (target[0] - here[0]).abs().max((target[1] - here[1]).abs()) > 2 {
-            self.player.go(&self.map, target);
+            self.travel(target);
         }
     }
 
@@ -3679,7 +3747,7 @@ impl App {
             } else if self.modifiers.shift_key() {
                 self.face_towards(target);
             } else {
-                self.player.go(&self.map, target);
+                self.travel(target);
             }
         }
     }
@@ -4253,6 +4321,8 @@ impl App {
             NetworkEvent::InventoryItemRemoved(uid) => {
                 debug_log::write(format_args!("app received inventory removal: uid={uid}"));
                 self.inventory.retain(|item| item.uid != uid);
+                // The bag closes the gap the item leaves, as the original's.
+                self.compact_inventory_at = Some(self.started.elapsed().as_secs_f32() + 0.6);
                 if self.pending_inventory_sort.is_some()
                     || self.pending_inventory_sort_move.is_some()
                 {
@@ -5057,6 +5127,18 @@ impl App {
         }
     }
 
+    /// Goes to `target`: on foot, or flying, a level glide there (a flier
+    /// only jumps, as in the original).
+    fn travel(&mut self, target: [i32; 2]) {
+        if self.player.flying {
+            if !self.player.moving() && self.pending_network_steps.is_empty() {
+                self.start_jump(target);
+            }
+        } else {
+            self.player.go(&self.map, target);
+        }
+    }
+
     fn start_jump(&mut self, target: [i32; 2]) {
         let current = self.player.cell();
         let Some(target) =
@@ -5152,6 +5234,17 @@ impl App {
             "player"
         };
         let label = if name.is_empty() { "unnamed" } else { &name };
+        // A ShopFlag (NPC type 16, Redux `RoleBoothFlag`): the hero goes to
+        // the cell two to its right and sets up a booth there.
+        if npc && npc_kind == BOOTH_FLAG {
+            if let Some(flag) = self.remote_actors.get(&id) {
+                let spot = [flag.position[0].round() as i32 + 2, flag.position[1].round() as i32];
+                self.pending_booth = Some(spot);
+                self.travel(spot);
+                self.network_status = "Setting up a booth by the flag...".into();
+            }
+            return true;
+        }
         if npc && let Some(network) = &self.network {
             network.send_npc_interact(id, npc_kind);
         }
@@ -5211,13 +5304,16 @@ impl App {
             self.pending_pickup = None;
             return;
         }
-        let target_position = target.map(|value| value as f32);
-        let distance = motion_math::cell_distance(self.player.position, target_position);
-        if distance > 1.5 {
+        // As the original: the hero goes onto the item's own cell to pick
+        // it up (walking or, flying, gliding there); one that cannot be
+        // stood on is picked from beside it.
+        let reachable = self.map.walkable(target);
+        let distance = motion_math::cell_distance(self.player.position, target.map(|value| value as f32));
+        if reachable && self.player.cell() != target || !reachable && distance > 1.5 {
             if self.player.moving() || !self.pending_network_steps.is_empty() {
                 return;
             }
-            self.player.go(&self.map, target);
+            self.travel(target);
             self.network_status = format!("online: approaching loot {item_id}");
             return;
         }
@@ -5440,7 +5536,7 @@ impl App {
             [target_cell[0], target_cell[1] + 1],
         ];
         if let Some(destination) = candidates.into_iter().find(|cell| self.map.walkable(*cell)) {
-            self.player.go(&self.map, destination);
+            self.travel(destination);
         } else {
             self.pending_attack = None;
             self.network_status = format!("online: no path to monster {target_id}");
@@ -5471,6 +5567,7 @@ impl App {
             dragging_emote: self
                 .dragging_emote
                 .and_then(|emote| action_panel::EMOTES.iter().position(|action| *action == emote)),
+            running: self.player.running,
             chat_recipient: self.chat_recipient.clone(),
             chat_name_focused: self.chat_name_focused,
             chat_channel: self.chat_channel,
@@ -5524,6 +5621,16 @@ impl App {
             kill_mode: self.kill_mode,
             info: self.info_lines(),
             hovered: None,
+            flying: (self.status_flags & network::FLY_FLAG != 0).then(|| {
+                let now = (hud::unix_now() as i64 + self.server_clock_offset).max(0) as u64;
+                let seconds = self
+                    .status_timers
+                    .iter()
+                    .find(|(flag, _)| *flag == network::FLY_FLAG)
+                    .map_or(0, |(_, end)| end.saturating_sub(now)) as u32;
+                let fly = if self.known_skills.contains_key(&8_002) { 8_002 } else { 8_003 };
+                (fly, seconds)
+            }),
             timers: {
                 let now = (hud::unix_now() as i64 + self.server_clock_offset).max(0) as u64;
                 self.status_timers
@@ -5711,7 +5818,7 @@ impl App {
                 if let Some(destination) =
                     candidates.into_iter().find(|cell| self.map.walkable(*cell))
                 {
-                    self.player.go(&self.map, destination);
+                    self.travel(destination);
                 } else {
                     self.pending_skill_attack = None;
                     self.network_status = format!("online: no path to monster {target_id}");
@@ -6001,6 +6108,55 @@ impl App {
             }
             "Copy Name" => copy_to_clipboard(&menu.sender),
             _ => copy_to_clipboard(&menu.message),
+        }
+    }
+
+    /// Shift and a click on an item of the bag or worn: its name goes into
+    /// the chat line as a link, `[Name(+n)]`, short enough for any message.
+    fn link_item_at_cursor(&mut self) -> bool {
+        if !self.modifiers.shift_key() {
+            return false;
+        }
+        let item = self
+            .inventory_slot_item_at_cursor()
+            .filter(|_| self.inventory_open)
+            .or_else(|| self.equipped_item_at_cursor().filter(|_| self.status_open));
+        let Some(item) = item.filter(|item| item.item_type != 0) else {
+            return false;
+        };
+        let name = shop::item_name(&mut self.assets, item.item_type);
+        let link = if item.plus > 0 { format!("[{name}(+{})]", item.plus) } else { format!("[{name}]") };
+        if self.chat_text.chars().count() + link.chars().count() + 1 <= 120 {
+            if !self.chat_text.is_empty() && !self.chat_text.ends_with(' ') {
+                self.chat_text.push(' ');
+            }
+            self.chat_text.push_str(&link);
+        }
+        self.chat_focused = true;
+        self.chat_name_focused = false;
+        self.held = false;
+        true
+    }
+
+    /// At the cell beside the ShopFlag: the booth opens, its window with it,
+    /// and the hero sits facing it (Redux `StartVending`).
+    fn process_pending_booth(&mut self) {
+        let Some(spot) = self.pending_booth else {
+            return;
+        };
+        if self.player.moving() || !self.pending_network_steps.is_empty() {
+            return;
+        }
+        self.pending_booth = None;
+        if self.player.cell() != spot {
+            self.network_status = "Stand beside a free flag to set up a booth.".into();
+            return;
+        }
+        self.face_towards([spot[0] - 2, spot[1]]);
+        self.handle_player_shop_panel_action(shop::PlayerShopPanelAction::Open);
+        self.quick_panel = Some(shop::QuickPanel::Market);
+        if self.held_pose.is_none() {
+            self.perform_emote(Action::Sit);
         }
     }
 
@@ -6732,6 +6888,26 @@ impl App {
         }
     }
 
+    /// Closes the bag's gaps: every item keeps its order, the later ones
+    /// moving up into the free slots, as the original's bag never has holes.
+    fn compact_inventory(&mut self) {
+        if self.pending_inventory_sort.is_some()
+            || self.pending_inventory_sort_move.is_some()
+            || self.pending_inventory_move.is_some()
+            || self.dragging_inventory_item.is_some()
+        {
+            // Busy: try again in a moment.
+            self.compact_inventory_at = Some(self.started.elapsed().as_secs_f32() + 0.5);
+            return;
+        }
+        let mut desired = self.inventory.iter().filter(|item| item.position < 40).copied().collect::<Vec<_>>();
+        desired.sort_by_key(|item| item.position);
+        let gaps = desired.iter().enumerate().any(|(index, item)| usize::from(item.position) != index);
+        if gaps {
+            self.plan_inventory(desired, false);
+        }
+    }
+
     fn organize_inventory(&mut self) {
         if self.pending_inventory_sort.is_some() || self.pending_inventory_sort_move.is_some() {
             self.network_status = "aguarde o inventário terminar de organizar".into();
@@ -6744,6 +6920,12 @@ impl App {
             .copied()
             .collect::<Vec<_>>();
         desired.sort_by_key(|item| (item.item_type, item.uid));
+        self.plan_inventory(desired, true);
+    }
+
+    /// Moves the bag's items so `desired` fills slots 0, 1, 2… in order;
+    /// `announce` tells the player (a sort they asked for).
+    fn plan_inventory(&mut self, desired: Vec<network::OwnedItem>, announce: bool) {
 
         // Build the same swap sequence the server will execute, but keep the
         // live online inventory untouched until authoritative responses arrive.
@@ -6774,7 +6956,9 @@ impl App {
                 .map(|(current, target)| (current.uid, target))
                 .collect::<VecDeque<_>>();
             self.pending_inventory_sort = Some(queue);
-            self.network_status = format!("organizando inventário: {moved_count} trocas pendentes");
+            if announce {
+                self.network_status = format!("organizando inventário: {moved_count} trocas pendentes");
+            }
             self.advance_inventory_sort();
         } else {
             for (current, target) in moves {
@@ -7032,6 +7216,15 @@ impl App {
     }
 
     fn queue_use_item(&mut self, item: network::OwnedItem) -> bool {
+        // An ExpBall asks first, showing the experience and level it brings.
+        if item.item_type == leveling::EXP_BALL && self.exp_ball_confirm.is_none() {
+            self.exp_ball_confirm = Some(item);
+            return true;
+        }
+        self.use_item_now(item)
+    }
+
+    fn use_item_now(&mut self, item: network::OwnedItem) -> bool {
         let worn = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
         if worn && !shop::is_consumable(item.item_type) {
             self.network_status = "Equipamentos se vestem, não se usam".into();
@@ -7268,6 +7461,17 @@ impl App {
                 "context requested: inventory uid={} type={} position={} cursor=({:.1},{:.1})",
                 item.uid, item.item_type, item.position, self.cursor[0], self.cursor[1]
             ));
+            let wearable = shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some();
+            // The right button alone does the usual: wears gear, uses the
+            // rest. Shift and the right button bring up the item's menu.
+            if !self.modifiers.shift_key() {
+                self.item_context = None;
+                return if wearable && !shop::is_consumable(item.item_type) {
+                    self.queue_equip_item(item)
+                } else {
+                    self.queue_use_item(item)
+                };
+            }
             // What is not worn is used; the server decides what using it
             // does (scrolls, dyes, books, potions...) and says when nothing.
             let actions = if shop::is_consumable(item.item_type) {
@@ -7798,6 +8002,8 @@ impl App {
                         character_id, item.uid, slot
                     ));
                     network.move_inventory_item(character_id, item.uid, slot);
+                    // Dropped past the last item, it moves up to close the gap.
+                    self.compact_inventory_at = Some(self.started.elapsed().as_secs_f32() + 0.6);
                     self.selected_inventory_uid = Some(item.uid);
                     self.network_status = format!(
                         "online: moving item {} to slot {}",
@@ -7884,33 +8090,6 @@ impl App {
             self.network_status = "online: drop the item inside the open shop to sell".into();
             return true;
         }
-        let Some(shop) = &self.shop else {
-            return true;
-        };
-        self.request_shop_sale(item.uid, shop.npc_id);
-        true
-    }
-
-    fn sell_inventory_item_at_cursor(&mut self) -> bool {
-        if self.shop.is_none() {
-            return false;
-        }
-        let Some(window) = &self.window else {
-            return true;
-        };
-        let size = window.inner_size();
-        let viewport = [size.width as f32, size.height as f32];
-        let Some(slot) = shop::inventory_slot_at(viewport, self.cursor) else {
-            return false;
-        };
-        let Some(item) = self
-            .inventory
-            .iter()
-            .find(|item| item.position == slot)
-            .copied()
-        else {
-            return true;
-        };
         let Some(shop) = &self.shop else {
             return true;
         };
@@ -8296,6 +8475,9 @@ fn copy_to_clipboard(text: &str) {
         let _ = clipboard.set_text(text.to_owned());
     }
 }
+
+/// NPC type 16: a ShopFlag, where a booth is set up (Redux `RoleBoothFlag`).
+const BOOTH_FLAG: u16 = 16;
 
 /// Arrows go on an F key to be worn.
 fn is_arrow(item_type: u32) -> bool {
@@ -8836,6 +9018,9 @@ fn run() -> Result<()> {
         pending_inventory_move: None,
         pending_inventory_sort: None,
         pending_inventory_sort_move: None,
+        compact_inventory_at: None,
+        pending_booth: None,
+        exp_ball_confirm: None,
         pending_inventory_drop: None,
         silver: server_ready
             .as_ref()

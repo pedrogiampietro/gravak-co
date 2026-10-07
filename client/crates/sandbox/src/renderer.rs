@@ -2555,7 +2555,7 @@ impl Renderer {
         } else {
             (0.0, 0.0)
         };
-        let origin = [ground[0] + recoil_x, ground[1] - player.height + recoil_y];
+        let origin = [ground[0] + recoil_x, ground[1] - player.height - player.hover + recoil_y];
         let actor_depth = player.position[0] + player.position[1];
         // The world character stays visible while the Character panel is open;
         // the paper doll in the panel is a separate preview on the left.
@@ -2795,6 +2795,14 @@ impl Renderer {
             } else {
                 Action::Idle
             };
+            // A flier keeps its flying pose, standing or gliding.
+            let action = if actor.status_flags & crate::network::FLY_FLAG != 0
+                && matches!(action, Action::Idle | Action::Jump | Action::WalkLeft | Action::WalkRight | Action::RunLeft | Action::RunRight)
+            {
+                Action::Fly
+            } else {
+                action
+            };
             // In a jump: how far along. The jump plays to its landing, even
             // when a blow is struck in the air.
             let jump_progress = (actor.jumping
@@ -2816,6 +2824,11 @@ impl Renderer {
             let projected = map.project(actor.position);
             let mut origin = [projected[0] - camera[0], projected[1] - camera[1]];
             origin[1] -= remote_jump_lift(actor, time);
+            // Fliers hover; their shadow stays on the ground.
+            let flying = actor.status_flags & crate::network::FLY_FLAG != 0;
+            if flying {
+                origin[1] -= crate::movement::FLY_HEIGHT;
+            }
             let visibility_margin = if monster {
                 384.0
             } else if actor.npc {
@@ -3085,7 +3098,11 @@ impl Renderer {
                         sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
-            } else if !actor.name.is_empty() && (hud_config.show_names || monster) {
+            } else if !actor.name.is_empty()
+                && (hud_config.show_names || monster)
+                // ShopFlags (type 16) stand nameless, as in the original.
+                && !(actor.npc && actor.npc_kind == 16)
+            {
                 // NPCs' names in green, as the original's.
                 let name_colour =
                     if actor.npc { NPC_NAME } else { crate::labels::name_colour(actor.status_flags) };
@@ -4105,7 +4122,8 @@ impl Renderer {
                 }
                 if let Some(item) = hovered_equipment {
                     let tooltip_key = format!(
-                        "@status-equipment-tooltip-{}-{}-{}-{}-{}-{}-{}-{}-{}",
+                        "@status-equipment-tooltip-{}-{}-{}-{}-{}-{}-{}-{}-{}-{}",
+                        crate::shop::hero_key(),
                         item.position,
                         item.item_type,
                         item.durability,
@@ -4619,7 +4637,7 @@ impl Renderer {
             }
             if let Some(index) = shop.hover.or(shop.selected) {
                 if let Some(item_id) = shop.items.get(index) {
-                    let tooltip_key = format!("@shop-tooltip-{item_id}");
+                    let tooltip_key = format!("@shop-tooltip-{item_id}-{}", crate::shop::hero_key());
                     if !self.textures.contains_key(&tooltip_key) {
                         self.upload(
                             &tooltip_key,
@@ -4828,7 +4846,8 @@ impl Renderer {
             }
 
             let tooltip_key = format!(
-                "@inventory-tooltip-{}-{}-{}-{}-{}-{}-{}",
+                "@inventory-tooltip-{}-{}-{}-{}-{}-{}-{}-{}",
+                crate::shop::hero_key(),
                 item.uid,
                 item.plus,
                 item.gem_one,
@@ -5023,7 +5042,8 @@ impl Renderer {
             };
             if item_hovered {
                 let tooltip_key = format!(
-                    "@action-item-tooltip-{}-{}-{}-{}-{}-{}-{}",
+                    "@action-item-tooltip-{}-{}-{}-{}-{}-{}-{}-{}",
+                    crate::shop::hero_key(),
                     panel.item.uid,
                     panel.item.plus,
                     panel.item.gem_one,
@@ -5795,6 +5815,10 @@ fn depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Te
 /// How high a remote actor's jump (action 130) lifts them now, along the
 /// local player's arc.
 fn remote_jump_lift(actor: &RemoteActor, time: f32) -> f32 {
+    // A flier glides level.
+    if actor.status_flags & crate::network::FLY_FLAG != 0 {
+        return 0.0;
+    }
     if !(actor.action == 130 || actor.jumping)
         || actor.movement_until <= actor.movement_started
         || time >= actor.movement_until

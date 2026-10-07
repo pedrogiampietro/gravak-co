@@ -630,6 +630,19 @@ impl PacketProcess for MsgAction {
                 Ok(())
             },
             ActionType::QueryEntity => self.handle_query_entity(state, actor).await,
+            // The client's CancelFly: the flier lands.
+            ActionType::TakeOff => {
+                let entity = actor.try_entity()?;
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                if self.character_id == character.id() && character.has_status(crate::entities::StatusEffect::Flying) {
+                    character.apply_status(crate::entities::StatusEffect::Flying, std::time::Duration::ZERO);
+                    let update = super::MsgPlayer::from(character);
+                    actor.send(update.clone()).await?;
+                    actor.send(super::MsgUserInfo::from(character)).await?;
+                    actor.screen().send_message(update).await?;
+                }
+                Ok(())
+            },
             ActionType::ChangeMap => self.handle_change_map(state, actor).await,
             _ => {
                 let p = MsgTalk::from_system(

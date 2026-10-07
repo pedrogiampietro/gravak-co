@@ -180,6 +180,8 @@ impl StatusLayout {
 pub struct ItemInfo {
     pub name: String,
     pub level: u32,
+    /// The class that may use it (itemtype.dat column 2; 0 any).
+    pub required_class: u32,
     pub attack_min: u32,
     pub attack_max: u32,
     pub defense: u32,
@@ -5055,6 +5057,17 @@ fn draw_durability_indicator(
     if item.max_durability == 0 {
         return;
     }
+    // A pack of arrows counts its arrows instead (its durability is how
+    // many are left), as the original shows them.
+    if item.item_type / 1_000 == 1_050 {
+        if let Ok(font) = labels::font() {
+            let count = item.durability.to_string();
+            let text_x = x + width - crate::daily_rewards_panel::width_of(&font, &count, 11.0).round() as i32;
+            let colour = if item.durability == 0 { [255, 90, 80] } else { [255, 255, 255] };
+            crate::daily_rewards_panel::say(image, &font, &count, colour, text_x, y - 9, 11.0);
+        }
+        return;
+    }
     let ratio = (f32::from(item.durability) / f32::from(item.max_durability)).clamp(0.0, 1.0);
     let color = if item.durability == 0 {
         [204, 55, 55, 255]
@@ -5286,6 +5299,69 @@ pub fn equipment_tooltip_image(
 /// The original item tooltip: a translucent black box sized to its lines,
 /// with the name in yellow, attributes in white, gems in green and bonuses
 /// in magenta. The custom rarity system keeps its colour for its lines.
+///
+/// The hero's class and level, which the tooltip checks the requirements
+/// against (red when unmet); the main loop keeps them current.
+static HERO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_hero(class: u8, level: u8) {
+    HERO.store(u32::from(class) << 8 | u32::from(level), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn hero() -> (u32, u32) {
+    let value = hero_key();
+    (value >> 8, value & 0xff)
+}
+
+/// The hero's class and level as one number, for tooltip cache keys.
+pub fn hero_key() -> u32 {
+    HERO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Gear, whose last digit is its quality (weapons, armour, helmets,
+/// necklaces, rings, boots, shields).
+fn is_gear(item_id: u32) -> bool {
+    (100_000..700_000).contains(&item_id) || (900_000..1_000_000).contains(&item_id)
+}
+
+/// The class family of a class or requirement code: 1 Trojan, 2 Warrior,
+/// 4 Archer, 10 Taoist.
+fn class_family(code: u32) -> u32 {
+    if code >= 100 { 10 } else { code / 10 }
+}
+
+/// What a requirement reads as: the family, or the rank asked for.
+fn required_class_label(code: u32) -> String {
+    match code {
+        10 => "Trojan".to_owned(),
+        20 => "Warrior".to_owned(),
+        40 => "Archer".to_owned(),
+        100 | 190 => "Taoist".to_owned(),
+        code => class_name(code as u8),
+    }
+}
+
+/// Whether `class` may use what asks for `required` (its family, and the
+/// rank when a rank is asked).
+fn class_satisfies(required: u32, class: u32) -> bool {
+    required == 0
+        || class_family(required) == class_family(class)
+            && (required % 10 == 0 || required >= 100 || class >= required)
+}
+
+/// The colour of an equipment's name by its quality, the last digit of its
+/// type, as `Conquer.exe` paints it: Refined blue, Unique green, Elite
+/// purple, Super pale gold, else white.
+fn quality_colour(item_id: u32) -> [u8; 4] {
+    match item_id % 10 {
+        6 => [0x5e, 0x87, 0xca, 255],
+        7 => [0x00, 0xff, 0x00, 255],
+        8 => [0xe8, 0x04, 0xfd, 255],
+        9 => [0xeb, 0xe5, 0x7f, 255],
+        _ => [255, 255, 255, 255],
+    }
+}
+
 fn classic_item_tooltip(
     item_uid: u32,
     item_id: u32,
@@ -5322,14 +5398,23 @@ fn classic_item_tooltip(
     if let Some(kind) = info.map(|item| item.item_type.trim()).filter(|kind| !kind.is_empty()) {
         title.push_str(&format!(" ({kind})"));
     }
-    lines.push((title, YELLOW));
+    // Equipment's name in its quality's colour; other items keep yellow.
+    let title_colour = if is_gear(item_id) { quality_colour(item_id) } else { YELLOW };
+    lines.push((title, title_colour));
     if rarity != ItemRarity::Common {
         lines.push((format!("Rarity: {}", rarity.label()), rarity_colour));
     }
     let scale = item_stat_scale(plus, rarity_code);
     if let Some(info) = info {
+        // Requirements the hero does not meet show in red.
+        let (hero_class, hero_level) = hero();
+        if info.required_class > 0 {
+            let met = hero_class == 0 || class_satisfies(info.required_class, hero_class);
+            lines.push((format!("Class: {}", required_class_label(info.required_class)), if met { WHITE } else { RED }));
+        }
         if info.level > 0 {
-            lines.push((format!("Level: {}", info.level), WHITE));
+            let met = hero_level == 0 || hero_level >= info.level;
+            lines.push((format!("Level: {}", info.level), if met { WHITE } else { RED }));
         }
         if info.attack_max > 0 {
             let attack = format_attack(Some((info.attack_min, info.attack_max)), scale);
@@ -5493,6 +5578,7 @@ fn load_item_infos(assets: &mut Assets, item_ids: &[u32]) -> HashMap<u32, ItemIn
             ItemInfo {
                 name: fields[1].replace('~', " "),
                 level: number(4),
+                required_class: number(2),
                 attack_max: number(14),
                 attack_min: number(15),
                 defense: number(16),
@@ -6596,3 +6682,4 @@ mod icon_tests {
         Ok(())
     }
 }
+

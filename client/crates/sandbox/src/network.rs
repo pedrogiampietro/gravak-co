@@ -392,6 +392,8 @@ pub enum NetworkEvent {
 
 /// The XP circle: XP skills are ready.
 pub const XP_CIRCLE_FLAG: u64 = 1 << 4;
+/// The Fly skill's status: the hero hovers.
+pub const FLY_FLAG: u64 = 1 << 27;
 /// Gravak extension bit for double experience.
 pub const DOUBLE_EXPERIENCE_FLAG: u64 = 1 << 48;
 pub const POISONED_FLAG: u64 = 1 << 1;
@@ -484,6 +486,9 @@ pub(crate) enum NetworkCommand {
         here: bool,
     },
     Mine {
+        character_id: u32,
+    },
+    CancelFly {
         character_id: u32,
     },
     ChangeMap {
@@ -863,6 +868,10 @@ impl NetworkHandle {
     /// Asks the server to take the hero through the portal at (x, y).
     pub fn change_map(&self, character_id: u32, x: u16, y: u16) {
         let _ = self.commands.send(NetworkCommand::ChangeMap { character_id, x, y });
+    }
+
+    pub fn cancel_fly(&self, character_id: u32) {
+        let _ = self.commands.send(NetworkCommand::CancelFly { character_id });
     }
 
     pub fn mine(&self, character_id: u32) {
@@ -1947,6 +1956,12 @@ pub(crate) async fn play(
                 Some(NetworkCommand::ChangeMap { character_id, x, y }) => {
                     session
                         .send(&ActionPacket::change_map(character_id, x, y))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::CancelFly { character_id }) => {
+                    session
+                        .send(&ActionPacket::cancel_fly(character_id))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

@@ -403,6 +403,18 @@ impl MsgInteract {
         }
 
         if skill.status.is_some_and(|status| status.is_self_buff()) {
+            // Fly is refused where the map forbids it (Redux `AddEffect`).
+            let fly = skill.status.is_some_and(|status| status.effect() == crate::entities::StatusEffect::Flying);
+            if fly
+                && state
+                    .try_map(character.entity().map_id())
+                    .is_ok_and(|map| map.flags().contains(super::MapFlags::FLY_DISABLED))
+            {
+                actor
+                    .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, "You cannot fly here."))
+                    .await?;
+                return Ok(());
+            }
             let now = Instant::now();
             let next_skill = NEXT_PLAYER_SKILL.get_or_init(|| Mutex::new(HashMap::new()));
             let can_cast = {
@@ -439,6 +451,8 @@ impl MsgInteract {
             character.apply_status(effect, skill.status_duration);
             actor.send(MsgUserInfo::from(character)).await?;
             actor.send(MsgPlayer::from(character)).await?;
+            // Those around see it too (a flier rises, Superman glows).
+            actor.screen().send_message(MsgPlayer::from(character)).await?;
             actor
                 .send(MsgTalk::from_system(
                     character.id(),
@@ -603,6 +617,16 @@ impl MsgInteract {
             return Ok(());
         }
 
+        // Where players may not fight (the Market) and nothing else can be
+        // fought, an attack skill has nothing to do: refused, no arrow spent.
+        if state.try_map(character.entity().map_id()).is_ok_and(|map| {
+            map.flags().contains(super::MapFlags::PK_DISABLED) && !map.has_foes()
+        }) {
+            actor
+                .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, "You cannot fight here."))
+                .await?;
+            return Ok(());
+        }
         // The bow skills (Scatter, RapidFire) shoot arrows: without them
         // nothing flies, as with a plain shot.
         let bow = character
@@ -722,9 +746,13 @@ impl MsgInteract {
                 .max(character_location.y.abs_diff(primary_location.y)),
         );
         let target_character = primary.as_character();
+        let pk_disabled = state
+            .try_map(character.entity().map_id())
+            .is_ok_and(|map| map.flags().contains(super::MapFlags::PK_DISABLED));
         let pvp_allowed = match target_character {
             Some(target) => {
-                (character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
+                !pk_disabled
+                    && (character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
                     && !team_mode_spares(state, character, target)
                     && !crate::events::allies(character.id(), target.id())
                     && !target.revive_protected()
@@ -1423,6 +1451,9 @@ impl PacketProcess for MsgInteract {
             return Ok(());
         };
         let target_entity = target.basic();
+        let pk_disabled = state
+            .try_map(character.entity().map_id())
+            .is_ok_and(|map| map.flags().contains(super::MapFlags::PK_DISABLED));
         if target_entity.map_id() != character.entity().map_id()
             || !tq_math::in_screen(character.entity().location().into(), target_entity.location().into())
             || tq_math::get_distance(character.entity().location().into(), target_entity.location().into())
@@ -1434,10 +1465,16 @@ impl PacketProcess for MsgInteract {
             || target
                 .as_character()
                 .is_some_and(|target| {
-                    !(character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
+                    // No player is a target where PK is off (Redux).
+                    pk_disabled
+                        || !(character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
                         || team_mode_spares(state, character, target)
                         || crate::events::allies(character.id(), target.id())
                         || target.revive_protected()
+                        // A flier is out of a melee weapon's reach (Redux
+                        // `CombatManager`: attack range under 5).
+                        || target.has_status(crate::entities::StatusEffect::Flying)
+                            && character.attack_range_with_catalog(Some(state.shop_catalog())) < 5
                 })
         {
             tracing::debug!(target_id = self.target_id, "Rejected invalid player attack target");
@@ -1519,14 +1556,35 @@ impl PacketProcess for MsgInteract {
         // often pinned it to the minimum value.
         let life_before = u32::from(target_entity.hp().current());
         let mut outcome = resolve_physical_hit(attacker_stats, target_stats, life_before, next_roll());
-        // Fury gems and Accuracy steady the blow; the rest may miss.
-        let accuracy = character.gem_bonus(crate::entities::GemFamily::Fury)
+        // The target's dodge against the hero's accuracy (worn items, Fury
+        // gems, Accuracy): a blow lands max(40, 90 - dodge + accuracy)
+        // percent of the time, an arrow 75 - dodge + accuracy and for the
+        // dodge's share less (Redux).
+        let (_, gear_accuracy) = character.dodge_and_accuracy(state.shop_catalog());
+        let accuracy = gear_accuracy
+            + character.gem_bonus(crate::entities::GemFamily::Fury)
             + if character.has_status(crate::entities::StatusEffect::Accuracy) {
                 crate::combat::ACCURACY_STATUS_BONUS
             } else {
                 0
             };
-        if next_roll() % 100 >= crate::combat::hit_chance(0, accuracy) {
+        let dodge = match (target.as_monster(), target.as_character()) {
+            (Some(monster), _) => monster.dodge(),
+            (_, Some(target)) => target.dodge_and_accuracy(state.shop_catalog()).0,
+            _ => 0,
+        };
+        let chance = if bow {
+            crate::combat::bow_hit_chance(dodge, accuracy)
+        } else {
+            crate::combat::hit_chance(dodge, accuracy)
+        };
+        if bow && outcome.damage > 0 {
+            let damage = crate::combat::after_dodge(outcome.damage, dodge);
+            outcome.remaining_health = life_before.saturating_sub(damage);
+            outcome.damage = damage;
+            outcome.defeated = outcome.remaining_health == 0;
+        }
+        if next_roll() % 100 >= chance {
             outcome.damage = 0;
             outcome.raw_damage = 0;
             outcome.remaining_health = life_before;

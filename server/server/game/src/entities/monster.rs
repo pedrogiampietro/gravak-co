@@ -100,6 +100,14 @@ impl Monster {
         &self.spawn
     }
 
+    pub fn dodge(&self) -> u32 {
+        self.inner.dodge.max(0) as u32
+    }
+
+    pub fn accuracy(&self) -> u32 {
+        self.inner.accuracy.max(0) as u32
+    }
+
     pub fn monster_type(&self) -> &tq_db::monster::MonsterType {
         &self.inner
     }

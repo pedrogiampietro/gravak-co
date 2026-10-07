@@ -920,6 +920,14 @@ impl ActionPacket {
     }
 
     /// MsgAction 99: start mining with a PickAxe.
+    /// The flier lands (MsgAction 120, Redux `CancelFly`).
+    pub fn cancel_fly(character_id: u32) -> Self {
+        Self {
+            action_type: 120,
+            ..Self::mine(character_id)
+        }
+    }
+
     pub fn mine(character_id: u32) -> Self {
         Self {
             client_timestamp: unix_timestamp(),

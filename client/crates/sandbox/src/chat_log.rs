@@ -171,6 +171,8 @@ pub fn channel_style(channel: u16) -> (Option<&'static str>, [u8; 4], [u8; 4]) {
 /// blue.
 const NAME: [u8; 4] = [130, 200, 255, 255];
 const OWN_NAME: [u8; 4] = [255, 214, 110, 255];
+/// A linked item's name.
+const ITEM_LINK: [u8; 4] = [255, 196, 64, 255];
 
 fn shown_message(message: &ChatMessage) -> bool {
     !message.message.is_empty()
@@ -222,8 +224,16 @@ fn pieces(message: &ChatMessage, own_name: &str) -> Vec<Piece> {
             last.text.push(':');
         }
     }
+    // An item linked with shift and a click reads `[Name(+n)]`, in gold.
+    let mut in_link = false;
     for word in message.message.split_whitespace() {
-        pieces.push(Piece { text: word.to_owned(), colour: words, name: false });
+        let starts = word.starts_with('[') && !word.starts_with("[[");
+        in_link = in_link || starts;
+        let colour = if in_link { ITEM_LINK } else { words };
+        if in_link && word.ends_with(']') {
+            in_link = false;
+        }
+        pieces.push(Piece { text: word.to_owned(), colour, name: false });
     }
     pieces
 }

@@ -101,12 +101,17 @@ pub struct SkillHud {
     pub xp_fire_until: Option<u64>,
     /// The kill mode (`shop::KILL_MODES` order) the Capture button shows.
     pub kill_mode: u8,
+    /// Running rather than walking (the bar's Run checkbox).
+    pub running: bool,
     /// The top-left information lines: map and position, FPS and ping.
     pub info: Option<InfoBar>,
     /// Skill under the cursor in the bar; filled in by the renderer.
     pub hovered: Option<u32>,
     /// Timed statuses: their flag and the seconds left.
     pub timers: Vec<(u64, u32)>,
+    /// Flying: the Fly skill and the seconds left. `Conquer.exe` shows it in
+    /// the XP dialog (189), over the KO counter; a click lands.
+    pub flying: Option<(u32, u32)>,
     /// The Character window's Skills tab: page, scroll and pick.
     pub skill_page: crate::shop::SkillPage,
     /// The Attributes tab shows attack and defence (Details) instead of
@@ -306,14 +311,14 @@ enum StatusIcon {
 }
 
 /// The icon of each timed status flag.
-const STATUS_ICONS: [(u64, StatusIcon); 14] = [
+/// (Fly shows over the KO counter instead, where a click lands it.)
+const STATUS_ICONS: [(u64, StatusIcon); 13] = [
     (1 << 18, StatusIcon::Skill(1_025)), // Superman
     (1 << 23, StatusIcon::Skill(1_110)), // Cyclone
     (1 << 9, StatusIcon::Skill(1_095)),  // Stigma
     (1 << 8, StatusIcon::Skill(1_020)),  // Shield
     (1 << 7, StatusIcon::Skill(1_015)),  // Accuracy
     (1 << 22, StatusIcon::Skill(1_075)), // Invisibility
-    (1 << 27, StatusIcon::Skill(8_002)), // Fly
     (1 << 47, StatusIcon::Skill(9_000)), // Intensify
     (1 << 1, StatusIcon::Skill(5_002)),  // Poisoned
     (1 << 5, StatusIcon::Skill(1_002)),  // Stunned
@@ -438,6 +443,10 @@ fn skill_bar_slots(assets: &mut Assets, viewport: [f32; 2], hud: &SkillHud) -> V
         .map(|(id, _, _)| *id)
         .partition(|id| crate::main_hud::is_xp_skill(assets, *id));
     let mut slots = Vec::new();
+    if let Some((fly, _)) = hud.flying.filter(|_| !hud.xp_ready) {
+        let top = viewport[1] as i32 - 173;
+        slots.push((fly, Rect(viewport[0] as i32 - XP_SLOT, top, XP_SLOT, XP_SLOT)));
+    }
     if hud.xp_ready {
         let shown = xp.len().min(XP_SHOWN) as i32;
         let left = viewport[0] as i32 - shown * XP_SLOT;
@@ -494,13 +503,22 @@ fn draw_skill_bar(
             let size = (rect.2 - 2) as u32;
             let mut icon = imageops::resize(&icon, size, size, imageops::FilterType::Triangle);
             // XP skills stay greyed until the XP circle lights up.
-            if !hud.xp_ready && crate::main_hud::is_xp_skill(assets, id) {
+            let flying = hud.flying.is_some_and(|(fly, _)| fly == id);
+            if !hud.xp_ready && !flying && crate::main_hud::is_xp_skill(assets, id) {
                 for pixel in icon.pixels_mut() {
                     let grey = ((u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 6) as u8;
                     *pixel = image::Rgba([grey, grey, grey, pixel[3]]);
                 }
             }
             imageops::overlay(img, &icon, i64::from(rect.0 + 1), i64::from(rect.1 + 1));
+        }
+        // The flier's time left under its icon.
+        if let Some((_, seconds)) = hud.flying.filter(|(fly, _)| *fly == id) {
+            let label = format!("{seconds}s");
+            let x = rect.0 + (rect.2 - main_hud::text_width(font, &label, 12.0)) / 2;
+            main_hud::text(img, font, &label, 12.0, [x + 1, rect.1 + rect.3 - 14], [0, 0, 0, 220], None);
+            main_hud::text(img, font, &label, 12.0, [x, rect.1 + rect.3 - 15], [255, 255, 255, 255], None);
+            outline(img, rect, [214, 176, 96, 255]);
         }
         if hud.active_skill == Some(id) {
             outline(img, rect, [255, 215, 108, 255]);
@@ -758,6 +776,10 @@ pub fn action_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Action)
 }
 
+pub fn run_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Run)
+}
+
 pub fn status_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Status)
 }
@@ -999,32 +1021,9 @@ fn active_buff_badges(
 /// curve, where reaching level `n + 1` needs `n * 100` total experience.
 /// Server `levexp` table: experience to leave each level (1-140), as in
 /// the reference server. The server keeps experience inside the level.
-const LEVEL_EXPERIENCE: [u64; 140] = [
-    120, 180, 240, 360, 600, 960, 1200, 2400,
-    3600, 8400, 12000, 14400, 18000, 21600, 22646, 32203,
-    37433, 47556, 56609, 68772, 70515, 75936, 97733, 114836,
-    120853, 123981, 126720, 145878, 173436, 197646, 202451, 212160,
-    244190, 285823, 305986, 312864, 324480, 366168, 433959, 460590,
-    506738, 569994, 728527, 850829, 916479, 935118, 940800, 1076593,
-    1272780, 1357994, 1384861, 1478400, 1632438, 1903104, 2066042, 2104924,
-    1921085, 2417202, 2853462, 3054574, 3111217, 3225600, 3810962, 4437896,
-    4880605, 4970962, 5107200, 5652518, 6579162, 6877991, 7100700, 7157657,
-    9106860, 10596398, 11220549, 11409192, 11424000, 12882952, 15172807, 15896990,
-    16163799, 16800000, 19230280, 22365208, 23819312, 24219528, 24864000, 27200077,
-    32033165, 33723801, 34291317, 34944000, 39463523, 45878567, 48924236, 49729220,
-    51072000, 55808379, 64870058, 68391931, 69537026, 76422968, 96950789, 112676755,
-    120090482, 121798280, 127680000, 137446887, 193715970, 408832150, 454674685, 461125885,
-    469189885, 477253885, 480479485, 485317885, 493381885, 580580046, 717424987, 282274058,
-    338728870, 406474644, 487769572, 585323487, 702388184, 842865821, 1011438985, 1073741823,
-    1073741823, 8589134588, 25767403764, 77302211292, 231906633876, 347859950814, 521789926221, 782684889332,
-    1174027333998, 1761041000997, 2641561501496, 0,
-];
 
 fn experience_fraction(level: u8, experience: u64) -> f32 {
-    let need = LEVEL_EXPERIENCE
-        .get(usize::from(level.max(1)) - 1)
-        .copied()
-        .unwrap_or(0);
+    let need = crate::leveling::required(level);
     if need == 0 {
         return 0.0;
     }
@@ -1098,6 +1097,7 @@ pub fn image(
             chat_channel_menu: skills.chat_channel_menu,
             chat_channel_hover: skills.chat_channel_hover,
             kill_mode: skills.kill_mode,
+            running: skills.running,
             active_skill_icon: skills
                 .active_skill
                 .and_then(|id| crate::main_hud::skill_icon(assets, id)),
@@ -1203,15 +1203,22 @@ pub fn image(
         });
         if let Some(name) = name.as_deref() {
             let frame = hotkey_rect(viewport, index);
-            tooltip(
-                &mut img,
-                font,
-                &[
-                    (name, [255, 255, 255, 255]),
-                    (&slot.hotkey, [200, 200, 200, 255]),
-                ],
-                [frame.0, frame.1 - 4],
-            );
+            // A skill shows its level and experience, as in the skill list.
+            let progress = match slot.binding() {
+                Some(crate::action_bar::Binding::Skill(id)) => {
+                    skills.skills.iter().find(|(skill, _, _)| *skill == id).map(|(_, level, experience)| {
+                        (format!("Level: {level}"), format!("Experience: {experience}"))
+                    })
+                }
+                _ => None,
+            };
+            let mut lines: Vec<(&str, [u8; 4])> = vec![(name, [255, 255, 0, 255])];
+            if let Some((level, experience)) = &progress {
+                lines.push((level, [255, 255, 255, 255]));
+                lines.push((experience, [255, 255, 255, 255]));
+            }
+            lines.push((&slot.hotkey, [200, 200, 200, 255]));
+            tooltip(&mut img, font, &lines, [frame.0, frame.1 - 4]);
         }
     }
     Ok(img)
