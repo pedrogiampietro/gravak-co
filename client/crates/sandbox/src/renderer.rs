@@ -108,7 +108,9 @@ const SPELL_CELLS_PER_SECOND: f32 = 14.0;
 
 /// How long a soul lingers over the body, then how long it flies.
 const SOUL_RISE_SECONDS: f32 = 1.0;
-const SOUL_FLIGHT_SECONDS: f32 = 0.8;
+const SOUL_FLIGHT_SECONDS: f32 = 1.6;
+/// How much larger than the world a soul flies to its slayer.
+const SOUL_SCALE: f32 = 1.5;
 
 /// The original `born` effect (`3DEffect.ini`) over a respawning monster:
 /// 151 frames of 40 ms. The monster itself fades in over the first moments.
@@ -3441,10 +3443,16 @@ impl Renderer {
             if *expires <= time {
                 continue;
             }
-            let position = remote_actors
+            // Yellow when the hero is struck, white otherwise. A target
+            // that is gone shows nothing (never on the hero).
+            let hero = network_character_id == Some(*target_id);
+            let Some(position) = remote_actors
                 .get(target_id)
                 .map(|target| target.position)
-                .unwrap_or(player.position);
+                .or(hero.then_some(player.position))
+            else {
+                continue;
+            };
             let projected = map.project(position);
             let origin = [projected[0] - camera[0], projected[1] - camera[1]];
             if !world_point_visible(origin, viewport, 192.0) {
@@ -3454,8 +3462,6 @@ impl Renderer {
             if *value == 0 {
                 continue;
             }
-            // Yellow when the hero is struck, white otherwise.
-            let hero = !remote_actors.contains_key(target_id);
             let elapsed = (time - (*expires - COMBAT_NUMBER_SECONDS)) * 1_000.0;
             let digits: Vec<u32> = value.to_string().chars().filter_map(|digit| digit.to_digit(10)).collect();
             let mut keys = Vec::with_capacity(digits.len());
@@ -3648,7 +3654,10 @@ impl Renderer {
             ];
             if world_point_visible(origin, viewport, 128.0) {
                 let depth = soul.from[0] + soul.from[1] + 0.07;
+                let scale = self.effect_scale;
+                self.effect_scale = scale * SOUL_SCALE;
                 self.push_looping_effect(assets, "soul", origin, elapsed, depth, viewport, &mut draws);
+                self.effect_scale = scale;
             }
         }
         // Arrows from the bows to their targets, with the effect some bows

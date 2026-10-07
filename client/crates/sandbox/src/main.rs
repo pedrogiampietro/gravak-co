@@ -439,6 +439,9 @@ struct App {
     /// What arrows carry until they strike, as the original: the damage
     /// and the blow (attacker, target, damage or none, when it lands).
     arrow_blows: Vec<(u32, u32, Option<u32>, f32)>,
+    /// Deaths waiting for the arrows that dealt them to strike (slayer,
+    /// slain, when).
+    pending_falls: Vec<(u32, u32, f32)>,
     skill_effects: Vec<renderer::SkillEffectInstance>,
     known_skills: HashMap<u32, (u16, u32)>,
     /// Weapon proficiency by weapon type: (level, experience).
@@ -1629,6 +1632,12 @@ impl ApplicationHandler for App {
             if self.network_character_id == Some(target_id) {
                 self.play_blow_on_player(attacker_id, target_id, now);
             }
+        }
+        // The slain fall once the arrow that slew them strikes.
+        let (falling, waiting): (Vec<_>, Vec<_>) = self.pending_falls.drain(..).partition(|(_, _, at)| *at <= now);
+        self.pending_falls = waiting;
+        for (slayer, slain, _) in falling {
+            self.fall(slayer, slain, now);
         }
         self.speech.retain(|_, (_, until)| *until > now);
         self.skill_effects.retain(|effect| effect.expires > now);
@@ -4721,29 +4730,17 @@ impl App {
                         }
                     }
                     let now = self.started.elapsed().as_secs_f32();
-                    let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
-                    // A slain monster's soul flies to its slayer.
-                    if (400001..=499999).contains(&target_id)
-                        && let (Some(monster), Some(renderer)) =
-                            (self.remote_actors.get(&target_id), self.renderer.as_mut())
-                    {
-                        renderer.add_soul(monster.position, id, now);
-                    }
-                    if let Some(actor) = self.remote_actors.get_mut(&target_id) {
-                        actor.health = 0;
-                        let player = !actor.npc && !(400001..=499999).contains(&target_id);
-                        // Players stay on the ground until they revive;
-                        // monsters fade after their death animation.
-                        if player {
-                            actor.action = renderer::REMOTE_DEAD;
-                            actor.animation_started = now;
-                            actor.animation_until = now + fall;
-                        } else {
-                            actor.action = renderer::REMOTE_FADING;
-                            // A death ends any respawn effect still playing.
-                            actor.respawn_until = 0.0;
-                            actor.animation_until = now + 1.2;
-                        }
+                    // Struck by an arrow still in the air, it falls when the
+                    // arrow strikes, as the original.
+                    let landing = self
+                        .arrow_blows
+                        .iter()
+                        .filter(|(_, target, _, _)| *target == target_id)
+                        .map(|(_, _, _, at)| *at)
+                        .fold(None, |latest: Option<f32>, at| Some(latest.map_or(at, |latest| latest.max(at))));
+                    match landing {
+                        Some(at) if at > now => self.pending_falls.push((id, target_id, at)),
+                        _ => self.fall(id, target_id, now),
                     }
                     if self.pending_attack == Some(target_id) {
                         self.pending_attack = None;
@@ -5527,6 +5524,31 @@ impl App {
             && let Some(audio) = &mut self.audio
         {
             audio.play_once(&mut self.assets, &sound);
+        }
+    }
+
+    /// `slain` falls to `slayer`: a monster's soul flies to its slayer and
+    /// it fades after its death; a player stays on the ground.
+    fn fall(&mut self, slayer: u32, slain: u32, now: f32) {
+        let fall = self.character.duration(Action::Die).as_secs_f32().max(0.1);
+        if (400001..=499999).contains(&slain)
+            && let (Some(monster), Some(renderer)) = (self.remote_actors.get(&slain), self.renderer.as_mut())
+        {
+            renderer.add_soul(monster.position, slayer, now);
+        }
+        if let Some(actor) = self.remote_actors.get_mut(&slain) {
+            actor.health = 0;
+            let player = !actor.npc && !(400001..=499999).contains(&slain);
+            if player {
+                actor.action = renderer::REMOTE_DEAD;
+                actor.animation_started = now;
+                actor.animation_until = now + fall;
+            } else {
+                actor.action = renderer::REMOTE_FADING;
+                // A death ends any respawn effect still playing.
+                actor.respawn_until = 0.0;
+                actor.animation_until = now + 1.2;
+            }
         }
     }
 
@@ -9240,6 +9262,7 @@ fn run() -> Result<()> {
         ghost_actors: HashSet::new(),
         combat_numbers: Vec::new(),
         arrow_blows: Vec::new(),
+        pending_falls: Vec::new(),
         skill_effects: Vec::new(),
         known_skills: HashMap::new(),
         weapon_skills: Default::default(),
