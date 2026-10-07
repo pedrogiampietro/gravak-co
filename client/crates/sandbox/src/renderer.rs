@@ -4302,7 +4302,7 @@ impl Renderer {
             }
         }
         self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
-        // The Store button, by the round buttons over the orb.
+        // The Store button, past the quiver over the bar.
         let [left, top, width, height] = crate::hud::store_button_rect(viewport);
         self.store_icon_rect = Some([left, top, width, height]);
         let store_hovered = self.store_icon_at(cursor);

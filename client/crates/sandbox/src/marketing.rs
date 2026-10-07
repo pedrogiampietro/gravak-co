@@ -320,3 +320,115 @@ fn marketing_tech() {
     series_foot(&mut post, 6, pages);
     post.save(out.join("15-tech-em-breve.png")).unwrap();
 }
+
+/// The website's pictures (`web/public/art`): views of the world and the
+/// four professions' heroes on clear ground.
+/// `cargo test --release -p conquer-sandbox site_art -- --ignored`
+#[test]
+#[ignore]
+fn site_art() {
+    let root = std::env::var("GRAVAK_ASSETS").unwrap_or_else(|_| "R:/5065".into());
+    let mut assets = crate::assets::Assets::open(std::path::Path::new(&root)).expect("assets");
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../web/public/art");
+    std::fs::create_dir_all(&out).expect("art folder");
+    let mut maps = Vec::new();
+    for (name, map_id, cell, size) in [
+        ("twin-city", 1002, [430.0, 380.0], [2400, 1200]),
+        ("bird-island", 1015, [717.0, 577.0], [1600, 1000]),
+        ("phoenix-castle", 1011, [193.0, 266.0], [1600, 1000]),
+        ("desert-city", 1000, [500.0, 650.0], [1600, 1000]),
+        ("ape-city", 1020, [566.0, 622.0], [1600, 1000]),
+    ] {
+        if !maps.iter().any(|map: &crate::map::Map| map.id == map_id) {
+            maps.push(crate::map::Map::load(&mut assets, map_id).expect("map"));
+        }
+        let map = maps.iter().find(|map| map.id == map_id).expect("map");
+        let picture = crate::login_scenes::sharp_view(&mut assets, map, cell, size);
+        image::DynamicImage::ImageRgba8(picture).to_rgb8().save(out.join(format!("{name}.jpg"))).unwrap();
+    }
+    for (class, (name, ..)) in CLASSES.into_iter().enumerate() {
+        let body = if class == 2 { 2 } else { 3 };
+        let hero = crate::showcase::Hero::load(&mut assets, body, class).expect("hero");
+        hero.render([700, 900], 820.0, 0.6, 0.35).save(out.join(format!("{}.png", name.to_lowercase()))).unwrap();
+    }
+}
+
+/// The website's item catalogue: every piece a hero can wear, its name,
+/// level and inventory icon (`web/src/content/items.json`, icons in
+/// `web/public/items`, one file per distinct picture).
+/// `cargo test --release -p conquer-sandbox site_items -- --ignored`
+#[test]
+#[ignore]
+fn site_items() {
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    let root = std::env::var("GRAVAK_ASSETS").unwrap_or_else(|_| "R:/5065".into());
+    let mut assets = crate::assets::Assets::open(std::path::Path::new(&root)).expect("assets");
+    let web = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../web");
+    let icons = web.join("public/items");
+    std::fs::create_dir_all(&icons).expect("items folder");
+    // Headgear to garments, weapons, shields and arrows.
+    let wearable = |id: u32| {
+        (111_000..200_000).contains(&id) || (400_000..700_000).contains(&id) || (900_000..1_000_000).contains(&id) || (1_050_000..1_052_000).contains(&id)
+    };
+    let ids: Vec<u32> = crate::shop::all_item_ids(&mut assets).into_iter().filter(|id| wearable(*id)).collect();
+    let infos = crate::shop::load_item_infos(&mut assets, &ids);
+
+    // The Character window's Equipment tab, empty, and where its slots are.
+    let ui = web.join("public/ui");
+    std::fs::create_dir_all(&ui).expect("ui folder");
+    crate::shop::status_base_image(&mut assets, crate::shop::StatusTab::Equipment, crate::shop::WeaponFilter::OneHand, false, false)
+        .expect("equipment window")
+        .save(ui.join("equipment-window.png"))
+        .expect("window png");
+    let (slots, paper, size) = crate::shop::status_equipment_layout();
+    let slots = slots
+        .iter()
+        .map(|(position, [x, y, width, height])| format!("{{\"position\":{position},\"rect\":[{x},{y},{width},{height}]}}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    std::fs::write(
+        web.join("src/content/equipment-window.json"),
+        format!(
+            "{{\"size\":[{},{}],\"paper\":[{},{},{},{}],\"slots\":[{slots}]}}\n",
+            size[0], size[1], paper[0], paper[1], paper[2], paper[3]
+        ),
+    )
+    .expect("layout json");
+    let mut pictures: HashMap<u64, String> = HashMap::new();
+    let mut catalogue = Vec::new();
+    for id in ids {
+        let Some(info) = infos.get(&id) else { continue };
+        let Ok(icon) = crate::shop::item_icon_native(&mut assets, id) else { continue };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        icon.as_raw().hash(&mut hasher);
+        let key = pictures.entry(hasher.finish()).or_insert_with(|| {
+            let key = format!("{id}");
+            icon.save(icons.join(format!("{key}.png"))).expect("icon");
+            key
+        });
+        catalogue.push(format!(
+            "\"{id}\":[{},{},\"{key}\"]",
+            serde_json_string(&info.name),
+            info.level
+        ));
+    }
+    std::fs::write(web.join("src/content/items.json"), format!("{{{}}}\n", catalogue.join(","))).expect("items.json");
+    println!("{} items, {} icons", catalogue.len(), pictures.len());
+}
+
+/// A JSON string literal.
+#[cfg(test)]
+fn serde_json_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}

@@ -1,0 +1,163 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Gravak: the crest's world. Night navy behind everything, the shield's
+  lapis for surfaces, its gold leaf for what matters (the one call to
+  act, the leaders of a ranking), parchment for text. One dark look, on
+  purpose: the game is played at night-blue too.
+  Layout: a full-bleed view of Twin City opens the page; the rest sits
+  on a left-aligned 72rem column, text kept under 70 characters.
+*/
+:root {
+  color-scheme: dark;
+  --night: #0c1729;
+  --lapis: #13284a;
+  --lapis-deep: #0f203b;
+  --heraldic: #4f8fd8;
+  --gold: #e2b451;
+  --gold-deep: #a8761f;
+  --parchment: #ece4d0;
+  --slate: #93a0b8;
+  --rule: #24395c;
+
+  --background: var(--night);
+  --foreground: var(--parchment);
+  --card: var(--lapis-deep);
+  --card-foreground: var(--parchment);
+  --popover: var(--lapis);
+  --popover-foreground: var(--parchment);
+  --primary: var(--gold);
+  --primary-foreground: #1b1206;
+  --secondary: var(--lapis);
+  --secondary-foreground: var(--parchment);
+  --muted: var(--lapis-deep);
+  --muted-foreground: var(--slate);
+  --accent: var(--lapis);
+  --accent-foreground: var(--parchment);
+  --destructive: #e0735c;
+  --border: var(--rule);
+  --input: var(--rule);
+  --ring: var(--gold);
+  --chart-1: var(--gold);
+  --chart-2: var(--heraldic);
+  --chart-3: var(--slate);
+  --chart-4: var(--gold-deep);
+  --chart-5: var(--lapis);
+  --radius: 0.375rem;
+  --sidebar: var(--lapis-deep);
+  --sidebar-foreground: var(--parchment);
+  --sidebar-primary: var(--gold);
+  --sidebar-primary-foreground: #1b1206;
+  --sidebar-accent: var(--lapis);
+  --sidebar-accent-foreground: var(--parchment);
+  --sidebar-border: var(--rule);
+  --sidebar-ring: var(--gold);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-body);
+  --font-heading: var(--font-display);
+  --font-display: var(--font-display);
+  --color-gold: var(--gold);
+  --color-gold-deep: var(--gold-deep);
+  --color-heraldic: var(--heraldic);
+  --color-parchment: var(--parchment);
+  --color-slate-blue: var(--slate);
+  --color-lapis: var(--lapis);
+  --color-night: var(--night);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    background: var(--night);
+    scroll-padding-top: 7.5rem;
+    -webkit-tap-highlight-color: rgb(226 180 81 / 0.15);
+  }
+  a,
+  button {
+    touch-action: manipulation;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+    line-height: 1.1;
+  }
+  :focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 3px;
+  }
+}
+
+/* The title in gold leaf, as the crest's wordmark is cast. */
+.gold-leaf {
+  background: linear-gradient(180deg, #fff1c4 0%, #f0c96a 45%, #b97f24 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 0 #1b1206) drop-shadow(0 6px 18px rgb(0 0 0 / 0.45));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .rise {
+    animation: rise 900ms cubic-bezier(0.2, 0.7, 0.1, 1) both;
+  }
+  .rise-late {
+    animation: rise 900ms 180ms cubic-bezier(0.2, 0.7, 0.1, 1) both;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0.001;
+    transform: translateY(14px);
+  }
+}
