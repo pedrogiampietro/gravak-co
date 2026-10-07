@@ -980,6 +980,17 @@ impl ApplicationHandler for App {
                     if self.sell_all.as_ref().is_some_and(|view| view.contains(self.cursor)) {
                         return;
                     }
+                    // Over the shop the right button buys what it is on, and
+                    // never casts the skill on the right button.
+                    let over_shop = self.shop.is_some()
+                        && self.window.as_ref().is_some_and(|window| {
+                            let size = window.inner_size();
+                            shop::panel_contains([size.width as f32, size.height as f32], self.cursor)
+                        });
+                    if over_shop {
+                        self.buy_shop_item_at_cursor();
+                        return;
+                    }
                     if self.begin_item_context_menu() {
                         return;
                     }

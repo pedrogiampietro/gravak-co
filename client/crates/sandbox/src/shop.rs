@@ -490,6 +490,12 @@ pub fn panel_position(viewport: [f32; 2]) -> [f32; 2] {
     [8.0, ((viewport[1] - SHOP_HEIGHT as f32) * 0.5).max(8.0)]
 }
 
+/// Whether `cursor` is over the shop window.
+pub fn panel_contains(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let [x, y] = panel_position(viewport);
+    cursor[0] >= x && cursor[1] >= y && cursor[0] < x + PANEL_WIDTH as f32 && cursor[1] < y + SHOP_HEIGHT as f32
+}
+
 pub fn inventory_position(viewport: [f32; 2]) -> [f32; 2] {
     original_ui_layout::inventory_position(viewport)
 }
