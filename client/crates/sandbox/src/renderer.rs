@@ -1443,7 +1443,9 @@ impl Renderer {
                     let p = turned(p, yaw);
                     let centre = [origin[0] + p.x * scale, origin[1] + (p.y * sin + p.z * cos) * scale];
                     let depth = (0.5 + (p.y * cos - p.z * sin) * scale * 0.0005).clamp(0.001, 0.999);
-                    let half = size * scale / 2.0;
+                    // Each sprite spans its size either side of its place
+                    // (C3_CORE_DLL `Ptcl_Draw`): twice its size across.
+                    let half = size * scale;
                     let cell = ((age.clamp(0.0, 1.0) * cells as f32) as u32).min(cells - 1);
                     let (u, v) = ((cell % cloud.row) as f32 / row, (cell / cloud.row) as f32 / row);
                     let corner = |dx: f32, dy: f32| Vertex {
@@ -6460,3 +6462,4 @@ mod transient_tests {
         }
     }
 }
+
