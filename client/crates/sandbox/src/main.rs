@@ -1043,8 +1043,9 @@ impl ApplicationHandler for App {
                         if self.warehouse_item_at_cursor()
                             || (self.warehouse.is_some()
                                 && self.deposit_inventory_item_at_cursor())
-                            || self.buy_shop_item_at_cursor()
-                            || self.sell_inventory_item_at_cursor() =>
+                            // Selling is a drag into the shop (or Sell All): the
+                            // right button on the bag uses or wears as always.
+                            || self.buy_shop_item_at_cursor() =>
                     {
                         return;
                     }
@@ -7920,33 +7921,6 @@ impl App {
             self.network_status = "online: drop the item inside the open shop to sell".into();
             return true;
         }
-        let Some(shop) = &self.shop else {
-            return true;
-        };
-        self.request_shop_sale(item.uid, shop.npc_id);
-        true
-    }
-
-    fn sell_inventory_item_at_cursor(&mut self) -> bool {
-        if self.shop.is_none() {
-            return false;
-        }
-        let Some(window) = &self.window else {
-            return true;
-        };
-        let size = window.inner_size();
-        let viewport = [size.width as f32, size.height as f32];
-        let Some(slot) = shop::inventory_slot_at(viewport, self.cursor) else {
-            return false;
-        };
-        let Some(item) = self
-            .inventory
-            .iter()
-            .find(|item| item.position == slot)
-            .copied()
-        else {
-            return true;
-        };
         let Some(shop) = &self.shop else {
             return true;
         };
