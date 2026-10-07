@@ -1074,6 +1074,35 @@ impl Renderer {
         self.weapon_flashes = kept;
     }
 
+    /// The original's lights under item icons (`shop::item_light`), each
+    /// over its slot of a window at `origin`.
+    fn push_item_lights(
+        &mut self,
+        assets: &Assets,
+        lights: &[(&'static str, crate::ui::UiRect)],
+        origin: [f32; 2],
+        time: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        for (light, rect) in lights {
+            let frame = crate::shop::item_light_frame(light, time);
+            self.texture(assets, &frame);
+            if self.textures.contains_key(&frame) {
+                draws.push(Draw {
+                    texture: frame,
+                    vertices: quad(
+                        [origin[0] + rect.x as f32, origin[1] + rect.y as f32],
+                        [rect.width as f32, rect.height as f32],
+                        viewport,
+                    ),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+    }
+
     /// What Super weapons always show (`Action3DEffect.ini` 999.999),
     /// bound to each weapon where it is held.
     #[allow(clippy::too_many_arguments)]
@@ -4306,6 +4335,8 @@ impl Renderer {
                         },
                     );
                 }
+                let lights = crate::shop::status_equipment_lights(&status_equipment);
+                self.push_item_lights(assets, &lights, crate::shop::status_position(viewport), time, viewport, &mut draws);
                 let overlay_draw_key = if self.textures.contains_key(&overlay_key) {
                     self.last_status_overlay_key = Some(overlay_key.clone());
                     Some(overlay_key.clone())
@@ -4465,6 +4496,8 @@ impl Renderer {
                     sort_depth: f32::INFINITY,
                 });
             }
+            let lights = crate::shop::inventory_lights(inventory, inventory_filter);
+            self.push_item_lights(assets, &lights, crate::shop::inventory_position(viewport), time, viewport, &mut draws);
             let inventory_overlay_draw_key = if self.textures.contains_key(&key) {
                 self.last_inventory_overlay_key = Some(key.clone());
                 Some(key.clone())
@@ -4860,6 +4893,8 @@ impl Renderer {
                     sort_depth: f32::INFINITY,
                 });
             }
+            let lights = crate::shop::inventory_lights(inventory, inventory_filter);
+            self.push_item_lights(assets, &lights, crate::shop::inventory_position(viewport), time, viewport, &mut draws);
             let inventory_overlay_draw_key = if self.textures.contains_key(&inventory_key) {
                 self.last_inventory_overlay_key = Some(inventory_key.clone());
                 Some(inventory_key.clone())
@@ -4969,6 +5004,8 @@ impl Renderer {
                         sort_depth: f32::INFINITY,
                     });
                 }
+                let lights = crate::shop::inventory_lights(inventory, inventory_filter);
+                self.push_item_lights(assets, &lights, crate::shop::inventory_position(viewport), time, viewport, &mut draws);
                 let inventory_overlay_draw_key = if self.textures.contains_key(&inventory_key) {
                     self.last_inventory_overlay_key = Some(inventory_key.clone());
                     Some(inventory_key.clone())

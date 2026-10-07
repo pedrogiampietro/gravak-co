@@ -2456,29 +2456,57 @@ fn status_fill(image: &mut RgbaImage, x: i32, y: i32, width: i32, height: i32, c
     }
 }
 
-/// A soft glow of the gear's quality behind its icon, as later clients
-/// tint their icons: Super red, Elite purple, Unique and Refined blue.
-fn quality_backdrop(image: &mut RgbaImage, rect: UiRect, item_id: u32) {
-    if !is_gear(item_id) {
-        return;
+/// The light the original animates under an item's icon (`Conquer.exe`
+/// 0x45b1ca, frames in `ani/effect.ani`): gear by its quality (Super fire,
+/// Elite red, Unique blue, Refined royal blue), gems golden, DragonBalls
+/// and Meteors (and 1100003/6/9) yellow.
+pub fn item_light(item_type: u32) -> Option<&'static str> {
+    if item_type < 1_000_000 && !(700_000..=800_000).contains(&item_type) {
+        return match item_type % 10 {
+            9 => Some("FireLight"),
+            8 => Some("RedLight"),
+            7 => Some("BlueLight"),
+            6 => Some("RoyalBlueLight"),
+            _ => None,
+        };
     }
-    let colour = match item_id % 10 {
-        9 => crate::paint::hex(0xd8342c),
-        8 => crate::paint::hex(0x9b3ad8),
-        7 | 6 => crate::paint::hex(0x2f78d8),
-        _ => return,
-    };
-    let centre = [rect.x as f32 + rect.width as f32 / 2.0, rect.y as f32 + rect.height as f32 / 2.0];
-    let reach = rect.width.min(rect.height) as f32 * 0.62;
-    for y in rect.y + 1..rect.y + rect.height - 1 {
-        for x in rect.x + 1..rect.x + rect.width - 1 {
-            let distance = ((x as f32 + 0.5 - centre[0]).powi(2) + (y as f32 + 0.5 - centre[1]).powi(2)).sqrt();
-            let share = (1.0 - distance / reach).clamp(0.0, 1.0);
-            if share > 0.0 {
-                crate::paint::blend(image, x, y, colour, 0.55 * share.powf(0.8));
+    match item_type {
+        700_001..=700_063 => Some("GoldEnLight"),
+        1_088_000..=1_088_002 | 1_100_003 | 1_100_006 | 1_100_009 => Some("YellowLight"),
+        _ => None,
+    }
+}
+
+/// The frame of a light `seconds` in: eight, a tenth of a second each.
+pub fn item_light_frame(light: &str, seconds: f32) -> String {
+    format!("Data/Pic/{light}/{:02}.dds", (seconds.max(0.0) * 10.0) as u32 % 8 + 1)
+}
+
+/// The inventory's lights: each and its slot in the window.
+pub fn inventory_lights(inventory: &[crate::network::OwnedItem], filter: InventoryFilter) -> Vec<(&'static str, UiRect)> {
+    inventory
+        .iter()
+        .filter(|item| item.position < 40 && filter.accepts(item.item_type))
+        .filter_map(|item| Some((item_light(item.item_type)?, inventory_slot_rect(item.position))))
+        .collect()
+}
+
+/// The worn gear's lights: each and its slot in the status window.
+pub fn status_equipment_lights(equipment: &[crate::network::OwnedItem]) -> Vec<(&'static str, UiRect)> {
+    (0..StatusLayout::SLOT_POSITIONS.len())
+        .filter_map(|slot| {
+            let rect = StatusLayout::slot_rect(slot);
+            if rect.width <= 0 || rect.height <= 0 {
+                return None;
             }
-        }
-    }
+            let position = StatusLayout::slot_position(slot);
+            let item = equipment.iter().find(|item| item.position == position)?;
+            Some((
+                item_light(item.item_type)?,
+                UiRect::new(StatusLayout::PAPER_X + rect.x, StatusLayout::PAPER_Y + rect.y, rect.width, rect.height),
+            ))
+        })
+        .collect()
 }
 
 /// "+12" in the icon's top right corner, gold edged in black, as the
@@ -2553,9 +2581,6 @@ pub fn status_equipment_overlay_image(
                     status_pixel(&mut image, x, y, [255, 230, 150, 220]);
                 }
             }
-        }
-        if let Some(item) = item {
-            quality_backdrop(&mut image, absolute, item.item_type);
         }
         if let Some(item) = item
             && let Ok(icon) = item_icon_native(assets, item.item_type)
@@ -4849,7 +4874,6 @@ pub fn inventory_overlay_image(
         .filter(|item| item.position < 40 && filter.accepts(item.item_type))
     {
         let slot = inventory_slot_rect(item.position);
-        quality_backdrop(&mut image, slot, item.item_type);
         quality_outline(&mut image, slot, item.rarity);
         let icon = load_icon_native(
             assets,
