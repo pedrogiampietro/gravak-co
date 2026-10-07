@@ -2483,12 +2483,7 @@ impl Renderer {
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         let scale = self.effect_scale * ARROW_SCALE;
-        // The ground direction that the screen direction shows: the world
-        // is seen from 45 degrees, so its depth is shortened by sin(45).
-        let ground = [direction[0], -direction[1] / cos];
-        // The model's tip points along -y; turn it about the vertical.
-        let turn = ground[1].atan2(ground[0]) - (-1.0_f32).atan2(0.0);
-        let (turn_sin, turn_cos) = turn.sin_cos();
+        let (turn_sin, turn_cos) = arrow_turn(direction).sin_cos();
         for (mesh_index, mesh) in model.meshes.iter().enumerate() {
             let Some(motion) = model.motions.get(mesh_index).or_else(|| model.motions.first()) else {
                 continue;
@@ -3671,8 +3666,15 @@ impl Renderer {
             let depth = from[0] + from[1] + (to[0] + to[1] - from[0] - from[1]) * t + 0.09;
             let direction = [end[0] - start[0], end[1] - start[1]];
             self.push_flying_object(assets, &arrow.flying, origin, direction, depth, viewport, &mut draws);
+            // The bow's effect is made about the arrow (its trail along the
+            // shaft): turned and sized as the arrow is.
             if let Some(effect) = &arrow.flying.effect {
+                let scale = self.effect_scale;
+                self.effect_yaw = Some(arrow_turn(direction));
+                self.effect_scale = scale * ARROW_SCALE;
                 self.push_looping_effect(assets, effect, origin, elapsed, depth, viewport, &mut draws);
+                self.effect_scale = scale;
+                self.effect_yaw = None;
             }
         }
         self.arrows = flying;
@@ -5913,6 +5915,15 @@ impl Renderer {
 /// paper doll), which the encoder sets as a scissor.
 fn clipped_to_character(draw: &Draw) -> bool {
     draw.depth_test && draw.sort_depth == f32::INFINITY
+}
+
+/// How far an arrow is turned about the vertical to fly along `direction`
+/// (on the screen): its model's tip points along -y, and the world is seen
+/// from 45 degrees, its depth shortened by cos(45).
+fn arrow_turn(direction: [f32; 2]) -> f32 {
+    let cos = (-std::f32::consts::FRAC_PI_4).cos();
+    let ground = [direction[0], -direction[1] / cos];
+    ground[1].atan2(ground[0]) - (-1.0_f32).atan2(0.0)
 }
 
 /// Where an arrow flies, from the archer's and the target's ground points:
