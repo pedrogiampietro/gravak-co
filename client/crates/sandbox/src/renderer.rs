@@ -3448,25 +3448,49 @@ impl Renderer {
             if !world_point_visible(origin, viewport, 192.0) {
                 continue;
             }
-            let key = format!("@damage-{value}");
-            if !self.textures.contains_key(&key) {
-                self.upload(&key, crate::labels::damage_image(*value)?);
+            // A blow of nothing shows no number: the target only dodges.
+            if *value == 0 {
+                continue;
             }
-            if let Some(texture) = self.textures.get(&key) {
-                let rise = (1.0 - (*expires - time).clamp(0.0, 1.0)) * 28.0;
-                draws.push(Draw {
-                    texture: key,
-                    vertices: quad(
-                        [
-                            origin[0] - texture.size[0] * 0.5,
-                            origin[1] - 115.0 - rise - index as f32 * 4.0,
-                        ],
-                        texture.size,
-                        viewport,
-                    ),
-                    depth_test: false,
-                    sort_depth: WORLD_OVERLAY_SORT,
-                });
+            // Yellow when the hero is struck, white otherwise.
+            let hero = !remote_actors.contains_key(target_id);
+            let elapsed = (time - (*expires - COMBAT_NUMBER_SECONDS)) * 1_000.0;
+            let digits: Vec<u32> = value.to_string().chars().filter_map(|digit| digit.to_digit(10)).collect();
+            let mut keys = Vec::with_capacity(digits.len());
+            for digit in &digits {
+                let key = format!("@count-{digit}-{}", if hero { "yellow" } else { "white" });
+                if !self.textures.contains_key(&key) {
+                    let Ok(image) = assets.image(&format!("c3/effect/CountB/CountB{digit}.dds")) else {
+                        break;
+                    };
+                    let mut image = image;
+                    if hero {
+                        for pixel in image.pixels_mut() {
+                            pixel.0[2] = 0;
+                        }
+                    }
+                    self.upload(&key, image);
+                }
+                keys.push(key);
+            }
+            if keys.len() != digits.len() {
+                continue;
+            }
+            let centre = [origin[0], origin[1] - 115.0 - index as f32 * 4.0];
+            for (scale, rise, alpha) in combat_number_passes(elapsed) {
+                let step = COUNT_SPACING * scale;
+                let left = centre[0] - step * keys.len() as f32 * 0.5;
+                let size = [COUNT_DIGIT[0] * scale, COUNT_DIGIT[1] * scale];
+                for (place, key) in keys.iter().enumerate() {
+                    let x = left + step * (place as f32 + 0.5) - size[0] * 0.5;
+                    let y = centre[1] - rise - size[1] * 0.5;
+                    draws.push(Draw {
+                        texture: key.clone(),
+                        vertices: quad_with_alpha([x, y], size, viewport, alpha),
+                        depth_test: false,
+                        sort_depth: WORLD_OVERLAY_SORT,
+                    });
+                }
             }
         }
         for effect in skill_effects {
@@ -5915,6 +5939,34 @@ impl Renderer {
 /// paper doll), which the encoder sets as a scissor.
 fn clipped_to_character(draw: &Draw) -> bool {
     draw.depth_test && draw.sort_depth == f32::INFINITY
+}
+
+/// How long a damage number shows (`Conquer.exe` 0x4d49cd: 250 ms coming
+/// in, 1200 ms rising away).
+pub const COMBAT_NUMBER_SECONDS: f32 = 1.45;
+/// The space each digit takes at full size, and a digit's size (the 64
+/// pixel `CountB` sprites on their 92 by 122 unit quad).
+const COUNT_SPACING: f32 = 64.0;
+const COUNT_DIGIT: [f32; 2] = [69.0, 65.0];
+
+/// How a damage number is drawn `elapsed` milliseconds in, as the original:
+/// first it shrinks from full size to 0.3 as it comes in (alpha 32 to 255),
+/// with an echo 1.3 times as large at 30%; then it rises 80 pixels in
+/// 1200 ms, fading away. Each pass: scale, rise, alpha.
+fn combat_number_passes(elapsed: f32) -> Vec<(f32, f32, f32)> {
+    if elapsed < 0.0 {
+        Vec::new()
+    } else if elapsed <= 250.0 {
+        let p = elapsed * 0.004;
+        let scale = 1.0 - 0.7 * p;
+        let alpha = (32.0 + 223.0 * p) / 255.0;
+        vec![(scale * 1.3, 0.0, alpha * 0.3), (scale, 0.0, alpha)]
+    } else if elapsed <= 1_450.0 {
+        let p = (elapsed - 250.0) / 1_200.0;
+        vec![(0.3, p * 80.0, 1.0 - p)]
+    } else {
+        Vec::new()
+    }
 }
 
 /// How far an arrow is turned about the vertical to fly along `direction`

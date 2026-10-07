@@ -57,34 +57,6 @@ pub(crate) fn decorative_font() -> Result<Arc<fontdue::Font>> {
         .map_err(|error| std::io::Error::other(error.clone()).into())
 }
 
-fn damage_font() -> Result<fontdue::Font> {
-    let mut database = fontdb::Database::new();
-    database.load_system_fonts();
-    let id = database
-        .query(&fontdb::Query {
-            families: &[
-                fontdb::Family::Name("Times New Roman"),
-                fontdb::Family::Name("Georgia"),
-                fontdb::Family::Serif,
-            ],
-            weight: fontdb::Weight::BOLD,
-            style: fontdb::Style::Italic,
-            ..Default::default()
-        })
-        .ok_or("No damage font available")?;
-    Ok(database
-        .with_face_data(id, |bytes, index| {
-            fontdue::Font::from_bytes(
-                bytes,
-                fontdue::FontSettings {
-                    collection_index: index,
-                    ..Default::default()
-                },
-            )
-        })
-        .ok_or("Damage font unavailable")??)
-}
-
 fn width(font: &fontdue::Font, text: &str) -> f32 {
     text.chars()
         .map(|c| font.metrics(c, FONT_SIZE).advance_width)
@@ -311,41 +283,6 @@ pub fn monster_image(name: &str, health: u16, maximum_health: u16, bounty: bool)
     for y in 19..23 {
         for x in 5..5 + filled_width.saturating_sub(1) {
             image.put_pixel(x, y, Rgba([54, 203, 70, 255]));
-        }
-    }
-    Ok(image)
-}
-
-pub fn damage_image(value: u32) -> Result<RgbaImage> {
-    let font = damage_font()?;
-    let text_value = if value == 0 { "Miss".to_owned() } else { value.to_string() };
-    let size = 46.0;
-    let text_width: f32 = text_value
-        .chars()
-        .map(|character| font.metrics(character, size).advance_width)
-        .sum();
-    let mut image = RgbaImage::new(text_width.ceil() as u32 + 24, 58);
-    for (outline, colour) in [(true, [20, 12, 65]), (false, [224, 216, 255])] {
-        let mut cursor = ((image.width() as f32 - text_width) * 0.5).round();
-        for character in text_value.chars() {
-            let (metrics, bitmap) = font.rasterize(character, size);
-            for row in 0..metrics.height {
-                for column in 0..metrics.width {
-                    let offset = if outline { 3 } else { 0 };
-                    let x = cursor as i32 + metrics.xmin + column as i32 + offset;
-                    let y = 48 - metrics.ymin - metrics.height as i32 + row as i32 + offset;
-                    if x < 0 || y < 0 || x >= image.width() as i32 || y >= image.height() as i32 {
-                        continue;
-                    }
-                    let alpha = bitmap[row * metrics.width + column];
-                    image.put_pixel(
-                        x as u32,
-                        y as u32,
-                        Rgba([colour[0], colour[1], colour[2], alpha]),
-                    );
-                }
-            }
-            cursor += metrics.advance_width;
         }
     }
     Ok(image)

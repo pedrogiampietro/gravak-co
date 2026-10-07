@@ -1624,7 +1624,7 @@ impl ApplicationHandler for App {
         self.arrow_blows = flying;
         for (attacker_id, target_id, damage, _) in landed {
             if let Some(damage) = damage {
-                self.combat_numbers.push((target_id, damage, now + 1.0));
+                self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
             }
             if self.network_character_id == Some(target_id) {
                 self.play_blow_on_player(attacker_id, target_id, now);
@@ -4777,7 +4777,7 @@ impl App {
                     }
                 } else {
                     if let Some(value) = number {
-                        self.combat_numbers.push((target_id, value, now + 1.0));
+                        self.combat_numbers.push((target_id, value, now + renderer::COMBAT_NUMBER_SECONDS));
                     }
                     self.play_blow_on_player(id, target_id, now);
                 }
@@ -4832,7 +4832,7 @@ impl App {
                     }
                 }
                 if !carried && damage > 0 {
-                    self.combat_numbers.push((target_id, damage, now + 1.0));
+                    self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
                 }
                 // One motion and one sound (MagicType) for the cast, not one
                 // per target.
