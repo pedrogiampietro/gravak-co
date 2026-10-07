@@ -150,7 +150,7 @@ pub fn lucky_dodge(character: &Character) -> bool {
 }
 
 /// A hit as luck changes it: twice as hard for a lucky attacker, one point
-/// for a lucky target; never past the life the target had.
+/// for a lucky target. The blow shows all it does, even past the life.
 pub fn empower(
     attacker: Option<&Character>,
     target: Option<&Character>,
@@ -165,9 +165,8 @@ pub fn empower(
         damage = 1;
     }
     if damage != outcome.damage {
-        let damage = damage.min(life_before);
         outcome.damage = damage;
-        outcome.remaining_health = life_before - damage;
+        outcome.remaining_health = life_before.saturating_sub(damage);
         outcome.defeated = outcome.remaining_health == 0;
     }
 }
