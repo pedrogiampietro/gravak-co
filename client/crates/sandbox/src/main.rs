@@ -373,6 +373,8 @@ struct App {
     /// When the bag closes its gaps (seconds since start): a little after
     /// items leave it, so several leaving at once close in one pass.
     compact_inventory_at: Option<f32>,
+    /// The cell beside a ShopFlag the hero is going to, to set up a booth.
+    pending_booth: Option<[i32; 2]>,
     /// An ExpBall waiting for the player's yes, with what it would give.
     exp_ball_confirm: Option<network::OwnedItem>,
     pending_inventory_drop: Option<network::OwnedItem>,
@@ -1341,6 +1343,7 @@ impl ApplicationHandler for App {
                     self.player.action = Action::Jump;
                 }
                 shop::set_hero(self.character.current_class, self.level);
+                self.process_pending_booth();
                 if self.compact_inventory_at.is_some_and(|at| elapsed >= at) {
                     self.compact_inventory_at = None;
                     self.compact_inventory();
@@ -5231,6 +5234,17 @@ impl App {
             "player"
         };
         let label = if name.is_empty() { "unnamed" } else { &name };
+        // A ShopFlag (NPC type 16, Redux `RoleBoothFlag`): the hero goes to
+        // the cell two to its right and sets up a booth there.
+        if npc && npc_kind == BOOTH_FLAG {
+            if let Some(flag) = self.remote_actors.get(&id) {
+                let spot = [flag.position[0].round() as i32 + 2, flag.position[1].round() as i32];
+                self.pending_booth = Some(spot);
+                self.travel(spot);
+                self.network_status = "Setting up a booth by the flag...".into();
+            }
+            return true;
+        }
         if npc && let Some(network) = &self.network {
             network.send_npc_interact(id, npc_kind);
         }
@@ -6122,6 +6136,28 @@ impl App {
         self.chat_name_focused = false;
         self.held = false;
         true
+    }
+
+    /// At the cell beside the ShopFlag: the booth opens, its window with it,
+    /// and the hero sits facing it (Redux `StartVending`).
+    fn process_pending_booth(&mut self) {
+        let Some(spot) = self.pending_booth else {
+            return;
+        };
+        if self.player.moving() || !self.pending_network_steps.is_empty() {
+            return;
+        }
+        self.pending_booth = None;
+        if self.player.cell() != spot {
+            self.network_status = "Stand beside a free flag to set up a booth.".into();
+            return;
+        }
+        self.face_towards([spot[0] - 2, spot[1]]);
+        self.handle_player_shop_panel_action(shop::PlayerShopPanelAction::Open);
+        self.quick_panel = Some(shop::QuickPanel::Market);
+        if self.held_pose.is_none() {
+            self.perform_emote(Action::Sit);
+        }
     }
 
     /// The chat strip set to whisper `name`, the keys on its line.
@@ -8440,6 +8476,9 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
+/// NPC type 16: a ShopFlag, where a booth is set up (Redux `RoleBoothFlag`).
+const BOOTH_FLAG: u16 = 16;
+
 /// Arrows go on an F key to be worn.
 fn is_arrow(item_type: u32) -> bool {
     item_type / 1_000 == 1_050
@@ -8980,6 +9019,7 @@ fn run() -> Result<()> {
         pending_inventory_sort: None,
         pending_inventory_sort_move: None,
         compact_inventory_at: None,
+        pending_booth: None,
         exp_ball_confirm: None,
         pending_inventory_drop: None,
         silver: server_ready

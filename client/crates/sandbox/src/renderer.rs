@@ -3098,7 +3098,11 @@ impl Renderer {
                         sort_depth: WORLD_OVERLAY_SORT,
                     });
                 }
-            } else if !actor.name.is_empty() && (hud_config.show_names || monster) {
+            } else if !actor.name.is_empty()
+                && (hud_config.show_names || monster)
+                // ShopFlags (type 16) stand nameless, as in the original.
+                && !(actor.npc && actor.npc_kind == 16)
+            {
                 // NPCs' names in green, as the original's.
                 let name_colour =
                     if actor.npc { NPC_NAME } else { crate::labels::name_colour(actor.status_flags) };
