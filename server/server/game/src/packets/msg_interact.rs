@@ -403,6 +403,18 @@ impl MsgInteract {
         }
 
         if skill.status.is_some_and(|status| status.is_self_buff()) {
+            // Fly is refused where the map forbids it (Redux `AddEffect`).
+            let fly = skill.status.is_some_and(|status| status.effect() == crate::entities::StatusEffect::Flying);
+            if fly
+                && state
+                    .try_map(character.entity().map_id())
+                    .is_ok_and(|map| map.flags().contains(super::MapFlags::FLY_DISABLED))
+            {
+                actor
+                    .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, "You cannot fly here."))
+                    .await?;
+                return Ok(());
+            }
             let now = Instant::now();
             let next_skill = NEXT_PLAYER_SKILL.get_or_init(|| Mutex::new(HashMap::new()));
             let can_cast = {
@@ -439,6 +451,8 @@ impl MsgInteract {
             character.apply_status(effect, skill.status_duration);
             actor.send(MsgUserInfo::from(character)).await?;
             actor.send(MsgPlayer::from(character)).await?;
+            // Those around see it too (a flier rises, Superman glows).
+            actor.screen().send_message(MsgPlayer::from(character)).await?;
             actor
                 .send(MsgTalk::from_system(
                     character.id(),
@@ -1438,6 +1452,10 @@ impl PacketProcess for MsgInteract {
                         || team_mode_spares(state, character, target)
                         || crate::events::allies(character.id(), target.id())
                         || target.revive_protected()
+                        // A flier is out of a melee weapon's reach (Redux
+                        // `CombatManager`: attack range under 5).
+                        || target.has_status(crate::entities::StatusEffect::Flying)
+                            && character.attack_range_with_catalog(Some(state.shop_catalog())) < 5
                 })
         {
             tracing::debug!(target_id = self.target_id, "Rejected invalid player attack target");

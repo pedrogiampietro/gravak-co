@@ -258,11 +258,13 @@ fn nearest_target(
 /// The player and their distance, if the monster may go after them.
 fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, view_range: i16) -> Option<(Arc<GameEntity>, i16)> {
     let character = entity.as_character()?;
-    // Dead, invisible or flying players are out of reach.
+    // Dead, invisible or flying players are out of reach; guards still
+    // shoot fliers down (Redux `Monster`: mesh 900).
     let flags = character.entity().flags();
     if character.entity().is_dead()
         || character.revive_protected()
-        || flags.intersects(crate::entities::Flags::INVISIBILITY | crate::entities::Flags::FLYING)
+        || flags.contains(crate::entities::Flags::INVISIBILITY)
+        || flags.contains(crate::entities::Flags::FLYING) && !guard
     {
         return None;
     }

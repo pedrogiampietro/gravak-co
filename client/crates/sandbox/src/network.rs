@@ -392,6 +392,8 @@ pub enum NetworkEvent {
 
 /// The XP circle: XP skills are ready.
 pub const XP_CIRCLE_FLAG: u64 = 1 << 4;
+/// The Fly skill's status: the hero hovers.
+pub const FLY_FLAG: u64 = 1 << 27;
 /// Gravak extension bit for double experience.
 pub const DOUBLE_EXPERIENCE_FLAG: u64 = 1 << 48;
 pub const POISONED_FLAG: u64 = 1 << 1;

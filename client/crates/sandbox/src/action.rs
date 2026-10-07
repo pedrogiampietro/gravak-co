@@ -29,10 +29,12 @@ pub enum Action {
     Dance,
     Wave,
     Bow,
+    /// Flying (the Fly skill): `Conquer.exe` gives a flier motion 510.
+    Fly,
 }
 
 impl Action {
-    pub const COUNT: usize = 20;
+    pub const COUNT: usize = 21;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Idle,
         Self::WalkLeft,
@@ -54,6 +56,7 @@ impl Action {
         Self::Dance,
         Self::Wave,
         Self::Bow,
+        Self::Fly,
     ];
 
     pub const fn index(self) -> usize {
@@ -78,6 +81,7 @@ impl Action {
             Self::Dance => 17,
             Self::Wave => 18,
             Self::Bow => 19,
+            Self::Fly => 20,
         }
     }
 
@@ -108,6 +112,7 @@ impl Action {
             Self::Dance => 1,
             Self::Wave => 190,
             Self::Bow => 200,
+            Self::Fly => 510,
         }
     }
 
@@ -157,7 +162,7 @@ mod tests {
         assert_eq!(Action::ALL.map(Action::index), std::array::from_fn(|index| index));
         assert_eq!(
             Action::ALL.map(Action::catalog_id),
-            [100, 110, 111, 120, 121, 130, 140, 100, 220, 401, 250, 230, 210, 170, 150, 160, 270, 1, 190, 200]
+            [100, 110, 111, 120, 121, 130, 140, 100, 220, 401, 250, 230, 210, 170, 150, 160, 270, 1, 190, 200, 510]
         );
         assert_eq!(Action::from_catalog_id(150), Some(Action::Happy));
         assert_eq!(Action::from_catalog_id(100), Some(Action::Idle));

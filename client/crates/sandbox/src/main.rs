@@ -1330,6 +1330,11 @@ impl ApplicationHandler for App {
                 if self.player.jumping() && self.local_action.is_none() {
                     self.player.action = Action::Jump;
                 }
+                // Flying (status bit 27): hover, and the flying pose at rest.
+                self.player.flying = self.status_flags & network::FLY_FLAG != 0 && self.dead_since.is_none();
+                if self.player.flying && self.player.action == Action::Idle {
+                    self.player.action = Action::Fly;
+                }
                 if self.held_pose.is_some() && self.player.moving() {
                     self.held_pose = None;
                 }
@@ -2853,7 +2858,7 @@ impl App {
         let target = actor.position.map(|value| value.round() as i32);
         let here = self.player.cell();
         if (target[0] - here[0]).abs().max((target[1] - here[1]).abs()) > 2 {
-            self.player.go(&self.map, target);
+            self.travel(target);
         }
     }
 
@@ -3679,7 +3684,7 @@ impl App {
             } else if self.modifiers.shift_key() {
                 self.face_towards(target);
             } else {
-                self.player.go(&self.map, target);
+                self.travel(target);
             }
         }
     }
@@ -5057,6 +5062,18 @@ impl App {
         }
     }
 
+    /// Goes to `target`: on foot, or flying, a level glide there (a flier
+    /// only jumps, as in the original).
+    fn travel(&mut self, target: [i32; 2]) {
+        if self.player.flying {
+            if !self.player.moving() && self.pending_network_steps.is_empty() {
+                self.start_jump(target);
+            }
+        } else {
+            self.player.go(&self.map, target);
+        }
+    }
+
     fn start_jump(&mut self, target: [i32; 2]) {
         let current = self.player.cell();
         let Some(target) =
@@ -5217,7 +5234,7 @@ impl App {
             if self.player.moving() || !self.pending_network_steps.is_empty() {
                 return;
             }
-            self.player.go(&self.map, target);
+            self.travel(target);
             self.network_status = format!("online: approaching loot {item_id}");
             return;
         }
@@ -5440,7 +5457,7 @@ impl App {
             [target_cell[0], target_cell[1] + 1],
         ];
         if let Some(destination) = candidates.into_iter().find(|cell| self.map.walkable(*cell)) {
-            self.player.go(&self.map, destination);
+            self.travel(destination);
         } else {
             self.pending_attack = None;
             self.network_status = format!("online: no path to monster {target_id}");
@@ -5711,7 +5728,7 @@ impl App {
                 if let Some(destination) =
                     candidates.into_iter().find(|cell| self.map.walkable(*cell))
                 {
-                    self.player.go(&self.map, destination);
+                    self.travel(destination);
                 } else {
                     self.pending_skill_attack = None;
                     self.network_status = format!("online: no path to monster {target_id}");

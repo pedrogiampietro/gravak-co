@@ -15,6 +15,12 @@ struct Segment {
     peak: f32,
     jump: bool,
 }
+/// How high a flier hovers (`Conquer.exe`: hero +0x238 = 100 while the Fly
+/// status lasts).
+pub const FLY_HEIGHT: f32 = 100.0;
+/// How fast the hover height follows: 6 a tick, about 180 a second.
+const HOVER_SPEED: f32 = 180.0;
+
 pub struct Player {
     pub position: [f32; 2],
     pub facing: f32,
@@ -22,6 +28,11 @@ pub struct Player {
     /// A ghost only walks, whatever `running` says.
     pub ghost: bool,
     pub height: f32,
+    /// Flying (the Fly skill): the hero hovers `hover` pixels up, rising to
+    /// [`FLY_HEIGHT`] and back down as `Conquer.exe` does (6 per tick), and
+    /// jumps glide level instead of arcing.
+    pub flying: bool,
+    pub hover: f32,
     /// How much faster than usual steps and jumps go: 2 in Cyclone, as
     /// `Conquer.exe` halves their frame interval.
     pub haste: f32,
@@ -86,6 +97,8 @@ impl Player {
             running: true,
             ghost: false,
             height: 0.0,
+            flying: false,
+            hover: 0.0,
             haste: 1.0,
             action: Action::Idle,
             action_instance: 0,
@@ -147,14 +160,16 @@ impl Player {
         let motion = jump_motion(self.position, target, animation.div_f32(self.haste.max(1.0)));
         self.facing = jump_facing(self.position, target).unwrap_or(self.facing);
         self.route.clear();
-        self.action = Action::Jump;
+        // A flier glides level, in its flying pose.
+        let peak = if self.flying { 0.0 } else { motion.peak_screen_pixels };
+        self.action = if self.flying { Action::Fly } else { Action::Jump };
         self.action_instance = self.action_instance.wrapping_add(1);
         self.segment = Some(Segment {
             start: self.position,
             target,
             elapsed: 0.0,
             duration: motion.duration.as_secs_f32(),
-            peak: motion.peak_screen_pixels,
+            peak,
             jump: true,
         });
         Some(target.map(|v| v as i32))
@@ -171,6 +186,9 @@ impl Player {
         }
     }
     pub fn tick(&mut self, dt: f32) {
+        let wanted = if self.flying { FLY_HEIGHT } else { 0.0 };
+        let step = HOVER_SPEED * dt.clamp(0.0, 0.1);
+        self.hover = if self.hover < wanted { (self.hover + step).min(wanted) } else { (self.hover - step).max(wanted) };
         let mut remaining = dt.clamp(0.0, 0.1);
         loop {
             if self.segment.is_none() {
