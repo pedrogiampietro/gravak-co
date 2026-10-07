@@ -11,6 +11,8 @@ pub mod dis_city;
 pub mod forge;
 #[cfg(test)]
 mod forge_tests;
+#[cfg(test)]
+mod weapon_skill_tests;
 pub mod vitals;
 pub mod drops;
 pub mod entities;

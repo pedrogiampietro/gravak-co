@@ -110,6 +110,13 @@ pub struct SkillHud {
     pub kill_mode: u8,
     /// Running rather than walking (the bar's Run checkbox).
     pub running: bool,
+    /// The bar's Map and Shift Screen checkboxes, and View Equipment
+    /// waiting for a player.
+    pub map_shown: bool,
+    pub shift_screen: bool,
+    pub picking_equipment: bool,
+    /// The equipment of the player looked at.
+    pub viewed_equipment: Option<crate::view_equipment::ViewedEquipment>,
     /// The top-left information lines: map and position, FPS and ping.
     pub info: Option<InfoBar>,
     /// Skill under the cursor in the bar; filled in by the renderer.
@@ -990,6 +997,31 @@ pub fn run_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Run)
 }
 
+pub fn npc_equip_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::NpcEquip)
+}
+
+pub fn map_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Map)
+}
+
+pub fn screen_move_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::ScreenMove)
+}
+
+/// The original's hint for the round buttons over the orb (`Conquer.exe`
+/// 0x46ef5d, `StrRes.ini` 10070, 10072, 10073/10074, 10370).
+pub fn round_button_tip(button: MainHudButton, shift_screen: bool) -> Option<&'static str> {
+    Some(match button {
+        MainHudButton::Run => "Walk/Run",
+        MainHudButton::Map => "Map On/Off",
+        MainHudButton::ScreenMove if shift_screen => "Shift Screen: On",
+        MainHudButton::ScreenMove => "Shift Screen: Off",
+        MainHudButton::NpcEquip => "View Equipment",
+        _ => return None,
+    })
+}
+
 pub fn status_button_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
     layout::main_hud_button_at(viewport, cursor) == Some(MainHudButton::Status)
 }
@@ -1311,6 +1343,9 @@ pub fn image(
             chat_channel_hover: skills.chat_channel_hover,
             kill_mode: skills.kill_mode,
             running: skills.running,
+            map_shown: skills.map_shown,
+            shift_screen: skills.shift_screen,
+            picking_equipment: skills.picking_equipment,
             active_skill_icon: skills
                 .active_skill
                 .and_then(|id| crate::main_hud::skill_icon(assets, id)),

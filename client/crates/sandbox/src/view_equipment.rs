@@ -28,10 +28,11 @@ const SLOTS: [([i32; 4], u8); 9] = [
 ];
 /// [258-1384] the top-right X and [258-1383] the button under the slots.
 const CLOSE: [[i32; 4]; 2] = [[225, 43, 15, 13], [160, 390, 63, 20]];
-/// [258-1389] the name and [258-1618] the line under it (the spouse's in
-/// the original; here the level and rank).
+/// [258-1389] the name and [258-1618] the spouse, after the art's labels.
 const NAME: [i32; 2] = [100, 64];
-const SUBLINE: [i32; 2] = [100, 90];
+const SPOUSE: [i32; 2] = [100, 90];
+/// [258-1625] the nobility medal (64 pixels).
+const NOBILITY: [i32; 2] = [35, 120];
 
 /// The player looked at and what they wear.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -41,6 +42,8 @@ pub struct ViewedEquipment {
     pub level: u16,
     pub nobility_rank: u32,
     pub female: bool,
+    /// "None" when single, as the original's MsgName 6 answer.
+    pub spouse: String,
     pub items: Vec<OwnedItem>,
 }
 
@@ -98,11 +101,14 @@ pub fn image(assets: &mut Assets, view: &ViewedEquipment) -> RgbaImage {
         }
     }
     text(&mut image, &view.name, NAME, [255, 255, 255, 255]);
-    let rank = match crate::nobility_panel::rank_name(view.nobility_rank, view.female) {
-        "Commoner" => String::new(),
-        rank => format!("  ·  {rank}"),
-    };
-    text(&mut image, &format!("Level {}{rank}", view.level), SUBLINE, [255, 226, 143, 255]);
+    let spouse = if view.spouse.is_empty() { "None" } else { &view.spouse };
+    text(&mut image, spouse, SPOUSE, [255, 255, 255, 255]);
+    // A noble's medal with its name over it; the commoner shows none.
+    if crate::nobility_panel::rank_name(view.nobility_rank, view.female) != "Commoner" {
+        for path in crate::nobility_panel::rank_art_paths(view.nobility_rank, view.female, 64) {
+            let _ = crate::original_ui::overlay_asset(&mut image, assets, &path, i64::from(NOBILITY[0]), i64::from(NOBILITY[1]));
+        }
+    }
     image
 }
 
@@ -121,6 +127,7 @@ mod tests {
             level: 130,
             nobility_rank: 12,
             female: false,
+            spouse: "Lily".into(),
             items: vec![item(1, 118_309), item(3, 130_309), item(4, 410_339), item(5, 1_050_002), item(8, 160_249)],
         }
     }

@@ -752,6 +752,10 @@ pub struct Renderer {
         std::result::Result<Option<crate::minimap::Minimap>, String>,
     )>,
     minimap_upload_index: usize,
+    /// The bar's Map checkbox: the corner map is shown.
+    pub minimap_shown: bool,
+    /// How far Shift Screen has moved the view off the hero.
+    pub camera_shift: [f32; 2],
     hud_signature: Option<u64>,
     shop_signature: Option<u64>,
     last_shop_base_key: Option<String>,
@@ -1016,6 +1020,8 @@ impl Renderer {
             minimap_map: None,
             minimap_ready: None,
             minimap_upload_index: 0,
+            minimap_shown: true,
+            camera_shift: [0.0, 0.0],
             hud_signature: None,
             shop_signature: None,
             last_shop_base_key: None,
@@ -2270,8 +2276,8 @@ impl Renderer {
     pub fn camera(&self, map: &Map, player: &Player) -> [f32; 2] {
         let p = map.project(player.position);
         [
-            p[0] - self.config.width as f32 * 0.5,
-            p[1] - self.config.height as f32 * 0.5,
+            p[0] - self.config.width as f32 * 0.5 + self.camera_shift[0],
+            p[1] - self.config.height as f32 * 0.5 + self.camera_shift[1],
         ]
     }
     /// The revive button under `position`: `Some(true)` revives here.
@@ -2642,9 +2648,10 @@ impl Renderer {
 
     pub fn minimap_pointer(&mut self, position: [f32; 2]) -> bool {
         let viewport = [self.config.width as f32, self.config.height as f32];
-        self.minimap
-            .as_mut()
-            .is_some_and(|minimap| minimap.pointer(position, viewport))
+        self.minimap_shown
+            && self.minimap
+                .as_mut()
+                .is_some_and(|minimap| minimap.pointer(position, viewport))
     }
 
     /// Closes the expanded minimap; false when it was not open.
@@ -3988,7 +3995,7 @@ impl Renderer {
         }
         // The Character window is not modal: the minimap and HUD stay visible
         // so world information remains available while the panel is open.
-        if minimap_visible {
+        if minimap_visible && self.minimap_shown {
             if let Some(minimap) = &self.minimap {
                 for item in minimap.quads(map, player.position, team_pins, camera, viewport) {
                     let mut vertices = quad(
@@ -4256,7 +4263,11 @@ impl Renderer {
             if !self.textures.contains_key(key) {
                 self.upload(key, crate::bounty_board::tracker_image(assets, tracker, tracker_hovered)?);
             }
-            let top = self.minimap.as_ref().map_or(180.0, |minimap| minimap.bottom(viewport)) + 8.0;
+            let top = match &self.minimap {
+                _ if !self.minimap_shown => 0.0,
+                Some(minimap) => minimap.bottom(viewport),
+                None => 180.0,
+            } + 8.0;
             if let Some(texture) = self.textures.get(key) {
                 let left = viewport[0] - texture.size[0] - 8.0;
                 self.bounty_tracker_rect = Some([left, top, texture.size[0], texture.size[1]]);
@@ -4360,6 +4371,94 @@ impl Renderer {
             .feedback_signature
             .map(|signature| format!("@network-feedback-{signature}"));
         self.prune_textures("@network-feedback-", &[current_feedback.as_deref()]);
+        // The hint of the round button under the cursor, over it.
+        if let Some(button) = crate::original_ui_layout::main_hud_button_at(viewport, cursor)
+            && let Some(tip) = crate::hud::round_button_tip(button, skill_hud.shift_screen)
+        {
+            let tip_key = format!("@round-button-tip-{tip}");
+            if !self.textures.contains_key(&tip_key) {
+                self.upload(&tip_key, crate::labels::tooltip_image(tip)?);
+            }
+            if let Some(texture) = self.textures.get(&tip_key) {
+                let [x, y] = crate::original_ui_layout::main_hud_position(viewport);
+                let rect = button.local_rect();
+                let left = (x + rect.x + rect.width * 0.5 - texture.size[0] * 0.5).max(0.0);
+                draws.push(Draw {
+                    texture: tip_key,
+                    vertices: quad([left, y + rect.y - texture.size[1] - 4.0], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        if let Some(view) = &skill_hud.viewed_equipment {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            view.hash(&mut hasher);
+            let key = format!("@view-equipment-{}", hasher.finish());
+            self.prune_textures("@view-equipment-", &[Some(key.as_str())]);
+            if !self.textures.contains_key(&key) {
+                let image = crate::view_equipment::image(assets, view);
+                self.upload(&key, image);
+            }
+            let [left, top] = crate::view_equipment::position(viewport);
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad([left, top], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+            // What the item under the cursor is, beside it.
+            if let Some(item) = crate::view_equipment::item_at(view, [cursor[0] - left, cursor[1] - top]) {
+                let tooltip_key = format!(
+                    "@viewed-item-tip-{}-{}-{}-{}-{}-{}-{}-{}-{}",
+                    item.uid,
+                    item.item_type,
+                    item.durability,
+                    item.max_durability,
+                    item.plus,
+                    item.gem_one,
+                    item.gem_two,
+                    item.rarity,
+                    item.bless
+                );
+                if !self.textures.contains_key(&tooltip_key) {
+                    let info = crate::shop::item_info(assets, item.item_type);
+                    self.upload(
+                        &tooltip_key,
+                        crate::shop::equipment_tooltip_image(
+                            item.uid,
+                            item.item_type,
+                            info.as_ref(),
+                            item.durability,
+                            item.max_durability,
+                            item.plus,
+                            item.gem_one,
+                            item.gem_two,
+                            item.rarity,
+                            item.rarity_roll,
+                            item.bless,
+                            item.enchant_hp,
+                        )?,
+                    );
+                }
+                if let Some(texture) = self.textures.get(&tooltip_key) {
+                    // To the left of the dialog, which stands at the right.
+                    let position = [
+                        (cursor[0] - texture.size[0] - 16.0).max(0.0),
+                        (cursor[1] + 16.0).min(viewport[1] - texture.size[1]).max(0.0),
+                    ];
+                    draws.push(Draw {
+                        texture: tooltip_key,
+                        vertices: quad(position, texture.size, viewport),
+                        depth_test: false,
+                        sort_depth: f32::INFINITY,
+                    });
+                }
+            }
+        }
         if skill_hud.action_panel_open {
             let key = format!("@action-panel-{:?}", skill_hud.action_panel_hover);
             if !self.textures.contains_key(&key) {
@@ -4434,6 +4533,9 @@ impl Renderer {
             skill_hud.weapon_filter.hash(&mut hasher);
             skill_hud.active_skill.hash(&mut hasher);
             skill_hud.quiver.hash(&mut hasher);
+            skill_hud.map_shown.hash(&mut hasher);
+            skill_hud.shift_screen.hash(&mut hasher);
+            skill_hud.picking_equipment.hash(&mut hasher);
             skill_hud.skill_page.hash(&mut hasher);
             skill_hud.attribute_details.hash(&mut hasher);
             mana.hash(&mut hasher);
@@ -6387,6 +6489,9 @@ fn player_face_ani_paths(assets: &mut crate::assets::Assets, face: u32) -> Vec<S
 }
 
 #[cfg(test)]
+mod effect_sheet;
+
+#[cfg(test)]
 mod player_face_probe {
     /// Prints how `ani/PlayerFace.ani` names the faces and which portrait
     /// each of the first faces resolves to, against a local 5065 install.
@@ -6611,3 +6716,45 @@ mod transient_tests {
 }
 
 
+
+/// Shift Screen's step (`Conquer.exe` 0x481933, called each frame by
+/// 0x469676 with Alt held and the box ticked): within 120 pixels of an
+/// edge the view moves toward it by up to 6 pixels a frame, more the
+/// nearer the cursor (the bottom's band sits 50 pixels higher, over the
+/// bar); it goes at most 356 pixels aside, 172 up and 192 down. `frames`
+/// is the time passed in the original's frames.
+pub fn shift_screen_step(shift: [f32; 2], cursor: [f32; 2], viewport: [f32; 2], frames: f32) -> [f32; 2] {
+    let [x, y] = cursor;
+    let [width, height] = viewport;
+    let mut step = [0.0, 0.0];
+    if x <= 120.0 {
+        step[0] += (x / 20.0).trunc() - 6.0;
+    }
+    if x >= width - 120.0 {
+        step[0] += 6.0 - ((width - x) / 20.0).trunc();
+    }
+    if y <= 120.0 {
+        step[1] += (y / 20.0).trunc() - 6.0;
+    }
+    if y >= height - 120.0 {
+        step[1] += 6.0 - ((height - 50.0 - y) / 20.0).trunc();
+    }
+    [
+        (shift[0] + step[0] * frames).clamp(-356.0, 356.0),
+        (shift[1] + step[1] * frames).clamp(-172.0, 192.0),
+    ]
+}
+
+#[cfg(test)]
+mod shift_screen_tests {
+    use super::shift_screen_step;
+
+    #[test]
+    fn the_view_moves_toward_the_edge_under_the_cursor() {
+        let viewport = [1024.0, 768.0];
+        assert_eq!(shift_screen_step([0.0, 0.0], [512.0, 384.0], viewport, 1.0), [0.0, 0.0]);
+        assert_eq!(shift_screen_step([0.0, 0.0], [0.0, 384.0], viewport, 1.0), [-6.0, 0.0]);
+        assert_eq!(shift_screen_step([0.0, 0.0], [1023.0, 0.0], viewport, 1.0), [6.0, -6.0]);
+        assert_eq!(shift_screen_step([350.0, 190.0], [1023.0, 767.0], viewport, 10.0), [356.0, 192.0]);
+    }
+}

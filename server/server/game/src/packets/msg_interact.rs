@@ -18,6 +18,28 @@ use std::time::{Duration, Instant};
 static NEXT_PLAYER_ATTACK: OnceLock<Mutex<HashMap<u32, Instant>>> = OnceLock::new();
 static NEXT_PLAYER_SKILL: OnceLock<Mutex<HashMap<(u32, u32), Instant>>> = OnceLock::new();
 
+/// The level a skill's effect carries (`MsgSkillEffect`), so all who see
+/// it draw that level's art (MagicType, the server's level less one).
+fn cast_level(character: &crate::entities::Character, skill_id: u32) -> u16 {
+    character.skill_progress(skill_id).map_or(1, |progress| progress.level)
+}
+
+/// Lets a test hit a training stake again at once.
+#[cfg(test)]
+pub(crate) fn forget_training_cooldown(character_id: u32) {
+    if let Some(skills) = NEXT_PLAYER_SKILL.get() {
+        skills.lock().expect("cooldowns").retain(|(id, _), _| *id != character_id);
+    }
+}
+
+/// Lets a test swing again at once.
+#[cfg(test)]
+pub(crate) fn forget_attack_cooldown(character_id: u32) {
+    if let Some(attacks) = NEXT_PLAYER_ATTACK.get() {
+        attacks.lock().expect("cooldowns").remove(&character_id);
+    }
+}
+
 fn skill_cooldown_key(character_id: u32, skill_id: u32) -> (u32, u32) {
     (character_id, skill_id)
 }
@@ -255,6 +277,15 @@ impl MsgInteract {
             cooldowns.insert(key, now + cooldown);
         }
 
+        // A plain hit sets off the weapon's skill here as on a monster
+        // (Redux `GetWeaponSkill`), so it can be trained on the stakes.
+        let weapon_skill = (skill.is_none() && !war_structure)
+            .then(|| weapon_skill_roll(state, character))
+            .flatten()
+            .and_then(|id| state.skill_catalog().get(id))
+            .map(|weapon_skill| {
+                weapon_skill.at_level(character.skill_progress(weapon_skill.id).map_or(1, |progress| progress.level))
+            });
         let attacker = character.combat_stats_with_catalog(Some(state.shop_catalog()));
         let attacker = match skill {
             Some(skill) => {
@@ -275,7 +306,18 @@ impl MsgInteract {
                     power,
                 )
             },
-            None => scale_skill_power(attacker, 100 + character.weapon_proficiency_bonus_percent()),
+            // The weapon skill's share of the physical attack, with the
+            // proficiency bonus, as `process_magic_attack` deals it.
+            None => match &weapon_skill {
+                Some(weapon_skill) => scale_skill_power(
+                    attacker,
+                    u16::try_from(
+                        u32::from(weapon_skill.power_percent) * u32::from(100 + character.weapon_proficiency_bonus_percent()) / 100,
+                    )
+                    .unwrap_or(u16::MAX),
+                ),
+                None => scale_skill_power(attacker, 100 + character.weapon_proficiency_bonus_percent()),
+            },
         };
         let damage = resolve_physical_hit(
             attacker,
@@ -285,13 +327,15 @@ impl MsgInteract {
         )
         .damage;
 
-        match skill {
+        let cast = skill.or(weapon_skill.as_ref());
+        match cast {
             Some(skill) => {
                 let mut effect = MsgSkillEffect::new(
                     character.id(),
                     skill.id as u16,
                     vec![super::SkillTarget::hit(npc.id(), damage)],
                 );
+                effect.level = cast_level(character, skill.id);
                 effect.target_x = target.x;
                 effect.target_y = target.y;
                 actor.send(effect.clone()).await?;
@@ -311,7 +355,7 @@ impl MsgInteract {
         let experience = crate::training::experience(level, npc.level(), npc.life(), damage);
         self.grant_hit_experience(state, actor, character, experience).await?;
         let practice = u32::try_from(experience).unwrap_or(u32::MAX).max(1);
-        match skill {
+        match cast {
             Some(skill) => {
                 if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
                     actor.send(super::MsgSkill::from(progress)).await?;
@@ -509,6 +553,7 @@ impl MsgInteract {
             }
             let location = dead.entity().location();
             let mut effect = MsgSkillEffect::new(character.id(), skill.id as u16, vec![super::SkillTarget::hit(dead.id(), 0)]);
+            effect.level = cast_level(character, skill.id);
             effect.target_x = location.x;
             effect.target_y = location.y;
             actor.send(effect.clone()).await?;
@@ -564,6 +609,7 @@ impl MsgInteract {
             }
             let location = character.entity().location();
             let mut effect = MsgSkillEffect::new(character.id(), skill.id as u16, touched);
+            effect.level = cast_level(character, skill.id);
             effect.target_x = location.x;
             effect.target_y = location.y;
             actor.send(effect.clone()).await?;
@@ -601,6 +647,7 @@ impl MsgInteract {
                 skill.id as u16,
                 vec![super::SkillTarget::hit(healed.id(), skill.heal)],
             );
+            effect.level = cast_level(character, skill.id);
             let location = healed.entity().location();
             effect.target_x = location.x;
             effect.target_y = location.y;
@@ -1067,6 +1114,7 @@ impl MsgInteract {
         }
 
         let mut effect = MsgSkillEffect::new(character.id(), skill.id as u16, effects);
+        effect.level = cast_level(character, skill.id);
         effect.target_x = self.x;
         effect.target_y = self.y;
         actor.send(effect.clone()).await?;

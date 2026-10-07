@@ -16,17 +16,20 @@ pub enum GameCursor {
     PickFriend,
     PickEnemy,
     PickTrade,
+    /// View Equipment.
+    PickView,
     /// The shop's Repair: a hammer, until an item is struck.
     Repair,
 }
 
 impl GameCursor {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Arrow,
         Self::Interact,
         Self::PickFriend,
         Self::PickEnemy,
         Self::PickTrade,
+        Self::PickView,
         Self::Repair,
     ];
 
@@ -34,7 +37,7 @@ impl GameCursor {
     pub const fn hotspot(self) -> [u16; 2] {
         match self {
             Self::Arrow | Self::Interact => [2, 2],
-            Self::PickFriend | Self::PickEnemy | Self::PickTrade => [RETICLE[0] as u16, RETICLE[1] as u16],
+            Self::PickFriend | Self::PickEnemy | Self::PickTrade | Self::PickView => [RETICLE[0] as u16, RETICLE[1] as u16],
             Self::Repair => [HAMMER_FACE[0] as u16, HAMMER_FACE[1] as u16],
         }
     }
@@ -47,6 +50,7 @@ impl GameCursor {
             Self::PickFriend => reticle(&mut image, Badge::Plus),
             Self::PickEnemy => reticle(&mut image, Badge::Cross),
             Self::PickTrade => reticle(&mut image, Badge::Coin),
+            Self::PickView => reticle(&mut image, Badge::Eye),
             Self::Repair => hammer(&mut image),
         }
         image
@@ -226,6 +230,8 @@ enum Badge {
     Cross,
     /// Trade.
     Coin,
+    /// View Equipment.
+    Eye,
 }
 
 /// A gold targeting ring with ticks and a centre dot, and a round badge at
@@ -266,6 +272,7 @@ fn reticle(image: &mut RgbaImage, badge: Badge) {
         Badge::Plus => ([62.0, 160.0, 84.0], [16.0, 52.0, 24.0]),
         Badge::Cross => ([196.0, 52.0, 44.0], [64.0, 12.0, 10.0]),
         Badge::Coin => (GOLD, [96.0, 60.0, 14.0]),
+        Badge::Eye => ([70.0, 128.0, 196.0], [14.0, 34.0, 64.0]),
     };
     let badge_distance = |x: f32, y: f32| (x - center[0]).hypot(y - center[1]) - 6.0;
     paint(image, |x, y| Some((INK, coverage(badge_distance(x, y) - 1.2))));
@@ -295,6 +302,15 @@ fn reticle(image: &mut RgbaImage, badge: Badge) {
             let mark = segment_distance([bx, by - 1.8], [bx, by + 1.8], x, y);
             Some(([110.0, 70.0, 16.0], coverage(inner - 0.5).max(coverage(mark - 0.6))))
         }),
+        // An eye: a white almond (two arcs) and a dark pupil.
+        Badge::Eye => {
+            let almond = |x: f32, y: f32| {
+                let (dx, dy) = (x - bx, y - by);
+                (dx.abs() / 4.2).powi(2) + (dy.abs() / 2.6).powf(1.4) - 1.0
+            };
+            paint(image, |x, y| Some(([255.0; 3], coverage(almond(x, y) * 2.5))));
+            paint(image, |x, y| Some((INK, coverage((x - bx).hypot(y - by) - 1.4))));
+        }
     }
 }
 
