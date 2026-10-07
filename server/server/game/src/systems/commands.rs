@@ -729,7 +729,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
         SubCommands::GiveItem(info) if info.count > 1 => {
             let mut created = 0;
             for _ in 0..info.count.min(40) {
-                let Some(item) = me.add_ground_item(state.pool(), info.item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), info.item_type, crate::shop::fresh_durability(info.item_type).0, crate::shop::fresh_durability(info.item_type).1).await? else {
                     break;
                 };
                 actor.send(MsgItemInfo::inventory_item(item)).await?;
@@ -745,7 +745,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             Ok(())
         },
         SubCommands::GiveItem(info) => {
-            let Some(item) = me.add_ground_item(state.pool(), info.item_type, 100, 100).await? else {
+            let Some(item) = me.add_ground_item(state.pool(), info.item_type, crate::shop::fresh_durability(info.item_type).0, crate::shop::fresh_durability(info.item_type).1).await? else {
                 actor
                     .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                     .await?;
@@ -806,7 +806,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in TEST_ITEMS {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(
                             me.id(),
@@ -842,7 +842,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             for (item_type, label) in samples {
                 let amount = if item_type == 1_088_000 { 5 } else { 1 };
                 for _ in 0..amount {
-                    let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                    let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                         break;
                     };
                     actor.send(MsgItemInfo::inventory_item(item)).await?;
@@ -865,7 +865,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             let samples = [(410_005_u32, "quality weapon"), (1_088_000_u32, "DragonBall")];
             let mut created = Vec::new();
             for (item_type, label) in samples {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                         .await?;
@@ -893,7 +893,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in samples {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                         .await?;
@@ -922,7 +922,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in samples {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                         .await?;
@@ -1016,7 +1016,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             ];
             let mut created = Vec::new();
             for (item_type, label) in TEST_ITEMS {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     actor
                         .send(MsgTalk::from_system(
                             me.id(),
@@ -1118,7 +1118,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
         },
         SubCommands::TestSkillBook(_) => {
             let item_type = crate::skills::WHIRLWIND_BOOK_ITEM;
-            let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+            let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                 actor
                     .send(MsgTalk::from_system(me.id(), TalkChannel::System, "Inventory is full."))
                     .await?;
@@ -1294,7 +1294,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             const KIT_CPS: u32 = 10_000;
             let mut created = 0;
             for item_type in KIT_ITEMS {
-                let Some(item) = me.add_ground_item(state.pool(), item_type, 100, 100).await? else {
+                let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
                     break;
                 };
                 actor.send(MsgItemInfo::inventory_item(item)).await?;

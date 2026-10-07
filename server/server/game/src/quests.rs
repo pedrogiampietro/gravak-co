@@ -366,7 +366,7 @@ async fn pay(pool: &sqlx::PgPool, character: &Character, quest: QuestDefinition)
         crate::audit::economic("quest_reward", character.id(), quest.npc_id, 0, quest.reward_silver);
         let reward_item = match quest.reward_item {
             Some(item_type) => {
-                let item = character.add_ground_item(pool, item_type, 100, 100).await?;
+                let item = character.add_ground_item(pool, item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await?;
                 if let Some(item) = &item {
                     crate::audit::item(
                         "quest_reward",
