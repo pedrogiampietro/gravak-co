@@ -49,6 +49,8 @@ enum ItemActionType {
     BoothAddCPs = 29,
     MoveInventory = 30,
     OpenSocket = 43,
+    /// The item menu's LEVEL (MagicArtisan and WeaponMaster's upgrade).
+    UpgradeLevel = 44,
 }
 
 /// Message containing an item action command. Item actions are usually
@@ -1118,230 +1120,29 @@ impl PacketProcess for MsgItem {
             ItemActionType::OpenSocket => {
                 let entity = actor.entity();
                 let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
-                let reject = |message: &str| MsgTalk::from_system(character.id(), TalkChannel::System, message);
-                if self.character_id != character.id() || self.amount != 1 {
-                    actor
-                        .send(reject("Socket rejected: invalid character or amount."))
-                        .await?;
-                    return Ok(());
+                if self.character_id == character.id() {
+                    crate::forge::socket(state, actor, character, self.param0).await?;
                 }
-                let equipped = character.equipment_items().iter().any(|item| item.uid == self.param0);
-                let (outcome, catalysts) = character.open_item_socket(state.pool(), self.param0).await?;
-                match outcome {
-                    crate::entities::SocketOutcome::Opened(item) => {
-                        for catalyst in catalysts {
-                            actor.send(MsgItemInfo::remove_inventory_item(catalyst)).await?;
-                        }
-                        if equipped {
-                            actor.send(MsgItemInfo::equipment_item(item)).await?;
-                        } else {
-                            actor.send(MsgItemInfo::inventory_item(item)).await?;
-                        }
-                        actor
-                            .send(MsgTalk::from_system(
-                                character.id(),
-                                TalkChannel::System,
-                                "Socket opened successfully.",
-                            ))
-                            .await?;
-                    },
-                    crate::entities::SocketOutcome::MissingDragonBall => {
-                        actor.send(reject("Socket rejected: you need a DragonBall.")).await?
-                    },
-                    crate::entities::SocketOutcome::DualSockets => {
-                        actor
-                            .send(reject("Socket rejected: this item already has dual sockets."))
-                            .await?
-                    },
-                    crate::entities::SocketOutcome::NotFound => {
-                        actor.send(reject("Socket rejected: equipment was not found.")).await?
-                    },
-                    _ => {
-                        actor
-                            .send(reject("Socket rejected: this item cannot receive a socket."))
-                            .await?
-                    },
+            },
+            ItemActionType::UpgradeLevel => {
+                let entity = actor.entity();
+                let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+                if self.character_id == character.id() {
+                    crate::forge::level(state, actor, character, self.param0).await?;
                 }
             },
             ItemActionType::Improve => {
                 let entity = actor.entity();
                 let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
-                let reject = |message: &str| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, message);
-                if self.character_id != character.id() || self.amount != 1 {
-                    actor
-                        .send(reject("Quality upgrade rejected: invalid character or amount."))
-                        .await?;
-                    return Ok(());
-                }
-                let Some(target) = character
-                    .inventory_items()
-                    .into_iter()
-                    .chain(character.equipment_items())
-                    .find(|item| item.uid == self.param0)
-                else {
-                    actor
-                        .send(reject("Quality upgrade rejected: owned item was not found."))
-                        .await?;
-                    return Ok(());
-                };
-                if crate::shop::ShopCatalog::equipment_slot_for_item(target.item_type).is_none() {
-                    actor
-                        .send(reject("Quality upgrade rejected: this item is not equipment."))
-                        .await?;
-                    return Ok(());
-                }
-                let equipped = character.equipment_items().iter().any(|item| item.uid == self.param0);
-                let (outcome, catalyst) = character
-                    .upgrade_quality_with_dragonball(state.pool(), self.param0)
-                    .await?;
-                match outcome {
-                    crate::entities::QualityUpgradeOutcome::Upgraded(item)
-                    | crate::entities::QualityUpgradeOutcome::Failed(item) => {
-                        if let Some(catalyst) = catalyst {
-                            actor.send(MsgItemInfo::remove_inventory_item(catalyst)).await?;
-                        }
-                        if equipped {
-                            actor.send(MsgItemInfo::equipment_item(item)).await?;
-                            character.refresh_equipment_resources(state.shop_catalog());
-                            actor.send(MsgUserInfo::from(character)).await?;
-                            actor.send(MsgPlayer::from(character)).await?;
-                            actor.screen().send_message(MsgPlayer::from(character)).await?;
-                        } else {
-                            actor.send(MsgItemInfo::inventory_item(item)).await?;
-                        }
-                        let success = matches!(outcome, crate::entities::QualityUpgradeOutcome::Upgraded(_));
-                        item_audit_log(
-                            if success {
-                                "quality-upgrade"
-                            } else {
-                                "quality-upgrade-failed"
-                            },
-                            character.id(),
-                            item.uid,
-                            item.item_type,
-                            format_args!(
-                                "equipped={equipped} durability={}/{}",
-                                item.durability, item.max_durability
-                            ),
-                        );
-                        let message = if success {
-                            format!("Item {} quality upgraded successfully.", item.item_type)
-                        } else {
-                            format!(
-                                "Item quality upgrade failed; durability is now {}/{}.",
-                                item.durability, item.max_durability
-                            )
-                        };
-                        actor
-                            .send(MsgTalk::from_system(character.id(), TalkChannel::System, message))
-                            .await?;
-                    },
-                    crate::entities::QualityUpgradeOutcome::MaxQuality(item) => {
-                        actor
-                            .send(reject(&format!(
-                                "Item {} is already at maximum quality.",
-                                item.item_type
-                            )))
-                            .await?;
-                    },
-                    crate::entities::QualityUpgradeOutcome::InvalidQuality(item) => {
-                        actor
-                            .send(reject(&format!(
-                                "Item {} cannot be refined through quality upgrade.",
-                                item.item_type
-                            )))
-                            .await?;
-                    },
-                    crate::entities::QualityUpgradeOutcome::MissingDragonBall => {
-                        actor
-                            .send(reject("Quality upgrade rejected: you need a DragonBall."))
-                            .await?;
-                    },
-                    crate::entities::QualityUpgradeOutcome::NotFound => {
-                        actor
-                            .send(reject("Quality upgrade rejected: owned item was not found."))
-                            .await?;
-                    },
+                if self.character_id == character.id() {
+                    crate::forge::quality(state, actor, character, self.param0).await?;
                 }
             },
             ItemActionType::UpLevel => {
                 let entity = actor.entity();
                 let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
-                let reject = |message: &str| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, message);
-                if self.character_id != character.id() || self.amount != 1 {
-                    actor
-                        .send(reject("Upgrade rejected: invalid character or amount."))
-                        .await?;
-                    return Ok(());
-                }
-                let Some(target) = character
-                    .inventory_items()
-                    .into_iter()
-                    .chain(character.equipment_items())
-                    .find(|item| item.uid == self.param0)
-                else {
-                    actor
-                        .send(reject("Upgrade rejected: owned item was not found."))
-                        .await?;
-                    return Ok(());
-                };
-                if crate::shop::ShopCatalog::equipment_slot_for_item(target.item_type).is_none() {
-                    actor
-                        .send(reject("Upgrade rejected: this item is not equipment."))
-                        .await?;
-                    return Ok(());
-                }
-                let equipped = character.equipment_items().iter().any(|item| item.uid == self.param0);
-                let (outcome, catalysts) = character.upgrade_item_with_meteor(state.pool(), self.param0).await?;
-                match outcome {
-                    crate::entities::ItemUpgradeOutcome::Upgraded(item) => {
-                        for catalyst in catalysts {
-                            actor.send(MsgItemInfo::remove_inventory_item(catalyst)).await?;
-                        }
-                        if equipped {
-                            actor.send(MsgItemInfo::equipment_item(item)).await?;
-                            character.refresh_equipment_resources(state.shop_catalog());
-                            actor.send(MsgUserInfo::from(character)).await?;
-                            actor.send(MsgPlayer::from(character)).await?;
-                            actor.screen().send_message(MsgPlayer::from(character)).await?;
-                        } else {
-                            actor.send(MsgItemInfo::inventory_item(item)).await?;
-                        }
-                        actor
-                            .send(MsgTalk::from_system(
-                                character.id(),
-                                TalkChannel::System,
-                                format!("Item {} upgraded to +{}.", item.item_type, item.plus),
-                            ))
-                            .await?;
-                    },
-                    crate::entities::ItemUpgradeOutcome::Failed(item) => {
-                        for catalyst in catalysts {
-                            actor.send(MsgItemInfo::remove_inventory_item(catalyst)).await?;
-                        }
-                        if equipped {
-                            actor.send(MsgItemInfo::equipment_item(item)).await?;
-                        } else {
-                            actor.send(MsgItemInfo::inventory_item(item)).await?;
-                        }
-                        actor.send(reject("Upgrade failed; the Meteors were consumed.")).await?;
-                    },
-                    crate::entities::ItemUpgradeOutcome::MaxLevel(item) => {
-                        actor
-                            .send(reject(&format!(
-                                "Item {} is already at maximum +{}.",
-                                item.item_type, item.plus
-                            )))
-                            .await?;
-                    },
-                    crate::entities::ItemUpgradeOutcome::MissingMeteor => {
-                        actor.send(reject("Upgrade rejected: you need a Meteor.")).await?;
-                    },
-                    crate::entities::ItemUpgradeOutcome::NotFound => {
-                        actor
-                            .send(reject("Upgrade rejected: owned item was not found."))
-                            .await?;
-                    },
+                if self.character_id == character.id() {
+                    crate::forge::plus(state, actor, character, self.param0).await?;
                 }
             },
             _ => {

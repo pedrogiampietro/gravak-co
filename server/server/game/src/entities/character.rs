@@ -177,6 +177,16 @@ pub enum RarityBonusOutcome {
 }
 
 /// Meteor cost and success chance for the next classic + level.
+/// A +n Stone (730001 +1Stone .. 730009 +9Stone) is born a +n item, so it
+/// composes like any other +n item.
+pub fn stone_plus(item_type: u32) -> u8 {
+    if (730_001..=730_009).contains(&item_type) {
+        (item_type - 730_000) as u8
+    } else {
+        0
+    }
+}
+
 pub fn item_upgrade_cost_and_chance(plus: u8) -> Option<(u8, u8)> {
     Some(match plus {
         0 => (1, 100),
@@ -1275,11 +1285,13 @@ impl Character {
             }
         }
 
+        // Proficiency belongs to the kind of weapon (410 blades), whatever
+        // blade it was earned with.
         if template.required_weapon_skill > 0 {
-            let Some(family) = crate::shop::ShopCatalog::weapon_family(item_type) else {
+            if crate::shop::ShopCatalog::weapon_family(item_type).is_none() {
                 return false;
-            };
-            let Some(progress) = self.weapon_proficiency(family) else {
+            }
+            let Some(progress) = self.weapon_type_proficiency(item_type / 1_000) else {
                 return false;
             };
             if progress.level < u16::from(template.required_weapon_skill) {
@@ -2517,6 +2529,204 @@ impl Character {
             .lock()
             .retain(|owned| !catalysts.iter().any(|catalyst| catalyst.uid == owned.uid));
         Ok(Some((item, catalysts)))
+    }
+
+    /// Where an owned item is: worn (`true`) or in the bag (`false`).
+    fn worn_or_bag(&self, item_uid: u32) -> Option<(InventoryItem, bool)> {
+        if let Some(item) = self.equipment.lock().iter().copied().find(|item| item.uid == item_uid) {
+            return Some((item, true));
+        }
+        self.inventory
+            .lock()
+            .iter()
+            .copied()
+            .find(|item| item.uid == item_uid)
+            .map(|item| (item, false))
+    }
+
+    /// The first `count` bag items of `item_type`, if there are that many.
+    fn catalysts(&self, item_type: u32, count: u32, except: u32) -> Option<Vec<InventoryItem>> {
+        let found = self
+            .inventory_items()
+            .into_iter()
+            .filter(|owned| owned.item_type == item_type && owned.uid != except)
+            .take(count as usize)
+            .collect::<Vec<_>>();
+        (found.len() == count as usize).then_some(found)
+    }
+
+    async fn delete_catalysts(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        catalysts: &[InventoryItem],
+    ) -> Result<bool, Error> {
+        for catalyst in catalysts {
+            let deleted = sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND item_type = $3")
+                .bind(i64::from(catalyst.uid))
+                .bind(self.inner.character_id)
+                .bind(i64::from(catalyst.item_type))
+                .execute(&mut **transaction)
+                .await?;
+            if deleted.rows_affected() != 1 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn mirror(&self, item: InventoryItem, catalysts: &[InventoryItem]) {
+        for items in [&self.inventory, &self.equipment] {
+            if let Some(existing) = items.lock().iter_mut().find(|existing| existing.uid == item.uid) {
+                *existing = item;
+            }
+        }
+        self.inventory
+            .lock()
+            .retain(|owned| !catalysts.iter().any(|catalyst| catalyst.uid == owned.uid));
+    }
+
+    /// Reforges an owned item, worn or in the bag (the item menu): its new
+    /// type, `cost` catalysts of `catalyst_type` paid, and the next socket
+    /// opened when `open_socket`. One transaction; `None` when the item or
+    /// the catalysts are missing.
+    pub async fn reforge_item(
+        &self,
+        pool: &sqlx::PgPool,
+        item_uid: u32,
+        new_type: u32,
+        catalyst_type: u32,
+        cost: u32,
+        open_socket: bool,
+    ) -> Result<Option<(InventoryItem, Vec<InventoryItem>)>, Error> {
+        let Some((mut item, worn)) = self.worn_or_bag(item_uid) else {
+            return Ok(None);
+        };
+        let Some(catalysts) = self.catalysts(catalyst_type, cost, item_uid) else {
+            return Ok(None);
+        };
+        let mut transaction = pool.begin().await?;
+        if !self.delete_catalysts(&mut transaction, &catalysts).await? {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        let table = if worn { "equipment_items" } else { "inventory_items" };
+        let updated = sqlx::query(&format!(
+            "UPDATE {table} SET item_type = $1 WHERE item_uid = $2 AND character_id = $3 AND item_type = $4"
+        ))
+        .bind(i64::from(new_type))
+        .bind(i64::from(item.uid))
+        .bind(self.inner.character_id)
+        .bind(i64::from(item.item_type))
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        item.item_type = new_type;
+        if open_socket {
+            if item.socket_one == 0 && item.gem_one == 0 {
+                item.socket_one = 1;
+            } else if item.socket_two == 0 && item.gem_two == 0 {
+                item.socket_two = 1;
+            }
+            self.save_sockets(&mut transaction, item).await?;
+        }
+        transaction.commit().await?;
+        self.mirror(item, &catalysts);
+        Ok(Some((item, catalysts)))
+    }
+
+    async fn save_sockets(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        item: InventoryItem,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT(item_uid) DO UPDATE SET socket_one = excluded.socket_one,
+               socket_two = excluded.socket_two",
+        )
+        .bind(i64::from(item.uid))
+        .bind(i64::from(item.plus))
+        .bind(i64::from(item.gem_one))
+        .bind(i64::from(item.gem_two))
+        .bind(i64::from(item.socket_one))
+        .bind(i64::from(item.socket_two))
+        .bind(i64::from(item.rarity))
+        .execute(&mut **transaction)
+        .await?;
+        Ok(())
+    }
+
+    /// Opens the next closed socket of an owned item, worn or in the bag,
+    /// for `count` bag items of `catalyst_type`.
+    pub async fn open_socket_paying(
+        &self,
+        pool: &sqlx::PgPool,
+        item_uid: u32,
+        catalyst_type: u32,
+        count: u32,
+    ) -> Result<Option<(InventoryItem, Vec<InventoryItem>)>, Error> {
+        let Some((mut item, _)) = self.worn_or_bag(item_uid) else {
+            return Ok(None);
+        };
+        let Some(catalysts) = self.catalysts(catalyst_type, count, item_uid) else {
+            return Ok(None);
+        };
+        if item.socket_one == 0 && item.gem_one == 0 {
+            item.socket_one = 1;
+        } else if item.socket_two == 0 && item.gem_two == 0 {
+            item.socket_two = 1;
+        } else {
+            return Ok(None);
+        }
+        let mut transaction = pool.begin().await?;
+        if !self.delete_catalysts(&mut transaction, &catalysts).await? {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        self.save_sockets(&mut transaction, item).await?;
+        transaction.commit().await?;
+        self.mirror(item, &catalysts);
+        Ok(Some((item, catalysts)))
+    }
+
+    /// Pays `catalysts` (by uid or by type) and sets an owned item's plus,
+    /// worn or in the bag: the +n composing of the item menu.
+    pub async fn compose_item_plus(
+        &self,
+        pool: &sqlx::PgPool,
+        item_uid: u32,
+        catalysts: &[InventoryItem],
+        plus: u8,
+    ) -> Result<Option<InventoryItem>, Error> {
+        let Some((mut item, _)) = self.worn_or_bag(item_uid) else {
+            return Ok(None);
+        };
+        let mut transaction = pool.begin().await?;
+        if !self.delete_catalysts(&mut transaction, catalysts).await? {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        item.plus = plus;
+        sqlx::query(
+            "INSERT INTO item_upgrades (item_uid, plus) VALUES ($1, $2)
+             ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus",
+        )
+        .bind(i64::from(item.uid))
+        .bind(i64::from(plus))
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.mirror(item, catalysts);
+        Ok(Some(item))
+    }
+
+    /// The first `count` bag items of `item_type`, not counting `except`.
+    pub fn bag_catalysts(&self, item_type: u32, count: u32, except: u32) -> Option<Vec<InventoryItem>> {
+        self.catalysts(item_type, count, except)
     }
 
     pub async fn open_item_socket(
@@ -4669,13 +4879,21 @@ impl Character {
         .bind(i64::from(max_durability))
         .fetch_one(pool)
         .await?;
+        let plus = stone_plus(item_type);
+        if plus > 0 {
+            sqlx::query("INSERT INTO item_upgrades (item_uid, plus) VALUES ($1, $2) ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus")
+                .bind(uid)
+                .bind(i64::from(plus))
+                .execute(pool)
+                .await?;
+        }
         let item = InventoryItem {
             uid: u32::try_from(uid).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
             item_type,
             position,
             durability,
             max_durability,
-            plus: 0,
+            plus,
             ..Default::default()
         };
         self.inventory.lock().push(item);
@@ -5644,6 +5862,38 @@ impl Character {
             .into_iter()
             .filter(|progress| progress.weapon_family / 100 == weapon_type)
             .max_by_key(|progress| (progress.level, progress.proficiency))
+    }
+
+    /// Sets the proficiency of a kind of weapon (410 blades) to `level`
+    /// (a game master's `$proficiency`).
+    pub async fn set_weapon_type_proficiency(
+        &self,
+        pool: &sqlx::PgPool,
+        weapon_type: u32,
+        level: u16,
+    ) -> Result<WeaponProficiency, Error> {
+        let mut progress = self.weapon_type_proficiency(weapon_type).unwrap_or(WeaponProficiency {
+            weapon_family: weapon_type * 100,
+            level: 1,
+            experience: 0,
+            proficiency: 0,
+        });
+        progress.level = level;
+        progress.proficiency = 0;
+        sqlx::query(
+            "INSERT INTO character_weapon_proficiencies
+             (character_id, weapon_family, level, experience, proficiency)
+             VALUES ($1, $2, $3, $4, 0)
+             ON CONFLICT(character_id, weapon_family) DO UPDATE SET level = excluded.level, proficiency = 0",
+        )
+        .bind(self.inner.character_id)
+        .bind(i64::from(progress.weapon_family))
+        .bind(i64::from(progress.level))
+        .bind(i64::try_from(progress.experience).unwrap_or(i64::MAX))
+        .execute(pool)
+        .await?;
+        self.weapon_proficiencies.lock().insert(progress.weapon_family, progress);
+        Ok(progress)
     }
 
     /// One proficiency level up for a weapon type (ProficiencyGod).
