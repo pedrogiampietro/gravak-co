@@ -112,12 +112,19 @@ pub fn banner(title: &str, version: &str, rows: &[(&str, String)]) {
     let bold = Style::new().fg(Color::Fixed(222)).bold();
     let dim = Style::new().fg(Color::DarkGray);
 
-    let credits = "Based on CoEmu, (c) 2020-2023 Shady Khalifa (@shekohex), GPL-3.0";
+    let credits = "Gravak · (c) 2026 Pedro Giampietro";
+    // GPL-3.0 asks the interface to keep the license and where the code
+    // comes from in sight.
+    let license = "Server built on Gravak, dont copy, dont steal, dont sell, dont redistribute";
     let label_width = rows.iter().map(|(label, _)| label.chars().count()).max().unwrap_or(0);
     let content = rows
         .iter()
         .map(|(_, value)| label_width + 4 + value.chars().count())
-        .chain([title.chars().count() + version.chars().count() + 6, credits.chars().count()])
+        .chain([
+            title.chars().count() + version.chars().count() + 6,
+            credits.chars().count(),
+            license.chars().count(),
+        ])
         .max()
         .unwrap_or(40)
         .max(46);
@@ -154,7 +161,8 @@ pub fn banner(title: &str, version: &str, rows: &[(&str, String)]) {
         );
     }
     println!("{}", line("├", "─", "┤"));
-    println!("{}", row(paint(dim, credits), credits.chars().count()));
+    println!("{}", row(paint(gold, credits), credits.chars().count()));
+    println!("{}", row(paint(dim, license), license.chars().count()));
     println!("{}", line("╰", "─", "╯"));
     println!();
 }

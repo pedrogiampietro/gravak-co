@@ -835,4 +835,36 @@ mod tests {
         let crop = imageops::crop_imm(&img, 0, 30, 110, 111).to_image();
         imageops::resize(&crop, 330, 333, imageops::FilterType::Nearest).save(format!("{dir}/orb-no-mana.png")).expect("png");
     }
+
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox hud_emblem_preview`:
+    /// the right of the HUD, with Gravak's emblem, at twice the size.
+    #[test]
+    fn hud_emblem_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let art = MainHudArt::get(&mut assets).expect("art");
+        let mut img = RgbaImage::new(1024, 141);
+        let state = MainHudState {
+            health: 60, max_health: 100, mana: 40, max_mana: 100, stamina: 50, max_stamina: 100,
+            xp: 0, xp_ready: false, experience: 0.3, hovered_button: None, hovered_chat: None,
+            chat_text: "", chat_focused: false, chat_name: "", chat_name_focused: false,
+            chat_channel: 0, chat_channel_menu: false, chat_channel_hover: None,
+            kill_mode: 0, running: true, active_skill_icon: None,
+        };
+        draw(&mut img, art, [0, 0], &state, font().expect("font"));
+        img.save(format!("{dir}/hud-full.png")).expect("png");
+        let crop = imageops::crop_imm(&img, 624, 0, 400, 141).to_image();
+        imageops::resize(&crop, 800, 282, imageops::FilterType::Nearest).save(format!("{dir}/hud-emblem.png")).expect("png");
+        // The original's corner, without the emblem.
+        let mut original = RgbaImage::new(1024, 141);
+        for slice in SLICES {
+            let source = assets.image(slice.asset).expect("slice");
+            let [x, y, width, height] = slice.source;
+            let part = imageops::crop_imm(&source, x, y, width, height).to_image();
+            imageops::overlay(&mut original, &part, slice.dest[0], slice.dest[1]);
+        }
+        original.save(format!("{dir}/hud-original-full.png")).expect("png");
+        let crop = imageops::crop_imm(&original, 624, 0, 400, 141).to_image();
+        imageops::resize(&crop, 800, 282, imageops::FilterType::Nearest).save(format!("{dir}/hud-original.png")).expect("png");
+    }
 }
