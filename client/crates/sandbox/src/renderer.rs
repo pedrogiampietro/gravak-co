@@ -2950,7 +2950,10 @@ impl Renderer {
                 sort_depth: depth,
             });
         }
-        let ground = [viewport[0] * 0.5, viewport[1] * 0.5];
+        // Where the hero stands on screen: the middle, but off it near the
+        // map's edges, where the view stops (`camera`).
+        let projected = map.project(player.position);
+        let ground = [projected[0] - camera[0], projected[1] - camera[1]];
         let (recoil_x, recoil_y) = if time < hit_until {
             // One short, visible flinch pulse. It is independent of the
             // motion catalog so a missing emote cannot become a wave.
