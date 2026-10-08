@@ -69,7 +69,7 @@ mod msg_friend;
 pub use msg_friend::MsgFriend;
 
 mod msg_guild;
-pub use msg_guild::{send_guild_members, MsgGuild, SET_GUILD};
+pub use msg_guild::{move_fund as move_guild_fund, send_guild_members, MsgGuild, SET_GUILD};
 
 mod msg_guild_member;
 pub use msg_guild_member::MsgGuildMember;
@@ -148,6 +148,8 @@ pub use msg_item_rarity_reroll::MsgItemRarityReroll;
 
 mod msg_bounty;
 mod msg_quest_log;
+mod msg_guild_panel;
+pub use msg_guild_panel::{MsgGuildPanel, MsgGuildPanelInfo, MsgGuildPanelRow, MsgGuildRelations};
 pub use msg_quest_log::{send_log as send_quest_log, send_progress as send_quest_progress, MsgQuestLog};
 pub use msg_bounty::{add_kills as add_bounty_kills, send_board, MsgBounty, MsgBountyState};
 

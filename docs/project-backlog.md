@@ -214,6 +214,21 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
       mundo, de campo e do labirinto) ficam furiosos abaixo de 30% (golpes 2×
       mais rápidos), chamam 3 da sua espécie abaixo de 50% e lançam magia em
       área (5 células) a cada 10 s. Teste no mapa real: `monster_ai_journey`.
+- [x] Janela Guild System (tecla/botão GUILD; pacotes 9170–9172, migração 81):
+      sem guild, abas Guild System (convites recebidos e pedidos enviados),
+      Buscar (pedir para entrar com mensagem) e Crie (nome, título, lema,
+      descrição; nível 90 e 1.000.000 de silver); com guild, cabeçalho com
+      brasão, título, lema, membros, online e level da guild (1% da
+      experiência dos membros) e abas Geral, Membros (promover, rebaixar,
+      expulsar, passar liderança), Pedidos (convidar por nome, aceitar ou
+      recusar pedidos; convites e pedidos expiram em 7 dias), Histórico
+      (filtros e busca, 90 dias), Banco (depósito, saque do líder, taxa de
+      entrada), Guerra (declarar, aceitar, recusar, encerrar, placar e
+      mortes), Mortes e frags (filtros, busca e resumo 12H/24H/3D/7D, 30 dias)
+      e Ajustes (do líder; dissolver com confirmação). O nome da guild e o
+      cargo aparecem sobre o nome de cada jogador para todos (1014 leva a
+      guild). Corrigido: uma saída rebaixava os vice-líderes no banco.
+      Testes: `guild_window_journey`, `guild_panel` do cliente.
 - [x] Chat por canal: time, guild, amigos, cônjuge e mundo chegavam só a quem
       estava na mesma região do mapa. Agora cada canal vai a quem deve, sempre
       com o nome real de quem fala, e canais do servidor (System, Center,

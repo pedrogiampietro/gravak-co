@@ -5,6 +5,19 @@ use std::collections::{HashMap, HashSet};
 
 pub const MAX_GUILD_MEMBERS: usize = 50;
 
+/// Each guild member's guild id, rank and guild name, as the players around
+/// them see it under their name (kept by [`GuildManager`] as it changes).
+static TAGS: std::sync::OnceLock<parking_lot::RwLock<HashMap<u32, (u32, u32, String)>>> = std::sync::OnceLock::new();
+
+fn tags() -> &'static parking_lot::RwLock<HashMap<u32, (u32, u32, String)>> {
+    TAGS.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+}
+
+/// The guild id, rank and name `character_id` shows, if in a guild.
+pub fn tag_of(character_id: u32) -> Option<(u32, u32, String)> {
+    tags().read().get(&character_id).cloned()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuildInfo {
     pub id: u32,
@@ -113,6 +126,8 @@ struct GuildBook {
     invites: HashMap<u32, u32>,
     /// (guild, other guild) -> "ally" or "enemy".
     relations: HashMap<(u32, u32), String>,
+    /// The members whose tags this book published.
+    published: HashSet<u32>,
 }
 
 /// Server-authoritative guild rules backed by the database. The in-memory book keeps
@@ -123,7 +138,52 @@ pub struct GuildManager {
     book: Mutex<GuildBook>,
 }
 
+impl GuildBook {
+    /// Publishes the members' tags anew: those it published before and no
+    /// longer has are taken back (and only those, so another book's stay).
+    fn publish(&mut self) {
+        let mut tags = tags().write();
+        for member in self.published.drain() {
+            tags.remove(&member);
+        }
+        for (member, guild_id) in &self.membership {
+            if let Some(guild) = self.guilds.get(guild_id) {
+                let role = if guild.leader_id == *member { LEADER_ROLE } else { self.roles.get(member).copied().unwrap_or(MEMBER_ROLE) };
+                tags.insert(*member, (*guild_id, role, guild.name.clone()));
+                self.published.insert(*member);
+            }
+        }
+    }
+}
+
+/// The book held for a change: the members' tags are published again when
+/// it is let go, whatever the change did.
+struct Publishing<'a>(parking_lot::MutexGuard<'a, GuildBook>);
+
+impl std::ops::Deref for Publishing<'_> {
+    type Target = GuildBook;
+    fn deref(&self) -> &GuildBook {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Publishing<'_> {
+    fn deref_mut(&mut self) -> &mut GuildBook {
+        &mut self.0
+    }
+}
+
+impl Drop for Publishing<'_> {
+    fn drop(&mut self) {
+        self.0.publish();
+    }
+}
+
 impl GuildManager {
+    fn write(&self) -> Publishing<'_> {
+        Publishing(self.book.lock())
+    }
+
     pub async fn load(pool: &PgPool) -> Result<Self, sqlx::Error> {
         let guild_rows =
             sqlx::query_as::<_, (i64, String, i64)>("SELECT guild_id, name, leader_id FROM guilds ORDER BY guild_id")
@@ -170,6 +230,7 @@ impl GuildManager {
         for (guild_id, other, kind) in relation_rows {
             book.relations.insert((guild_id as u32, other as u32), kind);
         }
+        book.publish();
         Ok(Self { book: Mutex::new(book) })
     }
 
@@ -246,13 +307,13 @@ impl GuildManager {
                 .bind(i64::from(guild.id))
                 .execute(&mut *transaction)
                 .await?;
-            sqlx::query(
-                "UPDATE guild_members SET role = CASE WHEN character_id = $1 THEN 1000 ELSE 200 END WHERE guild_id = $2",
-            )
-            .bind(database_id(guild.leader_id))
-            .bind(i64::from(guild.id))
-            .execute(&mut *transaction)
-            .await?;
+            // Only the leader's rank changes (a new one when the old left);
+            // the deputies keep theirs.
+            sqlx::query("UPDATE guild_members SET role = 1000 WHERE guild_id = $2 AND character_id = $1")
+                .bind(database_id(guild.leader_id))
+                .bind(i64::from(guild.id))
+                .execute(&mut *transaction)
+                .await?;
         }
         transaction.commit().await
     }
@@ -262,7 +323,7 @@ impl GuildManager {
         if !(3..=24).contains(&name.chars().count()) {
             return Err(GuildError::InvalidName);
         }
-        let mut book = self.book.lock();
+        let mut book = self.write();
         if book.membership.contains_key(&leader_id) {
             return Err(GuildError::AlreadyInGuild);
         }
@@ -286,7 +347,7 @@ impl GuildManager {
 
     /// The leader or a deputy invites someone.
     pub fn invite(&self, leader_id: u32, target_id: u32) -> Result<GuildChange, GuildError> {
-        let mut book = self.book.lock();
+        let mut book = self.write();
         let guild_id = book.membership.get(&leader_id).copied().ok_or(GuildError::NotInGuild)?;
         let guild = book.guilds.get(&guild_id).ok_or(GuildError::NotInGuild)?;
         let deputy = book.roles.get(&leader_id) == Some(&DEPUTY_ROLE);
@@ -308,7 +369,7 @@ impl GuildManager {
     }
 
     pub fn accept_invite(&self, member_id: u32) -> Result<GuildChange, GuildError> {
-        let mut book = self.book.lock();
+        let mut book = self.write();
         if book.membership.contains_key(&member_id) {
             return Err(GuildError::AlreadyInGuild);
         }
@@ -331,7 +392,7 @@ impl GuildManager {
     }
 
     pub fn leave(&self, member_id: u32) -> Result<GuildChange, GuildError> {
-        let mut book = self.book.lock();
+        let mut book = self.write();
         let guild_id = book.membership.remove(&member_id).ok_or(GuildError::NotInGuild)?;
         book.roles.remove(&member_id);
         let (info, new_leader) = {
@@ -370,7 +431,7 @@ impl GuildManager {
 
     /// The leader expels anyone; a deputy, only plain members.
     pub fn kick(&self, leader_id: u32, target_id: u32) -> Result<GuildChange, GuildError> {
-        let mut book = self.book.lock();
+        let mut book = self.write();
         let guild_id = book.membership.get(&leader_id).copied().ok_or(GuildError::NotInGuild)?;
         let deputy = book.roles.get(&leader_id) == Some(&DEPUTY_ROLE);
         let target_ranked = matches!(book.roles.get(&target_id), Some(&LEADER_ROLE) | Some(&DEPUTY_ROLE));
@@ -405,7 +466,7 @@ impl GuildManager {
 
     /// Dissolves the leader's guild; its former members are returned.
     pub fn disband(&self, leader_id: u32) -> Result<GuildInfo, GuildError> {
-        let mut book = self.book.lock();
+        let mut book = self.write();
         let guild_id = *book.membership.get(&leader_id).ok_or(GuildError::NotInGuild)?;
         if book.guilds.get(&guild_id).is_none_or(|guild| guild.leader_id != leader_id) {
             return Err(GuildError::NotLeader);
@@ -420,7 +481,7 @@ impl GuildManager {
 
     /// The leader gives a member another rank (990 deputy, 200 member).
     pub fn set_role(&self, leader_id: u32, member_id: u32, role: u32) -> Result<GuildInfo, GuildError> {
-        let mut book = self.book.lock();
+        let mut book = self.write();
         let guild_id = *book.membership.get(&leader_id).ok_or(GuildError::NotInGuild)?;
         let guild = book.guilds.get(&guild_id).ok_or(GuildError::NotInGuild)?;
         if guild.leader_id != leader_id {
@@ -435,6 +496,55 @@ impl GuildManager {
         let info = guild.info();
         book.roles.insert(member_id, role);
         Ok(info)
+    }
+
+    /// Takes `member_id` into the guild `guild_id` (an accepted request or
+    /// invitation from the Guild System window).
+    pub fn admit(&self, guild_id: u32, member_id: u32) -> Result<GuildInfo, GuildError> {
+        let mut book = self.write();
+        if book.membership.contains_key(&member_id) {
+            return Err(GuildError::TargetAlreadyInGuild);
+        }
+        let info = {
+            let guild = book.guilds.get_mut(&guild_id).ok_or(GuildError::NotInGuild)?;
+            if guild.members.len() >= MAX_GUILD_MEMBERS {
+                return Err(GuildError::GuildFull);
+            }
+            guild.members.push(member_id);
+            guild.info()
+        };
+        book.membership.insert(member_id, guild_id);
+        book.roles.insert(member_id, MEMBER_ROLE);
+        book.invites.remove(&member_id);
+        Ok(info)
+    }
+
+    /// The leader hands the guild to another member, and becomes a deputy.
+    pub fn transfer(&self, leader_id: u32, new_leader: u32) -> Result<GuildInfo, GuildError> {
+        let mut book = self.write();
+        let guild_id = *book.membership.get(&leader_id).ok_or(GuildError::NotInGuild)?;
+        if book.membership.get(&new_leader) != Some(&guild_id) || new_leader == leader_id {
+            return Err(GuildError::TargetNotFound);
+        }
+        let info = {
+            let guild = book.guilds.get_mut(&guild_id).ok_or(GuildError::NotInGuild)?;
+            if guild.leader_id != leader_id {
+                return Err(GuildError::NotLeader);
+            }
+            guild.leader_id = new_leader;
+            guild.info()
+        };
+        book.roles.insert(new_leader, LEADER_ROLE);
+        book.roles.insert(leader_id, DEPUTY_ROLE);
+        Ok(info)
+    }
+
+    /// Every guild: id, name, leader and members.
+    pub fn all(&self) -> Vec<GuildInfo> {
+        let book = self.book.lock();
+        let mut guilds: Vec<_> = book.guilds.values().map(GuildRecord::info).collect();
+        guilds.sort_by_key(|guild| guild.id);
+        guilds
     }
 
     /// The guild named `name`, if any.
@@ -465,6 +575,24 @@ impl GuildManager {
         transaction.commit().await
     }
 
+    /// A new leader, in the guild and in the ranks.
+    pub async fn persist_leader(pool: &PgPool, guild: &GuildInfo, old_leader: u32) -> Result<(), sqlx::Error> {
+        let mut transaction = pool.begin().await?;
+        sqlx::query("UPDATE guilds SET leader_id = $1 WHERE guild_id = $2")
+            .bind(database_id(guild.leader_id))
+            .bind(i64::from(guild.id))
+            .execute(&mut *transaction)
+            .await?;
+        for (member, role) in [(guild.leader_id, LEADER_ROLE), (old_leader, DEPUTY_ROLE)] {
+            sqlx::query("UPDATE guild_members SET role = $1 WHERE character_id = $2")
+                .bind(i64::from(role))
+                .bind(database_id(member))
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await
+    }
+
     pub async fn persist_role(pool: &PgPool, member_id: u32, role: u32) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE guild_members SET role = $1 WHERE character_id = $2")
             .bind(i64::from(role))
@@ -483,7 +611,7 @@ impl GuildManager {
         kind: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         {
-            let mut book = self.book.lock();
+            let mut book = self.write();
             match kind {
                 Some(kind) => {
                     book.relations.insert((guild_id, other_guild_id), kind.to_owned());
@@ -531,6 +659,19 @@ impl GuildManager {
             .collect()
     }
 
+    /// The ids of the guilds `guild_id` declared as `kind`.
+    pub fn relation_ids(&self, guild_id: u32, kind: &str) -> Vec<u32> {
+        let book = self.book.lock();
+        let mut ids: Vec<u32> = book
+            .relations
+            .iter()
+            .filter(|((owner, other), relation)| *owner == guild_id && relation.as_str() == kind && book.guilds.contains_key(other))
+            .map(|((_, other), _)| *other)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
     pub fn role_for(&self, character_id: u32) -> Option<u32> {
         let book = self.book.lock();
         book.roles.get(&character_id).copied()
@@ -545,14 +686,14 @@ impl GuildManager {
     }
 
     pub fn remove_member(&self, character_id: u32) {
-        let mut book = self.book.lock();
+        let mut book = self.write();
         let guild_ids: HashSet<u32> = book.guilds.keys().copied().collect();
         book.invites
             .retain(|target_id, guild_id| *target_id != character_id && guild_ids.contains(guild_id));
     }
 }
 
-fn database_id(entity_id: u32) -> i64 {
+pub fn database_id(entity_id: u32) -> i64 {
     i64::from(entity_id.saturating_sub(CHARACTER_ID_MIN))
 }
 

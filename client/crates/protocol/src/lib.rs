@@ -27,6 +27,12 @@ pub const MSG_BOUNTY: u16 = 9100;
 pub const MSG_BOUNTY_STATE: u16 = 9101;
 /// Gravak's quest log: one quest a packet (or a clear before the whole log).
 pub const MSG_QUEST_LOG: u16 = 9102;
+/// Gravak's Guild System window: a request, the guild's header, a list's row.
+pub const MSG_GUILD_PANEL: u16 = 9170;
+pub const MSG_GUILD_PANEL_INFO: u16 = 9171;
+pub const MSG_GUILD_PANEL_ROW: u16 = 9172;
+/// The hero's guild and the guilds at war with or allied to it.
+pub const MSG_GUILD_RELATIONS: u16 = 9173;
 /// Gravak's Store: one product of the catalog, and the buyer's CPs and VIP.
 pub const MSG_STORE_PRODUCT: u16 = 9111;
 pub const MSG_STORE_STATE: u16 = 9112;
@@ -518,6 +524,149 @@ pub struct BountyTask {
     pub points: u32,
     pub experience: u64,
     pub monster_name: String,
+}
+
+/// A request of the Guild System window (the server's `guild_panel.rs`
+/// lists the actions and what `param`, `amount` and the texts carry).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9170)]
+pub struct GuildPanelPacket {
+    pub action: u32,
+    pub param: u32,
+    pub amount: u32,
+    pub text1: String,
+    pub text2: String,
+    pub text3: String,
+    pub text4: String,
+}
+
+impl GuildPanelPacket {
+    pub const OPEN: u32 = 1;
+    pub const PAGE: u32 = 2;
+    pub const CREATE: u32 = 3;
+    pub const REQUEST_JOIN: u32 = 4;
+    pub const CANCEL_REQUEST: u32 = 5;
+    pub const ACCEPT_REQUEST: u32 = 6;
+    pub const REFUSE_REQUEST: u32 = 7;
+    pub const INVITE: u32 = 8;
+    pub const CANCEL_INVITE: u32 = 9;
+    pub const ACCEPT_INVITE: u32 = 10;
+    pub const REFUSE_INVITE: u32 = 11;
+    pub const LEAVE: u32 = 12;
+    pub const KICK: u32 = 13;
+    pub const PROMOTE: u32 = 14;
+    pub const DEMOTE: u32 = 15;
+    pub const TRANSFER: u32 = 16;
+    pub const DEPOSIT: u32 = 17;
+    pub const WITHDRAW: u32 = 18;
+    pub const SETTINGS: u32 = 19;
+    pub const DECLARE_WAR: u32 = 20;
+    pub const ANSWER_WAR: u32 = 21;
+    pub const END_WAR: u32 = 22;
+    pub const DISBAND: u32 = 23;
+    /// The leader's new crest, in `param`.
+    pub const EMBLEM: u32 = 24;
+
+    pub const MEMBERS: u32 = 1;
+    pub const REQUESTS: u32 = 2;
+    pub const INVITES: u32 = 3;
+    pub const EVENTS: u32 = 4;
+    pub const BALANCE: u32 = 5;
+    pub const WARS: u32 = 6;
+    pub const WAR_KILLS: u32 = 7;
+    pub const DEATHS: u32 = 8;
+    pub const SEARCH: u32 = 9;
+    pub const MY_INVITES: u32 = 10;
+    pub const MY_REQUESTS: u32 = 11;
+
+    pub fn new(action: u32, param: u32, amount: u32) -> Self {
+        Self { action, param, amount, ..Self::default() }
+    }
+
+    pub fn with_texts(mut self, texts: [&str; 4]) -> Self {
+        self.text1 = texts[0].to_owned();
+        self.text2 = texts[1].to_owned();
+        self.text3 = texts[2].to_owned();
+        self.text4 = texts[3].to_owned();
+        self
+    }
+}
+
+/// The Guild System window's header: the guild, or (`in_guild` 0) what the
+/// window shows someone without one.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9171)]
+pub struct GuildPanelInfo {
+    pub in_guild: u32,
+    pub guild_id: u32,
+    /// 1000 leader, 990 deputy, 200 member.
+    pub role: u32,
+    pub level: u32,
+    pub experience: u64,
+    pub next_experience: u64,
+    pub members: u32,
+    pub max_members: u32,
+    pub online: u32,
+    pub fund: u64,
+    pub entry_fee: u32,
+    pub accepting: u32,
+    pub created_at: u64,
+    pub guilds: u32,
+    pub guilds_accepting: u32,
+    pub silver: u64,
+    pub hero_level: u32,
+    pub pending_requests: u32,
+    /// The crest: emblem, field colour << 8, emblem colour << 16.
+    pub emblem: u32,
+    pub name: String,
+    pub title: String,
+    pub motto: String,
+    pub description: String,
+    pub leader: String,
+    pub note: String,
+}
+
+/// One row of one of the window's lists; `index` 0 is the list's header
+/// (its `total`, and what the list puts there), which starts it over.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9172)]
+pub struct GuildPanelRow {
+    pub list: u32,
+    pub index: u32,
+    pub total: u32,
+    pub id: u32,
+    pub level: u32,
+    pub value: u32,
+    pub extra: u32,
+    pub at: u64,
+    pub text1: String,
+    pub text2: String,
+    pub text3: String,
+    pub text4: String,
+}
+
+/// The hero's guild and the ids of the guilds at war with it and allied to
+/// it, joined by `,` (the shields over the players' names).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9173)]
+pub struct GuildRelations {
+    pub guild_id: u32,
+    pub enemies: String,
+    pub allies: String,
+}
+
+impl GuildRelations {
+    fn ids(list: &str) -> Vec<u32> {
+        list.split(',').filter_map(|id| id.trim().parse().ok()).collect()
+    }
+
+    pub fn enemy_ids(&self) -> Vec<u32> {
+        Self::ids(&self.enemies)
+    }
+
+    pub fn ally_ids(&self) -> Vec<u32> {
+        Self::ids(&self.allies)
+    }
 }
 
 /// One line of the quest log, or (`action` 0) the clear before a whole log.
@@ -1835,6 +1984,8 @@ pub struct ServerPlayer {
     pub nobility_position: i32,
     pub list_count: u8,
     pub character_name: String,
+    /// The guild, shown over the name (Gravak's server); empty without one.
+    pub guild_name: String,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
@@ -1868,6 +2019,9 @@ pub enum GameEvent {
     Bounty(BountyPacket),
     BountyState(BountyState),
     QuestLog(QuestLogPacket),
+    GuildPanelInfo(GuildPanelInfo),
+    GuildPanelRow(GuildPanelRow),
+    GuildRelations(GuildRelations),
     StoreProduct(StoreProduct),
     StoreState(StoreState),
     DailyRewardChoice(DailyRewardChoice),
@@ -1984,6 +2138,15 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_QUEST_LOG => Ok(GameEvent::QuestLog(
             QuestLogPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_GUILD_PANEL_INFO => Ok(GameEvent::GuildPanelInfo(
+            GuildPanelInfo::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_GUILD_PANEL_ROW => Ok(GameEvent::GuildPanelRow(
+            GuildPanelRow::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_GUILD_RELATIONS => Ok(GameEvent::GuildRelations(
+            GuildRelations::decode(body).map_err(ProtocolError::Decode)?,
+        )),
         MSG_STORE_PRODUCT => Ok(GameEvent::StoreProduct(
             StoreProduct::decode(body).map_err(ProtocolError::Decode)?,
         )),
@@ -2029,9 +2192,15 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_WALK => Ok(GameEvent::Walk(
             WalkPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
-        MSG_PLAYER => Ok(GameEvent::Player(
-            ServerPlayer::decode(body).map_err(ProtocolError::Decode)?,
-        )),
+        MSG_PLAYER => Ok(GameEvent::Player(match ServerPlayer::decode(body) {
+            Ok(player) => player,
+            // A server that sends no guild after the name: an empty one.
+            Err(_) => {
+                let mut padded = body.to_vec();
+                padded.push(0);
+                ServerPlayer::decode(&Bytes::from(padded)).map_err(ProtocolError::Decode)?
+            },
+        })),
         MSG_INTERACT => Ok(GameEvent::Interaction(
             InteractionPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
@@ -2905,6 +3074,7 @@ mod tests {
         };
         assert_eq!(player.character_id, 1000002);
         assert_eq!(player.character_name, "Other");
+        assert_eq!(player.guild_name, "", "no guild from a server that sends none");
         assert_eq!((player.x, player.y), (61, 110));
 
         let mut npc = Vec::new();

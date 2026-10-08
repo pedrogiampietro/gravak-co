@@ -16,6 +16,10 @@ mod rebirth_tests;
 #[cfg(test)]
 mod monster_ai_tests;
 #[cfg(test)]
+mod guild_panel_tests;
+#[cfg(test)]
+mod pvp_skill_tests;
+#[cfg(test)]
 mod weapon_skill_tests;
 pub mod vitals;
 pub mod drops;
@@ -63,6 +67,8 @@ pub mod refinery;
 pub mod shop;
 pub mod skills;
 pub mod special_drops;
+pub mod guild_panel;
+pub mod gem_effects;
 pub mod stats;
 pub mod team;
 pub mod teleports;

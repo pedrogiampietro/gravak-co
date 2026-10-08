@@ -6,6 +6,8 @@ mod assets;
 mod audio;
 mod booth;
 mod bounty_board;
+mod guild_emblems;
+mod guild_panel;
 mod forge_rules;
 mod character;
 mod components;
@@ -115,6 +117,10 @@ impl TargetPick {
     }
 }
 
+/// How long the hero rests before jumping again when the server refused a
+/// jump.
+const JUMP_REST_SECONDS: f32 = 0.5;
+
 /// Rows of the Shift+click player menu, in order.
 const PLAYER_MENU: [(&str, PlayerMenuAction); 6] = [
     ("TRADE", PlayerMenuAction::Trade),
@@ -133,12 +139,17 @@ enum PlayerMenuAction {
     AddFriend,
     TeamInvite,
     Enemy,
+    /// A leader or deputy invites a player without a guild.
+    GuildInvite,
+    /// Someone without a guild asks a leader's or deputy's guild to join.
+    GuildApply(u32),
 }
 
-/// The menu opened by Shift+clicking another player.
+/// The menu opened by Shift+clicking another player, with its rows.
 struct PlayerMenu {
     target_id: u32,
     name: String,
+    actions: Vec<PlayerMenuAction>,
     menu: shop::ChoiceMenu,
 }
 
@@ -440,6 +451,9 @@ struct App {
     confirmed_network_cell: Option<[i32; 2]>,
     pending_network_steps: VecDeque<[i32; 2]>,
     pending_network_jump: bool,
+    /// After the server pulls the hero back, no jump before this moment (a
+    /// held button would otherwise ask for one every frame).
+    jump_rest_until: f32,
     pending_attack: Option<u32>,
     /// Monster being attacked with the selected skill (right click): the
     /// skill is recast whenever its cooldown allows, approaching first when
@@ -530,6 +544,10 @@ struct App {
     server_clock_offset: i64,
     /// The bounty Task Board, as the server last sent it.
     bounty: Option<bounty_board::BountyView>,
+    /// The Guild System window, as the server last sent it.
+    guild_view: guild_panel::GuildView,
+    /// The hero's guild and the guilds at war with or allied to it.
+    guild_relations: gravak_protocol::GuildRelations,
     /// The Store, as the server last sent it.
     store: Option<store_panel::StoreView>,
     /// The Reward Wall; `daily_rewards_asked` opens it when the server
@@ -798,6 +816,28 @@ impl ApplicationHandler for App {
                                         self.warehouse_amount.push(ch);
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.guild_view.focused.is_some() && self.quick_panel == Some(shop::QuickPanel::Guild) =>
+            {
+                if event.state == ElementState::Pressed {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => self.guild_view.focused = None,
+                        PhysicalKey::Code(KeyCode::Backspace) => self.guild_view.erase(),
+                        PhysicalKey::Code(KeyCode::Tab) => self.guild_view.focus_next(),
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                            if let Some(action) = self.guild_view.submit() {
+                                self.handle_guild_window_action(action);
+                            }
+                        }
+                        _ => {
+                            if let Some(text) = event.text.as_ref() {
+                                self.guild_view.type_text(text);
                             }
                         }
                     }
@@ -1564,8 +1604,23 @@ impl ApplicationHandler for App {
                 let actors = &self.remote_actors;
                 self.booths
                     .retain(|seller, _| *seller == own_name || actors.values().any(|actor| actor.name == *seller));
+                // The war shields: green for the hero's guild while it is at
+                // war, red for guilds at war with it, blue for allies.
+                let relations = &self.guild_relations;
+                let (enemies, allies) = (relations.enemy_ids(), relations.ally_ids());
                 for actor in self.remote_actors.values_mut() {
                     actor.booth = self.booths.get(&actor.name).cloned();
+                    actor.shield = if actor.guild_id == 0 || relations.guild_id == 0 {
+                        0
+                    } else if enemies.contains(&actor.guild_id) {
+                        labels::SHIELD_ENEMY
+                    } else if allies.contains(&actor.guild_id) {
+                        labels::SHIELD_ALLY
+                    } else if actor.guild_id == relations.guild_id && !enemies.is_empty() {
+                        labels::SHIELD_OWN
+                    } else {
+                        0
+                    };
                 }
                 // KOs show while Cyclone or Superman lasts; a new one
                 // counts afresh.
@@ -1589,6 +1644,7 @@ impl ApplicationHandler for App {
                     }
                 }
                 let nobility_view = (self.quick_panel == Some(shop::QuickPanel::Nobility)).then(|| self.nobility_view_lit());
+                let guild_view = (self.quick_panel == Some(shop::QuickPanel::Guild)).then(|| self.guild_view_lit());
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1671,6 +1727,7 @@ impl ApplicationHandler for App {
                         self.daily_rewards.as_ref(),
                         self.highscores.as_ref(),
                         nobility_view.as_ref(),
+                        guild_view.as_ref(),
                         self.item_context.clone(),
                         choice_menu,
                         notice,
@@ -2015,8 +2072,8 @@ impl App {
             }
         }
         if let Some(player_menu) = self.player_menu.take() {
-            if let Some(row) = player_menu.menu.row_at(self.cursor) {
-                self.player_menu_action(player_menu.target_id, &player_menu.name, PLAYER_MENU[row].1);
+            if let Some(action) = player_menu.menu.row_at(self.cursor).and_then(|row| player_menu.actions.get(row).copied()) {
+                self.player_menu_action(player_menu.target_id, &player_menu.name, action);
                 self.held = false;
                 return true;
             }
@@ -2252,22 +2309,15 @@ impl App {
                 }
             }
             if self.quick_panel == Some(shop::QuickPanel::Guild) {
-                let has_guild = !self.character.guild.is_empty() || !self.guild_members.is_empty();
-                if let Some(action) = shop::guild_panel_action_at(
-                    viewport,
-                    self.cursor,
-                    has_guild,
-                    self.pending_guild_invite.is_some(),
-                ) {
-                    self.handle_guild_panel_action(action);
-                    self.held = false;
-                    return true;
+                let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Guild);
+                let local = [self.cursor[0] - left, self.cursor[1] - top];
+                let action = guild_panel::action_at(&self.guild_view, local);
+                // A click anywhere else in the window leaves the text box.
+                if !matches!(action, Some(guild_panel::GuildAction::Focus(_))) {
+                    self.guild_view.focused = None;
                 }
-                if let Some(member_id) =
-                    shop::guild_panel_member_at(viewport, self.cursor, &self.guild_members)
-                {
-                    self.selected_target = Some(member_id);
-                    self.network_status = format!("guild target selected: {member_id}");
+                if let Some(action) = action {
+                    self.handle_guild_window_action(action);
                     self.held = false;
                     return true;
                 }
@@ -2489,6 +2539,9 @@ impl App {
                     } else {
                         shop::QuickPanel::from_button(button)
                     };
+                    if self.quick_panel == Some(shop::QuickPanel::Guild) {
+                        self.open_guild_window();
+                    }
                 }
             }
             self.chat_focused = false;
@@ -3014,18 +3067,25 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
-        let menu = shop::ChoiceMenu::at(
-            viewport,
-            self.cursor,
-            name.clone(),
-            PLAYER_MENU.iter().map(|(label, _)| *label).collect(),
-        );
+        let mut rows: Vec<(&str, PlayerMenuAction)> = PLAYER_MENU.to_vec();
+        // The guild's own row: leaders and deputies invite those without a
+        // guild; those without one ask a leader's or deputy's guild.
+        if let Some(target) = self.remote_actors.get(&target_id) {
+            let officer = |rank: &str| matches!(rank, "Leader" | "Deputy Leader");
+            if officer(&self.character.guild_rank) && !self.character.guild.is_empty() && target.guild.is_empty() {
+                rows.push(("INVITE TO GUILD", PlayerMenuAction::GuildInvite));
+            } else if self.character.guild.is_empty() && officer(&target.guild_rank) && target.guild_id != 0 {
+                rows.push(("APPLY TO JOIN GUILD", PlayerMenuAction::GuildApply(target.guild_id)));
+            }
+        }
+        let menu = shop::ChoiceMenu::at(viewport, self.cursor, name.clone(), rows.iter().map(|(label, _)| *label).collect());
         self.pk_menu_open = false;
         self.target_pick = None;
         self.selected_target = Some(target_id);
         self.player_menu = Some(PlayerMenu {
             target_id,
             name,
+            actions: rows.into_iter().map(|(_, action)| action).collect(),
             menu,
         });
     }
@@ -3055,6 +3115,18 @@ impl App {
             PlayerMenuAction::Follow => {
                 self.follow_target = Some(target_id);
                 self.network_status = format!("seguindo {name}");
+            }
+            PlayerMenuAction::GuildInvite => {
+                use gravak_protocol::GuildPanelPacket as P;
+                if let Some(network) = &self.network {
+                    network.send_guild_panel(P::new(P::INVITE, 0, 0).with_texts([name, "", "", ""]));
+                }
+            }
+            PlayerMenuAction::GuildApply(guild_id) => {
+                use gravak_protocol::GuildPanelPacket as P;
+                if let Some(network) = &self.network {
+                    network.send_guild_panel(P::new(P::REQUEST_JOIN, guild_id, 0).with_texts(["", "", "", ""]));
+                }
             }
         }
     }
@@ -3381,6 +3453,44 @@ impl App {
             store_panel::StoreAction::VipRights => self.quick_panel = Some(shop::QuickPanel::Vip),
             // The purchase waits for the confirmation prompt.
             store_panel::StoreAction::Buy(product_id) => self.store_confirm = Some(product_id),
+        }
+    }
+
+    /// Asks the server for the Guild System window's header and lists.
+    fn open_guild_window(&mut self) {
+        self.guild_view.focused = None;
+        self.guild_view.confirm = None;
+        if let Some(network) = &self.network {
+            network.send_guild_panel(gravak_protocol::GuildPanelPacket::new(gravak_protocol::GuildPanelPacket::OPEN, 0, 0));
+        }
+    }
+
+    /// The Guild System window as drawn: the hero's name, the minute, and
+    /// the control under the cursor lit.
+    fn guild_view_lit(&self) -> guild_panel::GuildView {
+        let mut view = self.guild_view.clone();
+        view.hero = self.character.name.clone();
+        view.now = store_panel::now_secs() / 60;
+        if let Some(viewport) = self.viewport() {
+            let [left, top] = shop::quick_panel_position(viewport, shop::QuickPanel::Guild);
+            view.hover = guild_panel::action_at(&view, [self.cursor[0] - left, self.cursor[1] - top]);
+        }
+        view
+    }
+
+    fn handle_guild_window_action(&mut self, action: guild_panel::GuildAction) {
+        if action == guild_panel::GuildAction::Warehouse {
+            self.quick_panel = None;
+            self.handle_guild_panel_action(shop::GuildPanelAction::Warehouse);
+            return;
+        }
+        self.guild_view.hero = self.character.name.clone();
+        let Some(packet) = self.guild_view.apply(action) else {
+            return;
+        };
+        match &self.network {
+            Some(network) => network.send_guild_panel(packet),
+            None => self.network_status = "guild indisponível: servidor offline".into(),
         }
     }
 
@@ -4152,6 +4262,9 @@ impl App {
                     self.quick_panel = Some(shop::QuickPanel::Vip);
                 }
             }
+            NetworkEvent::GuildPanelInfo(info) => self.guild_view.receive_info(info),
+            NetworkEvent::GuildPanelRow(row) => self.guild_view.receive_row(row),
+            NetworkEvent::GuildRelations(relations) => self.guild_relations = relations,
             NetworkEvent::QuestLog(line) => {
                 let view = self.bounty.get_or_insert_with(Default::default);
                 view.apply_quest_line(line);
@@ -4180,6 +4293,7 @@ impl App {
                 if action == 2 && data != 0 && self.character.guild.is_empty() {
                     self.pending_guild_invite = Some(data);
                     self.quick_panel = Some(shop::QuickPanel::Guild);
+                    self.open_guild_window();
                 } else if action == 14 && data == 0 {
                     self.character.guild.clear();
                     self.character.guild_rank.clear();
@@ -4845,6 +4959,9 @@ impl App {
                 );
             }
             NetworkEvent::MovementRejected(message) => {
+                if self.pending_network_jump {
+                    self.jump_rest_until = self.started.elapsed().as_secs_f32() + JUMP_REST_SECONDS;
+                }
                 self.pending_network_jump = false;
                 self.pending_network_steps.clear();
                 if let Some(position) = self.confirmed_network_cell {
@@ -4857,6 +4974,9 @@ impl App {
                 position,
                 direction,
             } => {
+                if self.pending_network_jump {
+                    self.jump_rest_until = self.started.elapsed().as_secs_f32() + JUMP_REST_SECONDS;
+                }
                 self.pending_network_jump = false;
                 self.shop = None;
                 self.warehouse = None;
@@ -5308,6 +5428,11 @@ impl App {
                     }
                 }
                 if !actor.npc && self.network_character_id == Some(id) {
+                    // The hero's own guild and rank, as those around see them.
+                    if self.character.guild != actor.guild || self.character.guild_rank != actor.guild_rank {
+                        self.character.guild = actor.guild.clone();
+                        self.character.guild_rank = actor.guild_rank.clone();
+                    }
                     let lit = actor.status_flags & network::XP_CIRCLE_FLAG != 0;
                     if lit && self.status_flags & network::XP_CIRCLE_FLAG == 0 {
                         self.xp_lit_at = Some(hud::unix_now_ms());
@@ -5582,6 +5707,9 @@ impl App {
             self.player.go(&self.map, target);
             return;
         }
+        if self.started.elapsed().as_secs_f32() < self.jump_rest_until {
+            return;
+        }
         let current = self.player.cell();
         let Some(target) =
             self.player
@@ -5699,6 +5827,13 @@ impl App {
         }
         if npc && let Some(network) = &self.network {
             network.send_npc_interact(id, npc_kind);
+        }
+        // A city guard is struck only in PK mode (it is a crime).
+        let guard = monster && !training_goal && matches!(name.as_str(), "Guard1" | "Guard2");
+        if guard && self.kill_mode != 0 {
+            self.selected_target = Some(id);
+            self.system_line("Switch to PK mode to attack the guards.");
+            return true;
         }
         if monster || player_attack {
             self.pending_pickup = None;
@@ -7897,7 +8032,7 @@ impl App {
         let Some(gem) = self
             .inventory
             .iter()
-            .find(|owned| owned.uid == gem_uid && (700_000..800_000).contains(&owned.item_type))
+            .find(|owned| owned.uid == gem_uid && shop::is_socket_gem(owned.item_type))
             .copied()
         else {
             self.network_status = "Essa gem não está no inventário".into();
@@ -9714,6 +9849,7 @@ fn run() -> Result<()> {
         confirmed_network_cell: server_ready.as_ref().map(|ready| ready.position),
         pending_network_steps: VecDeque::new(),
         pending_network_jump: false,
+        jump_rest_until: 0.0,
         pending_attack: None,
         pending_skill_attack: None,
         selected_target: None,
@@ -9769,6 +9905,8 @@ fn run() -> Result<()> {
         status_timers: Vec::new(),
         server_clock_offset: 0,
         bounty: None,
+        guild_view: guild_panel::GuildView::default(),
+        guild_relations: Default::default(),
         store: None,
         daily_rewards: None,
         daily_rewards_asked: false,

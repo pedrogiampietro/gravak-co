@@ -232,18 +232,18 @@ pub async fn tick(state: &State) {
                 }
             }
             let Some((target, distance)) = found else {
-                // Guards walk a round about their post until a criminal
-                // comes along.
+                // Guards hold their post until a criminal comes along; one
+                // drawn away by a chase walks back to it and stands there.
                 if guard {
-                    let can_move = next_move.lock().unwrap().get(&monster.id()).is_none_or(|due| *due <= now);
+                    let away = mloc.x != home.x || mloc.y != home.y;
+                    let can_move = away && next_move.lock().unwrap().get(&monster.id()).is_none_or(|due| *due <= now);
                     if can_move {
-                        let corner = rules::patrol_target(monster.id(), home, mloc);
-                        if let Some(next) = next_step(map, mloc, corner, &occupied) {
+                        if let Some(next) = next_step(map, mloc, home, &occupied) {
                             occupied.remove(&(mloc.x, mloc.y));
                             occupied.insert((next.0.x, next.0.y));
                             move_to(map, &monster, next.0, next.1).await;
                         }
-                        next_move.lock().unwrap().insert(monster.id(), now + Duration::from_millis(1_400));
+                        next_move.lock().unwrap().insert(monster.id(), now + Duration::from_millis(700));
                     }
                     continue;
                 }
@@ -331,7 +331,7 @@ pub async fn tick(state: &State) {
 }
 
 /// City guards (Guard1, Guard2): they punish crime instead of hunting.
-fn is_guard(monster_type_id: i32) -> bool {
+pub(crate) fn is_guard(monster_type_id: i32) -> bool {
     matches!(monster_type_id, 900 | 910 | 911)
 }
 

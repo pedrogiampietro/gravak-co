@@ -919,6 +919,7 @@ async fn guild_director(
                             .owner()
                             .send(crate::packets::MsgGuild::new(crate::packets::SET_GUILD, 0))
                             .await?;
+                        crate::guild_panel::refresh_look(state, member.id()).await?;
                     }
                 }
             }
@@ -947,6 +948,7 @@ async fn guild_director(
                 .guild_manager()
                 .set_relation(state.pool(), guild.id, other.id, kind)
                 .await?;
+            crate::guild_panel::relations_changed(state, &guild).await?;
             say(actor, NPC, reply, "Thanks.").await
         },
         11 | 12 if leader => {
@@ -962,8 +964,19 @@ async fn guild_director(
             match state.guild_manager().set_role(character.id(), member_id, role) {
                 Ok(guild) => {
                     crate::guild::GuildManager::persist_role(state.pool(), member_id, role).await?;
+                    crate::guild_panel::log(
+                        state.pool(),
+                        guild.id,
+                        if option == 11 { "promoted" } else { "demoted" },
+                        typed.trim(),
+                        character.entity().name(),
+                        0,
+                        0,
+                    )
+                    .await?;
                     crate::packets::send_guild_members(state, character.id(), &guild).await?;
                     crate::packets::send_guild_members(state, member_id, &guild).await?;
+                    crate::guild_panel::refresh_look(state, member_id).await?;
                     let done = if option == 11 { "They have been promoted." } else { "They have been demoted." };
                     say(actor, NPC, done, "Thank you.").await
                 },
@@ -1003,11 +1016,13 @@ async fn create_guild(state: &State, actor: &Actor<ActorState>, character: &Char
         return say(actor, NPC, "I'm sorry, players must have at least 1 million gold to create a guild", "I'll come back").await;
     }
     crate::guild::GuildManager::persist_created(state.pool(), &guild).await?;
+    crate::guild_panel::log(state.pool(), guild.id, "founded", character.entity().name(), "", 0, 0).await?;
     actor.send(MsgUserInfo::from(character)).await?;
     actor
         .send(crate::packets::MsgGuild::new(crate::packets::SET_GUILD, guild.id).with_strings([guild.name.clone()]))
         .await?;
     crate::packets::send_guild_members(state, character.id(), &guild).await?;
+    crate::guild_panel::refresh_look(state, character.id()).await?;
     crate::audit::economic("guild_director", character.id(), NPC, guild.id, GUILD_PRICE);
     say(actor, NPC, "I have set up your guild successfully!", "Thanks!").await
 }

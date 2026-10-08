@@ -87,6 +87,7 @@ pub enum Handler {
     MsgTeamAction,
     MsgFriend,
     MsgGuild,
+    MsgGuildPanel,
     MsgGuildWarehouse,
     MsgTrade,
     MsgBounty,

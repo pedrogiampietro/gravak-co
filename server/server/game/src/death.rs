@@ -174,6 +174,10 @@ pub async fn kill_character(
         killer_name
     );
 
+    // The guilds keep the death, the frag and the war's kill.
+    if let Err(error) = crate::guild_panel::record_death(state, victim, killer_id, killer).await {
+        tracing::warn!(?error, "A death could not be kept for the guilds");
+    }
     let map_id = victim.entity().map_id();
     if map_id == crate::events::EVENT_MAP {
         // Events keep their own score; nothing drops.

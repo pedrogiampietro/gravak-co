@@ -240,6 +240,11 @@ pub enum NetworkEvent {
     Bounty(gravak_protocol::BountyState),
     /// A line of the quest log, or its clear.
     QuestLog(gravak_protocol::QuestLogPacket),
+    /// The Guild System window's header, and a row of one of its lists.
+    GuildPanelInfo(gravak_protocol::GuildPanelInfo),
+    GuildPanelRow(gravak_protocol::GuildPanelRow),
+    /// The guilds at war with or allied to the hero's.
+    GuildRelations(gravak_protocol::GuildRelations),
     /// One product of the Store catalog.
     StoreProduct(gravak_protocol::StoreProduct),
     /// The buyer's CPs and VIP.
@@ -457,6 +462,12 @@ pub struct RemoteActor {
     pub level: u16,
     /// The name over the player's booth while it is open.
     pub booth: Option<String>,
+    /// Their guild and rank, written over their name; empty without one.
+    pub guild: String,
+    pub guild_rank: String,
+    pub guild_id: u32,
+    /// The war shield beside their name (0 none): see `crate::labels::Shield`.
+    pub shield: u8,
     /// KOs of their Cyclone or Superman, shown over their head.
     pub ko_count: u32,
     /// The current movement is a jump: they stay in the air until it
@@ -503,6 +514,8 @@ pub(crate) enum NetworkCommand {
         action: u32,
         param: u32,
     },
+    /// A request of the Guild System window.
+    GuildPanel(gravak_protocol::GuildPanelPacket),
     Walk {
         character_id: u32,
         direction: u8,
@@ -788,6 +801,9 @@ impl NetworkHandle {
                 | NetworkEvent::NobilityRankingClear
                 | NetworkEvent::Bounty(_)
                 | NetworkEvent::QuestLog(_)
+                | NetworkEvent::GuildPanelInfo(_)
+                | NetworkEvent::GuildPanelRow(_)
+                | NetworkEvent::GuildRelations(_)
                 | NetworkEvent::BountyProgress { .. }
                 | NetworkEvent::StoreProduct(_)
                 | NetworkEvent::StoreState(_)
@@ -906,6 +922,10 @@ impl NetworkHandle {
     /// A bounty Task Board action (`gravak_protocol::BountyPacket` constants).
     pub fn send_bounty(&self, action: u32, param: u32) {
         let _ = self.commands.send(NetworkCommand::Bounty { action, param });
+    }
+
+    pub fn send_guild_panel(&self, packet: gravak_protocol::GuildPanelPacket) {
+        let _ = self.commands.send(NetworkCommand::GuildPanel(packet));
     }
 
     pub fn send_team(&self, action: u32, target_id: u32) {
@@ -1647,6 +1667,15 @@ pub(crate) async fn play(
                 Some(GameEvent::QuestLog(line)) => {
                     let _ = events.send(NetworkEvent::QuestLog(line));
                 }
+                Some(GameEvent::GuildPanelInfo(info)) => {
+                    let _ = events.send(NetworkEvent::GuildPanelInfo(info));
+                }
+                Some(GameEvent::GuildPanelRow(row)) => {
+                    let _ = events.send(NetworkEvent::GuildPanelRow(row));
+                }
+                Some(GameEvent::GuildRelations(relations)) => {
+                    let _ = events.send(NetworkEvent::GuildRelations(relations));
+                }
                 Some(GameEvent::Bounty(packet)) if packet.action == gravak_protocol::BountyPacket::PROGRESS => {
                     let _ = events.send(NetworkEvent::BountyProgress {
                         done: packet.param,
@@ -2190,6 +2219,9 @@ pub(crate) async fn play(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
+                Some(NetworkCommand::GuildPanel(packet)) => {
+                    session.send(&packet).await.map_err(|error| error.to_string())?;
+                }
                 Some(NetworkCommand::Team { action, target_id }) => {
                     session
                         .send(&TeamActionPacket::new(action, target_id))
@@ -2420,7 +2452,12 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         mesh: player.mesh.max(0) as u32,
         body: body_from_mesh(player.mesh.max(0) as u32),
         // The dyes ride in reserved1: armor, helmet, shield (one byte each).
-        armor: crate::character::dyed(player.armor.max(0) as u32, (player.reserved1 & 0xff) as u8),
+        // A garment is worn over the armor, as the hero's own (`appearance_armor`).
+        armor: if player.germent > 0 {
+            player.germent as u32
+        } else {
+            crate::character::dyed(player.armor.max(0) as u32, (player.reserved1 & 0xff) as u8)
+        },
         helmet: crate::character::dyed(player.helment.max(0) as u32, ((player.reserved1 >> 8) & 0xff) as u8),
         hair_style: player.hair_style.max(0) as u16,
         right_weapon: player.right_hand.max(0) as u32,
@@ -2437,6 +2474,19 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         npc: false,
         level: player.level.max(0) as u16,
         booth: None,
+        guild_rank: if player.guild_name.is_empty() {
+            String::new()
+        } else {
+            match player.syndicate_member_rank {
+                100 => "Leader",
+                90 => "Deputy Leader",
+                _ => "Member",
+            }
+            .to_owned()
+        },
+        guild_id: u32::from(player.syndicate_id.max(0) as u16),
+        shield: 0,
+        guild: player.guild_name,
         ko_count: 0,
         jumping: false,
         flung: 0,
@@ -2485,6 +2535,10 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         npc: true,
         level: 0,
         booth: None,
+        guild: String::new(),
+        guild_rank: String::new(),
+        guild_id: 0,
+        shield: 0,
         ko_count: 0,
         jumping: false,
         flung: 0,
