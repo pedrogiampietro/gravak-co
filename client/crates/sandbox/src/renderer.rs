@@ -826,6 +826,8 @@ pub struct Renderer {
     effect_attachment: Option<Matrix4>,
     /// The tint an effect is drawn recoloured with (a rarity's glow).
     effect_tint: Option<&'static str>,
+    /// The Shortcuts window, while open (set each frame by the app).
+    pub shortcuts: Option<crate::keybinds::ShortcutsView>,
     /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
     /// the hero), the effect and when it began.
     weapon_flashes: Vec<(Option<u32>, String, f32)>,
@@ -1073,6 +1075,7 @@ impl Renderer {
             effect_yaw: None,
             effect_attachment: None,
             effect_tint: None,
+            shortcuts: None,
             weapon_flashes: Vec::new(),
             last_hero_swing: 0,
             last_remote_swing: HashMap::new(),
@@ -6011,6 +6014,28 @@ impl Renderer {
                 });
             }
         }
+        // The Shortcuts window, over the other windows.
+        if let Some(view) = self.shortcuts.clone() {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            view.hash(&mut hasher);
+            let key = format!("@shortcuts-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                let font = crate::labels::font()?;
+                let mut content = image::RgbaImage::new(crate::keybinds::SIZE[0], crate::keybinds::SIZE[1]);
+                crate::keybinds::draw(&mut content, &font, &view);
+                let close = view.hover == Some(crate::keybinds::ShortcutAction::Close);
+                self.upload(&key, crate::shop::framed(assets, content, "Shortcuts", close)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::keybinds_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         if let Some(slot) = skill_hud.dragging_hotkey.and_then(|slot| action_bar.slots.get(slot)) {
             let key = format!("@hotkey-drag-{}", slot.action_id.as_deref().unwrap_or_default());
             if !self.textures.contains_key(&key) {
@@ -6375,7 +6400,8 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 18] = [
+const TRANSIENT_PREFIXES: [&str; 19] = [
+    "@shortcuts-",
     "@booth-tooltip-",
     "@sell-all-",
     "@speech-",
