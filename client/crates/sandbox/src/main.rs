@@ -1817,6 +1817,7 @@ impl ApplicationHandler for App {
         for event in events {
             self.handle_network_event(event);
         }
+        self.forget_actors_out_of_sight();
         self.poll_team_positions();
         self.run_helper();
         self.send_ping();
@@ -5873,13 +5874,7 @@ impl App {
                 }
             }
             NetworkEvent::RemoveActor(id) => {
-                self.remote_actors.remove(&id);
-                self.remote_models.remove(&id);
-                self.remote_npcs.remove(&id);
-                self.remote_monsters.remove(&id);
-                self.remote_models_loading.remove(&id);
-                self.remote_npcs_loading.remove(&id);
-                self.remote_monsters_loading.remove(&id);
+                self.forget_actor(id);
                 self.network_status = format!(
                     "online: actor {id} left screen ({} actors)",
                     self.remote_actors.len()
@@ -6466,6 +6461,36 @@ impl App {
     /// arrows show the shot (Scatter shot while jumping).
     /// The casting motion (903) of whoever casts a magic: the hero or
     /// another on screen.
+    /// Takes an actor off the screen, with its models.
+    fn forget_actor(&mut self, id: u32) {
+        self.remote_actors.remove(&id);
+        self.remote_models.remove(&id);
+        self.remote_npcs.remove(&id);
+        self.remote_monsters.remove(&id);
+        self.remote_models_loading.remove(&id);
+        self.remote_npcs_loading.remove(&id);
+        self.remote_monsters_loading.remove(&id);
+    }
+
+    /// The server stops telling of whoever leaves the hero's sight (18 cells,
+    /// `tq_math::SCREEN_DISTANCE`) and tells of them again on their return;
+    /// as the original, the client lets them go itself, or they would stand
+    /// where last seen.
+    fn forget_actors_out_of_sight(&mut self) {
+        const SIGHT: f32 = 18.0;
+        let here = self.player.position;
+        let gone: Vec<u32> = self
+            .remote_actors
+            .values()
+            .filter(|actor| Some(actor.id) != self.network_character_id)
+            .filter(|actor| (actor.position[0] - here[0]).abs().max((actor.position[1] - here[1]).abs()) > SIGHT + 1.0)
+            .map(|actor| actor.id)
+            .collect();
+        for id in gone {
+            self.forget_actor(id);
+        }
+    }
+
     fn play_cast_motion(&mut self, caster_id: u32, now: f32) {
         const CAST_SECONDS: f32 = 0.8;
         if self.network_character_id == Some(caster_id) {
