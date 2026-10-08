@@ -5,6 +5,10 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub const SCREEN_DISTANCE: u16 = 18;
+/// How far a hero sees others (players, monsters, NPCs): wider than the
+/// 5065's screen ([`SCREEN_DISTANCE`], which stays the reach of jumps, blows,
+/// talks and trades), so a window of 1920x1080 is filled to its corners.
+pub const VIEW_DISTANCE: u16 = 34;
 pub const RADIAN_TO_DEGREE: f32 = 57.29;
 pub const MAX_DIFFERENCE_IN_ELEVATION: u16 = 210;
 
@@ -87,6 +91,11 @@ fn round(x: f32) -> f32 {
 /// object's screen.
 pub fn in_screen(p1: (u16, u16), p2: (u16, u16)) -> bool {
     in_range(p1, p2, SCREEN_DISTANCE)
+}
+
+/// Whether one sees the other ([`VIEW_DISTANCE`]).
+pub fn in_view(p1: (u16, u16), p2: (u16, u16)) -> bool {
+    in_range(p1, p2, VIEW_DISTANCE)
 }
 
 /// This function returns true if an object is within the range.

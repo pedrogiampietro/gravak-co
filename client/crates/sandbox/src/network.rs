@@ -363,6 +363,8 @@ pub enum NetworkEvent {
     },
     /// A ping (MsgItem 27) came back carrying the client clock it left at.
     Pong(u32),
+    /// Seconds until the Travel Cube travels again (MsgItem 9001, ours).
+    TravelCubeWait(u32),
     /// Where a teammate stands (MsgAction 106); `map_id` is 0 when it is
     /// not on the local hero's map.
     TeamMemberPosition {
@@ -646,6 +648,8 @@ pub(crate) enum NetworkCommand {
     UseItem {
         character_id: u32,
         item_uid: u32,
+        /// What is chosen with it (the Travel Cube's city, 1 and up).
+        choice: u32,
     },
     MoveInventory {
         character_id: u32,
@@ -791,6 +795,7 @@ impl NetworkHandle {
                 | NetworkEvent::TeamMember { .. }
                 | NetworkEvent::TeamMemberPosition { .. }
                 | NetworkEvent::Pong(_)
+                | NetworkEvent::TravelCubeWait(_)
                 | NetworkEvent::Trade { .. }
                 | NetworkEvent::TradeItem(_)
                 | NetworkEvent::VendorItem { .. }
@@ -1095,9 +1100,15 @@ impl NetworkHandle {
     }
 
     pub fn use_item(&self, character_id: u32, item_uid: u32) {
+        self.use_item_choice(character_id, item_uid, 0);
+    }
+
+    /// Uses an item with a choice made for it (the Travel Cube's city).
+    pub fn use_item_choice(&self, character_id: u32, item_uid: u32, choice: u32) {
         let _ = self.commands.send(NetworkCommand::UseItem {
             character_id,
             item_uid,
+            choice,
         });
     }
 
@@ -2070,6 +2081,8 @@ pub(crate) async fn play(
                         let _ = events.send(NetworkEvent::Pong(word(12)));
                     } else if word(8) == 23 {
                         let _ = events.send(NetworkEvent::BoothItemGone(word(4)));
+                    } else if word(8) == 9_001 && body.len() >= 20 {
+                        let _ = events.send(NetworkEvent::TravelCubeWait(word(16)));
                     }
                 }
                 Some(_) => {}
@@ -2352,13 +2365,15 @@ pub(crate) async fn play(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
-                Some(NetworkCommand::UseItem { character_id, item_uid }) => {
+                Some(NetworkCommand::UseItem { character_id, item_uid, choice }) => {
                     crate::debug_log::write(format_args!(
                         "network send use item: character_id={} uid={}",
                         character_id, item_uid
                     ));
+                    let mut packet = ItemActionPacket::use_item(character_id, item_uid);
+                    packet.data2 = choice;
                     session
-                        .send(&ItemActionPacket::use_item(character_id, item_uid))
+                        .send(&packet)
                         .await
                         .map_err(|error| error.to_string())?;
                 }

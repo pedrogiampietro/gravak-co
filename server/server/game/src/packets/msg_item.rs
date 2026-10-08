@@ -68,6 +68,24 @@ pub struct MsgItem {
     param1: u32,
 }
 
+/// The client's MsgItem action for the Travel Cube's wait (Gravak's own).
+pub const TRAVEL_CUBE_WAIT: u32 = 9_001;
+
+impl MsgItem {
+    /// How many seconds the Travel Cube `uid` waits before it travels
+    /// again (0 ready), for its window.
+    pub fn travel_cube_wait(character_id: u32, uid: u32, seconds: u32) -> Self {
+        Self {
+            character_id,
+            param0: uid,
+            action_type: TRAVEL_CUBE_WAIT,
+            client_timestamp: 0,
+            amount: seconds,
+            param1: 0,
+        }
+    }
+}
+
 fn dragdrop_log(message: impl Display) {
     tracing::debug!(target: "economy", "Drag and drop: {message}");
 }
@@ -230,6 +248,16 @@ impl PacketProcess for MsgItem {
                         .await?;
                     return Ok(());
                 };
+                if crate::special_items::is_bound(item.item_type) {
+                    actor
+                        .send(MsgTalk::from_system(
+                            character.id(),
+                            TalkChannel::System,
+                            "This item stays with you: only a trade passes it on.",
+                        ))
+                        .await?;
+                    return Ok(());
+                }
                 let cps = self.action_type == ItemActionType::BoothAddCPs as u32;
                 match state
                     .player_shop_manager()
@@ -500,6 +528,10 @@ impl PacketProcess for MsgItem {
                         .await?;
                     return Ok(());
                 };
+                let Some(item) = Some(item).filter(|item| !crate::special_items::is_bound(item.item_type)) else {
+                    actor.send(reject("This item stays with you: only a trade passes it on.")).await?;
+                    return Ok(());
+                };
                 let Some(silver) =
                     state
                         .shop_catalog()
@@ -618,7 +650,7 @@ impl PacketProcess for MsgItem {
                     actor.send(reject("Use rejected: item is not in inventory.")).await?;
                     return Ok(());
                 };
-                if crate::special_items::use_item(state, actor, character, &item).await? {
+                if crate::special_items::use_item(state, actor, character, &item, self.param1).await? {
                     return Ok(());
                 }
                 if item.item_type == crate::leveling::EXP_BALL {
@@ -825,6 +857,14 @@ impl PacketProcess for MsgItem {
                     actor
                         .send(reject("Item drop rejected: invalid character or amount."))
                         .await?;
+                    return Ok(());
+                }
+                if character
+                    .inventory_items()
+                    .iter()
+                    .any(|item| item.uid == self.param0 && crate::special_items::is_bound(item.item_type))
+                {
+                    actor.send(reject("This item stays with you: only a trade passes it on.")).await?;
                     return Ok(());
                 }
                 if state.trade_manager().session(character.id()).is_some() {

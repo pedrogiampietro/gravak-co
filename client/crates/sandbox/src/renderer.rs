@@ -834,6 +834,7 @@ pub struct Renderer {
     /// The Shortcuts window, while open (set each frame by the app).
     pub shortcuts: Option<crate::keybinds::ShortcutsView>,
     pub helper: Option<crate::helper::HelperView>,
+    pub travel_cube: Option<crate::travel_cube::TravelCubeView>,
     /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
     /// the hero), the effect and when it began.
     weapon_flashes: Vec<(Option<u32>, String, f32)>,
@@ -1086,6 +1087,7 @@ impl Renderer {
             effect_tint: None,
             shortcuts: None,
             helper: None,
+            travel_cube: None,
             weapon_flashes: Vec::new(),
             last_hero_swing: 0,
             last_remote_swing: HashMap::new(),
@@ -6072,6 +6074,28 @@ impl Renderer {
                 });
             }
         }
+        // The Travel Cube's window, over the other windows.
+        if let Some(view) = self.travel_cube.clone() {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            view.hash(&mut hasher);
+            let key = format!("@travel-cube-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                let font = crate::labels::font()?;
+                let mut content = image::RgbaImage::new(crate::travel_cube::SIZE[0], crate::travel_cube::SIZE[1]);
+                crate::travel_cube::draw(&mut content, &font, &view);
+                let close = view.hover == Some(crate::travel_cube::CubeAction::Close);
+                self.upload(&key, crate::shop::framed(assets, content, "Travel Cube", close)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::travel_cube_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         // The helper's window, over the other windows.
         if let Some(view) = self.helper.clone() {
             use std::hash::{Hash, Hasher};
@@ -6480,7 +6504,8 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 20] = [
+const TRANSIENT_PREFIXES: [&str; 21] = [
+    "@travel-cube-",
     "@helper-",
     "@shortcuts-",
     "@booth-tooltip-",

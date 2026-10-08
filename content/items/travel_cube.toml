@@ -1,0 +1,14 @@
+# The Travel Cube (server/server/game/src/special_items.rs): sold in the
+# Store, kept for good (not lost on death, not dropped, not sold; only a
+# trade passes it on), it carries its owner to any city once every ten
+# minutes. Built on the Twin City scroll, a usable item of the bag.
+
+[[item]]
+id = 723990
+base = 1060020
+icon = "icons/723990.png"
+name = "TravelCube"
+price = 0
+cps_price = 0
+action = 0
+description = "A black cube that carries you to any city: Twin City, Phoenix Castle, Ape Mountain, Desert City, Bird Island or the Market. Once every 10 minutes. It stays with you on death; only a trade passes it on."
