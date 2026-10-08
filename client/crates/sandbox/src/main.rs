@@ -6521,17 +6521,19 @@ impl App {
         self.remote_monsters_loading.remove(&id);
     }
 
-    /// The server stops telling of whoever leaves the hero's sight (18 cells,
-    /// `tq_math::SCREEN_DISTANCE`) and tells of them again on their return;
-    /// as the original, the client lets them go itself, or they would stand
-    /// where last seen.
+    /// The server stops telling of a player who leaves the hero's sight (34
+    /// cells, `tq_math::VIEW_DISTANCE`) and tells of them again on their
+    /// return; the client lets them go itself, or they would stand where
+    /// last seen. Monsters and NPCs stay: a monster's steps and death are
+    /// told to the whole map, and an NPC does not move.
     fn forget_actors_out_of_sight(&mut self) {
-        const SIGHT: f32 = 18.0;
+        const SIGHT: f32 = 34.0;
         let here = self.player.position;
         let gone: Vec<u32> = self
             .remote_actors
             .values()
             .filter(|actor| Some(actor.id) != self.network_character_id)
+            .filter(|actor| !actor.npc && !(400_001..=499_999).contains(&actor.id))
             .filter(|actor| (actor.position[0] - here[0]).abs().max((actor.position[1] - here[1]).abs()) > SIGHT + 1.0)
             .map(|actor| actor.id)
             .collect();

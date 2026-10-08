@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 use primitives::{Location, Point, Size};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
-use tq_math::SCREEN_DISTANCE;
+use tq_math::VIEW_DISTANCE;
 use tq_network::{PacketEncode, PacketID};
 
 use super::Portal;
@@ -640,7 +640,9 @@ impl fmt::Display for MapRegion {
 
 impl MapRegion {
     /// WIDTH and HEIGHT are the number of tiles in a region.
-    pub const SIZE: Size<u32> = Size::new(SCREEN_DISTANCE as _, SCREEN_DISTANCE as _);
+    /// A region is as wide as one sees, so the regions around hold all
+    /// one sees.
+    pub const SIZE: Size<u32> = Size::new(VIEW_DISTANCE as _, VIEW_DISTANCE as _);
 
     pub fn new(start_point: Point<u32>, map_size: Size<i32>) -> Self {
         Self {

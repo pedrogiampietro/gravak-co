@@ -494,11 +494,11 @@ impl Screen {
 fn can_see(a: &GameEntity, b: &GameEntity) -> bool {
     let Location { x: x1, y: y1, .. } = a.basic().location();
     let Location { x: x2, y: y2, .. } = b.basic().location();
-    tq_math::in_screen((x1, y1), (x2, y2))
+    tq_math::in_view((x1, y1), (x2, y2))
 }
 
 fn can_see_npc(a: &GameEntity, b: &GameEntity) -> bool {
     let Location { x: x1, y: y1, .. } = a.basic().location();
     let Location { x: x2, y: y2, .. } = b.basic().location();
-    tq_math::in_range((x1, y1), (x2, y2), 16)
+    tq_math::in_view((x1, y1), (x2, y2))
 }
