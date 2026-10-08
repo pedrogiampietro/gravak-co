@@ -1,6 +1,6 @@
 //! Items whose use does something of its own, after the reference server
 //! (`Items/*.cs` of Redux): city scrolls, hair dyes, fireworks, the
-//! NinjaAmulet and the BlackTulip.
+//! NinjaAmulet and the BlackTulip; and Gravak's Travel Cube.
 
 use tq_network::Actor;
 
@@ -35,6 +35,20 @@ pub const FIREWORKS: [(u32, &str); 3] = [
     (720_032, "MyWish"),
 ];
 
+/// The Travel Cube (Gravak's, sold in the Store, after Tibia's Supreme
+/// Cube): kept for good, it carries its owner to any city of
+/// [`crate::store::CITIES`] once every ten minutes.
+pub const TRAVEL_CUBE: u32 = 723_990;
+/// Seconds between two of the cube's travels.
+pub const TRAVEL_CUBE_COOLDOWN: i64 = 600;
+const TRAVEL_CUBE_TIMER: &str = "travel_cube";
+
+/// Items that stay with their owner: not lost on death, not dropped on the
+/// ground, not sold to a shop or in a booth; only a trade passes them on.
+pub fn is_bound(item_type: u32) -> bool {
+    item_type == TRAVEL_CUBE
+}
+
 const NINJA_AMULET: u32 = 723_583;
 const BLACK_TULIP: u32 = 723_584;
 /// The armor colour the BlackTulip gives.
@@ -59,9 +73,21 @@ pub fn other_body(mesh: u32) -> u32 {
     mesh - body + other
 }
 
-/// Uses `item` when it is one of these; false for any other item.
-pub async fn use_item(state: &State, actor: &Actor<ActorState>, character: &Character, item: &InventoryItem) -> Result<bool, Error> {
+/// Uses `item` when it is one of these; false for any other item. `choice`
+/// is what the client picked with it (the Travel Cube's city, 1 and up; 0
+/// only asks how long until it may travel).
+pub async fn use_item(
+    state: &State,
+    actor: &Actor<ActorState>,
+    character: &Character,
+    item: &InventoryItem,
+    choice: u32,
+) -> Result<bool, Error> {
     let notice = |text: &str| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, text);
+    if item.item_type == TRAVEL_CUBE {
+        travel_cube(state, actor, character, item, choice).await?;
+        return Ok(true);
+    }
     if let Some((_, map_id, position)) = CITY_SCROLLS.iter().find(|(scroll, _, _)| *scroll == item.item_type) {
         let here = character.entity().map_id();
         let flags = state.try_map(here).map(|map| map.flags()).unwrap_or(MapFlags::empty());
@@ -146,6 +172,57 @@ pub async fn use_item(state: &State, actor: &Actor<ActorState>, character: &Char
     Ok(false)
 }
 
+/// Seconds until the Travel Cube carries `character` again; 0 when ready.
+async fn travel_cube_wait(state: &State, character: &Character) -> Result<u32, Error> {
+    let until: Option<i64> = sqlx::query_scalar("SELECT until_unix FROM character_timers WHERE character_id = $1 AND kind = $2")
+        .bind(character.database_id())
+        .bind(TRAVEL_CUBE_TIMER)
+        .fetch_optional(state.pool())
+        .await?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64);
+    Ok(until.map_or(0, |until| u32::try_from((until - now).max(0)).unwrap_or(0)))
+}
+
+/// The Travel Cube: `choice` 0 tells the client how long it waits (its
+/// window shows it); a city carries the owner there and starts the wait.
+async fn travel_cube(
+    state: &State,
+    actor: &Actor<ActorState>,
+    character: &Character,
+    item: &InventoryItem,
+    choice: u32,
+) -> Result<(), Error> {
+    let notice = |text: String| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, text);
+    let wait = travel_cube_wait(state, character).await?;
+    let tell = crate::packets::MsgItem::travel_cube_wait(character.id(), item.uid, wait);
+    let Some(city) = choice.checked_sub(1).and_then(|index| crate::store::CITIES.get(index as usize)) else {
+        actor.send(tell).await?;
+        return Ok(());
+    };
+    if wait > 0 {
+        actor.send(tell).await?;
+        actor
+            .send(notice(format!("The cube is resting: {}:{:02} left.", wait / 60, wait % 60)))
+            .await?;
+        return Ok(());
+    }
+    let here = character.entity().map_id();
+    let flags = state.try_map(here).map(|map| map.flags()).unwrap_or(MapFlags::empty());
+    if character.entity().is_dead() || flags.intersects(MapFlags::TELEPORT_DISABLED | MapFlags::PRISON_MAP) {
+        actor.send(notice("The cube does not work here.".into())).await?;
+        return Ok(());
+    }
+    crate::city_npcs::start_timer(state, character, TRAVEL_CUBE_TIMER, TRAVEL_CUBE_COOLDOWN).await?;
+    crate::world::relocate(state, character, city.map_id, city.position).await?;
+    let wait = u32::try_from(TRAVEL_CUBE_COOLDOWN).unwrap_or(0);
+    actor.send(crate::packets::MsgItem::travel_cube_wait(character.id(), item.uid, wait)).await?;
+    actor.send(notice(format!("The cube carried you to {}.", city.name))).await?;
+    crate::audit::item("travel_cube", character.id(), item.uid, item.item_type, format_args!("to {}", city.name));
+    Ok(())
+}
+
 /// Takes one of the item from the bag; false when it is gone.
 async fn consume(state: &State, actor: &Actor<ActorState>, character: &Character, item: &InventoryItem) -> Result<bool, Error> {
     let Some(taken) = character.consume_item_uids(state.pool(), &[item.uid]).await? else {
@@ -178,5 +255,11 @@ mod tests {
         assert_eq!(other_body(671_003), 671_004);
         assert_eq!(other_body(2_002), 2_001);
         assert_eq!(other_body(1_234), 1_234, "not a player body");
+    }
+
+    #[test]
+    fn only_the_cube_is_bound() {
+        assert!(is_bound(TRAVEL_CUBE));
+        assert!(!is_bound(1_060_020), "a city scroll is not");
     }
 }

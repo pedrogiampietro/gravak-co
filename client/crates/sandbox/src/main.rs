@@ -3,6 +3,7 @@ mod action;
 mod action_bar;
 mod keybinds;
 mod helper;
+mod travel_cube;
 mod cursors;
 mod assets;
 mod audio;
@@ -566,6 +567,10 @@ struct App {
     helper_memory: helper::Memory,
     helper_window: Option<helper::HelperView>,
     helper_status: String,
+    /// The Travel Cube's window while open (the cube's uid), and when the
+    /// cube travels again (client clock; `None` until the server says).
+    travel_cube: Option<u32>,
+    travel_cube_ready_at: Option<f32>,
     /// The hero's guild and the guilds at war with or allied to it.
     guild_relations: gravak_protocol::GuildRelations,
     /// The Store, as the server last sent it.
@@ -1341,6 +1346,7 @@ impl ApplicationHandler for App {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::Escape) if self.shortcuts.is_some() => self.shortcuts = None,
                     PhysicalKey::Code(KeyCode::Escape) if self.helper_window.is_some() => self.helper_window = None,
+                    PhysicalKey::Code(KeyCode::Escape) if self.travel_cube.is_some() => self.travel_cube = None,
                     PhysicalKey::Code(KeyCode::Escape) if self.gem_selection_panel.is_some() => {
                         self.gem_selection_panel = None;
                         self.network_status = "seleção de gem cancelada".into();
@@ -1689,9 +1695,11 @@ impl ApplicationHandler for App {
                 let guild_view = (self.quick_panel == Some(shop::QuickPanel::Guild)).then(|| self.guild_view_lit());
                 let shortcuts_view = self.shortcuts_view_lit();
                 let helper_view = self.helper_view_lit();
+                let travel_cube_view = self.travel_cube_view_lit();
                 if let Some(renderer) = &mut self.renderer {
                     renderer.shortcuts = shortcuts_view;
                     renderer.helper = helper_view;
+                    renderer.travel_cube = travel_cube_view;
                     renderer.helper_on = self.helper.enabled;
                     renderer.helper_tip = match self.keybinds.get(keybinds::Command::Helper) {
                         Some(key) => format!("Helper ({})", key.label()),
@@ -2096,6 +2104,25 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        // The Travel Cube's window: its clicks are its own.
+        if let Some(view) = self.travel_cube_view_lit() {
+            let [left, top] = travel_cube_position(viewport);
+            let local = [self.cursor[0] - left, self.cursor[1] - top];
+            if travel_cube::covers(local) {
+                match travel_cube::action_at(&view, local) {
+                    Some(travel_cube::CubeAction::Close) => self.travel_cube = None,
+                    Some(travel_cube::CubeAction::Travel(index)) => {
+                        if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                            network.use_item_choice(character_id, view.uid, index as u32 + 1);
+                        }
+                        self.travel_cube = None;
+                    }
+                    None => {}
+                }
+                self.held = false;
+                return true;
+            }
+        }
         // The helper's window: its clicks are its own.
         if let Some(view) = self.helper_view_lit() {
             let [left, top] = helper_position(viewport);
@@ -3854,6 +3881,20 @@ impl App {
         }
     }
 
+    /// The Travel Cube's window as drawn: how long the cube rests, what the
+    /// cursor is over.
+    fn travel_cube_view_lit(&self) -> Option<travel_cube::TravelCubeView> {
+        let uid = self.travel_cube?;
+        let now = self.started.elapsed().as_secs_f32();
+        let wait = self.travel_cube_ready_at.map(|ready| (ready - now).max(0.0).ceil() as u32);
+        let mut view = travel_cube::TravelCubeView { uid, wait, hover: None };
+        if let Some(viewport) = self.viewport() {
+            let [left, top] = travel_cube_position(viewport);
+            view.hover = travel_cube::action_at(&view, [self.cursor[0] - left, self.cursor[1] - top]);
+        }
+        Some(view)
+    }
+
     /// The helper's window as drawn: the choices, the skills learned, what
     /// the cursor is over.
     fn helper_view_lit(&self) -> Option<helper::HelperView> {
@@ -4829,6 +4870,9 @@ impl App {
                     _ => {}
                 }
                 self.network_status = format!("online: team action {action} target {target_id}");
+            }
+            NetworkEvent::TravelCubeWait(seconds) => {
+                self.travel_cube_ready_at = Some(self.started.elapsed().as_secs_f32() + seconds as f32);
             }
             NetworkEvent::Pong(sent) => {
                 // Signed, so a server that skews the echoed clock cannot
@@ -8482,6 +8526,16 @@ impl App {
     }
 
     fn queue_use_item(&mut self, item: network::OwnedItem) -> bool {
+        // The Travel Cube opens its window, and asks the server how long it
+        // rests; the city chosen there is the use.
+        if item.item_type == travel_cube::TRAVEL_CUBE {
+            self.travel_cube = Some(item.uid);
+            self.travel_cube_ready_at = None;
+            if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                network.use_item_choice(character_id, item.uid, 0);
+            }
+            return true;
+        }
         // An ExpBall asks first, showing the experience and level it brings.
         if item.item_type == leveling::EXP_BALL && self.exp_ball_confirm.is_none() {
             self.exp_ball_confirm = Some(item);
@@ -9811,6 +9865,14 @@ fn sync_slot_keys(keybinds: &keybinds::Keybinds, bar: &mut action_bar::ActionBar
     }
 }
 
+/// The Travel Cube's window's corner: centred on the screen.
+pub(crate) fn travel_cube_position(viewport: [f32; 2]) -> [f32; 2] {
+    [
+        ((viewport[0] - travel_cube::SIZE[0] as f32) * 0.5).max(8.0).round(),
+        ((viewport[1] - travel_cube::SIZE[1] as f32) * 0.5).max(8.0).round(),
+    ]
+}
+
 /// The helper's window's corner: centred on the screen.
 pub(crate) fn helper_position(viewport: [f32; 2]) -> [f32; 2] {
     [
@@ -10507,6 +10569,8 @@ fn run() -> Result<()> {
         helper_memory: helper::Memory::default(),
         helper_window: None,
         helper_status: String::new(),
+        travel_cube: None,
+        travel_cube_ready_at: None,
         guild_relations: Default::default(),
         store: None,
         daily_rewards: None,

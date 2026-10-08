@@ -208,7 +208,8 @@ pub async fn kill_character(
     let map_flags = state.try_map(map_id).map(|map| map.flags()).unwrap_or_default();
     let mut dropped = Vec::new();
     for item in victim.inventory_items() {
-        if !roll_percent(INVENTORY_DROP_PERCENT) {
+        // A bound item (the Travel Cube) stays with its owner.
+        if crate::special_items::is_bound(item.item_type) || !roll_percent(INVENTORY_DROP_PERCENT) {
             continue;
         }
         if let Some(item) = victim.drop_inventory_item(state.pool(), item.uid).await? {

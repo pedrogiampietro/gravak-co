@@ -1,5 +1,6 @@
 [package]
 name = "gravak-content"
+default-run = "gravak-content"
 description = "Gravak content pipeline: original 5065 data formats, custom content and the build"
 version.workspace = true
 edition.workspace = true
