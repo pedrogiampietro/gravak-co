@@ -131,7 +131,7 @@ pub async fn expire_vip(state: &State) {
 
 /// Sends the catalog and the buyer's state.
 pub async fn send_store(state: &State, character: &crate::entities::Character) -> Result<(), Error> {
-    let products = crate::store::catalog(state.pool()).await?;
+    let products = crate::store::catalog(state.pool(), character.database_id()).await?;
     let owner = character.owner();
     for (index, product) in products.iter().enumerate() {
         owner.send(MsgStoreProduct::new(index, products.len(), product)).await?;

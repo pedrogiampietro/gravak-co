@@ -19,9 +19,27 @@ pub struct Product {
     pub item_type: u32,
     pub amount: u32,
     pub vip_days: u32,
+    /// What it costs the buyer now: with `price_steps`, by how many they
+    /// bought today.
     pub price_cps: u32,
     /// Left today, for a product with a daily stock.
     pub stock_left: Option<u32>,
+}
+
+/// The price of the purchase after `bought` of today: the steps in order,
+/// then 1.8 times the last, rounded to 10 CPs. No steps: `price` always.
+pub fn stepped_price(price: u32, steps: &[u32], bought: u32) -> u32 {
+    let Some(last) = steps.last() else {
+        return price;
+    };
+    if let Some(step) = steps.get(bought as usize) {
+        return *step;
+    }
+    let mut price = f64::from(*last);
+    for _ in steps.len() as u32..=bought {
+        price = (price * 1.8 / 10.0).round() * 10.0;
+    }
+    price.min(f64::from(u32::MAX)) as u32
 }
 
 /// Why a purchase was refused.
@@ -65,33 +83,46 @@ pub fn now_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// The products on sale, in the Store's order, with today's stock.
-pub async fn catalog(pool: &sqlx::PgPool) -> Result<Vec<Product>, Error> {
-    let rows: Vec<(i64, i64, String, String, i64, i64, i64, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT p.product_id, p.category, p.name, p.description, p.item_type, p.amount, p.vip_days, p.price_cps,
-                p.daily_stock, s.sold
-         FROM store_products p
-         LEFT JOIN store_stock s ON s.product_id = p.product_id AND s.day = $1
-         WHERE p.enabled
-         ORDER BY p.category, p.sort, p.product_id",
-    )
-    .bind(today())
-    .fetch_all(pool)
-    .await?;
+/// The products on sale, in the Store's order, with today's stock and the
+/// prices `character_id` pays now.
+pub async fn catalog(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<Product>, Error> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(i64, i64, String, String, i64, i64, i64, i64, Option<i64>, Option<i64>, Option<String>, i64)> =
+        sqlx::query_as(
+            "SELECT p.product_id, p.category, p.name, p.description, p.item_type, p.amount, p.vip_days, p.price_cps,
+                    p.daily_stock, s.sold, p.price_steps,
+                    (SELECT COUNT(*) FROM store_purchases b
+                     WHERE b.product_id = p.product_id AND b.character_id = $2 AND b.bought_at >= $1 * 86400)
+             FROM store_products p
+             LEFT JOIN store_stock s ON s.product_id = p.product_id AND s.day = $1
+             WHERE p.enabled
+             ORDER BY p.category, p.sort, p.product_id",
+        )
+        .bind(today())
+        .bind(i64::from(character_id))
+        .fetch_all(pool)
+        .await?;
     let number = |value: i64| u32::try_from(value).unwrap_or_default();
     Ok(rows
         .into_iter()
         .map(
-            |(product_id, category, name, description, item_type, amount, vip_days, price_cps, daily_stock, sold)| Product {
-                product_id: number(product_id),
-                category: number(category),
-                name,
-                description,
-                item_type: number(item_type),
-                amount: number(amount),
-                vip_days: number(vip_days),
-                price_cps: number(price_cps),
-                stock_left: daily_stock.map(|stock| number(stock.saturating_sub(sold.unwrap_or(0)))),
+            |(product_id, category, name, description, item_type, amount, vip_days, price_cps, daily_stock, sold, steps, bought)| {
+                let steps: Vec<u32> = steps
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|step| step.trim().parse().ok())
+                    .collect();
+                Product {
+                    product_id: number(product_id),
+                    category: number(category),
+                    name,
+                    description,
+                    item_type: number(item_type),
+                    amount: number(amount),
+                    vip_days: number(vip_days),
+                    price_cps: stepped_price(number(price_cps), &steps, number(bought)),
+                    stock_left: daily_stock.map(|stock| number(stock.saturating_sub(sold.unwrap_or(0)))),
+                }
             },
         )
         .collect())
@@ -105,7 +136,7 @@ pub async fn buy(
     account_id: u32,
     product_id: u32,
 ) -> Result<Result<Purchase, Refusal>, Error> {
-    let Some(product) = catalog(pool)
+    let Some(product) = catalog(pool, character.database_id())
         .await?
         .into_iter()
         .find(|product| product.product_id == product_id)
@@ -451,10 +482,10 @@ mod tests {
     #[tokio::test]
     async fn buying_spends_cps_gives_items_and_vip() -> Result<(), Error> {
         let pool = tq_db::testing::pool().await;
-        let character = character(&pool, 1_000).await;
+        let character = character(&pool, 200).await;
 
         let meteor = buy(&pool, &character, 1, 20).await?.expect("a Meteor");
-        assert_eq!((meteor.cps_left, character.cps(), meteor.items.len()), (987, 987, 1));
+        assert_eq!((meteor.cps_left, character.cps(), meteor.items.len()), (198, 198, 1));
         assert_eq!(meteor.items[0].item_type, 1_088_001);
 
         let vip = buy(&pool, &character, 1, 1).await?.expect("VIP");
@@ -462,13 +493,13 @@ mod tests {
         assert!(week >= now_secs() + 7 * 86_400 - 5);
         assert_eq!(vip_until(&pool, 1).await?, week);
 
-        assert_eq!(buy(&pool, &character, 1, 2).await?, Err(Refusal::NotEnoughCps(1_800)));
-        assert_eq!(character.cps(), 487, "a refused purchase costs nothing");
+        assert_eq!(buy(&pool, &character, 1, 2).await?, Err(Refusal::NotEnoughCps(290)));
+        assert_eq!(character.cps(), 108, "a refused purchase costs nothing");
         assert_eq!(buy(&pool, &character, 1, 999).await?, Err(Refusal::NoSuchProduct));
 
         let past = history(&pool, character.database_id()).await?;
         let names: Vec<_> = past.iter().map(|purchase| (purchase.name.as_str(), purchase.price_cps)).collect();
-        assert_eq!(names, [("7 Days of VIP", 500), ("Meteor", 13)], "newest first, refusals left out");
+        assert_eq!(names, [("7 Days of VIP", 90), ("Meteor", 2)], "newest first, refusals left out");
 
         assert_eq!(loot_filter(&pool, character.database_id()).await?, loot::DEFAULT);
         save_loot_filter(&pool, character.database_id(), loot::GEMS | loot::SILVER).await?;
@@ -486,9 +517,32 @@ mod tests {
         assert!(buy(&pool, &character, 1, 11).await?.is_ok());
         assert!(buy(&pool, &character, 1, 11).await?.is_ok());
         assert_eq!(buy(&pool, &character, 1, 11).await?, Err(Refusal::SoldOut));
-        let ball = catalog(&pool).await?.into_iter().find(|product| product.product_id == 11).expect("Exp Ball");
+        let ball = catalog(&pool, character.database_id()).await?.into_iter().find(|product| product.product_id == 11).expect("Exp Ball");
         assert_eq!(ball.stock_left, Some(0));
-        assert_eq!(character.cps(), 100_000 - 400);
+        assert_eq!(character.cps(), 100_000 - 120);
+        Ok(())
+    }
+
+    #[test]
+    fn a_stepped_price_climbs_with_the_days_purchases() {
+        let steps = [30, 45, 90, 160, 290];
+        let prices: Vec<u32> = (0..7).map(|bought| stepped_price(30, &steps, bought)).collect();
+        assert_eq!(prices, [30, 45, 90, 160, 290, 520, 940]);
+        assert_eq!(stepped_price(60, &[], 5), 60, "no steps: one price");
+    }
+
+    #[tokio::test]
+    async fn the_exp_potion_costs_more_each_time_today() -> Result<(), Error> {
+        let pool = tq_db::testing::pool().await;
+        let character = character(&pool, 1_000).await;
+        let price = |products: Vec<Product>| products.into_iter().find(|product| product.product_id == 10).map(|product| product.price_cps);
+        assert_eq!(price(catalog(&pool, character.database_id()).await?), Some(30));
+        for paid in [30, 45, 90] {
+            let potion = buy(&pool, &character, 1, 10).await?.expect("an Exp Potion");
+            assert_eq!(potion.product.price_cps, paid);
+        }
+        assert_eq!(price(catalog(&pool, character.database_id()).await?), Some(160), "the fourth");
+        assert_eq!(character.cps(), 1_000 - 165);
         Ok(())
     }
 }
