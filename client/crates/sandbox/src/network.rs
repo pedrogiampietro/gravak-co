@@ -74,8 +74,9 @@ pub struct OwnedItem {
     /// Classic 5065 wire values: 0 closed, 255 open, otherwise gem code.
     pub gem_one: u8,
     pub gem_two: u8,
-    /// Server-persisted seed for the item's custom rarity bonus slots.
-    pub rarity_roll: u8,
+    /// The rarity affixes, packed (kind in the top four bits, value in the
+    /// low twelve), slot by slot; 0 where a slot is empty.
+    pub affixes: [u16; 4],
     /// Blessing: 1, 3, 5 or 7 percent less damage taken.
     pub bless: u8,
     /// Life added by a WuxingOven enchantment.
@@ -662,6 +663,7 @@ pub(crate) enum NetworkCommand {
     },
     RerollRarity {
         item_uid: u32,
+        slot: u8,
     },
     OpenSocket {
         character_id: u32,
@@ -1132,10 +1134,11 @@ impl NetworkHandle {
             .send(NetworkCommand::SetRarity { item_uid, rarity });
     }
 
-    pub fn reroll_item_rarity(&self, item_uid: u32) {
+    /// Rerolls every affix (`slot` 255) or the one in `slot`.
+    pub fn reroll_item_rarity(&self, item_uid: u32, slot: u8) {
         let _ = self
             .commands
-            .send(NetworkCommand::RerollRarity { item_uid });
+            .send(NetworkCommand::RerollRarity { item_uid, slot });
     }
 
     pub fn open_socket(&self, character_id: u32, item_uid: u32) {
@@ -1518,7 +1521,7 @@ pub(crate) async fn play(
                             rarity: 0,
                             gem_one: packet.gem_one,
                             gem_two: packet.gem_two,
-                            rarity_roll: 0,
+                            affixes: [0; 4],
                             bless: 0,
                             enchant_hp: 0,
                             color: 0,
@@ -1676,7 +1679,7 @@ pub(crate) async fn play(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.reserved3 as u8,
+                        affixes: crate::shop::affix_words(info.reserved3, info.restrain),
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
@@ -1702,7 +1705,7 @@ pub(crate) async fn play(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.reserved3 as u8,
+                        affixes: crate::shop::affix_words(info.reserved3, info.restrain),
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
@@ -1745,7 +1748,7 @@ pub(crate) async fn play(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.reserved3 as u8,
+                        affixes: crate::shop::affix_words(info.reserved3, info.restrain),
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
@@ -1774,7 +1777,7 @@ pub(crate) async fn play(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.reserved3 as u8,
+                        affixes: crate::shop::affix_words(info.reserved3, info.restrain),
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
@@ -1806,7 +1809,7 @@ pub(crate) async fn play(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.reserved3 as u8,
+                        affixes: crate::shop::affix_words(info.reserved3, info.restrain),
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
@@ -1828,7 +1831,7 @@ pub(crate) async fn play(
                         rarity: info.bless,
                         gem_one: info.gem_one,
                         gem_two: info.gem_two,
-                        rarity_roll: info.reserved3 as u8,
+                        affixes: crate::shop::affix_words(info.reserved3, info.restrain),
                         bless: info.reserved2,
                         enchant_hp: info.enchant,
                         color: info.reserved4 as u8,
@@ -2348,9 +2351,9 @@ pub(crate) async fn play(
                         .await
                         .map_err(|error| error.to_string())?;
                 }
-                Some(NetworkCommand::RerollRarity { item_uid }) => {
+                Some(NetworkCommand::RerollRarity { item_uid, slot }) => {
                     session
-                        .send(&ItemRarityRerollPacket::new(item_uid))
+                        .send(&ItemRarityRerollPacket::new(item_uid, slot))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

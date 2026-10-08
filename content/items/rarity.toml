@@ -1,0 +1,10 @@
+# The rarity system's catalyst (server/server/game/src/affixes.rs).
+
+[[item]]
+id = 1088003
+base = 1088000
+icon = "icons/1088003.png"
+name = "SuperDragonBall"
+price = 0
+cps_price = 0
+description = "Raises equipment to Legendary or Mythic rarity, and rerolls a single rarity affix. MagicArtisan presses ten DragonBalls into one."

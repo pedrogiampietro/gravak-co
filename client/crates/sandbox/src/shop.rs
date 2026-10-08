@@ -262,39 +262,50 @@ impl ItemRarity {
     }
 }
 
-pub fn rarity_upgrade_cost_and_chance(rarity: u8) -> Option<(u8, u8)> {
+pub const DRAGONBALL: u32 = 1_088_000;
+/// The catalyst of Legendary and Mythic, and of rerolling a single affix.
+pub const SUPER_DRAGONBALL: u32 = 1_088_003;
+
+/// The next rarity tier's catalyst, how many, and its chance before the
+/// failures' protection (the server's `affixes::upgrade_cost`).
+pub fn rarity_upgrade_cost(rarity: u8) -> Option<(u32, u8, u8)> {
     Some(match rarity {
-        0 => (1, 75),
-        1 => (2, 55),
-        2 => (3, 35),
-        3 => (5, 20),
+        0 => (DRAGONBALL, 1, 75),
+        1 => (DRAGONBALL, 3, 50),
+        2 => (SUPER_DRAGONBALL, 1, 35),
+        3 => (SUPER_DRAGONBALL, 3, 20),
+        _ => return None,
+    })
+}
+
+/// A catalyst's short name on the panel.
+fn catalyst_label(item_type: u32) -> &'static str {
+    if item_type == SUPER_DRAGONBALL { "SDB" } else { "DB" }
+}
+
+/// The four affixes MsgItemInfo carries, two to a word.
+pub fn affix_words(first: u32, second: u32) -> [u16; 4] {
+    [first as u16, (first >> 16) as u16, second as u16, (second >> 16) as u16]
+}
+
+/// What an affix reads ("Attack +4%"), `None` for an empty slot.
+pub fn affix_text(packed: u16) -> Option<String> {
+    let value = packed & 0x0fff;
+    Some(match packed >> 12 {
+        1 => format!("Attack +{value}%"),
+        2 => format!("Magic Attack +{value}%"),
+        3 => format!("Defense +{value}%"),
+        4 => format!("Max HP +{value}"),
+        5 => format!("Accuracy +{value}"),
+        6 => format!("Dodge +{value}"),
+        7 => format!("Damage Resist +{value}%"),
+        8 => format!("Penetration +{value}%"),
         _ => return None,
     })
 }
 
 pub fn rarity_bonus_slots(rarity: u8) -> u8 {
     rarity.min(4)
-}
-
-/// Generates the stable random-looking bonus attached to one rarity slot.
-/// The seed is persisted by the server and changes only after an upgrade or
-/// an explicit reroll, so the preview remains stable across item moves.
-pub fn rarity_bonus(item_uid: u32, rarity_roll: u8, slot: u8) -> (&'static str, u16, &'static str) {
-    let mut state = u32::from(rarity_roll.max(1))
-        .wrapping_mul(1_103_515_245)
-        .wrapping_add(item_uid)
-        .wrapping_add(u32::from(slot).wrapping_mul(2_654_435_761));
-    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-    let kind = (state % 6) as usize;
-    let value = 1 + ((state / 7) % 5) as u16 + u16::from(slot.min(3));
-    match kind {
-        0 => ("Attack", value, "%"),
-        1 => ("Defense", value, "%"),
-        2 => ("Max HP", value.saturating_mul(20), ""),
-        3 => ("Critical", value, "%"),
-        4 => ("Damage", value, "%"),
-        _ => ("Damage Resist", value, "%"),
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -2499,6 +2510,7 @@ pub fn item_light(item_type: u32) -> Option<&'static str> {
     match item_type {
         700_001..=700_063 => Some("GoldEnLight"),
         1_088_000..=1_088_002 | 1_100_003 | 1_100_006 | 1_100_009 => Some("YellowLight"),
+        SUPER_DRAGONBALL => Some("FireLight"),
         _ => None,
     }
 }
@@ -2662,7 +2674,7 @@ pub fn status_equipment_items(
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -2717,6 +2729,9 @@ pub struct ItemActionPanel {
     pub item: crate::network::OwnedItem,
     pub action: ItemContextAction,
     pub selected_rarity: u8,
+    /// The affix chosen to reroll alone (with a SuperDragonBall); none
+    /// rerolls them all (with a DragonBall).
+    pub selected_affix: Option<u8>,
     /// What QUALITY, LEVEL or UPGRADE takes, worked out when it opened.
     pub price: crate::forge_rules::ForgePrice,
 }
@@ -2726,6 +2741,8 @@ pub enum ItemActionPanelButton {
     Confirm,
     Cancel,
     Reroll,
+    /// An affix line of the current item, to reroll alone.
+    Affix(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -3157,6 +3174,11 @@ pub fn item_action_panel_button_at(
     let [left, top] = item_action_panel_position(viewport, action);
     let local = [cursor[0] - left, cursor[1] - top];
     if action == ItemContextAction::Rarity {
+        for slot in 0..4_u8 {
+            if UiRect::new(24, 192 + i32::from(slot) * 19, 222, 18).contains_local(local) {
+                return Some(ItemActionPanelButton::Affix(slot));
+            }
+        }
         if UiRect::new(24, 318, 150, 28).contains_local(local) {
             return Some(ItemActionPanelButton::Reroll);
         }
@@ -3207,13 +3229,13 @@ pub fn item_action_panel_confirm_enabled(
             panel.price.affordable(inventory, panel.item.uid)
         }
         ItemContextAction::Rarity => {
-            let Some((cost, _chance)) = rarity_upgrade_cost_and_chance(panel.item.rarity) else {
+            let Some((catalyst, cost, _chance)) = rarity_upgrade_cost(panel.item.rarity) else {
                 return false;
             };
             panel.selected_rarity == panel.item.rarity.saturating_add(1)
                 && inventory
                     .iter()
-                    .filter(|item| item.position < 40 && item.item_type == 1_088_000)
+                    .filter(|item| item.position < 40 && item.item_type == catalyst)
                     .count()
                     >= usize::from(cost)
         }
@@ -3226,11 +3248,12 @@ pub fn item_action_panel_reroll_enabled(
     panel: ItemActionPanel,
     inventory: &[crate::network::OwnedItem],
 ) -> bool {
+    let catalyst = if panel.selected_affix.is_some() { SUPER_DRAGONBALL } else { DRAGONBALL };
     panel.action == ItemContextAction::Rarity
         && panel.item.rarity > 0
         && inventory
             .iter()
-            .any(|item| item.position < 40 && item.item_type == 1_088_000)
+            .any(|item| item.position < 40 && item.item_type == catalyst)
 }
 
 /// Puts a panel's contents in the friend dialog's frame, like the trade,
@@ -3475,11 +3498,11 @@ fn rarity_action_panel_image(
     );
     let font = labels::font()?;
     let next_rarity = panel.item.rarity.saturating_add(1).min(4);
-    let (dragon_ball_cost, success_chance) =
-        rarity_upgrade_cost_and_chance(panel.item.rarity).unwrap_or((0, 0));
+    let (catalyst, dragon_ball_cost, success_chance) =
+        rarity_upgrade_cost(panel.item.rarity).unwrap_or((DRAGONBALL, 0, 0));
     let dragon_ball_count = inventory
         .iter()
-        .filter(|item| item.position < 40 && item.item_type == 1_088_000)
+        .filter(|item| item.position < 40 && item.item_type == catalyst)
         .count();
     let item_name = item_name(assets, panel.item.item_type);
     let title = if panel.item.plus > 0 {
@@ -3525,7 +3548,7 @@ fn rarity_action_panel_image(
             [x as f32 + 12.0, 158.0],
             10.0,
         );
-        let slots = format!("BONUS SLOTS  {}/4", rarity_bonus_slots(rarity));
+        let slots = format!("AFFIX SLOTS  {}/4", rarity_bonus_slots(rarity));
         labels::text_sized(
             &mut image,
             &font,
@@ -3536,24 +3559,25 @@ fn rarity_action_panel_image(
         for slot_index in 0..4_u8 {
             let y = 195.0 + f32::from(slot_index) * 19.0;
             if slot_index < rarity_bonus_slots(rarity) {
-                let (bonus_name, value, unit) = rarity_bonus(
-                    panel.item.uid,
-                    if x == 20 {
-                        panel.item.rarity_roll
-                    } else {
-                        panel.item.rarity_roll.wrapping_add(37)
-                    },
-                    slot_index,
-                );
-                let text = if x == 20 {
-                    format!("{bonus_name}  +{value}{unit}")
-                } else {
-                    format!("{bonus_name}  RANDOM")
+                // The affixes kept; the slot the next tier opens rolls new.
+                let affix = affix_text(panel.item.affixes[usize::from(slot_index)]);
+                let text = match (x == 20, affix) {
+                    (_, Some(affix)) => affix,
+                    (false, None) => "NEW AFFIX  (RANDOM)".to_owned(),
+                    (true, None) => "ROLLING...".to_owned(),
                 };
+                let chosen = x == 20 && panel.selected_affix == Some(slot_index);
+                if chosen {
+                    ui_theme::outline(
+                        &mut image,
+                        UiRect::new(x + 4, y as i32 - 3, 222, 18),
+                        [255, 218, 109, 255],
+                    );
+                }
                 labels::text_sized(
                     &mut image,
                     &font,
-                    &[(text.as_str(), rarity_colour(rarity))],
+                    &[(text.as_str(), if chosen { [255, 230, 140] } else { rarity_colour(rarity) })],
                     [x as f32 + 12.0, y],
                     8.0,
                 );
@@ -3561,7 +3585,7 @@ fn rarity_action_panel_image(
                 labels::text_sized(
                     &mut image,
                     &font,
-                    &[("LOCKED BONUS SLOT", [93, 108, 114])],
+                    &[("LOCKED AFFIX SLOT", [93, 108, 114])],
                     [x as f32 + 12.0, y],
                     8.0,
                 );
@@ -3576,7 +3600,8 @@ fn rarity_action_panel_image(
         18.0,
     );
     let cost = if panel.item.rarity < 4 {
-        format!("UPGRADE COST: {dragon_ball_cost} DB   AVAILABLE: {dragon_ball_count}")
+        let name = catalyst_label(catalyst);
+        format!("UPGRADE COST: {dragon_ball_cost} {name}   AVAILABLE: {dragon_ball_count}")
     } else {
         "MAXIMUM RARITY".to_owned()
     };
@@ -3588,7 +3613,7 @@ fn rarity_action_panel_image(
         9.0,
     );
     let chance = if panel.item.rarity < 4 {
-        format!("CHANCE: {success_chance}%")
+        format!("CHANCE: {success_chance}%  +5%/FAIL")
     } else {
         String::new()
     };
@@ -3646,7 +3671,7 @@ fn rarity_action_panel_image(
         &mut image,
         &font,
         UiRect::new(24, 318, 150, 28),
-        "REROLL BONUS (1 DB)",
+        if panel.selected_affix.is_some() { "REROLL ONE (1 SDB)" } else { "REROLL ALL (1 DB)" },
         hovered == Some(ItemActionPanelButton::Reroll),
         !reroll_enabled || animating,
     );
@@ -5142,7 +5167,7 @@ fn format_silver(silver: u32) -> String {
 }
 
 pub fn tooltip_image(item_id: u32, info: Option<&ItemInfo>) -> Result<RgbaImage> {
-    item_tooltip_image(item_id, item_id, info, 0, 0, 0, 0, 0, 0, 0)
+    item_tooltip_image(item_id, item_id, info, 0, 0, 0, 0, [0; 4], 0, 0)
 }
 
 /// Rich tooltip used for inventory items. The wrapper above remains available
@@ -5156,7 +5181,7 @@ pub fn item_tooltip_image(
     gem_one: u8,
     gem_two: u8,
     rarity_code: u8,
-    rarity_roll: u8,
+    affixes: [u16; 4],
     bless: u8,
     enchant_hp: u8,
 ) -> Result<RgbaImage> {
@@ -5168,7 +5193,7 @@ pub fn item_tooltip_image(
         plus,
         [gem_one, gem_two],
         rarity_code,
-        rarity_roll,
+        affixes,
         bless,
         enchant_hp,
     )
@@ -5184,7 +5209,7 @@ pub fn equipment_tooltip_image(
     gem_one: u8,
     gem_two: u8,
     rarity_code: u8,
-    rarity_roll: u8,
+    affixes: [u16; 4],
     bless: u8,
     enchant_hp: u8,
 ) -> Result<RgbaImage> {
@@ -5196,7 +5221,7 @@ pub fn equipment_tooltip_image(
         plus,
         [gem_one, gem_two],
         rarity_code,
-        rarity_roll,
+        affixes,
         bless,
         enchant_hp,
     )
@@ -5332,14 +5357,14 @@ fn quality_colour(item_id: u32) -> [u8; 4] {
 }
 
 fn classic_item_tooltip(
-    item_uid: u32,
+    _item_uid: u32,
     item_id: u32,
     info: Option<&ItemInfo>,
     durability: Option<(u16, u16)>,
     plus: u8,
     gems: [u8; 2],
     rarity_code: u8,
-    rarity_roll: u8,
+    affixes: [u16; 4],
     bless: u8,
     enchant_hp: u8,
 ) -> Result<RgbaImage> {
@@ -5489,9 +5514,9 @@ fn classic_item_tooltip(
     if bless > 0 {
         lines.push((format!("Damage -{bless}%"), ORANGE));
     }
-    for slot in 0..rarity_bonus_slots(rarity_code) {
-        let (bonus, value, unit) = rarity_bonus(item_uid, rarity_roll, slot);
-        lines.push((format!("{bonus}: +{value}{unit}"), rarity_colour));
+    // The rarity's affixes, as the server rolled them.
+    for text in affixes.iter().filter_map(|affix| affix_text(*affix)) {
+        lines.push((text, rarity_colour));
     }
     // Gems, stones and the like say what they are for.
     if let Some(info) = info.filter(|_| !is_gear(item_id)) {
@@ -6071,7 +6096,7 @@ mod icon_tests {
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -6087,7 +6112,7 @@ mod icon_tests {
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -6161,7 +6186,7 @@ mod icon_tests {
             rarity: 0,
             gem_one: 255,
             gem_two: 0,
-            rarity_roll: 0,
+            affixes: [0; 4],
             bless: 0,
             enchant_hp: 0,
             color: 0,
@@ -6212,9 +6237,21 @@ mod icon_tests {
                 item,
                 action,
                 selected_rarity: 0,
+                selected_affix: None,
                 price: Default::default(),
             };
         }
+    }
+
+    #[test]
+    fn affixes_read_as_the_server_rolled_them() {
+        let words = super::affix_words(0x8002_1004, 0x0000_40c8);
+        assert_eq!(words, [0x1004, 0x8002, 0x40c8, 0]);
+        assert_eq!(super::affix_text(words[0]).as_deref(), Some("Attack +4%"));
+        assert_eq!(super::affix_text(words[1]).as_deref(), Some("Penetration +2%"));
+        assert_eq!(super::affix_text(words[2]).as_deref(), Some("Max HP +200"));
+        assert_eq!(super::affix_text(words[3]), None);
+        assert_eq!(super::rarity_upgrade_cost(2), Some((super::SUPER_DRAGONBALL, 1, 35)));
     }
 
     #[test]
@@ -6229,7 +6266,7 @@ mod icon_tests {
             rarity: 0,
             gem_one: 0,
             gem_two: 0,
-            rarity_roll: 0,
+            affixes: [0; 4],
             bless: 0,
             enchant_hp: 0,
             color: 0,
@@ -6240,6 +6277,7 @@ mod icon_tests {
             item,
             action: super::ItemContextAction::ImproveQuality,
             selected_rarity: 0,
+            selected_affix: None,
             price: crate::forge_rules::ForgePrice::Done,
         };
         assert!(!super::item_action_panel_confirm_enabled(panel, &[]));
@@ -6251,6 +6289,7 @@ mod icon_tests {
             },
             action: super::ItemContextAction::ImproveQuality,
             selected_rarity: 0,
+            selected_affix: None,
             price: crate::forge_rules::ForgePrice::Pay { item_type: 1_088_000, count: 2, result: 410006 },
         };
         let dragon_ball = |uid| crate::network::OwnedItem {
@@ -6289,7 +6328,7 @@ mod icon_tests {
             rarity: 0,
             gem_one,
             gem_two,
-            rarity_roll: 0,
+            affixes: [0; 4],
             bless: 0,
             enchant_hp: 0,
             color: 0,
@@ -6443,7 +6482,7 @@ mod icon_tests {
             rarity: 0,
             gem_one: 0,
             gem_two: 0,
-            rarity_roll: 0,
+            affixes: [0; 4],
             bless: 0,
             enchant_hp: 0,
             color: 0,
@@ -6581,7 +6620,7 @@ mod icon_tests {
         state.selected = Some(2);
         super::panel_image(&mut assets, &state)?.save(output.join("shop.png"))?;
         let info = super::item_info(&mut assets, 410_339);
-        super::equipment_tooltip_image(7, 410_339, info.as_ref(), 70, 70, 12, 13, 13, 2, 9, 3, 120)?
+        super::equipment_tooltip_image(7, 410_339, info.as_ref(), 70, 70, 12, 13, 13, 2, [0x1004, 0x8002, 0, 0], 3, 120)?
             .save(output.join("tooltip.png"))?;
         Ok(())
     }
@@ -6615,7 +6654,7 @@ mod icon_tests {
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -6631,7 +6670,7 @@ mod icon_tests {
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -6647,7 +6686,7 @@ mod icon_tests {
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -6663,7 +6702,7 @@ mod icon_tests {
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -6679,7 +6718,7 @@ mod icon_tests {
                 rarity: 0,
                 gem_one: 0,
                 gem_two: 0,
-                rarity_roll: 0,
+                affixes: [0; 4],
                 bless: 0,
                 enchant_hp: 0,
                 color: 0,
@@ -6719,16 +6758,18 @@ mod requirement_preview {
         });
         let info = super::item_info(&mut assets, 410_205);
         assert_eq!(info.as_ref().map(|info| (info.required_weapon_skill, info.required_attributes[0])), Some((11, 160)));
-        super::item_tooltip_image(1, 410_205, info.as_ref(), 12, 13, 13, 0, 0, 7, 121)
+        super::item_tooltip_image(1, 410_205, info.as_ref(), 12, 13, 13, 0, [0; 4], 7, 121)
             .expect("tooltip")
             .save(format!("{dir}/tooltip-requirements.png"))
             .expect("png");
         for item_id in [410_209, 700_013, 730_008] {
             let info = super::item_info(&mut assets, item_id);
-            super::item_tooltip_image(1, item_id, info.as_ref(), 0, 0, 0, 0, 0, 0, 0)
+            super::item_tooltip_image(1, item_id, info.as_ref(), 0, 0, 0, 0, [0; 4], 0, 0)
                 .expect("tooltip")
                 .save(format!("{dir}/tooltip-{item_id}.png"))
                 .expect("png");
         }
     }
 }
+
+
