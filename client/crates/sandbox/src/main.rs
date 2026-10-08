@@ -1281,6 +1281,15 @@ impl ApplicationHandler for App {
                 if self
                     .renderer
                     .as_ref()
+                    .is_some_and(|renderer| renderer.helper_icon_at(self.cursor))
+                {
+                    self.run_command(keybinds::Command::Helper);
+                    self.held = false;
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
                     .is_some_and(|renderer| renderer.nobility_icon_at(self.cursor))
                 {
                     self.toggle_nobility();
@@ -1675,6 +1684,11 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.shortcuts = shortcuts_view;
                     renderer.helper = helper_view;
+                    renderer.helper_on = self.helper.enabled;
+                    renderer.helper_tip = match self.keybinds.get(keybinds::Command::Helper) {
+                        Some(key) => format!("Helper ({})", key.label()),
+                        None => "Helper".to_owned(),
+                    };
                 }
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(

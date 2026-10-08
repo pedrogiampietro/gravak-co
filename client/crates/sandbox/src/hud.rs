@@ -947,6 +947,12 @@ pub fn ranking_button_rect(viewport: [f32; 2]) -> [f32; 4] {
     [left + width - 2.0, top, width, height]
 }
 
+/// The Helper button, beside the Ranking's.
+pub fn helper_button_rect(viewport: [f32; 2]) -> [f32; 4] {
+    let [left, top, width, height] = ranking_button_rect(viewport);
+    [left + width - 2.0, top, width, height]
+}
+
 fn hud_origin(viewport: [f32; 2]) -> [i32; 2] {
     let [x, y] = layout::main_hud_position(viewport);
     [x.round() as i32, y.round() as i32]

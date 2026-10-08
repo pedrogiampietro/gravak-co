@@ -794,6 +794,11 @@ pub struct Renderer {
     /// Where the Store icon was drawn, for clicks.
     store_icon_rect: Option<[f32; 4]>,
     ranking_icon_rect: Option<[f32; 4]>,
+    helper_icon_rect: Option<[f32; 4]>,
+    /// Whether the helper is on: its button's light.
+    pub helper_on: bool,
+    /// The Helper button's hint ("Helper (J)").
+    pub helper_tip: String,
     /// The Nobility Rank button beside the map plate.
     nobility_icon_rect: Option<[f32; 4]>,
     /// Where the revive buttons were drawn (and whether each revives
@@ -1062,6 +1067,9 @@ impl Renderer {
             bounty_tracker_rect: None,
             store_icon_rect: None,
             ranking_icon_rect: None,
+            helper_icon_rect: None,
+            helper_on: false,
+            helper_tip: String::new(),
             nobility_icon_rect: None,
             revive_rects: Vec::new(),
             souls: Vec::new(),
@@ -2687,6 +2695,13 @@ impl Renderer {
     /// Whether `position` is on the Nobility Rank button.
     pub fn nobility_icon_at(&self, position: [f32; 2]) -> bool {
         self.nobility_icon_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
+    /// Whether `position` is on the Helper button.
+    pub fn helper_icon_at(&self, position: [f32; 2]) -> bool {
+        self.helper_icon_rect.is_some_and(|[left, top, width, height]| {
             (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
         })
     }
@@ -4443,6 +4458,37 @@ impl Renderer {
             if let Some(tip) = self.textures.get(tip_key) {
                 draws.push(Draw {
                     texture: tip_key.to_owned(),
+                    vertices: quad([left, top - tip.size[1] - 4.0], tip.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // The Helper button, beside the Ranking's; its light says whether
+        // the helper is on.
+        let [left, top, width, height] = crate::hud::helper_button_rect(viewport);
+        self.helper_icon_rect = Some([left, top, width, height]);
+        let helper_hovered = self.helper_icon_at(cursor);
+        let helper_key = format!("@helper-button-{}-{}", u8::from(helper_hovered), u8::from(self.helper_on));
+        if !self.textures.contains_key(&helper_key) {
+            self.upload(&helper_key, crate::emblems::helper_button(helper_hovered, self.helper_on));
+        }
+        if self.textures.contains_key(&helper_key) {
+            draws.push(Draw {
+                texture: helper_key,
+                vertices: quad([left, top], [width, height], viewport),
+                depth_test: false,
+                sort_depth: f32::INFINITY,
+            });
+        }
+        if helper_hovered {
+            let tip_key = format!("@helper-tip-{}", self.helper_tip);
+            if !self.textures.contains_key(&tip_key) {
+                self.upload(&tip_key, crate::labels::tooltip_image(&self.helper_tip)?);
+            }
+            if let Some(tip) = self.textures.get(&tip_key) {
+                draws.push(Draw {
+                    texture: tip_key.clone(),
                     vertices: quad([left, top - tip.size[1] - 4.0], tip.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
