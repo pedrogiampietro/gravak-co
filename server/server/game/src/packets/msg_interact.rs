@@ -461,6 +461,25 @@ impl MsgInteract {
             return Ok(());
         }
 
+        // Stigma, Magic Shield and Star of Accuracy go on the living player
+        // aimed at, when one is within reach; else on the caster.
+        let buff_recipient = (crate::skills::casts_on_ally(skill.id) && self.target_id != character.id())
+            .then(|| {
+                state
+                    .entities()
+                    .into_iter()
+                    .find(|entity| entity.id() == self.target_id && entity.as_character().is_some())
+            })
+            .flatten()
+            .filter(|entity| {
+                let target = entity.basic();
+                let here = character.entity().location();
+                let there = target.location();
+                target.is_alive()
+                    && target.map_id() == character.entity().map_id()
+                    && f32::from(here.x.abs_diff(there.x).max(here.y.abs_diff(there.y)))
+                        <= skill.range.max(crate::skills::ALLY_BUFF_RANGE)
+            });
         if skill.status.is_some_and(|status| status.is_self_buff()) {
             // Fly is refused where the map forbids it (Redux `AddEffect`).
             let fly = skill.status.is_some_and(|status| status.effect() == crate::entities::StatusEffect::Flying);
@@ -507,20 +526,47 @@ impl MsgInteract {
             if skill.xp && !character.in_xp_skill() {
                 character.reset_ko_count();
             }
-            character.apply_status(effect, skill.status_duration);
+            let recipient = buff_recipient.as_ref().and_then(|entity| entity.as_character()).unwrap_or(character);
+            recipient.apply_status(effect, skill.status_duration);
             actor.send(MsgUserInfo::from(character)).await?;
-            actor.send(MsgPlayer::from(character)).await?;
+            if recipient.id() != character.id() {
+                recipient.owner().send(MsgUserInfo::from(recipient)).await?;
+                recipient.owner().send(MsgPlayer::from(recipient)).await?;
+                let location = recipient.entity().location();
+                let mut cast =
+                    MsgSkillEffect::new(character.id(), skill.id as u16, vec![super::SkillTarget::hit(recipient.id(), 0)]);
+                cast.level = cast_level(character, skill.id);
+                cast.target_x = location.x;
+                cast.target_y = location.y;
+                actor.send(cast.clone()).await?;
+                actor.screen().send_message(cast).await?;
+                recipient
+                    .owner()
+                    .send(MsgTalk::from_system(
+                        recipient.id(),
+                        TalkChannel::System,
+                        format!(
+                            "{} cast {} on you for {} seconds.",
+                            character.entity().name(),
+                            skill.name,
+                            skill.status_duration.as_secs()
+                        ),
+                    ))
+                    .await?;
+            } else {
+                actor.send(MsgPlayer::from(character)).await?;
+            }
             // Those around see it too (a flier rises, Superman glows).
-            actor.screen().send_message(MsgPlayer::from(character)).await?;
+            actor.screen().send_message(MsgPlayer::from(recipient)).await?;
             actor
                 .send(MsgTalk::from_system(
                     character.id(),
                     TalkChannel::System,
-                    format!(
-                        "{} activated for {} seconds.",
-                        skill.name,
-                        skill.status_duration.as_secs()
-                    ),
+                    if recipient.id() == character.id() {
+                        format!("{} activated for {} seconds.", skill.name, skill.status_duration.as_secs())
+                    } else {
+                        format!("{} cast on {}.", skill.name, recipient.entity().name())
+                    },
                 ))
                 .await?;
             if let Some(progress) = character.practice_skill(state.pool(), skill.id, 1).await? {

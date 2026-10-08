@@ -10,6 +10,16 @@ pub const CYCLONE_ID: u32 = 1_110;
 pub const SUPERMAN_ID: u32 = 1_025;
 pub const STIGMA_ID: u32 = 1_095;
 pub const MAGIC_SHIELD_ID: u32 = 1_090;
+pub const STAR_OF_ACCURACY_ID: u32 = 1_085;
+/// How far a Taoist reaches another player with a support status.
+pub const ALLY_BUFF_RANGE: f32 = 10.0;
+
+/// The Taoist's support statuses, which (as in the original) go on the
+/// player aimed at, or on the caster when none is: Stigma, Magic Shield and
+/// Star of Accuracy. The other statuses stay the caster's own.
+pub fn casts_on_ally(skill_id: u32) -> bool {
+    matches!(skill_id, STIGMA_ID | MAGIC_SHIELD_ID | STAR_OF_ACCURACY_ID)
+}
 pub const WHIRLWIND_BOOK_ITEM: u32 = 723_100;
 /// The skills a pure rebirth teaches: Trojan, Warrior and Fire Taoist.
 pub const CRUEL_SHADE_ID: u32 = 3_050;

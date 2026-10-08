@@ -18,6 +18,10 @@ const FAST_BLADE: u32 = 1_045;
 const CRUEL_SHADE: u32 = 3_050;
 
 async fn hero(state: &State, account: u32) -> Result<Actor<ActorState>, Error> {
+    hero_of(state, account, crate::packets::BaseClass::Trojan).await
+}
+
+async fn hero_of(state: &State, account: u32, class: crate::packets::BaseClass) -> Result<Actor<ActorState>, Error> {
     let (tx, mut replies) = tokio::sync::mpsc::channel(4096);
     tokio::spawn(async move { while replies.recv().await.is_some() {} });
     sqlx::query("INSERT INTO accounts (account_id, username, password) VALUES ($1, $2, 'x') ON CONFLICT (account_id) DO NOTHING")
@@ -30,7 +34,7 @@ async fn hero(state: &State, account: u32) -> Result<Actor<ActorState>, Error> {
     let inner = crate::packets::MsgRegister::build_character_with(
         format!("pvp{account}"),
         crate::packets::BodyType::MuscularMale,
-        crate::packets::BaseClass::Trojan,
+        class,
         account,
         1,
     )?;
@@ -152,5 +156,48 @@ async fn pvp_skill_journey() -> Result<(), Error> {
     assert!(struck, "PK mode strikes the guard");
     assert!(me.entity().flags().contains(crate::entities::Flags::BLUE_FLASHING_NAME), "striking a guard is a crime");
     map.remove_monster(guard);
+    Ok(())
+}
+
+/// A Taoist's Stigma, Magic Shield and Star of Accuracy go on the hero
+/// aimed at (the helper's party buffs), and on the caster when none is.
+#[tokio::test]
+#[ignore]
+async fn support_statuses_go_on_the_player_aimed_at() -> Result<(), Error> {
+    use crate::entities::StatusEffect;
+    std::env::set_var("DATA_LOCATION", concat!(env!("CARGO_MANIFEST_DIR"), "/../../data"));
+    std::env::set_var("SKILLS_DATA", concat!(env!("CARGO_MANIFEST_DIR"), "/data/skills.dat"));
+    let state = State::with_pool(tq_db::testing::pool().await).await?;
+    let caster = hero_of(&state, 512, crate::packets::BaseClass::Taoist).await?;
+    let friend = hero(&state, 511).await?;
+    let caster_entity = caster.entity();
+    let me = caster_entity.as_character().expect("caster");
+    let friend_entity = friend.entity();
+    let them = friend_entity.as_character().expect("friend");
+    let skills = [
+        (crate::skills::STIGMA_ID, StatusEffect::Stigma),
+        (crate::skills::MAGIC_SHIELD_ID, StatusEffect::Shield),
+        (crate::skills::STAR_OF_ACCURACY_ID, StatusEffect::Accuracy),
+    ];
+    for (skill, _) in skills {
+        me.learn_skill(state.pool(), skill, 1).await?;
+    }
+    let map = state.try_map(me.entity().map_id())?;
+    map.load().await?;
+    let mut beside = me.entity().location();
+    beside.x += 3;
+    them.entity().set_location(beside);
+
+    for (skill, status) in skills {
+        cast(&state, &caster, skill, them.id(), (beside.x, beside.y)).await?;
+        assert!(them.has_status(status), "skill {skill} goes on the player aimed at");
+        assert!(!me.has_status(status), "skill {skill} is not the caster's");
+    }
+    // Out of reach, or no one aimed at: the caster's own.
+    let mut far = beside;
+    far.x += 30;
+    them.entity().set_location(far);
+    cast(&state, &caster, crate::skills::STIGMA_ID, them.id(), (far.x, far.y)).await?;
+    assert!(me.has_status(StatusEffect::Stigma), "a player out of reach leaves the Stigma on the caster");
     Ok(())
 }
