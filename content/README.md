@@ -11,6 +11,10 @@ content/
   icons/      ícones dos itens (PNG; o build gera os .dds)
   maps/       objetos nossos em cada mapa: <id do mapa>.toml
   objects/    imagens desses objetos (PNG)
+  garments/   garments nossos: o corte de um garment original com textura nossa
+  accessories/ acessórios de arma: o modelo de uma arma original com textura
+              e efeito nossos, num slot próprio
+  textures/   texturas dos garments e acessórios (PNG) e os scripts que as pintam
   build/      gerado pelo build; não editar, não versionar
 ```
 
@@ -78,6 +82,65 @@ O ID diz ao jogo que tipo de item ele é:
 O botão **Sugerir** do editor procura o primeiro ID livre na mesma família e
 qualidade da base. Não use um ID que já existe na instalação para um item novo:
 isso substitui o item original.
+
+## Acessórios de arma (`accessories/*.toml`)
+
+Um acessório é um item que vai num slot próprio da janela de equipamento
+(coluna da esquerda, acima do garment) e veste a arma do mesmo tipo com o
+visual dele. Todos o veem assim; sem a arma certa, ele não muda nada.
+
+- `350xxx`: arma de duas mãos (slot direito);
+- `360xxx`: arma de uma mão (slot direito ou esquerdo);
+- `370xxx`: arco (slot direito);
+- `380xxx`: escudo (slot esquerdo).
+
+```toml
+[[accessory]]
+id = 370001                       # o item (em items/, como qualquer outro)
+model = 500279                    # a arma original cujo modelo ele usa
+texture = "textures/370001.png"   # opcional: sem ela, a textura da própria arma
+mesh = "models/370001.obj"        # opcional: um modelo 3D nosso no lugar do da
+                                  # arma (veja "Modelos de arma" abaixo)
+aura = "Bow130"                   # opcional: um efeito do 3DEffect.ini sempre
+                                  # sobre a arma ("none" para nenhum; sem ele,
+                                  # o da arma original)
+aura_tint = "ice"                 # opcional: a cor da aura (ice, legendary
+                                  # ou mythic)
+```
+
+A aura fica presa à arma, como o brilho dos arcos Super. Escolha efeitos de
+brilho de arma (`999.999.<família>.<id>` no `Action3DEffect.ini`); efeitos
+de partículas que se espalham, como o `angelwing`, deixam um rastro no chão.
+
+O build desenha o acessório como a arma `<família>9<dois últimos dígitos do
+id>` (o 370001 vira o 500901), um ID que nenhuma arma original usa. Ele copia
+as poses, os golpes e as flechas do `model` e grava `ini/accessory.ini`, que
+o servidor e o cliente leem. Por isso dois acessórios do mesmo tipo de arma
+não podem terminar com os mesmos dois dígitos.
+
+O item em si fica em `items/`. O Seraph Bow (`items/seraph_bow.toml`) usa o
+Cloud Cloak como `base`: sem atributos e sem desgaste.
+
+### Modelos de arma (`models/*.obj`)
+
+Um acessório pode ter um modelo 3D próprio, num `.obj` (o formato que o
+Blender exporta, com coordenadas de textura). O build coloca esse modelo no
+`.c3` da arma do `model`, mantendo os ossos e os movimentos dela. Assim ele é
+segurado, posado e atira como ela, e a corda do arco é puxada.
+
+1. Exporte a arma original como referência:
+   `cargo run -p gravak-content -- weapon-obj 500279 ../content/models/500279-reference.obj`
+   (a partir de `client/`).
+2. Faça o modelo nesse mesmo espaço (no Blender: importe a referência,
+   modele por cima, apague a referência e exporte com "Y up"). Cada vértice
+   segue o osso do vértice original mais perto; um grupo `g bone3` fixa o
+   osso das faces dele (o 5 é o meio da corda do arco).
+3. A textura é a do `texture` do acessório, mapeada pelas coordenadas do
+   `.obj`.
+
+O Seraph Bow é feito assim, inteiro por script:
+`python content/models/make_seraph_bow.py` gera o modelo, a textura e o
+ícone.
 
 ## Objetos nos mapas (estátuas, decoração)
 

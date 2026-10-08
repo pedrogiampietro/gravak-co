@@ -1,0 +1,11 @@
+# The Seraph Bow (content/accessories/seraph_bow.toml): a bow accessory of
+# ours, worn in the right accessory slot; it dresses the bow in its look.
+# Built on the Cloud Cloak: no attributes, never wears out.
+
+[[item]]
+id = 370001
+base = 182995
+icon = "icons/370001.png"
+name = "SeraphBow"
+type_name = "Accessory"
+description = "A bow accessory of pearl and ice with wings of light. Worn in the right accessory slot, it dresses your bow in its look."

@@ -3,6 +3,7 @@
 [[item]]
 id = 182995
 base = 181335
+icon = "icons/182995.png"
 name = "CloudCloak"
 price = 0
 cps_price = 0

@@ -71,6 +71,8 @@ pub struct Report {
     pub objects: usize,
     /// Garments of ours (`content/garments`).
     pub garments: usize,
+    /// Weapon accessories of ours (`content/accessories`).
+    pub accessories: usize,
     pub output: PathBuf,
 }
 
@@ -125,7 +127,20 @@ pub fn build(installation: &mut Installation, content: &Path) -> Result<Report> 
         report.icons += 1;
     }
     (report.maps, report.objects) = crate::maps::build(content, &report.output)?;
-    report.garments = crate::garments::build(installation, content, &report.output)?;
+    let (garments, garment_textures) = crate::garments::build(installation, content, &report.output)?;
+    let (accessories, accessory_textures) = crate::accessories::build(installation, content, &report.output)?;
+    (report.garments, report.accessories) = (garments, accessories);
+    let ours = garment_textures + &accessory_textures;
+    if !ours.is_empty() {
+        let mut textures = installation.read(crate::garments::TEXTURES)?;
+        if !textures.ends_with(b"
+") {
+            textures.extend_from_slice(b"
+");
+        }
+        textures.extend_from_slice(ours.as_bytes());
+        std::fs::write(report.output.join(crate::garments::TEXTURES), textures)?;
+    }
     // Last, so an interrupted build never looks finished.
     std::fs::write(
         report.output.join(MARKER),

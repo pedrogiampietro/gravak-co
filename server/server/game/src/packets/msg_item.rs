@@ -1038,6 +1038,8 @@ impl PacketProcess for MsgItem {
                 }
                 if expected_slot != position
                     && !(expected_slot == 4 && position == 5 && !crate::shop::ShopCatalog::is_two_handed(source.item_type))
+                    // A one-handed weapon's accessory dresses either hand.
+                    && !(position == 16 && source.item_type / 1_000 == 360)
                 {
                     dragdrop_log(format_args!(
                         "equip rejected: item_uid={} item_type={} expected_slot={} requested_slot={}",

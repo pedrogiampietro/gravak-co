@@ -115,8 +115,10 @@ impl StatusLayout {
     // right hand (1677), left hand (1675), armor (1678, 盔甲), boots (1676)
     // and the reserved empty position. SLOT_POSITIONS holds the matching
     // server positions (1 head, 2 neck, 3 armor, 4 right, 5 left, 6 ring,
-    // 7 bracelet, 8 boots, 9 garment).
-    const SLOT_RECTS: [(i32, i32, i32, i32); 10] = [
+    // 7 bracelet, 8 boots, 9 garment). Ours after them: the right and left
+    // weapon accessories (15, 16), in the left column the original leaves
+    // empty, framed by `accessory_frame`.
+    const SLOT_RECTS: [(i32, i32, i32, i32); 12] = [
         (153, 14, 40, 40),
         (153, 67, 40, 40),
         (153, 116, 40, 40),
@@ -127,8 +129,13 @@ impl StatusLayout {
         (129, 245, 65, 65),
         (7, 269, 40, 40),
         (0, 0, 0, 0),
+        (7, 67, 40, 40),
+        (7, 116, 40, 40),
     ];
-    const SLOT_POSITIONS: [u8; 10] = [1, 2, 6, 9, 7, 4, 5, 3, 8, 0];
+    const SLOT_POSITIONS: [u8; 12] = [1, 2, 6, 9, 7, 4, 5, 3, 8, 0, 15, 16];
+    /// The ring's frame (`SLOT_RECTS[2]`), which the accessories' are made
+    /// from.
+    const RING_FRAME: (i32, i32) = (153, 116);
 
     const INFO_X: i32 = 40;
     const INFO_WIDTH: i32 = 206;
@@ -1741,6 +1748,66 @@ fn status_tab_frames(tab: StatusTab) -> [&'static str; 2] {
 
 /// Character window frame: `DialogQuery` with the active child dialog and
 /// its native controls, all at their `GUI.ini` `[131-*]`..`[135-*]` offsets.
+/// The silhouette an accessory slot shows while empty.
+#[derive(Clone, Copy)]
+enum AccessoryShape {
+    /// A bow with its arrow: the right hand's.
+    Bow,
+    /// A shield: the left hand's.
+    Shield,
+}
+
+impl AccessoryShape {
+    /// Whether (x, y), in the 40px frame, is in the silhouette; both carry
+    /// a four pointed sparkle in the top right corner.
+    fn contains(self, x: f32, y: f32) -> bool {
+        let sparkle = {
+            let (dx, dy) = ((x - 32.0).abs(), (y - 8.0).abs());
+            dx * dy < 1.6 && dx + dy < 6.0
+        };
+        let shape = match self {
+            Self::Bow => {
+                let arc = ((x - 36.0).hypot(y - 20.0) - 20.0).abs() < 1.6 && x < 23.0 && (4.0..=36.0).contains(&y);
+                let string = (x - 23.0).abs() < 0.6 && (5.0..=35.0).contains(&y);
+                let shaft = (y - 20.0).abs() < 0.9 && (8.0..=30.0).contains(&x);
+                let head = (25.0..=33.0).contains(&x) && (y - 20.0).abs() < (33.0 - x) * 0.45;
+                arc || string || shaft || head
+            }
+            Self::Shield => {
+                let half = if y < 22.0 { 9.0 } else { 9.0 * (34.0 - y) / 12.0 };
+                (8.0..=34.0).contains(&y) && (x - 19.0).abs() <= half
+            }
+        };
+        shape || sparkle
+    }
+}
+
+/// An accessory slot's frame: the ring's, its silhouette wiped (each row of
+/// the inside takes the colour of its right end, the grain of the original
+/// runs along the rows) and `shape` drawn in its manner, a dark outline
+/// over a lighter fill.
+fn accessory_frame(ring: &RgbaImage, shape: AccessoryShape) -> RgbaImage {
+    let mut frame = ring.clone();
+    for y in 3..37 {
+        let plain = *ring.get_pixel(34, y);
+        for x in 7..35 {
+            frame.put_pixel(x, y, plain);
+        }
+    }
+    let inside = |x: i32, y: i32| (0..40).contains(&x) && (0..40).contains(&y) && shape.contains(x as f32 + 0.5, y as f32 + 0.5);
+    for y in 3..37 {
+        for x in 3..37 {
+            if !inside(x, y) {
+                continue;
+            }
+            let edge = [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| !inside(x + dx, y + dy));
+            let colour = if edge { [6, 22, 44, 255] } else { [47, 74, 96, 255] };
+            frame.put_pixel(x as u32, y as u32, Rgba(colour));
+        }
+    }
+    frame
+}
+
 pub fn status_base_image(
     assets: &mut Assets,
     active_tab: StatusTab,
@@ -1765,6 +1832,16 @@ pub fn status_base_image(
         i64::from(StatusLayout::PAPER_Y),
     );
     imageops::overlay(&mut image, &child, paper_x, paper_y);
+    if active_tab == StatusTab::Equipment {
+        let (x, y) = StatusLayout::RING_FRAME;
+        let ring = imageops::crop_imm(&child, x as u32, y as u32, 40, 40).to_image();
+        for (position, shape) in [(15, AccessoryShape::Bow), (16, AccessoryShape::Shield)] {
+            let slot = StatusLayout::SLOT_POSITIONS.iter().position(|slot| *slot == position).expect("accessory slot");
+            let rect = StatusLayout::slot_rect(slot);
+            let frame = accessory_frame(&ring, shape);
+            imageops::overlay(&mut image, &frame, paper_x + i64::from(rect.x), paper_y + i64::from(rect.y));
+        }
+    }
     // Details: attack and defence over the attributes' box (8, 194 in the
     // role panel).
     if active_tab == StatusTab::Attributes && attribute_details {
@@ -4095,6 +4172,10 @@ pub fn equipment_slot_for_item(assets: &mut Assets, item_type: u32) -> Option<u8
         500..=599 => return Some(4), // two-handed weapon
         900..=909 => return Some(5), // shield / off-hand
         1_050 => return Some(5),     // arrows
+        // Weapon accessories (ours): two-handed, one-handed and bow ones
+        // dress the right hand, shield ones the left.
+        350 | 360 | 370 => return Some(15),
+        380 => return Some(16),
         _ => {}
     }
 
@@ -4150,11 +4231,97 @@ pub fn equipment_slot_for_item(assets: &mut Assets, item_type: u32) -> Option<u8
     }
 }
 
+/// Our accessories (`ini/accessory.ini`, from the content build): the
+/// weapon look each dresses its weapon in (`[<item>]` `Look=`), and the
+/// tint of each look's aura (`AuraTint=`, a `magic::tint` name) and where
+/// its sparkles twinkle (`Sparkles=x y z;...`, in the weapon's rest pose).
+struct Accessories {
+    looks: HashMap<u32, u32>,
+    tints: HashMap<u32, &'static str>,
+    sparkles: HashMap<u32, Vec<[f32; 3]>>,
+}
+
+fn accessories(assets: &mut Assets) -> &'static Accessories {
+    static ACCESSORIES: std::sync::OnceLock<Accessories> = std::sync::OnceLock::new();
+    if let Some(accessories) = ACCESSORIES.get() {
+        return accessories;
+    }
+    let catalog = sandbox_data::ini::SectionCatalog::parse(&assets.read("ini/accessory.ini").unwrap_or_default());
+    let mut accessories = Accessories { looks: HashMap::new(), tints: HashMap::new(), sparkles: HashMap::new() };
+    for section in catalog.sections() {
+        let (Ok(item), Some(Ok(look))) = (section.name.parse(), section.first("Look").map(|look| look.trim().parse())) else {
+            continue;
+        };
+        accessories.looks.insert(item, look);
+        let tint = section.first("AuraTint").map(str::trim);
+        if let Some(tint) = ["ice", "legendary", "mythic"].into_iter().find(|name| Some(*name) == tint) {
+            accessories.tints.insert(look, tint);
+        }
+        let points: Vec<[f32; 3]> = section
+            .first("Sparkles")
+            .unwrap_or_default()
+            .split(';')
+            .filter_map(|point| {
+                let mut numbers = point.split_whitespace().filter_map(|number| number.parse().ok());
+                Some([numbers.next()?, numbers.next()?, numbers.next()?])
+            })
+            .collect();
+        if !points.is_empty() {
+            accessories.sparkles.insert(look, points);
+        }
+    }
+    ACCESSORIES.get_or_init(|| accessories)
+}
+
+fn accessory_look(assets: &mut Assets, item_type: u32) -> Option<u32> {
+    accessories(assets).looks.get(&item_type).copied()
+}
+
+/// Where sparkles twinkle over weapon look `look` (in its rest pose), when
+/// an accessory of ours gives it some.
+pub fn accessory_sparkles(assets: &mut Assets, look: u32) -> &'static [[f32; 3]] {
+    accessories(assets).sparkles.get(&look).map_or(&[], Vec::as_slice)
+}
+
+/// The tint the aura of weapon look `look` takes, when an accessory of ours
+/// gives it one.
+pub fn accessory_aura_tint(assets: &mut Assets, look: u32) -> Option<&'static str> {
+    accessories(assets).tints.get(&look).copied()
+}
+
+/// Whether `look` may dress `weapon`: one-handed over one-handed, two-handed
+/// over two-handed, bows over bows and shields over shields (the server's
+/// `skin_fits`).
+fn look_fits(weapon: u32, look: u32) -> bool {
+    let kind = |item: u32| match item / 1_000 {
+        500 => Some(2),
+        900 => Some(3),
+        410..=499 => Some(0),
+        501..=599 => Some(1),
+        _ => None,
+    };
+    kind(weapon).is_some() && kind(weapon) == kind(look)
+}
+
+/// What the weapon worn at `position` (4 right, 5 left) looks like, as the
+/// server shows it to others: the accessory of its hand (15, 16) on a
+/// weapon of its kind, else its skin, else itself; 0 for none.
+pub fn worn_look(assets: &mut Assets, equipment: &[crate::network::OwnedItem], position: u8) -> u32 {
+    let Some(weapon) = equipment.iter().find(|item| item.position == position) else {
+        return 0;
+    };
+    let accessory = equipment.iter().find(|item| item.position == position + 11);
+    accessory
+        .and_then(|accessory| accessory_look(assets, accessory.item_type))
+        .filter(|look| look_fits(weapon.item_type, *look))
+        .unwrap_or(if weapon.skin != 0 { weapon.skin } else { weapon.item_type })
+}
+
 pub fn equipment_slot_accepts_item(assets: &mut Assets, item_type: u32, slot: u8) -> bool {
     let Some(primary) = equipment_slot_for_item(assets, item_type) else {
         return false;
     };
-    primary == slot || (primary == 4 && slot == 5)
+    primary == slot || (primary == 4 && slot == 5) || (slot == 16 && item_type / 1_000 == 360)
 }
 
 /// Returns the paper-doll slot accepted by the refinery material IDs used by
@@ -6451,7 +6618,10 @@ mod icon_tests {
         character.strength = 40;
         character.agility = 15;
         character.vitality = 24;
-        let equipment = status_equipment_items(&character, &[], &[false; 10]);
+        let mut equipment = status_equipment_items(&character, &[], &[false; 10]);
+        // A bow accessory of ours in the right accessory slot; the left one
+        // stays empty.
+        equipment.push(crate::network::OwnedItem { uid: 1, item_type: 370_001, position: 15, durability: 1, max_durability: 1, ..equipment[0] });
         for (tab, name, details) in [
             (StatusTab::Equipment, "equipment", false),
             (StatusTab::Attributes, "attributes", false),

@@ -20,6 +20,31 @@ pub struct ShopCatalog {
 /// most): a level 127 bow is born 70/70, not the 1/1 of a fixed 100.
 static FRESH_DURABILITY: std::sync::OnceLock<HashMap<u32, (u16, u16)>> = std::sync::OnceLock::new();
 
+/// What each weapon accessory of ours is drawn as (`ini/accessory.ini`
+/// beside `ITEMTYPE_DATA`, written by the content build): `[<item>]`
+/// `Look=<weapon id>`.
+static ACCESSORY_LOOKS: std::sync::OnceLock<HashMap<u32, u32>> = std::sync::OnceLock::new();
+
+/// The weapon look accessory `item_type` dresses its weapon in.
+pub fn accessory_look(item_type: u32) -> Option<u32> {
+    ACCESSORY_LOOKS.get()?.get(&item_type).copied()
+}
+
+fn parse_accessory_looks(text: &str) -> HashMap<u32, u32> {
+    let mut looks = HashMap::new();
+    let mut item = None;
+    for line in text.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+            item = name.parse::<u32>().ok();
+        } else if let (Some(item), Some(look)) = (item, line.strip_prefix("Look=")) {
+            if let Ok(look) = look.trim().parse() {
+                looks.insert(item, look);
+            }
+        }
+    }
+    looks
+}
+
 /// The durability `item_type` is born with; 100/100 without the item data.
 pub fn fresh_durability(item_type: u32) -> (u16, u16) {
     FRESH_DURABILITY
@@ -108,6 +133,10 @@ impl ShopCatalog {
                         catalog.items.iter().map(|(id, item)| (*id, (item.durability, item.max_durability))).collect(),
                     );
                     tracing::info!(items = catalog.items.len(), path = ?itemtype_path, "Loaded item templates");
+                    let looks = Path::new(&itemtype_path).with_file_name("accessory.ini");
+                    let looks = fs::read_to_string(looks).map(|text| parse_accessory_looks(&text)).unwrap_or_default();
+                    tracing::info!(accessories = looks.len(), "Loaded weapon accessories");
+                    let _ = ACCESSORY_LOOKS.set(looks);
                 },
                 Err(error) => tracing::error!(%error, path = ?itemtype_path, "Failed to load item templates"),
             }
@@ -213,8 +242,17 @@ impl ShopCatalog {
             900..=909 => Some(5),
             // Arrows, beside a bow.
             1_050 => Some(5),
+            // Weapon accessories: two-handed, one-handed (either hand) and
+            // bow ones dress the right hand, shield ones the left.
+            350 | 360 | 370 => Some(15),
+            380 => Some(16),
             _ => None,
         }
+    }
+
+    /// Whether `item_id` is a weapon accessory (`350xxx`..`380xxx`).
+    pub fn is_accessory(item_id: u32) -> bool {
+        (350..=389).contains(&(item_id / 1_000))
     }
 
     pub fn is_two_handed(item_id: u32) -> bool {
@@ -395,6 +433,20 @@ fn parse_item_templates(bytes: &[u8]) -> HashMap<u32, ItemTemplate> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accessory_looks_are_read_by_item() {
+        let looks = super::parse_accessory_looks("[370001]
+Look=500901
+
+[360002]
+Look=410902
+");
+        assert_eq!(looks.get(&370001), Some(&500901));
+        assert_eq!(looks.get(&360002), Some(&410902));
+        assert_eq!(super::ShopCatalog::equipment_slot_for_item(370001), Some(15));
+        assert_eq!(super::ShopCatalog::equipment_slot_for_item(380001), Some(16));
+    }
+
     #[test]
     fn hands_follow_the_two_handed_rules() {
         use super::{hand_conflict, ShopCatalog};

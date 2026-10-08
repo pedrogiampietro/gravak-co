@@ -7,8 +7,10 @@
 //! (`GRAVAK_CONTENT`) and the server (`ITEMTYPE_DATA`) read before the
 //! installation.
 
+pub mod accessories;
 pub mod assets;
 pub mod build;
+pub mod c3mesh;
 pub mod dds;
 pub mod garments;
 pub mod items;
