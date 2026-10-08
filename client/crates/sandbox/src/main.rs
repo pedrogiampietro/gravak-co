@@ -5748,21 +5748,36 @@ impl App {
                 if !carried && damage > 0 {
                     self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
                 }
+                // A magic is cast with the casting motion (MagicType 903), not
+                // a blow: Thunder, Cure, Stigma.
+                let cast = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
+                    .is_some_and(|magic| magic.motion == Action::Cast.catalog_id());
+                // A status the caster puts on themselves (Fly, Intensify)
+                // without the casting motion strikes no blow.
+                let on_self = !cast && target_id == attacker_id && damage == 0;
                 // One motion and one sound (MagicType) for the cast, not one
                 // per target.
                 if first {
-                    self.play_attack_motion(attacker_id, now);
+                    if cast {
+                        self.play_cast_motion(attacker_id, now);
+                    } else if !on_self {
+                        self.play_attack_motion(attacker_id, now);
+                    }
                     if let Some(sound) = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
                         .and_then(|magic| magic.sound.clone())
                     {
                         self.play_sound(&sound);
                     }
                 }
-                if carried {
-                    if self.network_character_id == Some(attacker_id) {
+                if cast {
+                    // A magic's blow shakes the hero struck; a heal or a buff
+                    // does not.
+                    if damage > 0 && target_id != attacker_id && self.network_character_id == Some(target_id) {
                         self.play_blow_on_player(attacker_id, target_id, now);
                     }
-                } else {
+                } else if on_self {
+                    // Nothing struck.
+                } else if !carried || self.network_character_id == Some(attacker_id) {
                     self.play_blow_on_player(attacker_id, target_id, now);
                 }
                 self.network_status =
@@ -6449,6 +6464,28 @@ impl App {
     /// `attacker_id` strikes: a remote actor plays its attack motion. In the
     /// middle of a jump the jump plays on to its landing and only the
     /// arrows show the shot (Scatter shot while jumping).
+    /// The casting motion (903) of whoever casts a magic: the hero or
+    /// another on screen.
+    fn play_cast_motion(&mut self, caster_id: u32, now: f32) {
+        const CAST_SECONDS: f32 = 0.8;
+        if self.network_character_id == Some(caster_id) {
+            if !self.player.jumping() {
+                self.player.action = Action::Cast;
+                self.player.action_instance = self.player.action_instance.wrapping_add(1);
+                self.local_action = Some((Action::Cast, now, now + CAST_SECONDS));
+            }
+            return;
+        }
+        if let Some(actor) = self.remote_actors.get_mut(&caster_id) {
+            if actor.jumping && now < actor.movement_until {
+                return;
+            }
+            actor.action = Action::Cast.catalog_id() as u16;
+            actor.animation_started = now;
+            actor.animation_until = now + CAST_SECONDS;
+        }
+    }
+
     fn play_attack_motion(&mut self, attacker_id: u32, now: f32) {
         if let Some(actor) = self.remote_actors.get_mut(&attacker_id) {
             if actor.jumping && now < actor.movement_until {

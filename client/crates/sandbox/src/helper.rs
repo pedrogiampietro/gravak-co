@@ -50,6 +50,9 @@ const CAST_GAP: f32 = 0.4;
 /// before it goes on the same teammate again; a buff waits for the status.
 const HEAL_AGAIN: f32 = 1.2;
 const BUFF_AGAIN: f32 = 5.0;
+/// A buff goes on the same player once every this many seconds (Stigma,
+/// Magic Shield and Star of Accuracy last 60 to 80 by their level).
+const BUFF_EVERY: f32 = 70.0;
 const FOLLOW_GAP: f32 = 0.5;
 
 pub fn skill_name(skill: u32) -> &'static str {
@@ -76,7 +79,7 @@ fn mana_cost(skill: u32) -> u32 {
         ADVANCED_CURE => 160,
         NECTAR => 600,
         PRAY => 1_000,
-        STIGMA | MAGIC_SHIELD => 50,
+        STIGMA | MAGIC_SHIELD => 200,
         STAR_OF_ACCURACY => 200,
         _ => 0,
     }
@@ -565,7 +568,7 @@ fn next_cast(settings: &Settings, world: &World, memory: &Memory, life: u32) -> 
             (Gift::Accuracy, STAR_OF_ACCURACY, STAR_OF_ACCURACY_FLAG),
         ] {
             if one.pick.has(gift) && one.flags & flag == 0 && ready(skill) && fresh(skill, one.id) {
-                return Some((skill, one.id, BUFF_AGAIN));
+                return Some((skill, one.id, BUFF_EVERY));
             }
         }
     }
@@ -1395,6 +1398,11 @@ mod tests {
         team.team[0].life_percent = Some(100);
         team.team[0].flags = 0;
         assert_eq!(decide(&settings, &team, &mut Memory::default(), 0.0), vec![Act::Cast { skill: STIGMA, target: 2 }]);
+        // Not again on Robert before 70 seconds, then again.
+        let mut memory = Memory::default();
+        assert_eq!(decide(&settings, &team, &mut memory, 0.0), vec![Act::Cast { skill: STIGMA, target: 2 }]);
+        assert!(decide(&settings, &team, &mut memory, 69.0).is_empty());
+        assert_eq!(decide(&settings, &team, &mut memory, 70.5), vec![Act::Cast { skill: STIGMA, target: 2 }]);
         // Without the Stigma ticked, nothing.
         settings.picks[0].stigma = false;
         assert!(decide(&settings, &team, &mut Memory::default(), 0.0).is_empty());

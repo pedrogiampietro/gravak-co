@@ -529,17 +529,18 @@ impl MsgInteract {
             let recipient = buff_recipient.as_ref().and_then(|entity| entity.as_character()).unwrap_or(character);
             recipient.apply_status(effect, skill.status_duration);
             actor.send(MsgUserInfo::from(character)).await?;
+            // The cast is seen (the caster's motion, the effect on whom it
+            // goes on), on another or on the caster.
+            let location = recipient.entity().location();
+            let mut cast = MsgSkillEffect::new(character.id(), skill.id as u16, vec![super::SkillTarget::hit(recipient.id(), 0)]);
+            cast.level = cast_level(character, skill.id);
+            cast.target_x = location.x;
+            cast.target_y = location.y;
+            actor.send(cast.clone()).await?;
+            actor.screen().send_message(cast).await?;
             if recipient.id() != character.id() {
                 recipient.owner().send(MsgUserInfo::from(recipient)).await?;
                 recipient.owner().send(MsgPlayer::from(recipient)).await?;
-                let location = recipient.entity().location();
-                let mut cast =
-                    MsgSkillEffect::new(character.id(), skill.id as u16, vec![super::SkillTarget::hit(recipient.id(), 0)]);
-                cast.level = cast_level(character, skill.id);
-                cast.target_x = location.x;
-                cast.target_y = location.y;
-                actor.send(cast.clone()).await?;
-                actor.screen().send_message(cast).await?;
                 recipient
                     .owner()
                     .send(MsgTalk::from_system(
