@@ -923,6 +923,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                 y: location.y,
                 owner_id: me.id(),
                 silver: 0,
+                rarity: 0,
             };
             state.insert_ground_item(item);
             let packet = MsgGroundItem::new(item.uid, item.item_id, item.x, item.y);

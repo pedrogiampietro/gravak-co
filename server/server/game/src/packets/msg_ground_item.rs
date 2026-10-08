@@ -139,6 +139,14 @@ impl PacketProcess for MsgGroundItem {
                 },
             };
             if let Some(item) = added {
+                let item = if ground_item.rarity > 0 {
+                    character
+                        .set_item_rarity(state.pool(), item.uid, ground_item.rarity)
+                        .await?
+                        .unwrap_or(item)
+                } else {
+                    item
+                };
                 actor.send(MsgItemInfo::inventory_item(item)).await?;
                 actor
                     .send(MsgTalk::from_system(

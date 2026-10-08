@@ -37,6 +37,8 @@ pub struct GroundItem {
     pub y: u16,
     pub owner_id: u32,
     pub silver: u32,
+    /// The rarity the item is picked up with (equipment that fell rare).
+    pub rarity: u8,
 }
 
 #[derive(Debug)]

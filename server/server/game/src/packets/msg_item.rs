@@ -857,6 +857,8 @@ impl PacketProcess for MsgItem {
                     y: location.y,
                     owner_id: character.id(),
                     silver: 0,
+                    // It keeps its rarity when picked up again.
+                    rarity: item.rarity,
                 };
                 state.insert_ground_item(ground);
                 dragdrop_log(format_args!(
