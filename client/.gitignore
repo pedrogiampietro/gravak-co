@@ -19,4 +19,6 @@ login-art-probe/
 
 # The key of the encrypted game pack (tools/package-client.ps1)
 /installer/pack.key
+# The release key that signs updates (tools/package-client.ps1)
+/keys/
 *.gpk

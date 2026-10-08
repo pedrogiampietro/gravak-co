@@ -11,6 +11,10 @@
     host that serves static files will do: a VPS with nginx, Cloudflare R2,
     an S3 bucket.
 
+    manifest.txt is signed with the release key (client\keys\update.key,
+    made by package-client.ps1) into manifest.sig: a release client takes
+    no manifest without it. Upload manifest.sig and manifest.txt last.
+
     gravak.ini is left out: it is each install's own (game folder, update
     address), written by the installer.
 
@@ -30,6 +34,12 @@ if (-not (Test-Path (Join-Path $Package "Gravak.exe"))) {
 }
 $version = (Select-String -Path (Join-Path $client "Cargo.toml") -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 
+$signer = Join-Path $client "target\dist\release\gravak-sign.exe"
+$secret = Join-Path $client "keys\update.key"
+if (-not (Test-Path $signer) -or -not (Test-Path $secret)) {
+    throw "No release key or signer ($secret, $signer); run tools\package-client.ps1 first."
+}
+
 if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
 New-Item -ItemType Directory -Force $Out | Out-Null
 
@@ -48,5 +58,8 @@ Get-ChildItem $Package -Recurse -File |
         Write-Host ("  {0,-28} {1,12:N0} bytes" -f $relative, $_.Length)
     }
 # Written last, so a client never finds a manifest naming files not yet there.
-$lines -join "`n" | Set-Content -NoNewline -Encoding ascii (Join-Path $Out "manifest.txt")
-Write-Host "dist\update ready for v$version. Upload its contents (manifest.txt last)." -ForegroundColor Green
+$manifest = Join-Path $Out "manifest.txt"
+$lines -join "`n" | Set-Content -NoNewline -Encoding ascii $manifest
+& $signer sign $secret $manifest
+if ($LASTEXITCODE -ne 0) { throw "gravak-sign failed" }
+Write-Host "dist\update ready for v$version. Upload its contents (manifest.sig and manifest.txt last)." -ForegroundColor Green

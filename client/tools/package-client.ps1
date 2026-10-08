@@ -21,6 +21,13 @@
     client\installer\pack.key (made on the first run, never committed);
     keep it to make packs for clients already handed out.
 
+    The client is also built with the release key's public half
+    (client\keys\update.pub, made by gravak-sign on the first run, never
+    committed): it then takes only update manifests that
+    tools\publish-update.ps1 signed with client\keys\update.key. Keep
+    that key off the update host, and keep it: a new one orphans every
+    client already handed out.
+
 .EXAMPLE
     .\tools\package-client.ps1
     .\tools\package-client.ps1 -Assets D:\Conquer5065 -Auth 192.168.0.10:9958
@@ -78,13 +85,24 @@ $env:CARGO_TARGET_DIR = Join-Path $client "target\dist"
 $env:GRAVAK_PACK_KEY = $packKey
 Push-Location $client
 try {
+    cargo build --release -p gravak-content --bin gravak-pack --bin gravak-sign
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed (gravak-pack, gravak-sign)" }
+    # The release key the updates are signed with; its public half goes
+    # into the client, which then refuses unsigned manifests.
+    $keys = Join-Path $client "keys"
+    if (-not (Test-Path (Join-Path $keys "update.key"))) {
+        & (Join-Path $client "target\dist\release\gravak-sign.exe") keygen $keys
+        if ($LASTEXITCODE -ne 0) { throw "gravak-sign keygen failed" }
+        Write-Host "New release key: $keys\update.key (keep it, never commit it, never upload it)" -ForegroundColor Yellow
+    }
+    $updateKey = (Get-Content -Raw (Join-Path $keys "update.pub")).Trim()
+    if ($updateKey -notmatch '^[0-9a-f]{64}$') { throw "$keys\update.pub must hold 64 hexadecimal digits" }
+    $env:GRAVAK_UPDATE_KEY = $updateKey
     cargo build --release -p conquer-sandbox --features packed-only
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-    cargo build --release -p gravak-content --bin gravak-pack
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed (gravak-pack)" }
 } finally {
     Pop-Location
-    Remove-Item Env:RUSTFLAGS, Env:CARGO_TARGET_DIR, Env:GRAVAK_PACK_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:RUSTFLAGS, Env:CARGO_TARGET_DIR, Env:GRAVAK_PACK_KEY, Env:GRAVAK_UPDATE_KEY -ErrorAction SilentlyContinue
 }
 
 # 4. The executable, its configuration and the licenses.

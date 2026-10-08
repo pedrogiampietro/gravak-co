@@ -21,6 +21,8 @@ fontdb = "0.23"
 fontdue = "0.9"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav"] }
 ureq = "3"
+# The release key the update manifests are signed with (updater.rs).
+ed25519-dalek = "2"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
