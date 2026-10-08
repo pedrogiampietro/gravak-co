@@ -1914,7 +1914,10 @@ impl Character {
     /// Helmet, armor and shield dyes packed for the spawn packet.
     pub fn appearance_colors(&self) -> i32 {
         let color = |slot: u8| self.equipment_item(slot).map_or(0, |item| i32::from(item.color));
-        color(3) | (color(1) << 8) | (color(5) << 16)
+        // The top byte: the weapons' rarity (right hand, then left, three
+        // bits each), for their Legendary and Mythic glows.
+        let rarity = |slot: u8| self.equipment_item(slot).map_or(0, |item| i32::from(item.rarity.min(7)));
+        color(3) | (color(1) << 8) | (color(5) << 16) | (rarity(4) << 24) | (rarity(5) << 27)
     }
 
     /// Sets the HP enchantment of an owned item.

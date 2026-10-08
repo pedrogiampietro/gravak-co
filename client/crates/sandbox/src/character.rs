@@ -18,6 +18,8 @@ pub struct Part {
     track: usize,
     /// The weapon this part is (its item type), 0 for the rest.
     pub item: u32,
+    /// A weapon held in the left hand.
+    pub left: bool,
 }
 #[derive(Clone)]
 pub struct Character {
@@ -256,6 +258,7 @@ impl Character {
             actions_local: Vec::new(),
             track: index,
             item: 0,
+            left: false,
         }];
 
         if hair != 0 {
@@ -304,6 +307,7 @@ impl Character {
                 let mut part = part;
                 part.actions_local = weapon_action_motions(assets, weapon, &action_codes);
                 part.item = weapon;
+                part.left = attachment == "v_l_weapon";
                 parts.push(part);
             }
         }
@@ -419,13 +423,13 @@ impl Character {
     /// The weapons held and where the hand holds each now (its dummy,
     /// `v_r_weapon` or `v_l_weapon`, posed as `vertices` poses it): the
     /// effects of a weapon hang there, in the dummy's own units.
-    pub fn weapon_matrices(&self, seconds: f32, action: Action, progress: Option<f32>) -> Vec<(u32, Matrix4)> {
+    pub fn weapon_matrices(&self, seconds: f32, action: Action, progress: Option<f32>) -> Vec<(u32, Matrix4, bool)> {
         self.parts
             .iter()
             .filter(|part| part.item != 0)
             .map(|part| {
                 let track = &self.actions[action.index()].motions[part.track];
-                (part.item, track.matrix_at(0, self.frame(track, seconds, action, progress)))
+                (part.item, track.matrix_at(0, self.frame(track, seconds, action, progress)), part.left)
             })
             .collect()
     }
@@ -941,6 +945,7 @@ fn load_dyed_attachment(
         ),
         track,
         item: 0,
+        left: false,
     })
 }
 

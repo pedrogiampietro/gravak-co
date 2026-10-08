@@ -824,6 +824,8 @@ pub struct Renderer {
     /// Where an effect bound to a weapon hangs (the weapon's posed bone);
     /// `None` for effects placed at the actor's feet.
     effect_attachment: Option<Matrix4>,
+    /// The tint an effect is drawn recoloured with (a rarity's glow).
+    effect_tint: Option<&'static str>,
     /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
     /// the hero), the effect and when it began.
     weapon_flashes: Vec<(Option<u32>, String, f32)>,
@@ -1070,6 +1072,7 @@ impl Renderer {
             current_trail: (0.0, Vec::new()),
             effect_yaw: None,
             effect_attachment: None,
+            effect_tint: None,
             weapon_flashes: Vec::new(),
             last_hero_swing: 0,
             last_remote_swing: HashMap::new(),
@@ -1173,10 +1176,12 @@ impl Renderer {
     /// What Super weapons always show (`Action3DEffect.ini` 999.999),
     /// bound to each weapon where it is held.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn push_weapon_auras(
         &mut self,
         assets: &mut Assets,
-        weapons: Vec<(u32, Matrix4)>,
+        weapons: Vec<(u32, Matrix4, bool)>,
+        rarity: [u8; 2],
         origin: [f32; 2],
         facing: f32,
         time: f32,
@@ -1184,16 +1189,36 @@ impl Renderer {
         viewport: [f32; 2],
         draws: &mut Vec<Draw>,
     ) {
-        for (weapon, matrix) in weapons {
-            let Some(name) = self.weapon_effect(assets, "999", weapon) else {
-                continue;
-            };
+        for (weapon, matrix, left) in weapons {
             self.effect_yaw = Some(facing);
             self.effect_attachment = Some(matrix);
-            self.push_looping_effect(assets, &name, origin, time, sort_depth, viewport, draws);
+            if let Some(name) = self.weapon_effect(assets, "999", weapon) {
+                self.push_looping_effect(assets, &name, origin, time, sort_depth, viewport, draws);
+            }
+            // Legendary and Mythic: the kind's own top Super glow, gold or
+            // crimson, whatever the weapon's level and quality.
+            let tint = crate::magic::rarity_tint(rarity[usize::from(left)]);
+            if let (Some(tint), Some(name)) = (tint, self.kind_glow(assets, weapon)) {
+                self.effect_tint = Some(tint);
+                self.push_looping_effect(assets, &name, origin, time, sort_depth + 0.001, viewport, draws);
+                self.effect_tint = None;
+            }
             self.effect_attachment = None;
             self.effect_yaw = None;
         }
+    }
+
+    /// The Super glow of the highest weapon of `weapon`'s kind (a level 130
+    /// blade's for every blade), shaped for that kind of weapon.
+    fn kind_glow(&mut self, assets: &mut Assets, weapon: u32) -> Option<String> {
+        self.weapon_effect(assets, "999", weapon)?;
+        let prefix = format!("999.{}.", weapon / 1_000);
+        let catalog = self.swing_effects.as_ref()?;
+        catalog
+            .iter()
+            .filter_map(|(key, name)| Some((key.strip_prefix(&prefix)?.parse::<u32>().ok()?, name)))
+            .max_by_key(|(item, _)| *item)
+            .map(|(_, name)| name.clone())
     }
 
     /// Plays an effect over and over (status effects): the time wraps at
@@ -1319,8 +1344,13 @@ impl Renderer {
         if frame >= effect.frames {
             return false;
         }
+        let tint = self.effect_tint;
+        let key_of = |texture: &str| match tint {
+            Some(tint) => crate::magic::tinted_key(texture, tint),
+            None => texture.to_owned(),
+        };
         for layer in &effect.layers {
-            self.texture(assets, &layer.texture);
+            self.texture(assets, &key_of(&layer.texture));
         }
         let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
         let scale = self.effect_scale;
@@ -1350,7 +1380,8 @@ impl Renderer {
             ([(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0], span)
         });
         for layer in &effect.layers {
-            if !self.textures.contains_key(&layer.texture) {
+            let texture = key_of(&layer.texture);
+            if !self.textures.contains_key(&texture) {
                 continue;
             }
             for (mesh_index, mesh) in layer.document.meshes.iter().enumerate() {
@@ -1401,7 +1432,7 @@ impl Renderer {
                     })
                     .collect();
                 draws.push(Draw {
-                    texture: layer.texture.clone(),
+                    texture: texture.clone(),
                     vertices: mesh
                         .opaque_indices
                         .iter()
@@ -1458,7 +1489,7 @@ impl Renderer {
                 }
                 if !vertices.is_empty() {
                     draws.push(Draw {
-                        texture: layer.texture.clone(),
+                        texture: texture.clone(),
                         vertices,
                         depth_test: false,
                         sort_depth,
@@ -1496,7 +1527,7 @@ impl Renderer {
                 }
                 if !vertices.is_empty() {
                     draws.push(Draw {
-                        texture: layer.texture.clone(),
+                        texture: texture.clone(),
                         vertices,
                         depth_test: false,
                         sort_depth,
@@ -1916,11 +1947,23 @@ impl Renderer {
                     }
                 };
                 while let Ok(path) = request_rx.recv() {
-                    let image = match path.strip_suffix(crate::magic::ADDITIVE_SUFFIX) {
-                        Some(texture) => assets.image(texture).map(crate::magic::additive_image),
-                        None => assets.image(&path),
-                    }
-                    .map_err(|error| error.to_string());
+                    let (texture, additive) = match path.strip_suffix(crate::magic::ADDITIVE_SUFFIX) {
+                        Some(texture) => (texture, true),
+                        None => (path.as_str(), false),
+                    };
+                    // A rarity's glow: the texture recoloured first.
+                    let (texture, tint) = match texture.split_once(crate::magic::TINT_MARK) {
+                        Some((texture, name)) => (texture, crate::magic::tint(name)),
+                        None => (texture, None),
+                    };
+                    let image = assets
+                        .image(texture)
+                        .map(|image| match tint {
+                            Some(tint) => crate::magic::tinted(image, tint),
+                            None => image,
+                        })
+                        .map(|image| if additive { crate::magic::additive_image(image) } else { image })
+                        .map_err(|error| error.to_string());
                     if result_tx
                         .send(LoadedTexture {
                             path,
@@ -3097,7 +3140,11 @@ impl Renderer {
             } else {
                 character.weapon_matrices(time, player.action, player.progress().or(action_progress))
             };
-            self.push_weapon_auras(assets, weapons, origin, player.facing, time, actor_depth + 0.04, viewport, &mut draws);
+            let rarity_of = |position: u8| {
+                equipment.iter().find(|item| item.position == position).map_or(0, |item| item.rarity)
+            };
+            let rarity = [rarity_of(4), rarity_of(5)];
+            self.push_weapon_auras(assets, weapons, rarity, origin, player.facing, time, actor_depth + 0.04, viewport, &mut draws);
         }
         if time < hit_until {
             if !self.textures.contains_key("@hit-flash") {
@@ -3436,7 +3483,7 @@ impl Renderer {
                 } else {
                     remote_character.weapon_matrices(0.0, Action::Idle, None)
                 };
-                self.push_weapon_auras(assets, weapons, origin, facing, time, depth + 0.04, viewport, &mut draws);
+                self.push_weapon_auras(assets, weapons, actor.weapon_rarity, origin, facing, time, depth + 0.04, viewport, &mut draws);
             }
             if !actor.npc && !monster && !actor.name.is_empty() {
                 self.push_speech(
@@ -6798,3 +6845,4 @@ mod shift_screen_tests {
         assert_eq!(shift_screen_step([350.0, 190.0], [1023.0, 767.0], viewport, 10.0), [356.0, 192.0]);
     }
 }
+
