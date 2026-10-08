@@ -349,8 +349,7 @@ impl MsgAction {
         }
 
         // Jumping faster than a client can: back to where the server has them.
-        let cells = f32::from(loc.x.abs_diff(new_x)).hypot(f32::from(loc.y.abs_diff(new_y)));
-        if !me.keeps_pace(crate::movement_pace::jump_cost(cells), "jump") {
+        if !me.keeps_pace(crate::movement_pace::jump_cost_between((loc.x, loc.y), (new_x, new_y)), "jump") {
             me.kick_back().await?;
             return Ok(());
         }
@@ -619,6 +618,16 @@ impl PacketProcess for MsgAction {
                 for item in character.inventory_items() {
                     actor.send(super::MsgItemInfo::inventory_item(item)).await?;
                 }
+                // Gravak's client asks no guild (MsgAction 97) at login: it
+                // comes with the items, and the hero's look carries it.
+                if let Some(guild) = state.guild_manager().guild_for(character.id()) {
+                    actor
+                        .send(super::MsgGuild::new(super::SET_GUILD, guild.id).with_strings([guild.name.clone()]))
+                        .await?;
+                    super::send_guild_members(state, character.id(), &guild).await?;
+                    crate::guild_panel::refresh_look(state, character.id()).await?;
+                    crate::guild_panel::send_relations(state, character.id()).await?;
+                }
                 Ok(())
             },
             ActionType::Reborn => self.handle_reborn(state, actor).await,
@@ -660,6 +669,8 @@ impl PacketProcess for MsgAction {
                         .send(super::MsgGuild::new(super::SET_GUILD, guild.id).with_strings([guild.name.clone()]))
                         .await?;
                     super::send_guild_members(state, character.id(), &guild).await?;
+                    // The hero's own look carries the guild their label shows.
+                    crate::guild_panel::refresh_look(state, character.id()).await?;
                 }
                 actor.send(self.clone()).await?;
                 Ok(())

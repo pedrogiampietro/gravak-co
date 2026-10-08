@@ -2949,7 +2949,10 @@ impl Character {
         let Some(gem) = self.inventory_items().into_iter().find(|owned| owned.uid == gem_uid) else {
             return Ok(SocketOutcome::NotFound);
         };
-        if !(700_000..800_000).contains(&gem.item_type) || gem.item_type % 1000 == 0 {
+        // Only socket gems (7000fq: family 0-7, quality 1-3); an ExpBall
+        // (723700) or a potion is no gem.
+        let socket_gem = gem.item_type / 1_000 == 700 && (1..=3).contains(&(gem.item_type % 10)) && (gem.item_type % 1_000) / 10 < 8;
+        if !socket_gem {
             return Ok(SocketOutcome::InvalidGem);
         }
         if occupied {

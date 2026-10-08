@@ -46,13 +46,6 @@ fn frame(panel: QuickPanel) -> Option<Frame> {
             anchor: Anchor::TopCenter,
             close: &[[263, 10, 15, 15]],
         },
-        // [0-133] plus [133-1510]/[133-1511].
-        QuickPanel::Guild => Frame {
-            art: "data/main/DialogQuery_Faction.dds",
-            size: [250, 392],
-            anchor: Anchor::Left,
-            close: &[[210, 23, 15, 15], [144, 350, 63, 21]],
-        },
         // [0-137] plus [137-1138].
         QuickPanel::Trade => Frame {
             art: "data/main/DialogTrade.dds",
@@ -585,33 +578,6 @@ fn guild_controls(has_guild: bool, pending_invite: bool) -> Vec<Control<GuildPan
         ));
     }
     controls
-}
-
-pub fn guild_action_at(
-    viewport: [f32; 2],
-    cursor: [f32; 2],
-    has_guild: bool,
-    pending_invite: bool,
-) -> Option<GuildPanelAction> {
-    hit(
-        &guild_controls(has_guild, pending_invite),
-        local(QuickPanel::Guild, viewport, cursor)?,
-    )
-}
-
-pub fn guild_member_at(viewport: [f32; 2], cursor: [f32; 2]) -> Option<usize> {
-    let point = local(QuickPanel::Guild, viewport, cursor)?;
-    (0..GUILD_MEMBER_ROWS).find(|&row| {
-        inside(
-            [
-                30,
-                GUILD_MEMBER_TOP + row as i32 * GUILD_MEMBER_ROW,
-                190,
-                GUILD_MEMBER_ROW,
-            ],
-            point,
-        )
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1495,20 +1461,6 @@ mod tests {
             team_portrait_at(viewport, at(QuickPanel::Team, [113, 10, 47, 47])),
             Some(2)
         );
-        assert_eq!(
-            guild_action_at(
-                viewport,
-                at(QuickPanel::Guild, [46, 320, 64, 22]),
-                true,
-                false
-            ),
-            Some(GuildPanelAction::Leave)
-        );
-        assert!(close_at(
-            QuickPanel::Guild,
-            viewport,
-            at(QuickPanel::Guild, [144, 350, 63, 21])
-        ));
         let mut trade = crate::network::TradeView::default();
         trade.active = true;
         assert_eq!(

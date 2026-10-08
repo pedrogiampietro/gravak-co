@@ -713,6 +713,7 @@ impl MsgInteract {
             // Toward the aimed monster or the clicked cell.
             let toward = map
                 .monster_entity(self.target_id)
+                .or_else(|| state.entity(self.target_id).filter(|entity| entity.is_character()))
                 .map(|entity| {
                     let location = entity.basic().location();
                     (i32::from(location.x), i32::from(location.y))
@@ -723,8 +724,7 @@ impl MsgInteract {
                 return Ok(());
             }
             let cells = crate::skills::line_cells(from, toward, skill.line);
-            let mut hit = map
-                .monster_entities()
+            let mut hit = area_candidates(state, &map, character)
                 .into_iter()
                 .filter(|candidate| {
                     let entity = candidate.basic();
@@ -742,9 +742,9 @@ impl MsgInteract {
             hit.sort_by_key(|target| target.id());
             hit
         } else if skill.centered {
-            // Around the caster: every living monster within the radius.
-            let mut around = map
-                .monster_entities()
+            // Around the caster: every living monster, and every player PK
+            // allows, within the radius.
+            let mut around = area_candidates(state, &map, character)
                 .into_iter()
                 .filter(|candidate| {
                     let entity = candidate.basic();
@@ -816,7 +816,9 @@ impl MsgInteract {
             },
             None => true,
         };
-        let valid_target = primary_entity.map_id() == character.entity().map_id()
+        let guard_spared = primary.as_monster().is_some_and(|monster| !may_strike_monster(character, monster));
+        let valid_target = !guard_spared
+            && primary_entity.map_id() == character.entity().map_id()
             && tq_math::in_screen(character_location.into(), primary_location.into())
             && distance <= skill.range
             && !primary_entity.is_dead()
@@ -841,11 +843,9 @@ impl MsgInteract {
             return None;
         }
 
-        let primary_is_monster = primary.as_monster().is_some();
         let mut targets = vec![primary.clone()];
-        if skill.radius > 0.0 && primary_is_monster {
-            let mut area_targets = map
-                .monster_entities()
+        if skill.radius > 0.0 {
+            let mut area_targets = area_candidates(state, map, character)
                 .into_iter()
                 .filter(|candidate| candidate.id() != primary.id())
                 .filter(|candidate| {
@@ -1091,6 +1091,7 @@ impl MsgInteract {
             }
             if let Some(monster) = target.as_monster() {
                 crate::systems::monster_ai::provoke(monster.id(), character.id());
+                guard_crime(character, monster).await?;
                 // Life is leeched from what the monster had, not past it.
                 bounty_leech(state, character, monster, outcome.damage.min(u32::from(health_before.current))).await?;
                 hit_experience += crate::leveling::combat_experience(
@@ -1156,6 +1157,7 @@ impl MsgInteract {
         for owner in player_owners {
             owner.send(effect.clone()).await?;
         }
+        crate::gem_effects::on_attack(character).await?;
         self.degrade_used_weapons(state, actor, character).await?;
         // Attack skills learn as much as the hit earned (Redux
         // `AddSkillExperience(expGain)`), at least one.
@@ -1178,6 +1180,67 @@ impl MsgInteract {
         }
         Ok(())
     }
+}
+
+/// Whether `character`'s skill may strike the player `target`: not
+/// themselves, alive, where PK is allowed, in a kill mode that lets it (or
+/// an event's enemy), not spared by team mode, not an event ally, and not
+/// just revived.
+fn skill_may_strike(state: &State, character: &crate::entities::Character, target: &crate::entities::Character) -> bool {
+    let pk_disabled = state
+        .try_map(character.entity().map_id())
+        .is_ok_and(|map| map.flags().contains(super::MapFlags::PK_DISABLED));
+    target.id() != character.id()
+        && !target.entity().is_dead()
+        && target.entity().map_id() == character.entity().map_id()
+        && !pk_disabled
+        && (character.can_attack_character(target) || crate::events::enemies(character.id(), target.id()))
+        && !team_mode_spares(state, character, target)
+        && !crate::events::allies(character.id(), target.id())
+        && !target.revive_protected()
+}
+
+/// Whether `character` may strike `monster`: a city guard only in PK mode
+/// (striking one is a crime); any other monster always.
+fn may_strike_monster(character: &crate::entities::Character, monster: &crate::entities::Monster) -> bool {
+    !crate::systems::monster_ai::is_guard(monster.monster_type().id) || character.kill_mode() == 0
+}
+
+/// Striking a guard flashes the name blue, as striking a player does.
+async fn guard_crime(character: &crate::entities::Character, monster: &crate::entities::Monster) -> Result<(), Error> {
+    if !crate::systems::monster_ai::is_guard(monster.monster_type().id) {
+        return Ok(());
+    }
+    let flashing = character.entity().flags().contains(crate::entities::Flags::BLUE_FLASHING_NAME);
+    character.flash_name(crate::death::ATTACK_FLASH);
+    if !flashing {
+        let update = MsgPlayer::from(character);
+        character.owner().send(update.clone()).await?;
+        if let Ok(screen) = character.try_screen() {
+            screen.send_message(update).await?;
+        }
+    }
+    Ok(())
+}
+
+/// What an area skill of `character` may strike on `map`: its monsters and
+/// the players [`skill_may_strike`] lets it.
+fn area_candidates(
+    state: &State,
+    map: &crate::world::Map,
+    character: &crate::entities::Character,
+) -> Vec<Arc<crate::entities::GameEntity>> {
+    let mut candidates: Vec<_> = map
+        .monster_entities()
+        .into_iter()
+        .filter(|entity| entity.as_monster().is_none_or(|monster| may_strike_monster(character, monster)))
+        .collect();
+    candidates.extend(state.entities().into_iter().filter(|entity| {
+        entity
+            .as_character()
+            .is_some_and(|target| skill_may_strike(state, character, target))
+    }));
+    candidates
 }
 
 /// Experience, drops and the death blow when `character` (or their pet,
@@ -1257,6 +1320,7 @@ pub(crate) async fn reward_monster_defeat(
         let share = base_share + u64::from((index as u64) < remainder);
         let share = crate::store::with_vip_bonus(share, state.vip().is_vip(recipient.id()));
         let leveled = recipient.grant_experience(share.max(1));
+        crate::guild_panel::add_experience(state, recipient, share).await?;
         if let Some(level) = leveled {
             crate::leveling::after_level_up(state, recipient, level).await?;
         }
@@ -1579,6 +1643,13 @@ impl PacketProcess for MsgInteract {
             tracing::debug!(target_id = self.target_id, "Rejected invalid player attack target");
             return Ok(());
         }
+        if let Some(monster) = target.as_monster().filter(|monster| !may_strike_monster(character, monster)) {
+            tracing::debug!(target_id = monster.id(), "Guard spared outside PK mode");
+            actor
+                .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, "Switch to PK mode to attack the guards."))
+                .await?;
+            return Ok(());
+        }
 
         let now = Instant::now();
         let next_attack = NEXT_PLAYER_ATTACK.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1733,6 +1804,7 @@ impl PacketProcess for MsgInteract {
         if let Some(monster) = target.as_monster() {
             crate::systems::monster_ai::provoke(monster.id(), character.id());
             bounty_leech(state, character, monster, outcome.damage.min(life_before)).await?;
+            guard_crime(character, monster).await?;
         }
         if let Some(victim) = target.as_character() {
             crate::death::check_crime(state, character, victim).await?;
@@ -1749,6 +1821,7 @@ impl PacketProcess for MsgInteract {
         hit.value = outcome.damage;
         actor.send(hit.clone()).await?;
         actor.screen().send_message(hit).await?;
+        crate::gem_effects::on_attack(character).await?;
         let (target_update, target_owner) = if let Some(monster) = target.as_monster() {
             (MsgPlayer::from_monster(monster), None)
         } else if let Some(target_character) = target.as_character() {

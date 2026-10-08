@@ -713,25 +713,6 @@ pub fn team_panel_member_at(
         .map(|member| member.member_id)
 }
 
-pub fn guild_panel_member_at(
-    viewport: [f32; 2],
-    cursor: [f32; 2],
-    guild_members: &[crate::network::GuildMember],
-) -> Option<u32> {
-    crate::original_panels::guild_member_at(viewport, cursor)
-        .and_then(|index| guild_members.get(index))
-        .map(|member| member.character_id)
-}
-
-pub fn guild_panel_action_at(
-    viewport: [f32; 2],
-    cursor: [f32; 2],
-    has_guild: bool,
-    pending_invite: bool,
-) -> Option<GuildPanelAction> {
-    crate::original_panels::guild_action_at(viewport, cursor, has_guild, pending_invite)
-}
-
 pub fn team_panel_action_at(
     viewport: [f32; 2],
     cursor: [f32; 2],
@@ -921,6 +902,7 @@ pub fn quick_panel_image(
     daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
     highscores: Option<&crate::highscores_panel::HighscoresView>,
     nobility: Option<&crate::nobility_panel::NobilityView>,
+    guild: Option<&crate::guild_panel::GuildView>,
 ) -> Result<RgbaImage> {
     if panel == QuickPanel::Market {
         return crate::booth::image(assets, booth, own_character_id);
@@ -1015,116 +997,7 @@ pub fn quick_panel_image(
             }
         }
         QuickPanel::Quest => crate::bounty_board::draw(&mut image, &font, bounty),
-        QuickPanel::Guild => {
-            crate::components::draw_card(
-                &mut image,
-                UiRect::new(20, 50, 480, 96),
-                crate::components::WidgetState::Normal,
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[("Informações da Guild", ui_theme::TEXT_GOLD)],
-                [32.0, 58.0],
-            );
-            let guild = if character.guild.is_empty() {
-                "Sem guild"
-            } else {
-                character.guild.as_str()
-            };
-            let rank = if character.guild_rank.is_empty() {
-                "Membro"
-            } else {
-                character.guild_rank.as_str()
-            };
-            labels::text(
-                &mut image,
-                &font,
-                &[
-                    ("Guild:", [220, 210, 175]),
-                    (" ", [220, 210, 175]),
-                    (guild, [255, 255, 255]),
-                ],
-                [32.0, 84.0],
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[
-                    ("Cargo:", [220, 210, 175]),
-                    (" ", [220, 210, 175]),
-                    (rank, [255, 255, 255]),
-                ],
-                [32.0, 110.0],
-            );
-
-            crate::components::draw_card(
-                &mut image,
-                UiRect::new(20, 156, 480, 185),
-                crate::components::WidgetState::Normal,
-            );
-            labels::text(
-                &mut image,
-                &font,
-                &[("Membros da Guild", ui_theme::TEXT_GOLD)],
-                [32.0, 164.0],
-            );
-            if guild_members.is_empty() && character.guild.is_empty() {
-                if let Some(inviter_id) = pending_guild_invite {
-                    labels::text(
-                        &mut image,
-                        &font,
-                        &[(
-                            format!("Convite recebido de {inviter_id}").as_str(),
-                            [220, 210, 175],
-                        )],
-                        [32.0, 192.0],
-                    );
-                    team_button(&mut image, &font, 24, 112, "ACEITAR CONVITE");
-                } else {
-                    labels::text(
-                        &mut image,
-                        &font,
-                        &[("Você não está em uma guild", [150, 150, 150])],
-                        [32.0, 192.0],
-                    );
-                }
-            } else if guild_members.is_empty() {
-                labels::text(
-                    &mut image,
-                    &font,
-                    &[("Nenhum membro online no momento", [150, 150, 150])],
-                    [32.0, 192.0],
-                );
-            } else {
-                for (index, member) in guild_members.iter().take(8).enumerate() {
-                    let member_name = member.name.chars().take(18).collect::<String>();
-                    let rank_label = if member.rank == 1000 {
-                        "Leader"
-                    } else {
-                        "Member"
-                    };
-                    let line = format!("{}  Lv.{} {}", member_name, member.level, rank_label);
-                    let status = if member.online { "ONLINE" } else { "OFFLINE" };
-                    crate::components::draw_list_item(
-                        &mut image,
-                        &font,
-                        UiRect::new(24, 184 + index as i32 * 21, 472, 20),
-                        &line,
-                        Some(status),
-                        if member.online {
-                            crate::components::WidgetState::Normal
-                        } else {
-                            crate::components::WidgetState::Disabled
-                        },
-                    );
-                }
-                team_button(&mut image, &font, 24, 350, "ARMAZÉM");
-                team_button(&mut image, &font, 268, 350, "SAIR");
-                team_button(&mut image, &font, 24, 382, "CONVIDAR");
-                team_button(&mut image, &font, 268, 382, "EXPULSAR");
-            }
-        }
+        QuickPanel::Guild => crate::guild_panel::draw(&mut image, &font, guild),
         QuickPanel::Friends => {
             labels::text(
                 &mut image,
@@ -2814,7 +2687,7 @@ pub fn gem_selection_panel_button_at(
     }
     let gems = inventory
         .iter()
-        .filter(|item| (700_000..800_000).contains(&item.item_type))
+        .filter(|item| is_socket_gem(item.item_type))
         .take(16);
     for (index, gem) in gems.enumerate() {
         let column = (index % 4) as i32;
@@ -3858,7 +3731,7 @@ fn gem_selection_panel_content(
     );
     let gems: Vec<_> = inventory
         .iter()
-        .filter(|item| (700_000..800_000).contains(&item.item_type))
+        .filter(|item| is_socket_gem(item.item_type))
         .take(16)
         .collect();
     for (index, gem) in gems.iter().enumerate() {
@@ -4557,8 +4430,15 @@ pub fn item_name(assets: &mut Assets, item_id: u32) -> String {
         })
 }
 
+/// A gem that goes in a socket: 7000ff q, the family (Phoenix 0 ..
+/// Tortoise 7) and the quality (1 Normal, 2 Refined, 3 Super). ExpBalls,
+/// potions and the rest of the 7xxxxx items are not.
+pub fn is_socket_gem(item_type: u32) -> bool {
+    item_type / 1_000 == 700 && (1..=3).contains(&(item_type % 10)) && (item_type % 1_000) / 10 < 8
+}
+
 fn gem_item_name(item_id: u32) -> Option<String> {
-    if !(700_000..800_000).contains(&item_id) || item_id % 1000 == 0 {
+    if !is_socket_gem(item_id) {
         return None;
     }
     let family = ((item_id - 700_000) / 10) as usize;
@@ -5758,7 +5638,7 @@ fn load_icon_native(
     {
         return Ok(icon);
     }
-    if (700_000..800_000).contains(&item_id) && item_id % 1000 != 0 {
+    if is_socket_gem(item_id) {
         return Ok(gem_placeholder_icon(item_id));
     }
     Ok(placeholder_icon(item_id)?)

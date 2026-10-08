@@ -174,6 +174,7 @@ pub fn draw_card(image: &mut RgbaImage, rect: UiRect, state: WidgetState) {
 }
 
 /// Renders a list item row with left and optional right text.
+#[allow(dead_code)]
 pub fn draw_list_item(
     image: &mut RgbaImage,
     font: &Font,

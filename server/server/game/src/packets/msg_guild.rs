@@ -104,6 +104,7 @@ pub async fn send_guild_members(
 async fn broadcast_guild_members(state: &State, guild: &crate::guild::GuildInfo) -> Result<(), Error> {
     for member_id in &guild.members {
         send_guild_members(state, *member_id, guild).await?;
+        crate::guild_panel::refresh_look(state, *member_id).await?;
     }
     Ok(())
 }
@@ -130,6 +131,7 @@ impl PacketProcess for MsgGuild {
                         .send(MsgGuild::new(SET_GUILD, guild.id).with_strings([guild_name]))
                         .await?;
                     crate::guild::GuildManager::persist_member(state.pool(), &guild, character_id).await?;
+                    crate::guild_panel::log(state.pool(), guild.id, "joined", character.entity().name(), "invitation", 0, 0).await?;
                     broadcast_guild_members(state, &guild).await?;
                     send_notice(actor, character_id, "You joined the guild.").await?;
                     Ok(())
@@ -168,7 +170,9 @@ impl PacketProcess for MsgGuild {
                 {
                     crate::guild::GuildManager::persist_removal(state.pool(), &guild, removed).await?;
                     actor.send(MsgGuild::new(SET_GUILD, 0)).await?;
+                    crate::guild_panel::refresh_look(state, removed).await?;
                     if !guild.members.is_empty() {
+                        crate::guild_panel::log(state.pool(), guild.id, "left", character.entity().name(), "", 0, 0).await?;
                         broadcast_guild_members(state, &guild).await?;
                     }
                 }
@@ -180,6 +184,7 @@ impl PacketProcess for MsgGuild {
                     .kick(character_id, self.data)
                     .map_err(|error| Error::Other(error.message().to_owned()))?;
                 send_to_character(state, self.data, MsgGuild::new(SET_GUILD, 0)).await?;
+                crate::guild_panel::refresh_look(state, self.data).await?;
                 if let crate::guild::GuildChange::State {
                     guild,
                     removed: Some(removed),
@@ -187,6 +192,12 @@ impl PacketProcess for MsgGuild {
                 } = change
                 {
                     crate::guild::GuildManager::persist_removal(state.pool(), &guild, removed).await?;
+                    let name: String = sqlx::query_scalar("SELECT name FROM characters WHERE character_id = $1")
+                        .bind(crate::guild::database_id(removed))
+                        .fetch_optional(state.pool())
+                        .await?
+                        .unwrap_or_default();
+                    crate::guild_panel::log(state.pool(), guild.id, "kicked", &name, character.entity().name(), 0, 0).await?;
                     broadcast_guild_members(state, &guild).await?;
                 }
                 send_notice(actor, character_id, "Guild member removed.").await
@@ -208,7 +219,9 @@ impl PacketProcess for MsgGuild {
                 }
                 Ok(())
             },
-            DONATE_SILVER | WITHDRAW_SILVER => move_fund(state, actor, character, self.action == DONATE_SILVER, self.data).await,
+            DONATE_SILVER | WITHDRAW_SILVER => {
+                move_fund(state, actor, character, self.action == DONATE_SILVER, self.data).await.map(|_| ())
+            },
             _ => Err(Error::Other(format!("Unsupported guild action {}.", self.action))),
         };
         if let Err(error) = result {
@@ -223,28 +236,42 @@ fn fund_packet(fund: u64) -> MsgGuild {
 }
 
 /// A donation to the guild fund, or the leader taking from it; every member
-/// online hears of it and sees the new fund.
-async fn move_fund(
+/// online hears of it and sees the new fund, and the guild's history keeps
+/// it. The fund after, or `None` when nothing moved.
+pub async fn move_fund(
     state: &State,
     actor: &Actor<ActorState>,
     character: &crate::entities::Character,
     donate: bool,
     amount: u32,
-) -> Result<(), Error> {
+) -> Result<Option<u64>, Error> {
     let character_id = character.id();
     let Some(guild) = state.guild_manager().guild_for(character_id) else {
-        return send_notice(actor, character_id, "You are not in a guild.").await;
+        send_notice(actor, character_id, "You are not in a guild.").await?;
+        return Ok(None);
     };
     if !donate && guild.leader_id != character_id {
-        return send_notice(actor, character_id, "Only the guild leader can take from the fund.").await;
+        send_notice(actor, character_id, "Only the guild leader can take from the fund.").await?;
+        return Ok(None);
     }
     if amount == 0 || amount > MAX_FUND_MOVE {
-        return Ok(());
+        return Ok(None);
     }
     let Some((_, fund)) = character.transfer_guild_fund(state.pool(), guild.id, amount, donate).await? else {
         let reason = if donate { "You do not have that much silver." } else { "The guild fund does not hold that much." };
-        return send_notice(actor, character_id, reason).await;
+        send_notice(actor, character_id, reason).await?;
+        return Ok(None);
     };
+    crate::guild_panel::log(
+        state.pool(),
+        guild.id,
+        if donate { "deposit" } else { "withdraw" },
+        character.entity().name(),
+        "",
+        i64::from(amount),
+        i64::try_from(fund).unwrap_or(i64::MAX),
+    )
+    .await?;
     actor.send(super::MsgUserInfo::from(character)).await?;
     let name = character.entity().name();
     let line = if donate {
@@ -257,7 +284,7 @@ async fn move_fund(
         send_to_character(state, *member_id, fund_packet(fund)).await?;
         send_notice_to_character(state, *member_id, line.clone()).await?;
     }
-    Ok(())
+    Ok(Some(u64::from(fund)))
 }
 
 async fn send_notice_to_character(state: &State, character_id: u32, message: impl Into<String>) -> Result<(), Error> {

@@ -1,9 +1,9 @@
 //! The special rules of monster AI, beyond seeing, chasing and striking
 //! (`monster_ai.rs`): casters strike from afar with their magic, a monster
 //! leaves alone heroes far above it and hits them softer, a weak one flees
-//! once when nearly dead, a pack answers when one of its own is hit, guards
-//! walk a round about their post, and the champions (world and field
-//! bosses) rage, call their kind and strike all around with their magic.
+//! once when nearly dead, a pack answers when one of its own is hit, and
+//! the champions (world and field bosses) rage, call their kind and strike
+//! all around with their magic.
 //! What each monster has done of these lives here, until it dies.
 
 use std::collections::HashMap;
@@ -38,8 +38,6 @@ pub const AREA_RADIUS: u16 = 5;
 pub const AREA_EVERY: Duration = Duration::from_secs(10);
 /// The magic a champion without its own casts around it (FireMeteor).
 pub const CHAMPION_MAGIC: u32 = 1_180;
-/// How far from its post a guard walks its round.
-pub const PATROL_REACH: i16 = 6;
 
 /// What one monster has done of the special rules in this life.
 #[derive(Debug, Clone, Default)]
@@ -50,7 +48,6 @@ struct Mind {
     enraged: bool,
     summoned: bool,
     next_area: Option<Instant>,
-    waypoint: usize,
 }
 
 fn minds() -> &'static Mutex<HashMap<u32, Mind>> {
@@ -175,30 +172,6 @@ pub fn area_due(monster_id: u32, now: Instant) -> bool {
     })
 }
 
-/// The corners of a guard's round about its post.
-pub fn patrol_round(home: Location) -> [Location; 4] {
-    let at = |dx: i16, dy: i16| Location::new((home.x as i16 + dx).max(0) as u16, (home.y as i16 + dy).max(0) as u16, 0);
-    [
-        at(PATROL_REACH, 0),
-        at(0, PATROL_REACH),
-        at(-PATROL_REACH, 0),
-        at(0, -PATROL_REACH),
-    ]
-}
-
-/// Where a guard walks next: the corner it heads to, the next one once it
-/// is there.
-pub fn patrol_target(monster_id: u32, home: Location, at: Location) -> Location {
-    let round = patrol_round(home);
-    with(monster_id, |mind| {
-        let target = round[mind.waypoint % round.len()];
-        if at.x.abs_diff(target.x).max(at.y.abs_diff(target.y)) <= 1 {
-            mind.waypoint = (mind.waypoint + 1) % round.len();
-        }
-        round[mind.waypoint % round.len()]
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,14 +216,8 @@ mod tests {
     }
 
     #[test]
-    fn guards_walk_their_round() {
-        let home = Location::new(100, 100, 0);
-        let first = patrol_target(9_000_003, home, home);
-        assert_eq!((first.x, first.y), (106, 100));
-        let second = patrol_target(9_000_003, home, Location::new(106, 100, 0));
-        assert_eq!((second.x, second.y), (100, 106));
+    fn a_fleeing_monster_runs_straight_away() {
         let away = away_from(Location::new(10, 10, 0), Location::new(12, 10, 0), 5);
         assert_eq!((away.x, away.y), (5, 10));
-        forget(9_000_003);
     }
 }

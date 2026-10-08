@@ -39,11 +39,15 @@ pub struct MsgPlayer {
     nobility_position: i32,
     list_count: u8,
     pub character_name: String,
+    /// The guild, shown under the name (Gravak's: the 5065 client asked
+    /// for the name apart); empty without one.
+    pub guild_name: String,
 }
 
 impl From<&Character> for MsgPlayer {
     fn from(c: &Character) -> Self {
         let loc = c.entity().location();
+        let guild = crate::guild::tag_of(c.id());
         Self {
             character_id: c.id() as i32,
             character_id2: c.id() as i32,
@@ -55,8 +59,15 @@ impl From<&Character> for MsgPlayer {
             x: loc.x,
             y: loc.y,
             direction: loc.direction,
-            list_count: 1,
+            list_count: 2,
             character_name: c.entity().name().to_owned(),
+            syndicate_id: guild.as_ref().map_or(0, |(id, _, _)| *id as i16),
+            syndicate_member_rank: guild.as_ref().map_or(0, |(_, role, _)| match *role {
+                crate::guild::LEADER_ROLE => 100,
+                crate::guild::DEPUTY_ROLE => 90,
+                _ => 50,
+            }),
+            guild_name: guild.map(|(_, _, name)| name).unwrap_or_default(),
             status_flags: c.entity().flags().bits() as i64,
             action: c.entity().action() as u8,
             germent: c.equipment_item(9).map_or(0, |item| item.item_type as i32),

@@ -269,6 +269,9 @@ enum UiTextureJob {
     ActorLabel {
         path: String,
         name: String,
+        guild: String,
+        guild_rank: String,
+        shield: u8,
         monster: bool,
         /// A monster of the bounty under way.
         bounty: bool,
@@ -374,6 +377,7 @@ enum UiTextureJob {
         daily: Option<crate::daily_rewards_panel::DailyRewardsView>,
         highscores: Option<crate::highscores_panel::HighscoresView>,
         nobility: Option<crate::nobility_panel::NobilityView>,
+        guild: Option<crate::guild_panel::GuildView>,
     },
     ShopBase {
         path: String,
@@ -473,6 +477,9 @@ impl UiTextureJob {
             Self::Feedback { message, .. } => crate::labels::status_image(&message),
             Self::ActorLabel {
                 name,
+                guild,
+                guild_rank,
+                shield,
                 monster,
                 bounty,
                 health,
@@ -483,7 +490,7 @@ impl UiTextureJob {
                 if monster {
                     crate::labels::monster_image(&name, health, maximum_health, bounty)
                 } else {
-                    crate::labels::actor_image(&name, name_colour)
+                    crate::labels::actor_image_with_guild(&name, name_colour, &guild, &guild_rank, shield)
                 }
             }
             Self::Hud {
@@ -658,6 +665,7 @@ impl UiTextureJob {
                 daily,
                 highscores,
                 nobility,
+                guild,
                 ..
             } => crate::shop::quick_panel_image(
                 assets,
@@ -686,6 +694,7 @@ impl UiTextureJob {
                 daily.as_ref(),
                 highscores.as_ref(),
                 nobility.as_ref(),
+                guild.as_ref(),
             ),
         };
         image.map_err(|error| error.to_string())
@@ -777,6 +786,9 @@ pub struct Renderer {
     frame_number: u64,
     transient_used: HashMap<String, u64>,
     quick_panel_signature: Option<u64>,
+    /// The quick panel's last texture that was ready, with its panel: drawn
+    /// while a new one is being made, so the window never blinks.
+    quick_panel_shown: Option<(crate::shop::QuickPanel, String)>,
     /// Where the bounty line under the minimap was drawn, for clicks.
     bounty_tracker_rect: Option<[f32; 4]>,
     /// Where the Store icon was drawn, for clicks.
@@ -1041,6 +1053,7 @@ impl Renderer {
             frame_number: 0,
             transient_used: HashMap::new(),
             quick_panel_signature: None,
+            quick_panel_shown: None,
             bounty_tracker_rect: None,
             store_icon_rect: None,
             ranking_icon_rect: None,
@@ -2736,6 +2749,7 @@ impl Renderer {
         daily: Option<&crate::daily_rewards_panel::DailyRewardsView>,
         highscores: Option<&crate::highscores_panel::HighscoresView>,
         nobility: Option<&crate::nobility_panel::NobilityView>,
+        guild: Option<&crate::guild_panel::GuildView>,
         item_context: Option<crate::shop::ItemContext>,
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
@@ -3440,19 +3454,21 @@ impl Renderer {
             if hovered_player == Some(actor.id) && !actor.npc && !monster && !actor.name.is_empty() {
                 let name_colour = crate::labels::vendor_or_name_colour(actor.status_flags, actor.booth.is_some());
                 let key = format!(
-                    "@player-plate-{}-{}-{}-{}-{:?}",
-                    actor.id, actor.mesh, actor.health, actor.maximum_health, name_colour
+                    "@player-plate-{}-{}-{}-{}-{:?}-{}-{}",
+                    actor.id, actor.mesh, actor.health, actor.maximum_health, name_colour, actor.guild, actor.guild_rank
                 );
                 if !self.textures.contains_key(&key) {
                     let face = player_face(assets, actor.mesh, crate::labels::PLAYER_FACE_SIZE);
                     self.upload(
                         &key,
-                        crate::labels::player_plate(
+                        crate::labels::player_plate_with_guild(
                             face.as_ref(),
                             &actor.name,
                             name_colour,
                             actor.health,
                             actor.maximum_health,
+                            &actor.guild,
+                            &actor.guild_rank,
                         )?,
                     );
                 }
@@ -3462,7 +3478,7 @@ impl Renderer {
                         vertices: quad(
                             [
                                 (origin[0] - plate.size[0] * 0.5).round(),
-                                (origin[1] - 160.0).round(),
+                                (origin[1] - 160.0 - if actor.guild.is_empty() { 0.0 } else { 14.0 }).round(),
                             ],
                             plate.size,
                             viewport,
@@ -3494,7 +3510,7 @@ impl Renderer {
                 let label_key = if monster {
                     format!("@monster-label-{}-{}-{bounty_target}", actor.id, actor.health)
                 } else {
-                    format!("@actor-label-{}-{:?}", actor.id, name_colour)
+                    format!("@actor-label-{}-{:?}-{}-{}-{}", actor.id, name_colour, actor.guild, actor.guild_rank, actor.shield)
                 };
                 if !self.textures.contains_key(&label_key) && !self.loading.contains(&label_key) {
                     self.queue_ui_texture(
@@ -3502,6 +3518,9 @@ impl Renderer {
                         UiTextureJob::ActorLabel {
                             path: label_key.clone(),
                             name: actor.name.clone(),
+                            guild: if monster || actor.npc { String::new() } else { actor.guild.clone() },
+                            guild_rank: if monster || actor.npc { String::new() } else { actor.guild_rank.clone() },
+                            shield: if monster || actor.npc { 0 } else { actor.shield },
                             monster,
                             bounty: bounty_target,
                             health: actor.health,
@@ -3523,7 +3542,10 @@ impl Renderer {
                                     } else if monster {
                                         68.0
                                     } else {
-                                        152.0
+                                        // A guild line over the name, or a shield hanging
+                                        // under it, keeps the name in place.
+                                        152.0 + (label.size[1] - 16.0).max(0.0)
+                                            - if actor.shield == 0 { 0.0 } else { crate::labels::SHIELD_DROP as f32 }
                                     })
                                 .round(),
                             ],
@@ -3535,11 +3557,13 @@ impl Renderer {
                     });
                 }
                 let vip = !actor.npc && !monster && actor.status_flags & VIP_FLAG != 0;
+                // A guild line over the name lifts what sits over it.
+                let name_top = origin[1] - 152.0 - if actor.npc || monster || actor.guild.is_empty() { 0.0 } else { 13.0 };
                 if vip {
-                    self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
+                    self.push_vip_tag([origin[0], name_top], viewport, &mut draws)?;
                 }
                 if !actor.npc && !monster {
-                    let over_name = origin[1] - 152.0 - if vip { 24.0 } else { 0.0 };
+                    let over_name = name_top - if vip { 24.0 } else { 0.0 };
                     self.push_ko_tag(assets, actor.ko_count, actor.status_flags, [origin[0], over_name], viewport, &mut draws);
                     let depth = actor.position[0] + actor.position[1];
                     self.push_top_title(actor.top_flags, origin, depth, time, viewport, &mut draws);
@@ -3935,9 +3959,11 @@ impl Renderer {
         }
         let world_phase_finished = Instant::now();
         let name_colour = crate::labels::vendor_or_name_colour(status_flags, character.booth.is_some());
+        // The guild and its rank are drawn under the name: joining or
+        // leaving one makes a new label.
         let label_key = format!(
-            "@label-{}-{}-{}-{:?}",
-            character.name, character.health, character.maximum_health, name_colour
+            "@label-{}-{}-{}-{:?}-{}-{}",
+            character.name, character.health, character.maximum_health, name_colour, character.guild, character.guild_rank
         );
         if !self.textures.contains_key(&label_key) && !self.loading.contains(&label_key) {
             self.queue_ui_texture(
@@ -3962,7 +3988,8 @@ impl Renderer {
             });
         }
         if status_flags & VIP_FLAG != 0 {
-            self.push_vip_tag([origin[0], origin[1] - 152.0], viewport, &mut draws)?;
+            let guild_line = if character.guild.is_empty() { 0.0 } else { 13.0 };
+            self.push_vip_tag([origin[0], origin[1] - 152.0 - guild_line], viewport, &mut draws)?;
         }
         self.push_speech(
             &skill_hud.speech,
@@ -4925,6 +4952,9 @@ impl Renderer {
             if panel == crate::shop::QuickPanel::Nobility {
                 nobility.hash(&mut hasher);
             }
+            if panel == crate::shop::QuickPanel::Guild {
+                guild.hash(&mut hasher);
+            }
             if panel == crate::shop::QuickPanel::Highscores {
                 highscores.hash(&mut hasher);
                 // "Last update" reads in minutes.
@@ -4992,13 +5022,23 @@ impl Renderer {
                         daily: daily.cloned(),
                         highscores: highscores.cloned(),
                         nobility: nobility.cloned(),
+                        guild: guild.cloned(),
                     },
                 );
                 self.quick_panel_signature = Some(signature);
             }
-            if let Some(texture) = self.textures.get(&key) {
+            if self.textures.contains_key(&key) {
+                self.quick_panel_shown = Some((panel, key.clone()));
+            }
+            // Until the new look is ready, the last one of this panel.
+            let shown = self
+                .quick_panel_shown
+                .as_ref()
+                .filter(|(shown_panel, shown_key)| *shown_panel == panel && self.textures.contains_key(shown_key))
+                .map(|(_, shown_key)| shown_key.clone());
+            if let Some(texture) = shown.as_ref().and_then(|shown| self.textures.get(shown)) {
                 draws.push(Draw {
-                    texture: key,
+                    texture: shown.clone().unwrap_or_default(),
                     vertices: quad(
                         crate::shop::quick_panel_position(viewport, panel),
                         texture.size,
