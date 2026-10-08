@@ -190,7 +190,7 @@ mod tests {
             rarity: 0,
             gem_one,
             gem_two,
-            rarity_roll: 0,
+            affixes: [0; 4],
             bless: 0,
             enchant_hp: 0,
             color: 0,

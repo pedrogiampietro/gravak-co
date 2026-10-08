@@ -76,7 +76,9 @@ impl MsgItemInfo {
             reserved2: item.bless,
             // The custom rarity seed rides in a reserved word so the
             // classic enchant byte carries the HP enchantment.
-            reserved3: u32::from(item.rarity_roll),
+            // The rarity affixes, two to a word (`affixes::Affix::pack`).
+            reserved3: u32::from(item.affixes[0]) | (u32::from(item.affixes[1]) << 16),
+            restrain: u32::from(item.affixes[2]) | (u32::from(item.affixes[3]) << 16),
             reserved4: u32::from(item.color),
             // The weapon's skin (the look it wears), 0 for none.
             reserved1: item.skin,
@@ -102,7 +104,9 @@ impl MsgItemInfo {
             reserved2: item.bless,
             // The custom rarity seed rides in a reserved word so the
             // classic enchant byte carries the HP enchantment.
-            reserved3: u32::from(item.rarity_roll),
+            // The rarity affixes, two to a word (`affixes::Affix::pack`).
+            reserved3: u32::from(item.affixes[0]) | (u32::from(item.affixes[1]) << 16),
+            restrain: u32::from(item.affixes[2]) | (u32::from(item.affixes[3]) << 16),
             reserved4: u32::from(item.color),
             // The weapon's skin (the look it wears), 0 for none.
             reserved1: item.skin,
@@ -146,7 +150,9 @@ impl MsgItemInfo {
             reserved2: item.bless,
             // The custom rarity seed rides in a reserved word so the
             // classic enchant byte carries the HP enchantment.
-            reserved3: u32::from(item.rarity_roll),
+            // The rarity affixes, two to a word (`affixes::Affix::pack`).
+            reserved3: u32::from(item.affixes[0]) | (u32::from(item.affixes[1]) << 16),
+            restrain: u32::from(item.affixes[2]) | (u32::from(item.affixes[3]) << 16),
             reserved4: u32::from(item.color),
             // The weapon's skin (the look it wears), 0 for none.
             reserved1: item.skin,
@@ -170,7 +176,9 @@ impl MsgItemInfo {
             reserved2: item.bless,
             // The custom rarity seed rides in a reserved word so the
             // classic enchant byte carries the HP enchantment.
-            reserved3: u32::from(item.rarity_roll),
+            // The rarity affixes, two to a word (`affixes::Affix::pack`).
+            reserved3: u32::from(item.affixes[0]) | (u32::from(item.affixes[1]) << 16),
+            restrain: u32::from(item.affixes[2]) | (u32::from(item.affixes[3]) << 16),
             reserved4: u32::from(item.color),
             // The weapon's skin (the look it wears), 0 for none.
             reserved1: item.skin,
@@ -204,7 +212,9 @@ impl MsgItemInfo {
             reserved2: item.bless,
             // The custom rarity seed rides in a reserved word so the
             // classic enchant byte carries the HP enchantment.
-            reserved3: u32::from(item.rarity_roll),
+            // The rarity affixes, two to a word (`affixes::Affix::pack`).
+            reserved3: u32::from(item.affixes[0]) | (u32::from(item.affixes[1]) << 16),
+            restrain: u32::from(item.affixes[2]) | (u32::from(item.affixes[3]) << 16),
             reserved4: u32::from(item.color),
             // The weapon's skin (the look it wears), 0 for none.
             reserved1: item.skin,

@@ -124,6 +124,9 @@ pub struct InventoryItem {
     pub color: u8,
     /// A weapon's skin: the item type whose look it wears (0 its own).
     pub skin: u32,
+    /// The affixes of its rarity slots, packed (`affixes::Affix`), slot by
+    /// slot; 0 where a slot is empty.
+    pub affixes: [u16; 4],
 }
 
 /// Quality is encoded by the final digit of the classic equipment type and
@@ -203,17 +206,6 @@ pub fn item_upgrade_cost_and_chance(plus: u8) -> Option<(u8, u8)> {
         9 => (5, 25),
         10 => (6, 20),
         11 => (8, 15),
-        _ => return None,
-    })
-}
-
-/// DragonBall cost and success chance for the next custom rarity.
-pub fn rarity_upgrade_cost_and_chance(rarity: u8) -> Option<(u8, u8)> {
-    Some(match rarity {
-        0 => (1, 75),
-        1 => (2, 55),
-        2 => (3, 35),
-        3 => (5, 20),
         _ => return None,
     })
 }
@@ -1647,6 +1639,7 @@ impl Character {
                             enchant_hp: 0,
                             color: 0,
                             skin: 0,
+                            affixes: [0; 4],
                         })
                     },
                 )
@@ -1709,7 +1702,140 @@ impl Character {
                 item.skin = skins.get(&item.uid).copied().unwrap_or(0);
             }
         }
+        self.load_affixes(pool, &uids).await
+    }
+
+    /// Reads the affixes of `uids` into the items, and rolls the ones their
+    /// rarity opens but they lack (items that rose before affixes were
+    /// kept, or whose rarity a game master set).
+    async fn load_affixes(&self, pool: &sqlx::PgPool, uids: &[u32]) -> Result<(), Error> {
+        let rows = sqlx::query_as::<_, (i64, i16, i32)>("SELECT item_uid, slot, affix FROM item_affixes")
+            .fetch_all(pool)
+            .await?;
+        let mut affixes = HashMap::<u32, [u16; 4]>::new();
+        for (uid, slot, affix) in rows {
+            let (Ok(uid), Ok(slot), Ok(affix)) = (u32::try_from(uid), usize::try_from(slot), u16::try_from(affix)) else {
+                continue;
+            };
+            if slot < 4 && uids.contains(&uid) {
+                affixes.entry(uid).or_default()[slot] = affix;
+            }
+        }
+        let mut lacking = Vec::new();
+        for items in [&self.inventory, &self.equipment, &self.warehouse] {
+            for item in items.lock().iter_mut() {
+                item.affixes = affixes.get(&item.uid).copied().unwrap_or_default();
+                let filled = item.affixes.iter().take_while(|affix| **affix != 0).count();
+                if filled < crate::affixes::slots(item.rarity) && crate::affixes::can_carry_rarity(item.item_type) {
+                    lacking.push(item.uid);
+                }
+            }
+        }
+        for uid in lacking {
+            self.fill_affixes(pool, uid).await?;
+        }
         Ok(())
+    }
+
+    /// Makes an item's affixes match its rarity: the slots it opens keep
+    /// theirs and the empty ones roll; slots past it are cleared.
+    pub async fn fill_affixes(&self, pool: &sqlx::PgPool, item_uid: u32) -> Result<Option<InventoryItem>, Error> {
+        let Some(mut item) = self.item_in_memory(item_uid) else {
+            return Ok(None);
+        };
+        let slots = if crate::affixes::can_carry_rarity(item.item_type) {
+            crate::affixes::slots(item.rarity)
+        } else {
+            0
+        };
+        for slot in 0..4 {
+            if slot >= slots {
+                item.affixes[slot] = 0;
+                continue;
+            }
+            if item.affixes[slot] != 0 {
+                continue;
+            }
+            let existing = crate::affixes::unpack_all(&item.affixes);
+            if let Some(affix) = crate::affixes::roll(item.item_type, slot, &existing, next_roll) {
+                item.affixes[slot] = affix.pack();
+            }
+        }
+        self.store_affixes(pool, item).await
+    }
+
+    /// Writes an item's affixes to the database and to every copy of it.
+    async fn store_affixes(&self, pool: &sqlx::PgPool, item: InventoryItem) -> Result<Option<InventoryItem>, Error> {
+        let mut transaction = pool.begin().await?;
+        sqlx::query("DELETE FROM item_affixes WHERE item_uid = $1")
+            .bind(i64::from(item.uid))
+            .execute(&mut *transaction)
+            .await?;
+        for (slot, affix) in item.affixes.iter().enumerate().filter(|(_, affix)| **affix != 0) {
+            sqlx::query("INSERT INTO item_affixes (item_uid, slot, affix) VALUES ($1, $2, $3)")
+                .bind(i64::from(item.uid))
+                .bind(slot as i16)
+                .bind(i32::from(*affix))
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
+        for items in [&self.inventory, &self.equipment, &self.warehouse] {
+            if let Some(existing) = items.lock().iter_mut().find(|existing| existing.uid == item.uid) {
+                existing.affixes = item.affixes;
+            }
+        }
+        Ok(Some(item))
+    }
+
+    /// What the worn, unbroken items' affixes give of `kind` in all.
+    pub fn affix_total(&self, kind: crate::affixes::AffixKind) -> u32 {
+        self.equipment_items()
+            .iter()
+            .filter(|item| item.durability > 0)
+            .map(|item| crate::affixes::total(&item.affixes, kind))
+            .sum()
+    }
+
+    /// Takes `count` of `item_type` from the bag inside `transaction`:
+    /// their rows, or `None` (nothing taken) when there are not enough.
+    async fn take_catalysts(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        item_type: u32,
+        count: u8,
+    ) -> Result<Option<Vec<InventoryItem>>, Error> {
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            "SELECT item_uid, item_type, position, durability, max_durability
+             FROM inventory_items
+             WHERE character_id = $1 AND item_type = $2 AND position < 40
+             ORDER BY position LIMIT $3",
+        )
+        .bind(self.inner.character_id)
+        .bind(i64::from(item_type))
+        .bind(i64::from(count))
+        .fetch_all(&mut **transaction)
+        .await?;
+        if rows.len() < usize::from(count) {
+            return Ok(None);
+        }
+        let mut taken = Vec::with_capacity(rows.len());
+        for row in rows {
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
+                .bind(row.0)
+                .bind(self.inner.character_id)
+                .execute(&mut **transaction)
+                .await?;
+            taken.push(InventoryItem {
+                uid: u32::try_from(row.0).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
+                item_type: u32::try_from(row.1).unwrap_or(item_type),
+                position: u8::try_from(row.2).unwrap_or_default(),
+                durability: u16::try_from(row.3).unwrap_or_default(),
+                max_durability: u16::try_from(row.4).unwrap_or_default(),
+                ..Default::default()
+            });
+        }
+        Ok(Some(taken))
     }
 
     /// Sets the blessing of an owned item.
@@ -1881,6 +2007,7 @@ impl Character {
                             enchant_hp: 0,
                             color: 0,
                             skin: 0,
+                            affixes: [0; 4],
                         })
                     },
                 )
@@ -3637,6 +3764,7 @@ impl Character {
                 enchant_hp: 0,
                 color: 0,
                 skin: 0,
+                affixes: [0; 4],
             })
         };
         let mut left_items = Vec::with_capacity(offered_uids.len());
@@ -3943,6 +4071,7 @@ impl Character {
                         enchant_hp: 0,
                         color: 0,
                         skin: 0,
+                        affixes: [0; 4],
                     })
                 },
             )
@@ -3968,7 +4097,7 @@ impl Character {
         if rarity > 4 {
             return Err(Error::Other("custom item rarity must be between 0 and 4".into()));
         }
-        let Some(mut item) = self.item_in_memory(item_uid) else {
+        let Some(item) = self.item_in_memory(item_uid) else {
             return Ok(None);
         };
         let mut transaction = pool.begin().await?;
@@ -4015,17 +4144,19 @@ impl Character {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        item.rarity = rarity;
         for items in [&self.inventory, &self.equipment, &self.warehouse] {
             if let Some(existing) = items.lock().iter_mut().find(|existing| existing.uid == item_uid) {
                 existing.rarity = rarity;
             }
         }
-        Ok(Some(item))
+        self.fill_affixes(pool, item_uid).await
     }
 
-    /// Attempts to advance the custom rarity by one tier. DragonBalls are
-    /// consumed for every attempt, including a failed roll.
+    /// Attempts the next rarity tier (`affixes::upgrade_cost`): DragonBalls
+    /// up to Epic, Super DragonBalls past it, spent even on a failure. Each
+    /// failure on the item adds `affixes::FAILURE_BONUS` to its next chance
+    /// until it rises; rising rolls the new slot's affix and keeps the rest.
+    /// Also the chance the next attempt has.
     pub async fn upgrade_item_rarity_with_dragonballs(
         &self,
         pool: &sqlx::PgPool,
@@ -4034,7 +4165,10 @@ impl Character {
         let Some(mut item) = self.item_in_memory(item_uid) else {
             return Ok((RarityUpgradeOutcome::NotFound, Vec::new()));
         };
-        let Some((dragon_ball_cost, chance)) = rarity_upgrade_cost_and_chance(item.rarity) else {
+        if !crate::affixes::can_carry_rarity(item.item_type) {
+            return Ok((RarityUpgradeOutcome::NotFound, Vec::new()));
+        }
+        let Some((catalyst, cost, chance)) = crate::affixes::upgrade_cost(item.rarity) else {
             return Ok((RarityUpgradeOutcome::MaxRarity(item), Vec::new()));
         };
         let mut transaction = pool.begin().await?;
@@ -4055,29 +4189,24 @@ impl Character {
             transaction.rollback().await?;
             return Ok((RarityUpgradeOutcome::NotFound, Vec::new()));
         }
-        let catalysts = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-            "SELECT item_uid, item_type, position, durability, max_durability
-             FROM inventory_items
-             WHERE character_id = $1 AND item_type = 1088000 AND position < 40
-             ORDER BY position LIMIT $2",
-        )
-        .bind(self.inner.character_id)
-        .bind(i64::from(dragon_ball_cost))
-        .fetch_all(&mut *transaction)
-        .await?;
-        if catalysts.len() < usize::from(dragon_ball_cost) {
+        let Some(catalysts) = self.take_catalysts(&mut transaction, catalyst, cost).await? else {
             transaction.rollback().await?;
             return Ok((RarityUpgradeOutcome::MissingDragonBall, Vec::new()));
-        }
-        let chance = crate::lucky::lucky_chance(u32::from(chance), self.lucky_time() > 0);
+        };
+        let failures = sqlx::query_scalar::<_, i32>("SELECT failures FROM item_rarity_failures WHERE item_uid = $1")
+            .bind(i64::from(item_uid))
+            .fetch_optional(&mut *transaction)
+            .await?
+            .unwrap_or(0);
+        let chance = (chance + crate::affixes::FAILURE_BONUS * failures.max(0) as u32).min(100);
+        let chance = crate::lucky::lucky_chance(chance, self.lucky_time() > 0);
         let upgraded = next_roll() % 100 < chance;
         if upgraded {
-            let rarity_roll = u8::try_from((next_roll() % 255) + 1).unwrap_or(1);
             sqlx::query(
                 "INSERT INTO item_upgrades
-                    (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity, enchant)
-                 VALUES ($1, $2, $3, $4, $5, $6, 0, $7)
-                 ON CONFLICT(item_uid) DO UPDATE SET rarity = excluded.rarity, enchant = excluded.enchant",
+                    (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT(item_uid) DO UPDATE SET rarity = excluded.rarity",
             )
             .bind(i64::from(item_uid))
             .bind(i64::from(item.plus))
@@ -4085,135 +4214,141 @@ impl Character {
             .bind(i64::from(item.gem_two))
             .bind(i64::from(item.socket_one))
             .bind(i64::from(item.socket_two))
-            .bind(i64::from(rarity_roll))
+            .bind(i64::from(item.rarity.saturating_add(1).min(4)))
             .execute(&mut *transaction)
             .await?;
-            sqlx::query("UPDATE item_upgrades SET rarity = rarity + 1, enchant = $1 WHERE item_uid = $2")
-                .bind(i64::from(rarity_roll))
+            sqlx::query("DELETE FROM item_rarity_failures WHERE item_uid = $1")
                 .bind(i64::from(item_uid))
                 .execute(&mut *transaction)
                 .await?;
-        }
-        for catalyst in &catalysts {
-            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
-                .bind(catalyst.0)
-                .bind(self.inner.character_id)
-                .execute(&mut *transaction)
-                .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO item_rarity_failures (item_uid, failures) VALUES ($1, 1)
+                 ON CONFLICT(item_uid) DO UPDATE SET failures = item_rarity_failures.failures + 1",
+            )
+            .bind(i64::from(item_uid))
+            .execute(&mut *transaction)
+            .await?;
         }
         transaction.commit().await?;
-
+        self.inventory
+            .lock()
+            .retain(|owned| !catalysts.iter().any(|catalyst| catalyst.uid == owned.uid));
         if upgraded {
             item.rarity = item.rarity.saturating_add(1).min(4);
-            item.rarity_roll = u8::try_from(
-                sqlx::query_scalar::<_, i64>("SELECT enchant FROM item_upgrades WHERE item_uid = $1")
-                    .bind(i64::from(item_uid))
-                    .fetch_one(pool)
-                    .await?,
-            )
-            .unwrap_or(item.rarity_roll);
             for items in [&self.inventory, &self.equipment, &self.warehouse] {
                 if let Some(existing) = items.lock().iter_mut().find(|existing| existing.uid == item_uid) {
                     existing.rarity = item.rarity;
                 }
             }
+            item = self.fill_affixes(pool, item_uid).await?.unwrap_or(item);
+            return Ok((RarityUpgradeOutcome::Upgraded(item), catalysts));
         }
-        let catalysts: Vec<InventoryItem> = catalysts
-            .into_iter()
-            .map(|catalyst| {
-                Ok(InventoryItem {
-                    uid: u32::try_from(catalyst.0)
-                        .map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
-                    item_type: u32::try_from(catalyst.1).unwrap_or(1_088_000),
-                    position: u8::try_from(catalyst.2).unwrap_or_default(),
-                    durability: u16::try_from(catalyst.3).unwrap_or_default(),
-                    max_durability: u16::try_from(catalyst.4).unwrap_or_default(),
-                    plus: 0,
-                    ..Default::default()
-                })
-            })
-            .collect::<Result<_, Error>>()?;
-        self.inventory
-            .lock()
-            .retain(|owned| !catalysts.iter().any(|catalyst| catalyst.uid == owned.uid));
-        Ok((
-            if upgraded {
-                RarityUpgradeOutcome::Upgraded(item)
-            } else {
-                RarityUpgradeOutcome::Failed(item)
-            },
-            catalysts,
-        ))
+        Ok((RarityUpgradeOutcome::Failed(item), catalysts))
     }
 
-    /// Rerolls the custom rarity bonus seed. One DragonBall is consumed for
-    /// every reroll, while the item's rarity and classic quality remain
-    /// unchanged.
+    /// The chance in percent the next rarity attempt on `item_uid` has, its
+    /// failures counted; `None` at Mythic.
+    pub async fn rarity_chance(&self, pool: &sqlx::PgPool, item_uid: u32) -> Result<Option<u32>, Error> {
+        let Some(item) = self.item_in_memory(item_uid) else {
+            return Ok(None);
+        };
+        let Some((_, _, chance)) = crate::affixes::upgrade_cost(item.rarity) else {
+            return Ok(None);
+        };
+        let failures = sqlx::query_scalar::<_, i32>("SELECT failures FROM item_rarity_failures WHERE item_uid = $1")
+            .bind(i64::from(item_uid))
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0);
+        Ok(Some((chance + crate::affixes::FAILURE_BONUS * failures.max(0) as u32).min(100)))
+    }
+
+    /// Rerolls an item's affixes: all of them for a DragonBall, or only the
+    /// one in `slot` for a Super DragonBall, the others kept.
     pub async fn reroll_item_rarity_bonus_with_dragonball(
         &self,
         pool: &sqlx::PgPool,
         item_uid: u32,
+        slot: Option<usize>,
     ) -> Result<(RarityBonusOutcome, Option<InventoryItem>), Error> {
         let Some(mut item) = self.item_in_memory(item_uid) else {
             return Ok((RarityBonusOutcome::NotFound, None));
         };
-        if item.rarity == 0 {
+        let slots = crate::affixes::slots(item.rarity);
+        if slots == 0 || !crate::affixes::can_carry_rarity(item.item_type) {
             return Ok((RarityBonusOutcome::NoRarity, None));
         }
+        if slot.is_some_and(|slot| slot >= slots) {
+            return Ok((RarityBonusOutcome::NotFound, None));
+        }
+        let catalyst_type = if slot.is_some() {
+            crate::affixes::SUPER_DRAGONBALL
+        } else {
+            crate::drops::DRAGONBALL
+        };
         let mut transaction = pool.begin().await?;
-        let Some(catalyst) = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-            "SELECT item_uid, item_type, position, durability, max_durability
-             FROM inventory_items
-             WHERE character_id = $1 AND item_type = 1088000 AND position < 40
-             ORDER BY position LIMIT 1",
-        )
-        .bind(self.inner.character_id)
-        .fetch_optional(&mut *transaction)
-        .await?
-        else {
+        let Some(mut catalysts) = self.take_catalysts(&mut transaction, catalyst_type, 1).await? else {
             transaction.rollback().await?;
             return Ok((RarityBonusOutcome::MissingDragonBall, None));
         };
-        let rarity_roll = u8::try_from((next_roll() % 255) + 1).unwrap_or(1);
-        sqlx::query(
-            "INSERT INTO item_upgrades
-                (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity, enchant)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT(item_uid) DO UPDATE SET enchant = excluded.enchant",
-        )
-        .bind(i64::from(item_uid))
-        .bind(i64::from(item.plus))
-        .bind(i64::from(item.gem_one))
-        .bind(i64::from(item.gem_two))
-        .bind(i64::from(item.socket_one))
-        .bind(i64::from(item.socket_two))
-        .bind(i64::from(item.rarity))
-        .bind(i64::from(rarity_roll))
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
-            .bind(catalyst.0)
-            .bind(self.inner.character_id)
-            .execute(&mut *transaction)
-            .await?;
         transaction.commit().await?;
-
-        item.rarity_roll = rarity_roll;
-        for items in [&self.inventory, &self.equipment, &self.warehouse] {
-            if let Some(existing) = items.lock().iter_mut().find(|existing| existing.uid == item_uid) {
-                existing.rarity_roll = rarity_roll;
-            }
+        self.inventory
+            .lock()
+            .retain(|owned| !catalysts.iter().any(|catalyst| catalyst.uid == owned.uid));
+        match slot {
+            Some(slot) => {
+                let others: Vec<_> = crate::affixes::unpack_all(&item.affixes)
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != slot)
+                    .map(|(_, affix)| affix)
+                    .collect();
+                if let Some(affix) = crate::affixes::roll(item.item_type, slot, &others, next_roll) {
+                    item.affixes[slot] = affix.pack();
+                }
+            },
+            None => {
+                item.affixes = [0; 4];
+                for slot in 0..slots {
+                    let existing = crate::affixes::unpack_all(&item.affixes);
+                    if let Some(affix) = crate::affixes::roll(item.item_type, slot, &existing, next_roll) {
+                        item.affixes[slot] = affix.pack();
+                    }
+                }
+            },
         }
-        let catalyst = InventoryItem {
-            uid: u32::try_from(catalyst.0).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
-            item_type: u32::try_from(catalyst.1).unwrap_or(1_088_000),
-            position: u8::try_from(catalyst.2).unwrap_or_default(),
-            durability: u16::try_from(catalyst.3).unwrap_or_default(),
-            max_durability: u16::try_from(catalyst.4).unwrap_or_default(),
-            ..Default::default()
+        let item = self.store_affixes(pool, item).await?.unwrap_or(item);
+        Ok((RarityBonusOutcome::Rerolled(item), catalysts.pop()))
+    }
+
+    /// Composes a Super DragonBall from `affixes::SUPER_DRAGONBALL_RECIPE`
+    /// DragonBalls: the DragonBalls spent and the Super DragonBall made, or
+    /// `None` when there are not enough (or no room).
+    pub async fn compose_super_dragonball(
+        &self,
+        pool: &sqlx::PgPool,
+    ) -> Result<Option<(Vec<InventoryItem>, InventoryItem)>, Error> {
+        let mut transaction = pool.begin().await?;
+        let Some(spent) = self
+            .take_catalysts(&mut transaction, crate::drops::DRAGONBALL, crate::affixes::SUPER_DRAGONBALL_RECIPE)
+            .await?
+        else {
+            transaction.rollback().await?;
+            return Ok(None);
         };
-        self.inventory.lock().retain(|owned| owned.uid != catalyst.uid);
-        Ok((RarityBonusOutcome::Rerolled(item), Some(catalyst)))
+        transaction.commit().await?;
+        self.inventory
+            .lock()
+            .retain(|owned| !spent.iter().any(|catalyst| catalyst.uid == owned.uid));
+        let (durability, max_durability) = crate::shop::fresh_durability(crate::affixes::SUPER_DRAGONBALL);
+        let Some(made) = self
+            .add_ground_item(pool, crate::affixes::SUPER_DRAGONBALL, durability, max_durability)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some((spent, made)))
     }
 
     pub fn warehouse_silver(&self) -> u32 {
@@ -4586,6 +4721,7 @@ impl Character {
                         enchant_hp: 0,
                         color: 0,
                         skin: 0,
+                        affixes: [0; 4],
                     })
                 },
             )
@@ -4692,6 +4828,7 @@ impl Character {
             enchant_hp: 0,
             color: 0,
             skin: 0,
+            affixes: [0; 4],
         };
         let withdrawn = InventoryItem { position, ..stored };
         self.inventory.lock().push(withdrawn);
@@ -5399,7 +5536,10 @@ impl Character {
             .fold((0, 0), |(dodge, accuracy), template| {
                 (dodge + u32::from(template.dodge), accuracy + u32::from(template.accuracy))
             });
-        (dodge + self.dodge_status_bonus(), accuracy)
+        (
+            dodge + self.dodge_status_bonus() + self.affix_total(crate::affixes::AffixKind::Dodge),
+            accuracy + self.affix_total(crate::affixes::AffixKind::Accuracy),
+        )
     }
 
     /// The Dodge skill's dodge while its status lasts: ten per level.
@@ -5448,6 +5588,10 @@ impl Character {
         if self.has_status(StatusEffect::Stigma) {
             attack_percent = attack_percent.saturating_add(20);
         }
+        // Rarity affixes: Attack, Defense, Damage Resist and Penetration.
+        attack_percent = attack_percent
+            .saturating_add(u16::try_from(self.affix_total(crate::affixes::AffixKind::Attack)).unwrap_or(u16::MAX));
+        let affix_defense = self.affix_total(crate::affixes::AffixKind::Defense);
         let equipment = self
             .equipment_items()
             .into_iter()
@@ -5479,10 +5623,18 @@ impl Character {
         } else {
             defense
         };
-        let damage_reduction_percent = damage_reduction_percent.saturating_add(self.bless_reduction_percent());
+        let defense = defense.saturating_mul(100 + affix_defense) / 100;
+        let damage_reduction_percent = damage_reduction_percent
+            .saturating_add(self.bless_reduction_percent())
+            .saturating_add(
+                u16::try_from(self.affix_total(crate::affixes::AffixKind::DamageResist)).unwrap_or(u16::MAX),
+            );
         // Refinery Penetration ignores that share of the target's defense.
         let penetration_percent = penetration_percent
-            .saturating_add(u16::try_from(self.refinery_stats().penetration).unwrap_or(u16::MAX));
+            .saturating_add(u16::try_from(self.refinery_stats().penetration).unwrap_or(u16::MAX))
+            .saturating_add(
+                u16::try_from(self.affix_total(crate::affixes::AffixKind::Penetration)).unwrap_or(u16::MAX),
+            );
         CombatStats {
             // As in the original: a point of Strength is a point of
             // attack, the rest is the gear's. Level and Agility add none.
@@ -5510,7 +5662,8 @@ impl Character {
                 (
                     health
                         .saturating_add(scaled(item.health_add))
-                        .saturating_add(u32::from(owned.enchant_hp)),
+                        .saturating_add(u32::from(owned.enchant_hp))
+                        .saturating_add(crate::affixes::total(&owned.affixes, crate::affixes::AffixKind::MaxHp)),
                     mana.saturating_add(scaled(item.mana_add)),
                 )
             })
@@ -7417,11 +7570,12 @@ mod tests {
             .await?
             .expect("item should become Rare");
 
-        let (outcome, catalyst) = character.reroll_item_rarity_bonus_with_dragonball(&pool, 501).await?;
+        let (outcome, catalyst) = character.reroll_item_rarity_bonus_with_dragonball(&pool, 501, None).await?;
         let RarityBonusOutcome::Rerolled(item) = outcome else {
             panic!("Rare item should be rerollable");
         };
-        assert!(item.rarity_roll > 0);
+        assert_ne!(item.affixes[0], 0, "a Rare item has one affix");
+        assert_eq!(item.affixes[1], 0);
         assert_eq!(catalyst.expect("one DragonBall should be consumed").uid, 701);
         assert_eq!(character.item_in_memory(501).expect("item remains owned").rarity, 1);
         assert_eq!(
@@ -7431,7 +7585,7 @@ mod tests {
             0
         );
         character.load_inventory(&pool).await?;
-        assert_eq!(character.inventory_items()[0].rarity_roll, item.rarity_roll);
+        assert_eq!(character.inventory_items()[0].affixes, item.affixes, "the affixes persist");
         Ok(())
     }
 

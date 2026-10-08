@@ -50,8 +50,11 @@ impl PacketProcess for MsgItemRarity {
                 } else {
                     actor.send(MsgItemInfo::inventory_item(item)).await?;
                 }
+                let next = character.rarity_chance(state.pool(), item.uid).await?.unwrap_or_default();
                 actor
-                    .send(reject("Rarity upgrade failed; DragonBalls were consumed."))
+                    .send(reject(&format!(
+                        "The rarity did not rise; the catalysts were spent. The next attempt has {next}% chance."
+                    )))
                     .await?;
                 return Ok(());
             },
@@ -60,9 +63,14 @@ impl PacketProcess for MsgItemRarity {
                 return Ok(());
             },
             crate::entities::RarityUpgradeOutcome::MissingDragonBall => {
-                actor
-                    .send(reject("Rarity upgrade rejected: you need more DragonBalls."))
-                    .await?;
+                let need = character
+                    .item_in_memory(self.item_id)
+                    .and_then(|item| crate::affixes::upgrade_cost(item.rarity))
+                    .map_or_else(String::new, |(catalyst, count, _)| {
+                        let name = if catalyst == crate::affixes::SUPER_DRAGONBALL { "SuperDragonBall" } else { "DragonBall" };
+                        format!(" It takes {count} {name}{}.", if count > 1 { "s" } else { "" })
+                    });
+                actor.send(reject(&format!("You lack the catalysts.{need}"))).await?;
                 return Ok(());
             },
             crate::entities::RarityUpgradeOutcome::NotFound => {
@@ -83,13 +91,18 @@ impl PacketProcess for MsgItemRarity {
         } else {
             actor.send(MsgItemInfo::inventory_item(item)).await?;
         }
+        let tier = ["Common", "Rare", "Epic", "Legendary", "Mythic"][usize::from(item.rarity.min(4))];
         actor
             .send(MsgTalk::from_system(
                 character.id(),
                 TalkChannel::System,
-                format!("Item rarity upgraded to tier {}.", item.rarity),
+                format!("The item rose to {tier}, and gained an affix."),
             ))
             .await?;
+        // A Mythic is news to everyone online.
+        if item.rarity >= 4 {
+            crate::bosses::announce(state, format!("{} forged a Mythic item!", character.entity().name())).await;
+        }
         Ok(())
     }
 }

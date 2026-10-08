@@ -241,6 +241,7 @@ pub async fn kill_character(
             y: location.y.saturating_add_signed(dy),
             owner_id: 0,
             silver: 0,
+            rarity: 0,
         };
         state.insert_ground_item(ground);
         let packet = MsgGroundItem::new(ground.uid, ground.item_id, ground.x, ground.y);

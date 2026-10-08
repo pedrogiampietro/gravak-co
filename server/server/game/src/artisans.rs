@@ -162,6 +162,7 @@ pub fn opening(npc_id: u32) -> Option<(String, Vec<(u8, String)>, u16)> {
             vec![
                 (1, "Upgrade Quality".to_owned()),
                 (2, "Upgrade Level".to_owned()),
+                (3, "Compose a SuperDragonBall".to_owned()),
                 (255, "No thanks".to_owned()),
             ],
             MAGIC_ARTISAN_FACE,
@@ -175,6 +176,8 @@ enum Step {
     Say(String, Vec<(u8, String)>),
     UpgradeQuality { position: u8, next: u32, cost: u32 },
     UpgradeLevel { position: u8, next: u32, cost: u32 },
+    /// Ten DragonBalls into a Super DragonBall.
+    ComposeSuperDragonBall,
 }
 
 fn say(text: impl Into<String>, option: &str) -> Step {
@@ -200,6 +203,23 @@ fn step(
 ) -> Option<Step> {
     let exists = |item_type: u32| catalog.template(item_type).is_some();
     let requirement = |item_type: u32| catalog.template(item_type).map_or(0, |template| template.level);
+    // The Super DragonBall: Legendary and Mythic rarity are made of it.
+    let recipe = u32::from(crate::affixes::SUPER_DRAGONBALL_RECIPE);
+    match option {
+        3 => {
+            return Some(Step::Say(
+                format!(
+                    "Ten DragonBalls, pressed together by my art, make a SuperDragonBall: what raises                      equipment to Legendary and Mythic rarity, and rerolls a single affix. It takes {recipe}                      DragonBalls."
+                ),
+                vec![(4, "Compose it".to_owned()), (255, "Never mind".to_owned())],
+            ));
+        },
+        4 if !has(DRAGONBALL, recipe) => {
+            return Some(say(format!("You do not have the {recipe} DragonBalls it takes."), "Sorry"));
+        },
+        4 => return Some(Step::ComposeSuperDragonBall),
+        _ => {},
+    }
     let position = option % 10;
     if !SLOTS.iter().any(|(slot, _)| *slot == position) && option > 2 {
         return None;
@@ -321,6 +341,31 @@ pub async fn answer(
     let (position, next, catalyst, cost, socket_per_mille, done) = match step {
         Step::Say(text, options) => {
             send_dialog(actor, npc_id, text, options).await?;
+            return Ok(true);
+        },
+        Step::ComposeSuperDragonBall => {
+            let Some((spent, made)) = character.compose_super_dragonball(state.pool()).await? else {
+                send_dialog(
+                    actor,
+                    npc_id,
+                    "You need ten DragonBalls and room in your bag.".to_owned(),
+                    vec![(255, "Sorry".to_owned())],
+                )
+                .await?;
+                return Ok(true);
+            };
+            for catalyst in spent {
+                actor.send(MsgItemInfo::remove_inventory_item(catalyst)).await?;
+            }
+            actor.send(MsgItemInfo::inventory_item(made)).await?;
+            crate::audit::item("compose_super_dragonball", character.id(), made.uid, made.item_type, format_args!(""));
+            send_dialog(
+                actor,
+                npc_id,
+                "Here is your SuperDragonBall. Use it well.".to_owned(),
+                vec![(255, "Thanks!".to_owned())],
+            )
+            .await?;
             return Ok(true);
         },
         Step::UpgradeQuality { position, next, cost } => (

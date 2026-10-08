@@ -1512,16 +1512,18 @@ impl ItemRarityPacket {
     }
 }
 
-/// Requests a new random bonus roll for an already rare-or-better item.
+/// Rerolls an item's rarity affixes: all of them for a DragonBall (`slot`
+/// 255), or the one in `slot` for a SuperDragonBall.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
 #[packet(id = 2079)]
 pub struct ItemRarityRerollPacket {
     pub item_id: u32,
+    pub slot: u8,
 }
 
 impl ItemRarityRerollPacket {
-    pub fn new(item_id: u32) -> Self {
-        Self { item_id }
+    pub fn new(item_id: u32, slot: u8) -> Self {
+        Self { item_id, slot }
     }
 }
 

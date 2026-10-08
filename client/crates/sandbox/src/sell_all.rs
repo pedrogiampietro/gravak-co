@@ -398,7 +398,7 @@ mod tests {
             rarity: 0,
             gem_one: 0,
             gem_two: 0,
-            rarity_roll: 0,
+            affixes: [0; 4],
             bless: 0,
             enchant_hp: 0,
             color: 0,

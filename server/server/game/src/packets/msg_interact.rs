@@ -297,13 +297,18 @@ impl MsgInteract {
                 );
                 let bonus = character.magic_attack_bonus_with_catalog(Some(state.shop_catalog()));
                 let spirit = u32::from(character.spirit());
+                // Rarity affixes: percent more magic attack.
+                let magic = character.affix_total(crate::affixes::AffixKind::MagicAttack);
                 scale_skill_power(
-                    CombatStats {
-                        min_attack: attacker.min_attack.saturating_add(spirit * 3).saturating_add(bonus),
-                        max_attack: attacker.max_attack.saturating_add(spirit * 4).saturating_add(bonus),
-                        ..attacker
-                    },
-                    power,
+                    scale_skill_power(
+                        CombatStats {
+                            min_attack: attacker.min_attack.saturating_add(spirit * 3).saturating_add(bonus),
+                            max_attack: attacker.max_attack.saturating_add(spirit * 4).saturating_add(bonus),
+                            ..attacker
+                        },
+                        power,
+                    ),
+                    u16::try_from(100 + magic).unwrap_or(u16::MAX),
                 )
             },
             // The weapon skill's share of the physical attack, with the
@@ -941,6 +946,13 @@ impl MsgInteract {
             ..attacker
         };
         let attacker_stats = scale_skill_power(attacker_stats, skill_power);
+        // Rarity affixes: percent more magic attack on spells.
+        let attacker_stats = if skill.physical {
+            attacker_stats
+        } else {
+            let magic = character.affix_total(crate::affixes::AffixKind::MagicAttack);
+            scale_skill_power(attacker_stats, u16::try_from(100 + magic).unwrap_or(u16::MAX))
+        };
         // Weapon skills: the physical attack, proficiency bonus included.
         let physical_stats = attacker;
         let physical_power = u16::try_from(
@@ -1447,6 +1459,8 @@ pub(crate) async fn reward_monster_defeat(
                 .map(|item_id| (item_id, 0)),
         );
     }
+    // Whether it was a boss, asked before its fall is recorded below.
+    let boss = crate::bosses::is_boss(monster.id());
     // Special drops: refinery materials from bosses and strong monsters.
     drops.extend(
         crate::special_drops::roll(monster_level, crate::bosses::is_boss(monster.id()), next_roll, |item| {
@@ -1463,6 +1477,25 @@ pub(crate) async fn reward_monster_defeat(
             .into_iter()
             .map(|item_id| (item_id, 0)),
     );
+    // The Super DragonBall: every boss drops one; any monster, very rarely.
+    if boss || crate::affixes::rolls_super_dragonball(next_roll()) {
+        drops.push((crate::affixes::SUPER_DRAGONBALL, 0));
+        if !boss {
+            crate::bosses::announce(
+                state,
+                format!("{} found a SuperDragonBall on a {}!", character.entity().name(), monster.monster_type().name),
+            )
+            .await;
+        }
+    }
+    // Equipment may fall rare: the rarity each drop is picked up with.
+    let rarity_of = |item_id: u32| {
+        if crate::affixes::can_carry_rarity(item_id) {
+            crate::affixes::drop_rarity(boss, next_roll())
+        } else {
+            0
+        }
+    };
     // VIP: the drops their loot filter picks go straight into the bag.
     if state.vip().is_vip(character.id()) {
         let filter = state.vip().loot_filter(character.id());
@@ -1480,6 +1513,12 @@ pub(crate) async fn reward_monster_defeat(
                 match character.add_ground_item(state.pool(), item_id, durability, max_durability).await? {
                     Some(item) => {
                         crate::audit::item("vip_auto_pickup", character.id(), item.uid, item.item_type, format_args!(""));
+                        let rarity = rarity_of(item_id);
+                        let item = if rarity > 0 {
+                            character.set_item_rarity(state.pool(), item.uid, rarity).await?.unwrap_or(item)
+                        } else {
+                            item
+                        };
                         character.owner().send(super::MsgItemInfo::inventory_item(item)).await?;
                     },
                     // A full bag: it falls to the ground as usual.
@@ -1502,6 +1541,7 @@ pub(crate) async fn reward_monster_defeat(
             y,
             owner_id: character.id(),
             silver: item_id.1,
+            rarity: if item_id.1 == 0 { rarity_of(item_id.0) } else { 0 },
         });
         let item_drop = MsgGroundItem::new(item_uid, item_id.0, x, y);
         character.owner().send(item_drop.clone()).await?;

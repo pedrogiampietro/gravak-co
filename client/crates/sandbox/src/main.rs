@@ -8077,12 +8077,12 @@ impl App {
         true
     }
 
-    fn queue_reroll_rarity_bonus(&mut self, item: network::OwnedItem) -> bool {
+    fn queue_reroll_rarity_bonus(&mut self, item: network::OwnedItem, slot: u8) -> bool {
         let Some(network) = &self.network else {
             self.network_status = "Rolar bônus requer o modo online".into();
             return true;
         };
-        network.reroll_item_rarity(item.uid);
+        network.reroll_item_rarity(item.uid, slot);
         self.network_status = format!("online: rolando bônus de {}", item.item_type);
         true
     }
@@ -8291,6 +8291,7 @@ impl App {
             item,
             action,
             selected_rarity,
+            selected_affix: None,
             price,
         });
         self.network_status = format!("{}: confirme a operação no painel", action.label());
@@ -8386,17 +8387,28 @@ impl App {
                 self.item_action_panel = None;
                 self.action_animation_started = None;
             }
+            Some(shop::ItemActionPanelButton::Affix(slot)) => {
+                // Choosing an affix rerolls it alone; again, all of them.
+                if usize::from(slot) < usize::from(panel.item.rarity.min(4)) {
+                    let chosen = (panel.selected_affix != Some(slot)).then_some(slot);
+                    if let Some(open) = self.item_action_panel.as_mut() {
+                        open.selected_affix = chosen;
+                    }
+                }
+            }
             Some(shop::ItemActionPanelButton::Reroll) => {
                 if !shop::item_action_panel_reroll_enabled(panel, &self.inventory) {
                     self.network_status = if panel.item.rarity == 0 {
-                        "o item precisa ser Rare ou melhor para rolar bônus".into()
+                        "o item precisa ser Rare ou melhor para rolar afixos".into()
+                    } else if panel.selected_affix.is_some() {
+                        "rolar um afixo pede uma SuperDragonBall".into()
                     } else {
-                        "reroll indisponível: DragonBall insuficiente".into()
+                        "rolar todos os afixos pede uma DragonBall".into()
                     };
                     return true;
                 }
                 self.item_action_panel = None;
-                self.queue_reroll_rarity_bonus(panel.item);
+                self.queue_reroll_rarity_bonus(panel.item, panel.selected_affix.unwrap_or(u8::MAX));
             }
             Some(shop::ItemActionPanelButton::Confirm) => {
                 if !shop::item_action_panel_confirm_enabled(panel, &self.inventory) {

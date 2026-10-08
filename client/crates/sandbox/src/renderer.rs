@@ -4465,7 +4465,7 @@ impl Renderer {
                             item.gem_one,
                             item.gem_two,
                             item.rarity,
-                            item.rarity_roll,
+                            item.affixes,
                             item.bless,
                             item.enchant_hp,
                         )?,
@@ -4755,7 +4755,7 @@ impl Renderer {
                         item.gem_one,
                         item.gem_two,
                         item.rarity,
-                        item.rarity_roll
+                        format!("{:?}", item.affixes)
                     );
                     if !self.textures.contains_key(&tooltip_key) {
                         let info = crate::shop::item_info(assets, item.item_type);
@@ -4771,7 +4771,7 @@ impl Renderer {
                                 item.gem_one,
                                 item.gem_two,
                                 item.rarity,
-                                item.rarity_roll,
+                                item.affixes,
                                 item.bless,
                                 item.enchant_hp,
                             )?,
@@ -5074,7 +5074,7 @@ impl Renderer {
                             item.gem_one,
                             item.gem_two,
                             item.rarity,
-                            item.rarity_roll,
+                            item.affixes,
                             item.bless,
                             item.enchant_hp,
                         )?,
@@ -5539,7 +5539,7 @@ impl Renderer {
                 item.gem_two,
                 item.item_type,
                 item.rarity,
-                item.rarity_roll
+                format!("{:?}", item.affixes)
             );
             if !self.textures.contains_key(&tooltip_key) {
                 let info = crate::shop::item_info(assets, item.item_type);
@@ -5553,7 +5553,7 @@ impl Renderer {
                         item.gem_one,
                         item.gem_two,
                         item.rarity,
-                        item.rarity_roll,
+                        item.affixes,
                         item.bless,
                         item.enchant_hp,
                     )?,
@@ -5735,7 +5735,7 @@ impl Renderer {
                     panel.item.gem_two,
                     panel.item.item_type,
                     panel.item.rarity,
-                    panel.item.rarity_roll
+                    format!("{:?}", panel.item.affixes)
                 );
                 if !self.textures.contains_key(&tooltip_key) {
                     let info = crate::shop::item_info(assets, panel.item.item_type);
@@ -5749,7 +5749,7 @@ impl Renderer {
                             panel.item.gem_one,
                             panel.item.gem_two,
                             panel.item.rarity,
-                            panel.item.rarity_roll,
+                            panel.item.affixes,
                             panel.item.bless,
                             panel.item.enchant_hp,
                         )?,
