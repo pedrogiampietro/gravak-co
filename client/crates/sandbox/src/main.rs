@@ -2188,6 +2188,16 @@ impl App {
                 self.held = false;
                 return true;
             }
+            // An XP skill is used at once, as the original's XP icons are;
+            // one that needs a target waits for the next click on one.
+            if crate::main_hud::is_xp_skill(&mut self.assets, skill_id)
+                && let Some(skill) = action_bar::skill_action(skill_id).filter(|skill| !skill.requires_target)
+            {
+                self.cast_skill(skill);
+                self.skill_bar_open = false;
+                self.held = false;
+                return true;
+            }
             self.active_skill = Some(skill_id);
             self.skill_bar_open = false;
             self.network_status = format!("skill selecionada: {skill_id}");
