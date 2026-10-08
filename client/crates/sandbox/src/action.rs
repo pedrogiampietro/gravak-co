@@ -13,7 +13,8 @@ pub enum Action {
     /// Conquer's action 220 (Kneel), used by the original client while
     /// collecting an item from the ground.
     Pickup,
-    /// `3dmotion.ini` 401: falling dead; the last frame is the corpse.
+    /// `3dmotion.ini` 330: falling dead; the last frame is the corpse (401,
+    /// once used here, is the blow: `140` points at `401.c3`).
     Die,
     /// `3dmotion.ini` 250: sitting down; the last frame is held.
     Sit,
@@ -33,10 +34,13 @@ pub enum Action {
     Fly,
     /// Casting a magic (Thunder, Cure, Stigma...): MagicType's motion 903.
     Cast,
+    /// The swept blow of Hercules, WideStrike, SpeedLightning, Snow and
+    /// the like: MagicType's motion 403.
+    Sweep,
 }
 
 impl Action {
-    pub const COUNT: usize = 22;
+    pub const COUNT: usize = 23;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Idle,
         Self::WalkLeft,
@@ -60,6 +64,7 @@ impl Action {
         Self::Bow,
         Self::Fly,
         Self::Cast,
+        Self::Sweep,
     ];
 
     pub const fn index(self) -> usize {
@@ -86,6 +91,7 @@ impl Action {
             Self::Bow => 19,
             Self::Fly => 20,
             Self::Cast => 21,
+            Self::Sweep => 22,
         }
     }
 
@@ -105,7 +111,7 @@ impl Action {
             // Action.dat/3dmotion.ini in the original 5065 client names this
             // motion Kneel (220); it is the pickup pose.
             Self::Pickup => 220,
-            Self::Die => 401,
+            Self::Die => 330,
             Self::Sit => 250,
             Self::Cool => 230,
             Self::Kneel => 210,
@@ -118,6 +124,7 @@ impl Action {
             Self::Bow => 200,
             Self::Fly => 510,
             Self::Cast => 903,
+            Self::Sweep => 403,
         }
     }
 
@@ -167,7 +174,7 @@ mod tests {
         assert_eq!(Action::ALL.map(Action::index), std::array::from_fn(|index| index));
         assert_eq!(
             Action::ALL.map(Action::catalog_id),
-            [100, 110, 111, 120, 121, 130, 140, 100, 220, 401, 250, 230, 210, 170, 150, 160, 270, 1, 190, 200, 510, 903]
+            [100, 110, 111, 120, 121, 130, 140, 100, 220, 330, 250, 230, 210, 170, 150, 160, 270, 1, 190, 200, 510, 903, 403]
         );
         assert_eq!(Action::from_catalog_id(150), Some(Action::Happy));
         assert_eq!(Action::from_catalog_id(100), Some(Action::Idle));

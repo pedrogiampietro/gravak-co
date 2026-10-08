@@ -242,7 +242,7 @@ impl Character {
         let actions = Action::ALL
             .into_iter()
             .map(|action| match action {
-                _ if action == Action::Die || action == Action::Fly || action == Action::Cast || action.emote() => {
+                _ if matches!(action, Action::Die | Action::Fly | Action::Cast | Action::Sweep) || action.emote() => {
                     motion(action).or_else(|_| motion(Action::Idle))
                 }
                 _ => motion(action),

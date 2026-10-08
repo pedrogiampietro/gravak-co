@@ -5749,18 +5749,25 @@ impl App {
                 if !carried && damage > 0 {
                     self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
                 }
-                // A magic is cast with the casting motion (MagicType 903), not
-                // a blow: Thunder, Cure, Stigma.
-                let cast = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
-                    .is_some_and(|magic| magic.motion == Action::Cast.catalog_id());
-                // A status the caster puts on themselves (Fly, Intensify)
-                // without the casting motion strikes no blow.
-                let on_self = !cast && target_id == attacker_id && damage == 0;
+                // The caster's motion is MagicType's (0x90), as the original
+                // plays it: 903 casts a magic (Thunder, Cure, Stigma), 403
+                // sweeps (Hercules, WideStrike, Snow), 401 and the bows' 800
+                // and 801 strike the plain blow; 100, 501 and 630 stand
+                // (IronShirt, Fly, Intensify).
+                let motion = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level).map(|magic| magic.motion);
+                let cast = motion == Some(Action::Cast.catalog_id());
+                let sweep = motion == Some(Action::Sweep.catalog_id());
+                let standing = matches!(motion, Some(100 | 501 | 630));
+                // A status the caster puts on themselves without a motion of
+                // its own strikes no blow either.
+                let on_self = standing || (!cast && target_id == attacker_id && damage == 0);
                 // One motion and one sound (MagicType) for the cast, not one
                 // per target.
                 if first {
                     if cast {
-                        self.play_cast_motion(attacker_id, now);
+                        self.play_skill_motion(attacker_id, Action::Cast, now);
+                    } else if sweep {
+                        self.play_skill_motion(attacker_id, Action::Sweep, now);
                     } else if !on_self {
                         self.play_attack_motion(attacker_id, now);
                     }
@@ -5770,9 +5777,9 @@ impl App {
                         self.play_sound(&sound);
                     }
                 }
-                if cast {
-                    // A magic's blow shakes the hero struck; a heal or a buff
-                    // does not.
+                if cast || sweep {
+                    // The caster's motion is played; a blow shakes the hero
+                    // struck, a heal or a buff does not.
                     if damage > 0 && target_id != attacker_id && self.network_character_id == Some(target_id) {
                         self.play_blow_on_player(attacker_id, target_id, now);
                     }
@@ -6459,8 +6466,6 @@ impl App {
     /// `attacker_id` strikes: a remote actor plays its attack motion. In the
     /// middle of a jump the jump plays on to its landing and only the
     /// arrows show the shot (Scatter shot while jumping).
-    /// The casting motion (903) of whoever casts a magic: the hero or
-    /// another on screen.
     /// Takes an actor off the screen, with its models.
     fn forget_actor(&mut self, id: u32) {
         self.remote_actors.remove(&id);
@@ -6491,13 +6496,15 @@ impl App {
         }
     }
 
-    fn play_cast_motion(&mut self, caster_id: u32, now: f32) {
-        const CAST_SECONDS: f32 = 0.8;
+    /// A skill's own motion (the casting 903, the sweep 403) on whoever
+    /// uses it: the hero or another on screen.
+    fn play_skill_motion(&mut self, caster_id: u32, action: Action, now: f32) {
+        let seconds = if action == Action::Cast { 0.8 } else { 0.6 };
         if self.network_character_id == Some(caster_id) {
             if !self.player.jumping() {
-                self.player.action = Action::Cast;
+                self.player.action = action;
                 self.player.action_instance = self.player.action_instance.wrapping_add(1);
-                self.local_action = Some((Action::Cast, now, now + CAST_SECONDS));
+                self.local_action = Some((action, now, now + seconds));
             }
             return;
         }
@@ -6505,9 +6512,9 @@ impl App {
             if actor.jumping && now < actor.movement_until {
                 return;
             }
-            actor.action = Action::Cast.catalog_id() as u16;
+            actor.action = action.catalog_id() as u16;
             actor.animation_started = now;
-            actor.animation_until = now + CAST_SECONDS;
+            actor.animation_until = now + seconds;
         }
     }
 
