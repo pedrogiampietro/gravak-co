@@ -184,6 +184,17 @@ impl ShopCatalog {
         self.items.get(&item_id).copied()
     }
 
+    /// The best weapon of `family` (item type / 1000) a hero of `level`
+    /// may wear: its highest level, Super quality. For test characters.
+    #[cfg(test)]
+    pub fn best_weapon(&self, family: u32, level: u32) -> Option<u32> {
+        self.items
+            .iter()
+            .filter(|(id, item)| **id / 1_000 == family && **id % 10 == 9 && item.level <= level)
+            .max_by_key(|(id, item)| (item.level, **id))
+            .map(|(id, _)| *id)
+    }
+
     /// Resolves the equipment position from the classic item family. The
     /// server uses this as a second line of defense because the client-provided
     /// slot is input, not authority.
