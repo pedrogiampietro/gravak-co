@@ -356,6 +356,23 @@ impl Screen {
         let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
         let mymap = state.try_map(me.entity().map_id())?;
         let loc = me.entity().location();
+        // Whatever is out of sight now leaves the screen, wherever it is
+        // (not only in the regions around): the client lets it go itself,
+        // so it must be sent again when it comes back. A player leaves both
+        // screens.
+        let gone: Vec<u32> = self.with_entities(|seen| {
+            seen.values()
+                .filter_map(Weak::upgrade)
+                .filter(|o| match o.as_ref() {
+                    GameEntity::Npc(_) => !can_see_npc(o, &entity),
+                    _ => !can_see(o, &entity),
+                })
+                .map(|o| o.id())
+                .collect()
+        });
+        for id in gone {
+            let _ = self.remove_entity(id);
+        }
         let myreagions = mymap.surrunding_regions(loc.x, loc.y);
         let futures = FuturesUnordered::new();
         for region in myreagions {
