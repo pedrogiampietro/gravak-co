@@ -241,8 +241,8 @@ pub const TINT_MARK: &str = "#tint-";
 /// carry: Legendary gold, Mythic crimson. Per channel, times the light.
 pub fn tint(name: &str) -> Option<[f32; 3]> {
     match name {
-        "legendary" => Some([2.2, 1.45, 0.35]),
-        "mythic" => Some([2.4, 0.35, 0.55]),
+        "legendary" => Some([0.75, 0.54, 0.15]),
+        "mythic" => Some([0.9, 0.2, 0.36]),
         _ => None,
     }
 }
@@ -543,8 +543,8 @@ mod tests {
         assert_eq!(rarity_tint(4), Some("mythic"));
         let key = tinted_key(&format!("c3/effect/bow/129.dds{ADDITIVE_SUFFIX}"), "mythic");
         assert_eq!(key, format!("c3/effect/bow/129.dds#tint-mythic{ADDITIVE_SUFFIX}"));
-        let image = tinted(image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])), [2.2, 1.45, 0.35]);
-        assert_eq!(image.get_pixel(0, 0).0, [255, 255, 89, 255], "white turns gold");
+        let image = tinted(image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])), tint("legendary").unwrap());
+        assert_eq!(image.get_pixel(0, 0).0, [191, 137, 38, 255], "white turns gold");
     }
 
     #[test]

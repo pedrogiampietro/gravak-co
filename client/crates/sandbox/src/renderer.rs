@@ -1192,15 +1192,18 @@ impl Renderer {
         for (weapon, matrix, left) in weapons {
             self.effect_yaw = Some(facing);
             self.effect_attachment = Some(matrix);
-            if let Some(name) = self.weapon_effect(assets, "999", weapon) {
-                self.push_looping_effect(assets, &name, origin, time, sort_depth, viewport, draws);
-            }
-            // Legendary and Mythic: the kind's own top Super glow, gold or
-            // crimson, whatever the weapon's level and quality.
+            // Legendary and Mythic glow gold or crimson: a Super weapon's own
+            // glow turns that colour (never a second glow over it); another
+            // weapon takes its kind's top Super glow in that colour.
             let tint = crate::magic::rarity_tint(rarity[usize::from(left)]);
-            if let (Some(tint), Some(name)) = (tint, self.kind_glow(assets, weapon)) {
-                self.effect_tint = Some(tint);
-                self.push_looping_effect(assets, &name, origin, time, sort_depth + 0.001, viewport, draws);
+            let glow = match self.weapon_effect(assets, "999", weapon) {
+                Some(own) => Some(own),
+                None if tint.is_some() => self.kind_glow(assets, weapon),
+                None => None,
+            };
+            if let Some(name) = glow {
+                self.effect_tint = tint;
+                self.push_looping_effect(assets, &name, origin, time, sort_depth, viewport, draws);
                 self.effect_tint = None;
             }
             self.effect_attachment = None;
@@ -1211,7 +1214,8 @@ impl Renderer {
     /// The Super glow of the highest weapon of `weapon`'s kind (a level 130
     /// blade's for every blade), shaped for that kind of weapon.
     fn kind_glow(&mut self, assets: &mut Assets, weapon: u32) -> Option<String> {
-        self.weapon_effect(assets, "999", weapon)?;
+        // The catalog loads with the first lookup.
+        let _ = self.weapon_effect(assets, "999", weapon);
         let prefix = format!("999.{}.", weapon / 1_000);
         let catalog = self.swing_effects.as_ref()?;
         catalog
@@ -6845,4 +6849,5 @@ mod shift_screen_tests {
         assert_eq!(shift_screen_step([350.0, 190.0], [1023.0, 767.0], viewport, 10.0), [356.0, 192.0]);
     }
 }
+
 
