@@ -4,6 +4,7 @@ pub mod error;
 pub mod limits;
 pub mod linker;
 pub mod register;
+pub mod secure;
 pub mod state;
 
 use bytes::Bytes;
@@ -65,6 +66,34 @@ impl PacketHandler for Runtime {
         actor: &Actor<Self::ActorState>,
     ) -> Result<(), Self::Error> {
         const PROCESS_PACKET: &str = "process_packet";
+        // A sealed login opens into the usual login or registration; the
+        // old ones, their password in the 5065's RC5, only from this
+        // machine (the development tools).
+        let packet = if packet.0 == secure::MsgSecureLogin::PACKET_ID {
+            let opened = secure::key().and_then(|key| {
+                let msg: secure::MsgSecureLogin = tq_serde::from_bytes(&packet.1).ok()?;
+                secure::unseal(key, &msg)
+            });
+            match opened {
+                Some(packet) => packet,
+                None => {
+                    actor.send(msg_connect_ex::RejectionCode::InvalidPassword.packet()).await?;
+                    return Ok(());
+                },
+            }
+        } else {
+            if matches!(
+                packet.0,
+                msg_account::MsgAccount::PACKET_ID | register::MsgRegisterAccount::PACKET_ID
+            ) && secure::key().is_some()
+                && actor.peer().is_some_and(|peer| !peer.ip().is_loopback())
+            {
+                tracing::warn!(target: "auth", "An unsealed login from another machine; refused");
+                actor.send(msg_connect_ex::RejectionCode::ServerOldProtocol.packet()).await?;
+                return Ok(());
+            }
+            packet
+        };
         let packet_len = packet.1.len();
 
         if matches!(

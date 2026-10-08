@@ -34,6 +34,10 @@ param(
     # The folder URL players' clients update from (tools\publish-update.ps1
     # makes its contents); empty leaves the updater off.
     [string]$Update = "",
+    # The login server's public key (hex): players seal their passwords to
+    # it. Empty reads server\keys\login.pub, which the auth server writes
+    # on its first start.
+    [string]$LoginKey = "",
     # Skip the installer even when Inno Setup is present.
     [switch]$NoInstaller
 )
@@ -97,15 +101,30 @@ Auth=$Auth
 Realm=$Realm
 Update=$Update
 "@ | Set-Content -Encoding utf8 (Join-Path $package "gravak.ini")
+if (-not $LoginKey) {
+    $keyFile = Join-Path (Split-Path -Parent $client) "server\keys\login.pub"
+    if (Test-Path $keyFile) { $LoginKey = (Get-Content $keyFile -Raw).Trim() }
+}
+if ($LoginKey -and $LoginKey -notmatch '^[0-9a-f]{64}$') {
+    throw "LoginKey must be 64 hex digits (server\keys\login.pub)."
+}
+if (-not $LoginKey) {
+    Write-Warning "No login key: players' passwords would travel unsealed, and the server refuses that from other machines. Start the auth server once (it writes server\keys\login.pub) or pass -LoginKey."
+}
 $servers = Join-Path $client "installer\servers.ini"
 if (Test-Path $servers) {
     Copy-Item $servers (Join-Path $package "servers.ini") -Force
+    if (-not (Select-String -Path $servers -Pattern '^\s*Key\s*=' -Quiet)) {
+        Write-Warning "installer\servers.ini has no Key= line: add the login key to each world."
+    }
 } else {
     @"
 ; The worlds on the login screen: one section per world.
+; Key: the login server's public key; passwords are sealed to it.
 [$Realm]
 Auth=$Auth
 Realm=$Realm
+Key=$LoginKey
 "@ | Set-Content -Encoding utf8 (Join-Path $package "servers.ini")
 }
 Copy-Item (Join-Path $client "LICENSE"), (Join-Path $client "NOTICE") (Join-Path $package "licenses") -Force

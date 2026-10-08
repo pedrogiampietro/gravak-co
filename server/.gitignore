@@ -4,3 +4,6 @@ target
 *.DS_Store
 logs/
 data/GameMaps.invalid-download/
+
+# The login server's secret key (secure.rs); never commit it.
+keys/
