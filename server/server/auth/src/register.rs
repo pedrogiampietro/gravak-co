@@ -137,4 +137,27 @@ mod tests {
             .unwrap();
         assert_eq!(account.username, "newhero");
     }
+
+    #[tokio::test]
+    async fn a_banned_account_is_refused_until_lifted() {
+        let pool = pool().await;
+        assert_eq!(register(&pool, "banme", "hunter2").await, RegisterResult::Created);
+        sqlx::query("UPDATE accounts SET banned_until = now() + interval '1 hour' WHERE username = 'banme'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            tq_db::account::Account::auth(&pool, "banme", "hunter2").await,
+            Err(tq_db::Error::AccountBanned)
+        ));
+        assert!(
+            matches!(tq_db::account::Account::auth(&pool, "banme", "wrong").await, Err(tq_db::Error::InvalidPassword)),
+            "a wrong password says nothing of the ban"
+        );
+        sqlx::query("UPDATE accounts SET banned_until = now() - interval '1 second' WHERE username = 'banme'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(tq_db::account::Account::auth(&pool, "banme", "hunter2").await.is_ok(), "an expired ban lets them in");
+    }
 }

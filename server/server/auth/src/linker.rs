@@ -185,6 +185,7 @@ pub mod db {
                         Ok(account) => account.account_id,
                         Err(tq_db::Error::AccountNotFound) => -1,
                         Err(tq_db::Error::InvalidPassword) => -2,
+                        Err(tq_db::Error::AccountBanned) => -3,
                         Err(e) => {
                             tracing::error!("Failed to auth account: {}", e);
                             -1

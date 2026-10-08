@@ -22,14 +22,26 @@ impl Account {
         match maybe_account {
             Some(account) => {
                 let matched = bcrypt::verify(password, &account.password)?;
-                if matched {
-                    Ok(account)
-                } else {
-                    Err(crate::Error::InvalidPassword)
+                if !matched {
+                    return Err(crate::Error::InvalidPassword);
                 }
+                if Self::banned(pool, account.account_id).await? {
+                    return Err(crate::Error::AccountBanned);
+                }
+                Ok(account)
             },
             None => Err(crate::Error::AccountNotFound),
         }
+    }
+
+    /// Whether the account is banned now.
+    pub async fn banned(pool: &sqlx::PgPool, account_id: i32) -> Result<bool, crate::Error> {
+        let banned: Option<bool> =
+            sqlx::query_scalar("SELECT banned_until IS NOT NULL AND banned_until > now() FROM accounts WHERE account_id = $1")
+                .bind(i64::from(account_id))
+                .fetch_optional(pool)
+                .await?;
+        Ok(banned.unwrap_or(false))
     }
 
     /// Returns all accounts in the database.
