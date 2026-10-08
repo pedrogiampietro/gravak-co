@@ -70,16 +70,18 @@ pub enum Command {
     Emotes,
     Map,
     Shortcuts,
+    Helper,
     Stop,
     RunWalk,
     Sit,
     Mine,
     Land,
     Performance,
+    HelperToggle,
 }
 
 impl Command {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::Slot1,
         Self::Slot2,
         Self::Slot3,
@@ -104,12 +106,14 @@ impl Command {
         Self::Emotes,
         Self::Map,
         Self::Shortcuts,
+        Self::Helper,
         Self::Stop,
         Self::RunWalk,
         Self::Sit,
         Self::Mine,
         Self::Land,
         Self::Performance,
+        Self::HelperToggle,
     ];
 
     fn index(self) -> usize {
@@ -124,7 +128,7 @@ impl Command {
     pub fn category(self) -> Category {
         match self.index() {
             0..10 => Category::ActionBar,
-            10..24 => Category::Panels,
+            10..25 => Category::Panels,
             _ => Category::Gameplay,
         }
     }
@@ -150,6 +154,8 @@ impl Command {
             Self::Emotes => "Actions".into(),
             Self::Map => "Corner map".into(),
             Self::Shortcuts => "Shortcuts".into(),
+            Self::Helper => "Helper".into(),
+            Self::HelperToggle => "Helper on / off".into(),
             Self::Stop => "Stop".into(),
             Self::RunWalk => "Run / Walk".into(),
             Self::Sit => "Sit".into(),
@@ -176,6 +182,8 @@ impl Command {
             Self::Emotes => "The emotes and actions panel.",
             Self::Map => "Shows or hides the map in the corner.",
             Self::Shortcuts => "This window.",
+            Self::Helper => "Potions, heals, buffs and following, by themselves.",
+            Self::HelperToggle => "Turns the helper on or off.",
             Self::Stop => "Stops walking and attacking.",
             Self::RunWalk => "Switches between running and walking.",
             Self::Sit => "Sits down or stands up.",
@@ -215,12 +223,14 @@ impl Command {
             Self::Emotes => key(KeyCode::KeyE),
             Self::Map => key(KeyCode::Tab),
             Self::Shortcuts => key(KeyCode::KeyL),
+            Self::Helper => key(KeyCode::KeyJ),
             Self::Stop => key(KeyCode::Space),
             Self::RunWalk => key(KeyCode::Slash),
             Self::Sit => key(KeyCode::KeyX),
             Self::Mine => key(KeyCode::KeyM),
             Self::Land => key(KeyCode::KeyC),
             Self::Performance => key(KeyCode::F11),
+            Self::HelperToggle => Some(Binding { code: KeyCode::KeyJ, ctrl: true, alt: false, shift: false }),
         }
     }
 }
@@ -364,7 +374,7 @@ impl Binding {
 /// The key bound to each command.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Keybinds {
-    binds: [Option<Binding>; 30],
+    binds: [Option<Binding>; Command::ALL.len()],
 }
 
 impl Default for Keybinds {
@@ -685,7 +695,7 @@ mod tests {
         view.category = Category::Gameplay;
         view.scroll = 0;
         view.scroll_by(5);
-        assert_eq!(view.scroll, 0, "six gameplay commands fit");
+        assert_eq!(view.scroll, 0, "the gameplay commands fit");
     }
 }
 

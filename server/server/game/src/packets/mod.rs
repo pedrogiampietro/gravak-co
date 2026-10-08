@@ -63,7 +63,7 @@ mod msg_team;
 pub use msg_team::{MsgTeam, MsgTeamMember};
 
 mod msg_team_action;
-pub use msg_team_action::MsgTeamAction;
+pub use msg_team_action::{left_team_on_logout, MsgTeamAction};
 
 mod msg_friend;
 pub use msg_friend::MsgFriend;

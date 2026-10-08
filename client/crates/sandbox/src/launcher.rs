@@ -746,6 +746,15 @@ impl LoginUi {
         }
     }
 
+    /// Pasted text goes into the focused field as if typed: the first line,
+    /// without its spaces round it.
+    pub fn paste(&mut self, text: &str) {
+        let text = text.lines().next().unwrap_or_default().trim();
+        if !text.is_empty() {
+            self.key(&Key::Character(text.into()), Some(text), false);
+        }
+    }
+
     pub fn key(&mut self, key: &Key, text: Option<&str>, shift: bool) -> Option<Request> {
         if self.list.take().is_some() && matches!(key, Key::Named(NamedKey::Escape)) {
             return None;
@@ -1850,6 +1859,8 @@ struct Launcher {
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     cursor: [f32; 2],
     shift: bool,
+    /// Ctrl held: Ctrl+V pastes into the field.
+    control: bool,
     started: Instant,
     entered: Option<NetworkHandle>,
     error: Option<String>,
@@ -1963,7 +1974,10 @@ impl ApplicationHandler for Launcher {
                 }
             }
             WindowEvent::Resized(_) => self.redraw(),
-            WindowEvent::ModifiersChanged(modifiers) => self.shift = modifiers.state().shift_key(),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.shift = modifiers.state().shift_key();
+                self.control = modifiers.state().control_key();
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
                 if self.ui.drag(self.cursor) {
@@ -2016,9 +2030,17 @@ impl ApplicationHandler for Launcher {
             } => self.ui.release(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 let before = std::mem::discriminant(&self.ui.screen);
-                let request = self
-                    .ui
-                    .key(&event.logical_key, event.text.as_deref(), self.shift);
+                // Ctrl+V: the clipboard's text, typed into the field.
+                let paste = self.control
+                    && matches!(&event.physical_key, winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyV));
+                let request = if paste {
+                    let text = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()).unwrap_or_default();
+                    self.ui.paste(&text);
+                    self.redraw();
+                    None
+                } else {
+                    self.ui.key(&event.logical_key, event.text.as_deref(), self.shift)
+                };
                 self.sound_screen_change(before);
                 self.run(request, event_loop);
             }
@@ -2103,6 +2125,7 @@ pub fn run(
         surface: None,
         cursor: [0.0; 2],
         shift: false,
+        control: false,
         started: Instant::now(),
         entered: None,
         error: None,
@@ -2151,6 +2174,18 @@ mod tests {
 
     fn new_ui() -> LoginUi {
         LoginUi::new(vec![world()], LoginPrefs::default())
+    }
+
+    #[test]
+    fn a_pasted_password_fills_the_field() {
+        let mut ui = new_ui();
+        ui.focus = 1;
+        ui.paste("  s3cret!X
+second line");
+        assert_eq!(ui.field_value(1), "s3cret!X", "the first line, trimmed");
+        ui.focus = 0;
+        ui.paste("hero");
+        assert_eq!(ui.field_value(0), "hero");
     }
 
     fn type_text(ui: &mut LoginUi, text: &str) {

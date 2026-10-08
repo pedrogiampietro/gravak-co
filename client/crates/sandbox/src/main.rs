@@ -2,6 +2,7 @@
 mod action;
 mod action_bar;
 mod keybinds;
+mod helper;
 mod cursors;
 mod assets;
 mod audio;
@@ -104,6 +105,10 @@ enum TargetPick {
     Trade,
     /// The main bar's View Equipment ([130-1016]).
     ViewEquipment,
+    /// The Team window's Invite: the player clicked is invited.
+    TeamInvite,
+    /// The Team window's Join: the team of the player clicked is asked.
+    TeamJoin,
 }
 
 impl TargetPick {
@@ -114,6 +119,8 @@ impl TargetPick {
             Self::Ignore => "Click a player to add as enemy (click the ground to cancel)",
             Self::Trade => "Click a player to request a trade (click the ground to cancel)",
             Self::ViewEquipment => "Click a player to view their equipment (click the ground to cancel)",
+            Self::TeamInvite => "Click a player to invite to your team (Esc or the ground cancels)",
+            Self::TeamJoin => "Click a player of the team you want to join (Esc or the ground cancels)",
         }
     }
 }
@@ -123,12 +130,13 @@ impl TargetPick {
 const JUMP_REST_SECONDS: f32 = 0.5;
 
 /// Rows of the Shift+click player menu, in order.
-const PLAYER_MENU: [(&str, PlayerMenuAction); 6] = [
+const PLAYER_MENU: [(&str, PlayerMenuAction); 7] = [
     ("TRADE", PlayerMenuAction::Trade),
     ("FOLLOW", PlayerMenuAction::Follow),
     ("WHISPER", PlayerMenuAction::Whisper),
     ("ADD FRIEND", PlayerMenuAction::AddFriend),
     ("TEAM INVITE", PlayerMenuAction::TeamInvite),
+    ("JOIN TEAM", PlayerMenuAction::TeamJoin),
     ("ENEMY", PlayerMenuAction::Enemy),
 ];
 
@@ -139,6 +147,7 @@ enum PlayerMenuAction {
     Whisper,
     AddFriend,
     TeamInvite,
+    TeamJoin,
     Enemy,
     /// A leader or deputy invites a player without a guild.
     GuildInvite,
@@ -551,6 +560,12 @@ struct App {
     keybinds: keybinds::Keybinds,
     /// The Shortcuts window, while open.
     shortcuts: Option<keybinds::ShortcutsView>,
+    /// The helper's choices (`settings/helper.ini`), what it remembers
+    /// between frames, its window while open and what it last did.
+    helper: helper::Settings,
+    helper_memory: helper::Memory,
+    helper_window: Option<helper::HelperView>,
+    helper_status: String,
     /// The hero's guild and the guilds at war with or allied to it.
     guild_relations: gravak_protocol::GuildRelations,
     /// The Store, as the server last sent it.
@@ -1274,6 +1289,15 @@ impl ApplicationHandler for App {
                 if self
                     .renderer
                     .as_ref()
+                    .is_some_and(|renderer| renderer.helper_icon_at(self.cursor))
+                {
+                    self.run_command(keybinds::Command::Helper);
+                    self.held = false;
+                    return;
+                }
+                if self
+                    .renderer
+                    .as_ref()
                     .is_some_and(|renderer| renderer.nobility_icon_at(self.cursor))
                 {
                     self.toggle_nobility();
@@ -1316,6 +1340,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::Escape) if self.shortcuts.is_some() => self.shortcuts = None,
+                    PhysicalKey::Code(KeyCode::Escape) if self.helper_window.is_some() => self.helper_window = None,
                     PhysicalKey::Code(KeyCode::Escape) if self.gem_selection_panel.is_some() => {
                         self.gem_selection_panel = None;
                         self.network_status = "seleção de gem cancelada".into();
@@ -1663,8 +1688,15 @@ impl ApplicationHandler for App {
                 let nobility_view = (self.quick_panel == Some(shop::QuickPanel::Nobility)).then(|| self.nobility_view_lit());
                 let guild_view = (self.quick_panel == Some(shop::QuickPanel::Guild)).then(|| self.guild_view_lit());
                 let shortcuts_view = self.shortcuts_view_lit();
+                let helper_view = self.helper_view_lit();
                 if let Some(renderer) = &mut self.renderer {
                     renderer.shortcuts = shortcuts_view;
+                    renderer.helper = helper_view;
+                    renderer.helper_on = self.helper.enabled;
+                    renderer.helper_tip = match self.keybinds.get(keybinds::Command::Helper) {
+                        Some(key) => format!("Helper ({})", key.label()),
+                        None => "Helper".to_owned(),
+                    };
                 }
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
@@ -1785,7 +1817,9 @@ impl ApplicationHandler for App {
         for event in events {
             self.handle_network_event(event);
         }
+        self.forget_actors_out_of_sight();
         self.poll_team_positions();
+        self.run_helper();
         self.send_ping();
         // Closing the trade window by any means (its X, Escape, another
         // panel) cancels the trade, so the partner's window closes too.
@@ -2062,6 +2096,18 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        // The helper's window: its clicks are its own.
+        if let Some(view) = self.helper_view_lit() {
+            let [left, top] = helper_position(viewport);
+            let local = [self.cursor[0] - left, self.cursor[1] - top];
+            if helper::covers(local) {
+                if let Some(action) = helper::action_at(&view, local) {
+                    self.handle_helper_action(action);
+                }
+                self.held = false;
+                return true;
+            }
+        }
         // The Shortcuts window: its clicks are its own.
         if let Some(view) = self.shortcuts.as_ref() {
             let [left, top] = keybinds_position(viewport);
@@ -2347,6 +2393,12 @@ impl App {
                 {
                     self.selected_target = Some(member_id);
                     self.network_status = format!("team target selected: {member_id}");
+                    if let Some(member) = self.team_members.iter().find(|member| member.member_id == member_id) {
+                        let name = member.name.clone();
+                        if Some(member_id) != self.network_character_id {
+                            self.system_line(&format!("{name} picked: Kick or Leader act on them."));
+                        }
+                    }
                     self.held = false;
                     return true;
                 }
@@ -2662,6 +2714,7 @@ impl App {
             Some(TargetPick::Ignore) => return GameCursor::PickEnemy,
             Some(TargetPick::Trade) => return GameCursor::PickTrade,
             Some(TargetPick::ViewEquipment) => return GameCursor::PickView,
+            Some(TargetPick::TeamInvite | TargetPick::TeamJoin) => return GameCursor::PickTeam,
             None => {}
         }
         if self.ground_loot_at_cursor().is_some() {
@@ -3000,11 +3053,11 @@ impl App {
             (false, true) => self.handle_team_panel_action(shop::TeamPanelAction::AcceptJoin),
             (true, false) => {
                 self.pending_team_invite = None;
-                self.network_status = "convite de grupo recusado".into();
+                self.system_line("Team invite declined.");
             }
             (false, false) => {
                 self.pending_team_join_request = None;
-                self.network_status = "pedido de entrada no grupo recusado".into();
+                self.system_line("Join request declined.");
             }
         }
     }
@@ -3148,6 +3201,10 @@ impl App {
             PlayerMenuAction::TeamInvite => {
                 const REQUEST_INVITE: u32 = 4;
                 self.send_team_action(REQUEST_INVITE, target_id);
+            }
+            PlayerMenuAction::TeamJoin => {
+                const REQUEST_JOIN: u32 = 1;
+                self.send_team_action(REQUEST_JOIN, target_id);
             }
             PlayerMenuAction::Whisper => {
                 self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
@@ -3647,6 +3704,13 @@ impl App {
                 }
             }
             C::Shortcuts => self.toggle_shortcuts(),
+            C::Helper => {
+                self.helper_window = match self.helper_window.take() {
+                    Some(_) => None,
+                    None => Some(helper::HelperView::default()),
+                };
+            }
+            C::HelperToggle => self.toggle_helper(),
             C::Stop => {
                 self.pending_attack = None;
                 self.pending_skill_attack = None;
@@ -3769,6 +3833,204 @@ impl App {
         };
     }
 
+    /// Turns the helper on or off, and says so.
+    fn toggle_helper(&mut self) {
+        self.helper.enabled = !self.helper.enabled;
+        self.helper.save();
+        self.helper_memory = helper::Memory::default();
+        self.helper_status.clear();
+        self.system_line(if self.helper.enabled { "Helper on." } else { "Helper off." });
+    }
+
+    fn handle_helper_action(&mut self, action: helper::HelperAction) {
+        let Some(window) = self.helper_window.as_mut() else {
+            return;
+        };
+        match helper::apply(&mut self.helper, window, action) {
+            helper::Effect::Close => self.helper_window = None,
+            helper::Effect::Power => self.toggle_helper(),
+            helper::Effect::Save => self.helper.save(),
+            helper::Effect::Nothing => {}
+        }
+    }
+
+    /// The helper's window as drawn: the choices, the skills learned, what
+    /// the cursor is over.
+    fn helper_view_lit(&self) -> Option<helper::HelperView> {
+        let mut view = self.helper_window.clone()?;
+        view.settings = self.helper.clone();
+        view.known = self.known_skills.keys().copied().collect();
+        view.known.sort_unstable();
+        view.toggle_key = self
+            .keybinds
+            .get(keybinds::Command::HelperToggle)
+            .map_or_else(|| "none".to_owned(), keybinds::Binding::label);
+        view.status = self.helper_status.clone();
+        // The bag's potions, one entry a kind, with how many.
+        let mut potions: Vec<(u32, u32)> = Vec::new();
+        for item in &self.inventory {
+            if shop::health_recovery_for_item(item.item_type).is_none() && shop::mana_recovery_for_item(item.item_type).is_none() {
+                continue;
+            }
+            match potions.iter_mut().find(|(kind, _)| *kind == item.item_type) {
+                Some((_, count)) => *count += 1,
+                None => potions.push((item.item_type, 1)),
+            }
+        }
+        potions.sort_unstable();
+        view.potions = potions;
+        let me = self.network_character_id;
+        view.party = std::iter::once(self.character.name.clone())
+            .chain(
+                self.team_members
+                    .iter()
+                    .filter(|member| Some(member.member_id) != me && !member.name.is_empty())
+                    .map(|member| member.name.clone()),
+            )
+            .collect();
+        view.leader = self.team_leader_id.and_then(|leader| {
+            if Some(leader) == me {
+                return Some(self.character.name.clone());
+            }
+            self.team_members.iter().find(|member| member.member_id == leader).map(|member| member.name.clone())
+        });
+        if let Some(viewport) = self.viewport() {
+            let [left, top] = helper_position(viewport);
+            view.hover = helper::action_at(&view, [self.cursor[0] - left, self.cursor[1] - top]);
+        }
+        Some(view)
+    }
+
+    /// The helper's turn: what it decides (`helper.rs`) goes to the server
+    /// as the player's own potion, cast or walk would.
+    fn run_helper(&mut self) {
+        if !self.helper.enabled {
+            return;
+        }
+        let Some(me) = self.network_character_id else {
+            return;
+        };
+        let now = self.started.elapsed().as_secs_f32();
+        let world = self.helper_world(me, now);
+        for act in helper::decide(&self.helper, &world, &mut self.helper_memory, now) {
+            match act {
+                helper::Act::Potion { uid } => {
+                    if let Some(network) = &self.network {
+                        network.use_item(me, uid);
+                    }
+                }
+                helper::Act::Cast { skill, target } => self.helper_cast(me, skill, target, now),
+                helper::Act::Follow(at) => self.helper_follow(at),
+            }
+        }
+    }
+
+    /// What the helper sees: the hero, the bag's potions, the team.
+    fn helper_world(&self, me: u32, now: f32) -> helper::World {
+        let team = self
+            .team_members
+            .iter()
+            .filter(|member| member.member_id != me)
+            .map(|member| {
+                let actor = self.remote_actors.get(&member.member_id);
+                let maximum = u32::from(member.maximum_health);
+                helper::Teammate {
+                    id: member.member_id,
+                    name: member.name.clone(),
+                    life_percent: (maximum > 0).then(|| (u32::from(member.health) * 100 / maximum).min(100) as u8),
+                    position: actor.map(|actor| actor.position),
+                    flags: actor.map_or(0, |actor| actor.status_flags),
+                    dead: maximum > 0 && member.health == 0,
+                }
+            })
+            .collect();
+        let leader_at = self.team_leader_id.and_then(|leader| {
+            self.remote_actors.get(&leader).map(|actor| actor.position).or_else(|| {
+                self.team_positions
+                    .get(&leader)
+                    .filter(|(map_id, _)| *map_id == self.map.id)
+                    .map(|(_, position)| position.map(|value| value as f32))
+            })
+        });
+        let potions = self
+            .inventory
+            .iter()
+            .filter(|item| {
+                shop::health_recovery_for_item(item.item_type).is_some() || shop::mana_recovery_for_item(item.item_type).is_some()
+            })
+            .map(|item| (item.uid, item.item_type))
+            .collect();
+        let flags = self.status_flags;
+        helper::World {
+            me,
+            my_name: self.character.name.clone(),
+            position: self.player.position,
+            health: self.character.health,
+            maximum_health: self.character.maximum_health,
+            mana: self.mana,
+            maximum_mana: self.maximum_mana,
+            dead: self.dead_since.is_some(),
+            flags,
+            known: self.known_skills.keys().copied().collect(),
+            cooling: self
+                .skill_cooldown_until
+                .iter()
+                .filter(|(_, until)| now < **until)
+                .map(|(skill, _)| *skill)
+                .collect(),
+            potions,
+            team,
+            leader: self.team_leader_id,
+            leader_at,
+            xp_ready: flags & network::XP_CIRCLE_FLAG != 0,
+            busy: self.pending_attack.is_some()
+                || self.pending_skill_attack.is_some()
+                || self.pending_pickup.is_some()
+                || self.player.moving()
+                || !self.pending_network_steps.is_empty(),
+        }
+    }
+
+    /// A cast the helper chose, on the hero or a teammate on screen.
+    fn helper_cast(&mut self, me: u32, skill: u32, target: u32, now: f32) {
+        if self.in_air() {
+            return;
+        }
+        let (cell, name) = if target == me {
+            (self.player.cell(), "you".to_owned())
+        } else {
+            let Some(actor) = self.remote_actors.get(&target) else {
+                return;
+            };
+            (actor.position.map(|value| value.round() as i32), actor.name.clone())
+        };
+        let Some(network) = &self.network else {
+            return;
+        };
+        network.send_magic_attack(me, target, cell[0].max(0) as u16, cell[1].max(0) as u16, skill);
+        let cooldown = action_bar::skill_action(skill).map_or(0.8, |action| action.cooldown_seconds);
+        self.skill_cooldown_until.insert(skill, now + cooldown);
+        if target != me {
+            self.face_towards(cell);
+        }
+        self.helper_status = format!("{} on {name}.", helper::skill_name(skill));
+    }
+
+    /// Walks to a free cell beside the leader, the nearest to the hero.
+    fn helper_follow(&mut self, at: [f32; 2]) {
+        let goal = at.map(|value| value.round() as i32);
+        let here = self.player.cell();
+        let mut cells: Vec<[i32; 2]> = (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dy| [goal[0] + dx, goal[1] + dy]))
+            .filter(|cell| *cell != goal)
+            .collect();
+        cells.sort_by_key(|cell| (cell[0] - here[0]).abs().max((cell[1] - here[1]).abs()));
+        if let Some(cell) = cells.into_iter().find(|cell| self.map.walkable(*cell)) {
+            self.travel(cell);
+            self.helper_status = "Following the leader.".into();
+        }
+    }
+
     /// The window as drawn: what the cursor is over lit.
     fn shortcuts_view_lit(&self) -> Option<keybinds::ShortcutsView> {
         let mut view = self.shortcuts.clone()?;
@@ -3881,17 +4143,14 @@ impl App {
 
     fn handle_team_panel_action(&mut self, action: shop::TeamPanelAction) {
         const CREATE: u32 = 0;
-        const REQUEST_JOIN: u32 = 1;
         const ACCEPT_INVITE: u32 = 3;
         const ACCEPT_JOIN: u32 = 5;
         const LEAVE_TEAM: u32 = 2;
-        const REQUEST_INVITE: u32 = 4;
         const DISMISS: u32 = 6;
         const KICK: u32 = 7;
         const FORBID_NEW_MEMBERS: u32 = 8;
         const ALLOW_NEW_MEMBERS: u32 = 9;
         const LEADER: u32 = 15;
-        let target = self.selected_target.unwrap_or_default();
         match action {
             shop::TeamPanelAction::Create => self.send_team_action(CREATE, 0),
             shop::TeamPanelAction::AcceptInvite => {
@@ -3902,12 +4161,7 @@ impl App {
                 self.send_team_action(ACCEPT_INVITE, leader_id);
             }
             shop::TeamPanelAction::RequestJoin => {
-                if target == 0 {
-                    self.network_status =
-                        "selecione o líder do grupo para solicitar entrada".into();
-                } else {
-                    self.send_team_action(REQUEST_JOIN, target);
-                }
+                self.target_pick = Some(TargetPick::TeamJoin);
             }
             shop::TeamPanelAction::AcceptJoin => {
                 let Some(requester_id) = self.pending_team_join_request.take() else {
@@ -3917,27 +4171,23 @@ impl App {
                 self.send_team_action(ACCEPT_JOIN, requester_id);
             }
             shop::TeamPanelAction::Invite => {
-                if target == 0 {
-                    self.network_status = "selecione um jogador para convidar".into();
+                if self.team_members.len() >= 5 {
+                    self.system_line("The team is full (5 members).");
+                } else if self.team_leader_id.is_some() && self.team_leader_id != self.network_character_id {
+                    self.system_line("Only the team leader can invite.");
                 } else {
-                    self.send_team_action(REQUEST_INVITE, target);
+                    self.target_pick = Some(TargetPick::TeamInvite);
                 }
             }
             shop::TeamPanelAction::Leave => self.send_team_action(LEAVE_TEAM, 0),
-            shop::TeamPanelAction::Leader => {
-                if target == 0 {
-                    self.network_status = "selecione um membro para passar a liderança".into();
-                } else {
-                    self.send_team_action(LEADER, target);
-                }
-            }
-            shop::TeamPanelAction::Kick => {
-                if target == 0 {
-                    self.network_status = "selecione um membro para expulsar".into();
-                } else {
-                    self.send_team_action(KICK, target);
-                }
-            }
+            shop::TeamPanelAction::Leader => match self.picked_teammate() {
+                Some(member) => self.send_team_action(LEADER, member),
+                None => self.system_line("Click a teammate's picture in the Team window, then Leader."),
+            },
+            shop::TeamPanelAction::Kick => match self.picked_teammate() {
+                Some(member) => self.send_team_action(KICK, member),
+                None => self.system_line("Click a teammate's picture in the Team window, then Kick."),
+            },
             shop::TeamPanelAction::Dismiss => self.send_team_action(DISMISS, 0),
             shop::TeamPanelAction::ToggleJoin => {
                 let action = if self.team_join_enabled {
@@ -3948,6 +4198,14 @@ impl App {
                 self.send_team_action(action, 0);
             }
         }
+    }
+
+    /// The teammate picked in the Team window (not the hero).
+    fn picked_teammate(&self) -> Option<u32> {
+        let target = self.selected_target?;
+        (Some(target) != self.network_character_id
+            && self.team_members.iter().any(|member| member.member_id == target))
+        .then_some(target)
     }
 
     fn handle_guild_panel_action(&mut self, action: shop::GuildPanelAction) {
@@ -4557,6 +4815,14 @@ impl App {
                         self.team_join_enabled = true;
                         self.pending_team_join_request = None;
                     }
+                    // Leaving (2) or being kicked (7): out of the team.
+                    2 | 7 if Some(target_id) == self.network_character_id => {
+                        self.team_members.clear();
+                        self.team_leader_id = None;
+                        self.team_join_enabled = true;
+                        self.pending_team_join_request = None;
+                        self.team_positions.clear();
+                    }
                     8 => self.team_join_enabled = false,
                     9 => self.team_join_enabled = true,
                     15 => self.team_leader_id = Some(target_id),
@@ -4796,6 +5062,11 @@ impl App {
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
                     actor.health = scaled_life(life, max);
                     actor.maximum_health = 1_000;
+                }
+                // A teammate's life, told once a second (MsgAction 106).
+                if let Some(member) = self.team_members.iter_mut().find(|member| member.member_id == id) {
+                    member.health = life.min(u32::from(u16::MAX)) as u16;
+                    member.maximum_health = max.min(u32::from(u16::MAX)) as u16;
                 }
             }
             NetworkEvent::SkillForgotten(skill_id) => {
@@ -5478,21 +5749,36 @@ impl App {
                 if !carried && damage > 0 {
                     self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
                 }
+                // A magic is cast with the casting motion (MagicType 903), not
+                // a blow: Thunder, Cure, Stigma.
+                let cast = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
+                    .is_some_and(|magic| magic.motion == Action::Cast.catalog_id());
+                // A status the caster puts on themselves (Fly, Intensify)
+                // without the casting motion strikes no blow.
+                let on_self = !cast && target_id == attacker_id && damage == 0;
                 // One motion and one sound (MagicType) for the cast, not one
                 // per target.
                 if first {
-                    self.play_attack_motion(attacker_id, now);
+                    if cast {
+                        self.play_cast_motion(attacker_id, now);
+                    } else if !on_self {
+                        self.play_attack_motion(attacker_id, now);
+                    }
                     if let Some(sound) = crate::magic::magic_type(&mut self.assets, u32::from(skill_id), level)
                         .and_then(|magic| magic.sound.clone())
                     {
                         self.play_sound(&sound);
                     }
                 }
-                if carried {
-                    if self.network_character_id == Some(attacker_id) {
+                if cast {
+                    // A magic's blow shakes the hero struck; a heal or a buff
+                    // does not.
+                    if damage > 0 && target_id != attacker_id && self.network_character_id == Some(target_id) {
                         self.play_blow_on_player(attacker_id, target_id, now);
                     }
-                } else {
+                } else if on_self {
+                    // Nothing struck.
+                } else if !carried || self.network_character_id == Some(attacker_id) {
                     self.play_blow_on_player(attacker_id, target_id, now);
                 }
                 self.network_status =
@@ -5588,13 +5874,7 @@ impl App {
                 }
             }
             NetworkEvent::RemoveActor(id) => {
-                self.remote_actors.remove(&id);
-                self.remote_models.remove(&id);
-                self.remote_npcs.remove(&id);
-                self.remote_monsters.remove(&id);
-                self.remote_models_loading.remove(&id);
-                self.remote_npcs_loading.remove(&id);
-                self.remote_monsters_loading.remove(&id);
+                self.forget_actor(id);
                 self.network_status = format!(
                     "online: actor {id} left screen ({} actors)",
                     self.remote_actors.len()
@@ -6073,6 +6353,14 @@ impl App {
                 }
                 TargetPick::Trade => self.handle_trade_panel_action(shop::TradePanelAction::Request),
                 TargetPick::ViewEquipment => self.query_equipment(id),
+                TargetPick::TeamInvite => {
+                    const REQUEST_INVITE: u32 = 4;
+                    self.send_team_action(REQUEST_INVITE, id);
+                }
+                TargetPick::TeamJoin => {
+                    const REQUEST_JOIN: u32 = 1;
+                    self.send_team_action(REQUEST_JOIN, id);
+                }
             }
         }
         if let Some(window) = &self.window {
@@ -6171,6 +6459,58 @@ impl App {
     /// `attacker_id` strikes: a remote actor plays its attack motion. In the
     /// middle of a jump the jump plays on to its landing and only the
     /// arrows show the shot (Scatter shot while jumping).
+    /// The casting motion (903) of whoever casts a magic: the hero or
+    /// another on screen.
+    /// Takes an actor off the screen, with its models.
+    fn forget_actor(&mut self, id: u32) {
+        self.remote_actors.remove(&id);
+        self.remote_models.remove(&id);
+        self.remote_npcs.remove(&id);
+        self.remote_monsters.remove(&id);
+        self.remote_models_loading.remove(&id);
+        self.remote_npcs_loading.remove(&id);
+        self.remote_monsters_loading.remove(&id);
+    }
+
+    /// The server stops telling of whoever leaves the hero's sight (18 cells,
+    /// `tq_math::SCREEN_DISTANCE`) and tells of them again on their return;
+    /// as the original, the client lets them go itself, or they would stand
+    /// where last seen.
+    fn forget_actors_out_of_sight(&mut self) {
+        const SIGHT: f32 = 18.0;
+        let here = self.player.position;
+        let gone: Vec<u32> = self
+            .remote_actors
+            .values()
+            .filter(|actor| Some(actor.id) != self.network_character_id)
+            .filter(|actor| (actor.position[0] - here[0]).abs().max((actor.position[1] - here[1]).abs()) > SIGHT + 1.0)
+            .map(|actor| actor.id)
+            .collect();
+        for id in gone {
+            self.forget_actor(id);
+        }
+    }
+
+    fn play_cast_motion(&mut self, caster_id: u32, now: f32) {
+        const CAST_SECONDS: f32 = 0.8;
+        if self.network_character_id == Some(caster_id) {
+            if !self.player.jumping() {
+                self.player.action = Action::Cast;
+                self.player.action_instance = self.player.action_instance.wrapping_add(1);
+                self.local_action = Some((Action::Cast, now, now + CAST_SECONDS));
+            }
+            return;
+        }
+        if let Some(actor) = self.remote_actors.get_mut(&caster_id) {
+            if actor.jumping && now < actor.movement_until {
+                return;
+            }
+            actor.action = Action::Cast.catalog_id() as u16;
+            actor.animation_started = now;
+            actor.animation_until = now + CAST_SECONDS;
+        }
+    }
+
     fn play_attack_motion(&mut self, attacker_id: u32, now: f32) {
         if let Some(actor) = self.remote_actors.get_mut(&attacker_id) {
             if actor.jumping && now < actor.movement_until {
@@ -6581,7 +6921,7 @@ impl App {
             self.pending_pickup = None;
             self.pending_skill_attack = Some((target, skill.id));
             self.process_pending_skill_attack();
-        } else if action_bar::is_support_skill(skill.id)
+        } else if (action_bar::is_support_skill(skill.id) || helper::is_ally_buff(skill.id))
             && let Some(ally) = self.player_at_cursor()
         {
             self.cast_support_skill(skill, ally);
@@ -9464,6 +9804,14 @@ fn sync_slot_keys(keybinds: &keybinds::Keybinds, bar: &mut action_bar::ActionBar
     }
 }
 
+/// The helper's window's corner: centred on the screen.
+pub(crate) fn helper_position(viewport: [f32; 2]) -> [f32; 2] {
+    [
+        ((viewport[0] - helper::SIZE[0] as f32) * 0.5).max(8.0).round(),
+        ((viewport[1] - helper::SIZE[1] as f32) * 0.5).max(8.0).round(),
+    ]
+}
+
 /// The Shortcuts window's corner: centred on the screen.
 pub(crate) fn keybinds_position(viewport: [f32; 2]) -> [f32; 2] {
     [
@@ -10148,6 +10496,10 @@ fn run() -> Result<()> {
         guild_view: guild_panel::GuildView::default(),
         keybinds: keybinds::Keybinds::load(),
         shortcuts: None,
+        helper: helper::Settings::load(),
+        helper_memory: helper::Memory::default(),
+        helper_window: None,
+        helper_status: String::new(),
         guild_relations: Default::default(),
         store: None,
         daily_rewards: None,

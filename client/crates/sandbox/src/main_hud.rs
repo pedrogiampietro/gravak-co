@@ -808,6 +808,20 @@ fn draw_text(
     (cursor - top_left[0] as f32).ceil() as i32
 }
 
+/// The HUD drawn with made-up numbers into `img`, for previews.
+#[cfg(test)]
+pub fn preview_into(img: &mut RgbaImage, assets: &mut Assets) {
+    let art = MainHudArt::get(assets).expect("art");
+    let state = MainHudState {
+        health: 60, max_health: 100, mana: 40, max_mana: 100, stamina: 50, max_stamina: 100,
+        xp: 0, xp_ready: false, experience: 0.3, hovered_button: None, hovered_chat: None,
+        chat_text: "", chat_focused: false, chat_name: "", chat_name_focused: false,
+        chat_channel: 0, chat_channel_menu: false, chat_channel_hover: None,
+        kill_mode: 0, running: true, map_shown: true, shift_screen: false, picking_equipment: false, active_skill_icon: None,
+    };
+    draw(img, art, [0, 0], &state, crate::labels::font().expect("font").as_ref());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

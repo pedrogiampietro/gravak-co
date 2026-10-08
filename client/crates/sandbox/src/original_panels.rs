@@ -497,6 +497,12 @@ fn team_controls(state: &TeamState) -> Vec<Control<TeamPanelAction>> {
                     A::RequestJoin
                 }),
             ),
+            // Inviting makes the team too.
+            control(
+                [119, 60, 43, 17],
+                Face::Art("data/main/GroupBtnInvite.dds"),
+                Some(A::Invite),
+            ),
         ]);
     }
     controls
@@ -1250,6 +1256,11 @@ pub fn image(assets: &mut Assets, panel: QuickPanel, data: &PanelData) -> Result
                 );
                 if data.team_leader_id == Some(member.member_id) {
                     outline(&mut image, rect, [255, 215, 108, 255]);
+                }
+                // The member picked for Kick or Leader.
+                if data.selected_target_name.is_some_and(|name| name == member.name) {
+                    outline(&mut image, [x + 1, 11, 45, 45], [110, 220, 255, 255]);
+                    outline(&mut image, [x + 2, 12, 43, 43], [110, 220, 255, 255]);
                 }
             }
         }

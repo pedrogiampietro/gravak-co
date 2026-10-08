@@ -53,6 +53,9 @@ pub struct MagicType {
     pub sound: Option<String>,
     /// Experience to the next level; 0 at the top.
     pub need_exp: u32,
+    /// The caster's motion (`3dmotion.ini`, at 0x90): 903 for a magic
+    /// (Thunder, Cure, Stigma), a weapon skill's own, 800/801 for a bow.
+    pub motion: u32,
     /// The `.tme` trail drawn along the cast, if any.
     pub trail: Option<String>,
 }
@@ -173,6 +176,9 @@ pub fn parse_magic_types(bytes: &[u8]) -> Vec<MagicType> {
                         _ => None,
                     }
                 },
+                motion: record
+                    .get(ARROW_SORT..ARROW_SORT + 4)
+                    .map_or(0, |value| u32::from_le_bytes([value[0], value[1], value[2], value[3]])),
                 sender_effect: field(record, SENDER_EFFECT),
                 fly_effect: field(record, FLY_EFFECT),
                 target_effect: field(record, TARGET_EFFECT),

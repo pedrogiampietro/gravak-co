@@ -35,7 +35,9 @@ impl TQServer for GameServer {
             me.save(state).await?;
             me.try_screen()?.remove_from_observers().await?;
             ActorState::dispose(&actor, actor.handle()).await?;
-            state.team_manager().remove_member(me.id());
+            if let Err(error) = game::packets::left_team_on_logout(state, me.id()).await {
+                tracing::warn!(%error, "Could not tell the team of a logout");
+            }
             state.talismans().set(me.id(), None);
             state.vip().remove(me.id());
             if let Some(game::trade::TradeChange::Closed { owner_id, target_id }) =

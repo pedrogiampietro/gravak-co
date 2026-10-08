@@ -21,6 +21,8 @@ mod guild_panel_tests;
 #[cfg(test)]
 mod pvp_skill_tests;
 #[cfg(test)]
+mod seed_tests;
+#[cfg(test)]
 mod weapon_skill_tests;
 pub mod vitals;
 pub mod drops;

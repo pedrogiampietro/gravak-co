@@ -41,8 +41,10 @@ rem One account per client: the same account cannot be online twice.
 rem   run-client.bat            opens two clients (test1 and gravak)
 rem   run-client.bat <account>  opens one client with that account
 rem   run-client.bat login      opens the login screens (register/create)
+rem run-client.bat <account> [password]: one client, signed in; the
+rem password is the development accounts' 123456 when not given.
 if not "%~1"=="" (
-    call :client "%~1"
+    call :client "%~1" "%~2"
     popd
     exit /b
 )
@@ -56,7 +58,9 @@ exit /b
 :client
 rem cmd /c ... || pause keeps the window open when the client exits with an
 rem error (for example, the game server is not running), so it can be read.
-start "Gravak-CO - %~1" cmd /c ""%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username %~1 --password 123456 --realm Gravak || pause"
+set "CLIENT_PASSWORD=%~2"
+if "%CLIENT_PASSWORD%"=="" set "CLIENT_PASSWORD=123456"
+start "Gravak-CO - %~1" cmd /c ""%CLIENT_EXE%" --assets "R:\5065" --online --auth 127.0.0.1:9958 --username %~1 --password %CLIENT_PASSWORD% --realm Gravak || pause"
 exit /b
 
 :login

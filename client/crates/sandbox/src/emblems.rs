@@ -1,6 +1,7 @@
 //! Emblems drawn in code, in the style of the Reward Wall and the
 //! Highscores: the compass of the top-left plate, and the HUD's round
-//! feature buttons (Store, Ranking) with their coins and trophy.
+//! feature buttons (Store, Ranking, Helper) with their coins, trophy and
+//! cross.
 
 use crate::daily_rewards_panel::{glow_in, paint_in, GOLD, GOLD_DARK, GOLD_LIGHT};
 use crate::paint;
@@ -113,6 +114,7 @@ pub fn compass(image: &mut RgbaImage, centre: [f32; 2], radius: f32) {
 pub enum Feature {
     Store,
     Ranking,
+    Helper,
 }
 
 /// An ellipse's signed distance, roughly (`radii` across and down).
@@ -176,6 +178,26 @@ fn trophy(image: &mut RgbaImage, bounds: UiRect, centre: [f32; 2]) {
     );
 }
 
+/// The helper's cross: a green healer's cross edged in gold.
+fn cross(image: &mut RgbaImage, bounds: UiRect, centre: [f32; 2]) {
+    let [cx, cy] = centre;
+    let plus = move |x: f32, y: f32, arm: f32, half: f32| {
+        let (dx, dy) = ((x - cx).abs(), (y - cy).abs());
+        ((dx - half).max(dy - arm)).min((dx - arm).max(dy - half))
+    };
+    paint_in(image, bounds, 0, move |x, y| plus(x, y, 8.6, 3.6), |_, _| paint::hex(0xd8a648), 1.0);
+    paint_in(
+        image,
+        bounds,
+        0,
+        move |x, y| plus(x, y, 7.4, 2.4),
+        move |_, y| paint::mix(paint::hex(0x9af59a), paint::hex(0x2f9a45), (y - cy + 7.4) / 14.8),
+        1.0,
+    );
+    // A glint on the upper arm.
+    paint_in(image, bounds, 0, move |x, y| ((x - cx + 0.8).abs() - 0.7).max((y - cy + 4.6).abs() - 2.0), |_, _| paint::hex(0xeaffea), 0.7);
+}
+
 /// Size of a round feature button's image, its glow's room included.
 pub const ROUND_BUTTON: [u32; 2] = [40, 40];
 /// The disc's radius in it.
@@ -229,10 +251,26 @@ pub fn round_button(feature: Feature, hovered: bool) -> RgbaImage {
     match feature {
         Feature::Store => coins(&mut image, bounds, [centre[0], centre[1] - 1.0]),
         Feature::Ranking => trophy(&mut image, bounds, [centre[0], centre[1] + 0.5]),
+        Feature::Helper => cross(&mut image, bounds, centre),
     }
     // A glint on the ring's top left.
     let glint = [centre[0] - r * 0.55, centre[1] - r * 0.55];
     paint_in(&mut image, bounds, 0, |x, y| paint::circle(x, y, glint, 1.6), |_, _| paint::hex(0xfffbe8), 0.8);
+    image
+}
+
+/// The Helper's button: the cross, with a light on its lower right, green
+/// while the helper is on.
+pub fn helper_button(hovered: bool, on: bool) -> RgbaImage {
+    let mut image = round_button(Feature::Helper, hovered);
+    let bounds = UiRect::new(0, 0, ROUND_BUTTON[0] as i32, ROUND_BUTTON[1] as i32);
+    let light = [ROUND_BUTTON[0] as f32 - 10.0, ROUND_BUTTON[1] as f32 - 10.0];
+    paint_in(&mut image, bounds, 0, |x, y| paint::circle(x, y, light, 4.4), |_, _| paint::hex(0x1a140c), 1.0);
+    let colour = if on { paint::hex(0x5cf06c) } else { paint::hex(0x8a3a30) };
+    if on {
+        glow_in(&mut image, bounds, |x, y| paint::circle(x, y, light, 3.2), 3.0, colour, 0.8);
+    }
+    paint_in(&mut image, bounds, 0, |x, y| paint::circle(x, y, light, 3.2), |_, _| colour, 1.0);
     image
 }
 
@@ -254,6 +292,34 @@ mod tests {
             image::imageops::overlay(&mut sheet, &round_button(feature, hovered), 80 + column as i64 * 46, 104);
         }
         sheet.save(format!("{dir}/emblems.png")).expect("png");
+    }
+
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox helper_button_preview`:
+    /// the HUD's left with the Store, Ranking and Helper buttons, at twice
+    /// the size.
+    #[test]
+    fn helper_button_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let viewport = [1024.0, 141.0];
+        let mut hud = RgbaImage::new(1024, 141);
+        crate::main_hud::preview_into(&mut hud, &mut assets);
+        let place = |hud: &mut RgbaImage, button: &RgbaImage, rect: [f32; 4]| {
+            image::imageops::overlay(hud, button, rect[0] as i64, rect[1] as i64);
+        };
+        let store = crate::store_panel::button_image(&mut assets, false).expect("store");
+        place(&mut hud, &store, crate::hud::store_button_rect(viewport));
+        place(&mut hud, &round_button(Feature::Ranking, false), crate::hud::ranking_button_rect(viewport));
+        place(&mut hud, &helper_button(false, true), crate::hud::helper_button_rect(viewport));
+        let crop = image::imageops::crop_imm(&hud, 100, 0, 360, 141).to_image();
+        image::imageops::resize(&crop, 720, 282, image::imageops::FilterType::Nearest)
+            .save(format!("{dir}/hud-helper.png"))
+            .expect("png");
+        let mut sheet = RgbaImage::from_pixel(200, 50, image::Rgba([40, 60, 45, 255]));
+        for (column, (hovered, on)) in [(false, false), (false, true), (true, false), (true, true)].into_iter().enumerate() {
+            image::imageops::overlay(&mut sheet, &helper_button(hovered, on), 5 + column as i64 * 48, 5);
+        }
+        sheet.save(format!("{dir}/helper-buttons.png")).expect("png");
     }
 }
 

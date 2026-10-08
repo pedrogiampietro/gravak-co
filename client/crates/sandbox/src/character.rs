@@ -242,7 +242,9 @@ impl Character {
         let actions = Action::ALL
             .into_iter()
             .map(|action| match action {
-                _ if action == Action::Die || action == Action::Fly || action.emote() => motion(action).or_else(|_| motion(Action::Idle)),
+                _ if action == Action::Die || action == Action::Fly || action == Action::Cast || action.emote() => {
+                    motion(action).or_else(|_| motion(Action::Idle))
+                }
                 _ => motion(action),
             })
             .collect::<Result<Vec<_>>>()?;

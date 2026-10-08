@@ -794,6 +794,11 @@ pub struct Renderer {
     /// Where the Store icon was drawn, for clicks.
     store_icon_rect: Option<[f32; 4]>,
     ranking_icon_rect: Option<[f32; 4]>,
+    helper_icon_rect: Option<[f32; 4]>,
+    /// Whether the helper is on: its button's light.
+    pub helper_on: bool,
+    /// The Helper button's hint ("Helper (J)").
+    pub helper_tip: String,
     /// The Nobility Rank button beside the map plate.
     nobility_icon_rect: Option<[f32; 4]>,
     /// Where the revive buttons were drawn (and whether each revives
@@ -828,6 +833,7 @@ pub struct Renderer {
     effect_tint: Option<&'static str>,
     /// The Shortcuts window, while open (set each frame by the app).
     pub shortcuts: Option<crate::keybinds::ShortcutsView>,
+    pub helper: Option<crate::helper::HelperView>,
     /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
     /// the hero), the effect and when it began.
     weapon_flashes: Vec<(Option<u32>, String, f32)>,
@@ -1061,6 +1067,9 @@ impl Renderer {
             bounty_tracker_rect: None,
             store_icon_rect: None,
             ranking_icon_rect: None,
+            helper_icon_rect: None,
+            helper_on: false,
+            helper_tip: String::new(),
             nobility_icon_rect: None,
             revive_rects: Vec::new(),
             souls: Vec::new(),
@@ -1076,6 +1085,7 @@ impl Renderer {
             effect_attachment: None,
             effect_tint: None,
             shortcuts: None,
+            helper: None,
             weapon_flashes: Vec::new(),
             last_hero_swing: 0,
             last_remote_swing: HashMap::new(),
@@ -2336,12 +2346,14 @@ impl Renderer {
             }
         }
     }
+    /// The map pixel at the screen's top left: the hero in the middle, but
+    /// never past the map's edges (as the original), where there is no
+    /// picture, only black; the hero then walks off the middle.
     pub fn camera(&self, map: &Map, player: &Player) -> [f32; 2] {
         let p = map.project(player.position);
-        [
-            p[0] - self.config.width as f32 * 0.5 + self.camera_shift[0],
-            p[1] - self.config.height as f32 * 0.5 + self.camera_shift[1],
-        ]
+        let view = [self.config.width as f32, self.config.height as f32];
+        let wanted = [p[0] - view[0] * 0.5 + self.camera_shift[0], p[1] - view[1] * 0.5 + self.camera_shift[1]];
+        clamp_camera(wanted, map.extent, view)
     }
     /// The revive button under `position`: `Some(true)` revives here.
     pub fn revive_at(&self, position: [f32; 2]) -> Option<bool> {
@@ -2689,6 +2701,13 @@ impl Renderer {
         })
     }
 
+    /// Whether `position` is on the Helper button.
+    pub fn helper_icon_at(&self, position: [f32; 2]) -> bool {
+        self.helper_icon_rect.is_some_and(|[left, top, width, height]| {
+            (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
+        })
+    }
+
     pub fn ranking_icon_at(&self, position: [f32; 2]) -> bool {
         self.ranking_icon_rect.is_some_and(|[left, top, width, height]| {
             (left..left + width).contains(&position[0]) && (top..top + height).contains(&position[1])
@@ -2931,7 +2950,10 @@ impl Renderer {
                 sort_depth: depth,
             });
         }
-        let ground = [viewport[0] * 0.5, viewport[1] * 0.5];
+        // Where the hero stands on screen: the middle, but off it near the
+        // map's edges, where the view stops (`camera`).
+        let projected = map.project(player.position);
+        let ground = [projected[0] - camera[0], projected[1] - camera[1]];
         let (recoil_x, recoil_y) = if time < hit_until {
             // One short, visible flinch pulse. It is independent of the
             // motion catalog so a missing emote cannot become a wave.
@@ -4447,6 +4469,37 @@ impl Renderer {
                 });
             }
         }
+        // The Helper button, beside the Ranking's; its light says whether
+        // the helper is on.
+        let [left, top, width, height] = crate::hud::helper_button_rect(viewport);
+        self.helper_icon_rect = Some([left, top, width, height]);
+        let helper_hovered = self.helper_icon_at(cursor);
+        let helper_key = format!("@helper-button-{}-{}", u8::from(helper_hovered), u8::from(self.helper_on));
+        if !self.textures.contains_key(&helper_key) {
+            self.upload(&helper_key, crate::emblems::helper_button(helper_hovered, self.helper_on));
+        }
+        if self.textures.contains_key(&helper_key) {
+            draws.push(Draw {
+                texture: helper_key,
+                vertices: quad([left, top], [width, height], viewport),
+                depth_test: false,
+                sort_depth: f32::INFINITY,
+            });
+        }
+        if helper_hovered {
+            let tip_key = format!("@helper-tip-{}", self.helper_tip);
+            if !self.textures.contains_key(&tip_key) {
+                self.upload(&tip_key, crate::labels::tooltip_image(&self.helper_tip)?);
+            }
+            if let Some(tip) = self.textures.get(&tip_key) {
+                draws.push(Draw {
+                    texture: tip_key.clone(),
+                    vertices: quad([left, top - tip.size[1] - 4.0], tip.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         // Each status message is its own texture; keep only the latest.
         let current_feedback = self
             .feedback_signature
@@ -5042,7 +5095,12 @@ impl Renderer {
             let selected_target_name = selected_target
                 .and_then(|id| remote_actors.get(&id))
                 .filter(|actor| !actor.npc && !(400001..=499999).contains(&actor.id))
-                .map(|actor| actor.name.as_str());
+                .map(|actor| actor.name.as_str())
+                .or_else(|| {
+                    selected_target.and_then(|id| {
+                        team_members.iter().find(|member| member.member_id == id).map(|member| member.name.as_str())
+                    })
+                });
             selected_target_name.hash(&mut hasher);
             let signature = hasher.finish();
             let key = format!("@quick-panel-{signature}");
@@ -6014,6 +6072,28 @@ impl Renderer {
                 });
             }
         }
+        // The helper's window, over the other windows.
+        if let Some(view) = self.helper.clone() {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            view.hash(&mut hasher);
+            let key = format!("@helper-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                let font = crate::labels::font()?;
+                let mut content = image::RgbaImage::new(crate::helper::SIZE[0], crate::helper::SIZE[1]);
+                crate::helper::draw(&mut content, &font, &view, assets);
+                let close = view.hover == Some(crate::helper::HelperAction::Close);
+                self.upload(&key, crate::shop::framed(assets, content, "Helper", close)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::helper_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         // The Shortcuts window, over the other windows.
         if let Some(view) = self.shortcuts.clone() {
             use std::hash::{Hash, Hasher};
@@ -6400,7 +6480,8 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 19] = [
+const TRANSIENT_PREFIXES: [&str; 20] = [
+    "@helper-",
     "@shortcuts-",
     "@booth-tooltip-",
     "@sell-all-",
@@ -6472,6 +6553,15 @@ pub(crate) const REMOTE_DEAD: u16 = 1161;
 /// The colour of NPCs' names over their heads.
 const NPC_NAME: [u8; 3] = [96, 236, 96];
 pub(crate) const REMOTE_FADING: u16 = 1160;
+
+/// `wanted` kept so the view stays on the map; a map smaller than the view
+/// sits in its middle.
+fn clamp_camera(wanted: [f32; 2], extent: [f32; 2], view: [f32; 2]) -> [f32; 2] {
+    [0, 1].map(|axis| {
+        let room = extent[axis] - view[axis];
+        if room <= 0.0 { room * 0.5 } else { wanted[axis].clamp(0.0, room) }
+    })
+}
 
 fn remote_action(value: u16) -> Action {
     match value {
@@ -6721,8 +6811,22 @@ fn trail_point(trail: &[(f32, [f32; 2])], when: f32) -> Option<[f32; 2]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Draw, coalesce_adjacent_draws, quad, should_hide_dead_monster, world_point_visible,
+        Draw, clamp_camera, coalesce_adjacent_draws, quad, should_hide_dead_monster, world_point_visible,
     };
+
+    #[test]
+    fn the_view_stays_on_the_map() {
+        let extent = [26_368.0, 17_920.0];
+        let view = [1024.0, 768.0];
+        // In the middle of the map: centred as wanted.
+        assert_eq!(clamp_camera([5_000.0, 6_000.0], extent, view), [5_000.0, 6_000.0]);
+        // Near the top (Twin City's Bird Island portal): no black above.
+        assert_eq!(clamp_camera([13_856.0, -224.0], extent, view), [13_856.0, 0.0]);
+        // Near the bottom right corner.
+        assert_eq!(clamp_camera([26_000.0, 17_500.0], extent, view), [25_344.0, 17_152.0]);
+        // A map smaller than the view sits in its middle.
+        assert_eq!(clamp_camera([10.0, 10.0], [800.0, 600.0], view), [-112.0, -84.0]);
+    }
 
     #[test]
     fn neighbours_of_one_texture_draw_in_one_call() {
