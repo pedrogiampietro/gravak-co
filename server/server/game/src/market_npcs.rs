@@ -222,6 +222,39 @@ pub fn reborn_skills(old_class: u8, target: u8) -> (Vec<u32>, Vec<u32>) {
     )
 }
 
+/// What a rebirth to the profession `target` (1..=5) does: the new class,
+/// the points to allot, and the skills learned and forgotten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebirthPlan {
+    pub new_class: u8,
+    pub points: u16,
+    pub learn: Vec<u32>,
+    pub forget: Vec<u32>,
+}
+
+/// A rebirth of a `class` character at `level`. The second (`rebirths` 1)
+/// is our own rule, as neither reference server has one: its points are
+/// its own level's bonus plus again the first rebirth's (`first_level`, the
+/// lowest a rebirth asks when unknown), and a skill the first rebirth taught
+/// is never forgotten.
+pub fn rebirth_plan(class: u8, previous_class: u8, rebirths: u8, level: u16, first_level: u16, target: u8) -> Option<RebirthPlan> {
+    let new_class = reborn_class(target)?;
+    let mut points = reborn_points(level, profession_type(class) == 3);
+    let (learn, mut forget) = reborn_skills(class, target);
+    if rebirths >= 1 {
+        let first_level = if first_level == 0 { reborn_level(previous_class) } else { first_level };
+        points += reborn_points(first_level, profession_type(previous_class) == 3);
+        let (taught, _) = reborn_skills(previous_class, profession_type(class));
+        forget.retain(|skill| !taught.contains(skill));
+    }
+    Some(RebirthPlan {
+        new_class,
+        points,
+        learn,
+        forget,
+    })
+}
+
 fn reborn_class(target: u8) -> Option<u8> {
     Some(match target {
         1 => 11,
@@ -919,12 +952,34 @@ async fn ethereal(state: &State, actor: &Actor<ActorState>, character: &Characte
 }
 
 async fn rebirth(state: &State, actor: &Actor<ActorState>, character: &Character, target: u8, gem: Option<u32>) -> Result<(), Error> {
-    let Some(new_class) = reborn_class(target) else {
+    let first_level: i32 = sqlx::query_scalar("SELECT first_rebirth_level FROM characters WHERE character_id = $1")
+        .bind(i64::from(character.database_id()))
+        .fetch_optional(state.pool())
+        .await?
+        .unwrap_or(0);
+    let Some(RebirthPlan {
+        new_class,
+        points,
+        learn,
+        forget,
+    }) = rebirth_plan(
+        character.current_class(),
+        character.previous_class(),
+        character.rebirths(),
+        character.entity().level(),
+        u16::try_from(first_level).unwrap_or(0),
+        target,
+    )
+    else {
         return Ok(());
     };
-    let old_class = character.current_class();
-    let points = reborn_points(character.entity().level(), profession_type(old_class) == 3);
-    let (learn, forget) = reborn_skills(old_class, target);
+    if character.rebirths() == 0 {
+        sqlx::query("UPDATE characters SET first_rebirth_level = $1 WHERE character_id = $2")
+            .bind(i32::from(character.entity().level()))
+            .bind(i64::from(character.database_id()))
+            .execute(state.pool())
+            .await?;
+    }
     match gem {
         Some(gem) => {
             if let Some(gem) = character.grant_item(state.pool(), state.shop_catalog(), gem, false).await? {
@@ -989,6 +1044,26 @@ async fn rebirth(state: &State, actor: &Actor<ActorState>, character: &Character
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_rebirth_adds_both_bonuses_and_keeps_the_first_skills() {
+        // Trojan reborn as a Trojan at 120 (CruelShade), now at 130 again.
+        let first = rebirth_plan(15, 0, 0, 120, 0, 1).unwrap();
+        assert_eq!((first.new_class, first.points, first.learn.clone()), (11, 20, vec![3050]));
+        let second = rebirth_plan(15, 15, 1, 130, 120, 2).unwrap();
+        assert_eq!(second.points, 75 + 20);
+        assert_eq!(second.new_class, 21);
+        // Trojan to Warrior forgets Hercules, which the first did not teach.
+        assert_eq!(second.forget, vec![1115]);
+        // A Water Taoist first reborn as a Warrior keeps nothing it was not
+        // taught; unknown first levels count as the lowest a rebirth asks.
+        let unknown = rebirth_plan(25, 135, 1, 120, 0, 2).unwrap();
+        assert_eq!(unknown.points, 20 + 20);
+        // A Warrior first reborn from a Warrior (Reflect) and then reborn to
+        // Trojan keeps Reflect even if a path forgets it.
+        let kept = rebirth_plan(25, 25, 1, 120, 120, 1).unwrap();
+        assert!(!kept.forget.contains(&3060));
+    }
 
     #[test]
     fn reborn_paths_follow_the_reference_table() {

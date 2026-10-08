@@ -11,6 +11,14 @@ pub const SUPERMAN_ID: u32 = 1_025;
 pub const STIGMA_ID: u32 = 1_095;
 pub const MAGIC_SHIELD_ID: u32 = 1_090;
 pub const WHIRLWIND_BOOK_ITEM: u32 = 723_100;
+/// The skills a pure rebirth teaches: Trojan, Warrior and Fire Taoist.
+pub const CRUEL_SHADE_ID: u32 = 3_050;
+pub const REFLECT_ID: u32 = 3_060;
+pub const DODGE_ID: u32 = 3_080;
+/// Reflect sends one blow in this many hundred back.
+pub const REFLECT_PERCENT: u32 = 10;
+/// Dodge adds this much dodge per level of the skill.
+pub const DODGE_PER_LEVEL: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillStatus {
@@ -24,6 +32,7 @@ pub enum SkillStatus {
     Flying,
     Intensify,
     Accuracy,
+    Dodge,
 }
 
 impl SkillStatus {
@@ -40,6 +49,7 @@ impl SkillStatus {
             Self::Flying => StatusEffect::Flying,
             Self::Intensify => StatusEffect::Intensify,
             Self::Accuracy => StatusEffect::Accuracy,
+            Self::Dodge => StatusEffect::Dodge,
         }
     }
 
@@ -99,6 +109,12 @@ pub struct SkillDefinition {
     pub weapon: Vec<u32>,
     /// ...one attack in a hundred times this (MagicType `Percent`).
     pub chance: u8,
+    /// Takes this share of the target's current life (CruelShade).
+    pub life_percent: u16,
+    /// Works by itself and cannot be cast (Reflect).
+    pub passive: bool,
+    /// The element of a magic: only a resistance to it helps.
+    pub element: Option<crate::refinery::Element>,
 }
 
 impl SkillDefinition {
@@ -116,7 +132,9 @@ impl SkillDefinition {
         match magic.power {
             // A share of the physical attack (Hercules, Scatter, Phoenix...).
             power if power >= 30_000 => {
-                if skill.physical && power % 1_000 > 0 {
+                if skill.life_percent > 0 && power % 1_000 > 0 {
+                    skill.life_percent = u16::try_from(power % 1_000).unwrap_or(skill.life_percent);
+                } else if skill.physical && power % 1_000 > 0 {
                     skill.power_percent = u16::try_from(power % 1_000).unwrap_or(100);
                 }
             },
@@ -316,6 +334,9 @@ impl SkillCatalog {
                         needs_shield: false,
                         weapon: Vec::new(),
                         chance: 0,
+                        life_percent: 0,
+                        passive: false,
+                        element: None,
                     });
                 }
                 continue;
@@ -381,6 +402,7 @@ impl SkillCatalog {
                         "fly" | "flying" => Some(SkillStatus::Flying),
                         "intensify" => Some(SkillStatus::Intensify),
                         "accuracy" => Some(SkillStatus::Accuracy),
+                        "dodge" => Some(SkillStatus::Dodge),
                         "" | "none" => None,
                         _ => return Err(format!("invalid skill status at line {}", line_number + 1)),
                     };
@@ -467,6 +489,24 @@ impl SkillCatalog {
                         .parse()
                         .map_err(|_| format!("invalid skill chance at line {}", line_number + 1))?;
                 },
+                "LifePercent" => {
+                    skill.life_percent = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill life percent at line {}", line_number + 1))?;
+                },
+                "Element" => {
+                    skill.element = Some(
+                        crate::refinery::Element::parse(value)
+                            .ok_or_else(|| format!("invalid skill element at line {}", line_number + 1))?,
+                    );
+                },
+                "Passive" => {
+                    skill.passive = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("invalid skill passive flag at line {}", line_number + 1))?;
+                },
                 "Sector" => {
                     skill.sector = value
                         .trim()
@@ -523,6 +563,11 @@ impl SkillCatalog {
         }
         Ok(catalog)
     }
+}
+
+/// Whether a pure Warrior's Reflect sends this blow back.
+pub fn reflects(character: &crate::entities::Character) -> bool {
+    character.has_skill(REFLECT_ID) && crate::combat::next_roll() % 100 < REFLECT_PERCENT
 }
 
 /// Cells of a line from `from` toward `to`, `length` steps long (Redux
@@ -594,6 +639,9 @@ impl Default for SkillCatalog {
                 needs_shield: false,
                 weapon: Vec::new(),
                 chance: 0,
+                life_percent: 0,
+                passive: false,
+                element: None,
             },
         );
         skills.insert(
@@ -627,6 +675,9 @@ impl Default for SkillCatalog {
                 needs_shield: false,
                 weapon: Vec::new(),
                 chance: 0,
+                life_percent: 0,
+                passive: false,
+                element: None,
             },
         );
         skills.insert(
@@ -660,6 +711,9 @@ impl Default for SkillCatalog {
                 needs_shield: false,
                 weapon: Vec::new(),
                 chance: 0,
+                life_percent: 0,
+                passive: false,
+                element: None,
             },
         );
         skills.insert(
@@ -693,6 +747,9 @@ impl Default for SkillCatalog {
                 needs_shield: false,
                 weapon: Vec::new(),
                 chance: 0,
+                life_percent: 0,
+                passive: false,
+                element: None,
             },
         );
         skills.insert(
@@ -726,6 +783,9 @@ impl Default for SkillCatalog {
                 needs_shield: false,
                 weapon: Vec::new(),
                 chance: 0,
+                life_percent: 0,
+                passive: false,
+                element: None,
             },
         );
         skills.insert(
@@ -759,6 +819,9 @@ impl Default for SkillCatalog {
                 needs_shield: false,
                 weapon: Vec::new(),
                 chance: 0,
+                life_percent: 0,
+                passive: false,
+                element: None,
             },
         );
         skills.insert(
@@ -792,6 +855,9 @@ impl Default for SkillCatalog {
                 needs_shield: false,
                 weapon: Vec::new(),
                 chance: 0,
+                life_percent: 0,
+                passive: false,
+                element: None,
             },
         );
         Self { skills }
@@ -862,6 +928,22 @@ mod tests {
         let quake = catalog.weapon_skill(450).expect("Earthquake for axes");
         assert_eq!((quake.id, quake.status.is_some(), quake.power_percent), (7_010, true, 100));
         assert_eq!(catalog.weapon_skill(500).map(|skill| skill.id), Some(5_000), "bows freeze");
+    }
+
+    #[test]
+    fn every_rebirth_skill_is_in_the_catalog() {
+        let catalog = SkillCatalog::parse(include_str!("../data/skills.dat")).expect("skills.dat parses");
+        // Every skill a rebirth path teaches can be used (or works by itself).
+        for skill_id in [3_050, 3_060, 3_080, 3_090, 1_115, 1_025, 1_051, 1_320, 1_015, 1_020, 5_000, 5_002] {
+            assert!(catalog.get(skill_id).is_some(), "skill {skill_id} is missing");
+        }
+        let cruel = catalog.get(super::CRUEL_SHADE_ID).unwrap();
+        assert_eq!(cruel.at_level(1).life_percent, 10);
+        assert_eq!(cruel.at_level(4).life_percent, 20);
+        assert_eq!(cruel.at_level(1).stamina_cost, 100);
+        assert!(catalog.get(super::REFLECT_ID).unwrap().passive);
+        let dodge = catalog.get(super::DODGE_ID).unwrap().at_level(3);
+        assert_eq!((dodge.status, dodge.mana_cost, dodge.status_duration.as_secs()), (Some(SkillStatus::Dodge), 400, 60));
     }
 
     #[test]

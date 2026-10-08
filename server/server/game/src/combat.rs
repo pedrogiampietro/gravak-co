@@ -145,6 +145,69 @@ pub fn resolve_magic_damage(
     apply_damage(current_health.min(max_health.max(1)), damage, raw_damage)
 }
 
+/// Makes a hit `percent` as strong (a critical, 150), from the life the
+/// target had.
+pub fn scale_outcome(outcome: &mut DamageOutcome, life_before: u32, percent: u32) {
+    if outcome.damage == 0 {
+        return;
+    }
+    let damage = u32::try_from(u64::from(outcome.damage) * u64::from(percent) / 100).unwrap_or(u32::MAX).max(1);
+    outcome.damage = damage;
+    outcome.remaining_health = life_before.saturating_sub(damage);
+    outcome.defeated = outcome.remaining_health == 0;
+}
+
+/// A hit that does nothing (missed, blocked or reflected).
+pub fn nullify(outcome: &mut DamageOutcome, life_before: u32) {
+    outcome.damage = 0;
+    outcome.raw_damage = 0;
+    outcome.remaining_health = life_before;
+    outcome.defeated = false;
+}
+
+/// Refinery on a blow: the target's Block may stop a physical one, then the
+/// attacker's Critical Strike (Skill Critical Strike for a magic) may make
+/// it half again as strong. `true` when it was blocked.
+pub fn refine_hit(
+    outcome: &mut DamageOutcome,
+    life_before: u32,
+    attacker: &crate::refinery::RefineryStats,
+    target: &crate::refinery::RefineryStats,
+    physical: bool,
+) -> bool {
+    if outcome.damage == 0 {
+        return false;
+    }
+    if physical && crate::refinery::blocked(target.block, attacker.breakthrough, next_roll()) {
+        nullify(outcome, life_before);
+        return true;
+    }
+    let chance = if physical { attacker.critical } else { attacker.skill_critical };
+    if crate::refinery::critical(chance, target.counteraction, target.immunity, next_roll(), next_roll()) {
+        scale_outcome(outcome, life_before, crate::refinery::CRITICAL_PERCENT);
+    }
+    false
+}
+
+/// CruelShade: a share of the life the target has left, at least one, and
+/// no more than `cap` (the caster's strongest blow times
+/// [`LIFE_CUT_CAP_TIMES`]), so a boss's huge life does not make it a
+/// one-hit kill.
+pub fn resolve_life_cut(current_health: u32, percent: u16, cap: u32) -> DamageOutcome {
+    let damage = (u64::from(current_health) * u64::from(percent.min(100)) / 100) as u32;
+    let damage = damage.min(cap.max(1)).max(1);
+    apply_damage(current_health, damage, damage)
+}
+
+/// How many of the caster's strongest blows a CruelShade may take at most.
+pub const LIFE_CUT_CAP_TIMES: u32 = 5;
+
+/// Reflect: the share of a blow sent back, which never kills (the attacker
+/// is left with one life at least).
+pub fn reflected_damage(damage: u32, attacker_life: u32) -> u32 {
+    damage.min(attacker_life.saturating_sub(1))
+}
+
 fn apply_damage(current_health: u32, damage: u32, raw_damage: u32) -> DamageOutcome {
     let remaining_health = current_health.saturating_sub(damage);
     DamageOutcome {
@@ -158,6 +221,38 @@ fn apply_damage(current_health: u32, damage: u32, raw_damage: u32) -> DamageOutc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cruel_shade_takes_a_share_of_the_life_left_up_to_a_cap() {
+        let cut = resolve_life_cut(1_000, 10, 10_000);
+        assert_eq!((cut.damage, cut.remaining_health), (100, 900));
+        assert_eq!(resolve_life_cut(2_000_000, 20, 5_000).damage, 5_000);
+        assert_eq!(resolve_life_cut(3, 10, 100).damage, 1);
+        assert!(!resolve_life_cut(1, 20, 100).defeated || resolve_life_cut(1, 20, 100).remaining_health == 0);
+    }
+
+    #[test]
+    fn a_critical_is_half_again_and_a_block_stops_the_blow() {
+        let mut outcome = resolve_life_cut(1_000, 10, 1_000);
+        scale_outcome(&mut outcome, 1_000, 150);
+        assert_eq!((outcome.damage, outcome.remaining_health), (150, 850));
+        let sure_block = crate::refinery::RefineryStats { block: 100, ..Default::default() };
+        let none = crate::refinery::RefineryStats::default();
+        assert!(refine_hit(&mut outcome, 1_000, &none, &sure_block, true));
+        assert_eq!((outcome.damage, outcome.remaining_health), (0, 1_000));
+        let mut magic = resolve_life_cut(1_000, 10, 1_000);
+        assert!(!refine_hit(&mut magic, 1_000, &none, &sure_block, false), "magic is not blocked");
+        let sure_crit = crate::refinery::RefineryStats { skill_critical: 100, ..Default::default() };
+        refine_hit(&mut magic, 1_000, &sure_crit, &none, false);
+        assert_eq!(magic.damage, 150);
+    }
+
+    #[test]
+    fn reflect_never_kills_the_attacker() {
+        assert_eq!(reflected_damage(500, 1_000), 500);
+        assert_eq!(reflected_damage(500, 200), 199);
+        assert_eq!(reflected_damage(500, 1), 0);
+    }
 
     #[test]
     fn hits_land_between_forty_and_a_hundred_percent() {

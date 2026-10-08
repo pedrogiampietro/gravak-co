@@ -1,12 +1,13 @@
 //! The Task Board of bounty tasks, drawn inside the QUESTS quick panel: the
 //! points and tokens, the four difficulties, the three bounties on offer or
-//! the one under way, and the talisman's bonuses.
+//! the one under way, and the talisman's bonuses. Its other tab is the quest
+//! log: the quests under way, each giver's next, and how many are done.
 
 use crate::components::{draw_bar, draw_button, draw_card, draw_tab, WidgetState};
 use crate::ui::UiRect;
 use crate::{labels, ui_theme};
 use fontdue::Font;
-use gravak_protocol::{BountyState, BountyTask};
+use gravak_protocol::{BountyState, BountyTask, QuestLogPacket};
 use image::RgbaImage;
 
 pub const DIFFICULTIES: [&str; 4] = ["Beginner", "Adept", "Expert", "Master"];
@@ -27,17 +28,38 @@ pub struct BountyView {
     pub board: BountyState,
     /// The tab chosen on this screen; the board's own difficulty until then.
     pub selected: Option<u32>,
+    /// Whether the server sent the board yet (the quest log may come first).
+    pub has_board: bool,
+    /// The Quests tab is shown instead of the board.
+    pub showing_quests: bool,
+    /// The quest log, as the server sent it.
+    pub quests: Vec<QuestLogPacket>,
 }
 
 impl BountyView {
     pub fn selected(&self) -> u32 {
         self.selected.unwrap_or(self.board.difficulty)
     }
+
+    /// A line of the quest log: a clear starts it over; a quest replaces
+    /// its own line or joins the log.
+    pub fn apply_quest_line(&mut self, line: QuestLogPacket) {
+        if line.action == QuestLogPacket::CLEAR {
+            self.quests.clear();
+            return;
+        }
+        match self.quests.iter_mut().find(|quest| quest.quest_id == line.quest_id) {
+            Some(quest) => *quest = line,
+            None => self.quests.push(line),
+        }
+    }
 }
 
 /// What a click on the board asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BountyAction {
+    /// The Quests tab (true) or the board (false).
+    ShowQuests(bool),
     ClaimDaily,
     /// Shows a difficulty's tab; nothing is spent.
     Select(u32),
@@ -56,6 +78,12 @@ pub enum BountyAction {
 }
 
 const DAILY: UiRect = UiRect::new(372, 50, 128, 22);
+/// The Bounties and Quests tabs, under the title.
+const PAGE_TABS: [UiRect; 2] = [UiRect::new(20, 26, 110, 20), UiRect::new(134, 26, 110, 20)];
+/// The quest log's cards.
+const QUEST_TOP: i32 = 54;
+const QUEST_ROW: i32 = 44;
+const QUEST_ROWS: usize = 7;
 const REROLL: UiRect = UiRect::new(404, 84, 96, 22);
 const ABANDON: UiRect = UiRect::new(352, 222, 136, 24);
 
@@ -168,9 +196,79 @@ fn button(image: &mut RgbaImage, font: &Font, rect: UiRect, label: &str, enabled
     draw_button(image, font, rect, label, state);
 }
 
+/// `text` cut to `chars` characters.
+fn clip(text: &str, chars: usize) -> String {
+    if text.chars().count() <= chars {
+        text.to_owned()
+    } else {
+        format!("{}...", text.chars().take(chars.saturating_sub(3)).collect::<String>())
+    }
+}
+
+/// What a quest's card says on its right: the level it waits for, the
+/// count so far, or who to speak to.
+fn quest_status(quest: &QuestLogPacket) -> (String, [u8; 3]) {
+    match (quest.state, quest.kind) {
+        (QuestLogPacket::AVAILABLE, _) => (format!("Level {}", quest.min_level), ui_theme::TEXT_MUTED),
+        (QuestLogPacket::DONE, _) => ("Done".to_owned(), PREFERRED),
+        (_, 3) => ("Speak to them".to_owned(), ui_theme::TEXT),
+        (_, kind) => {
+            let verb = if kind == 0 { "defeated" } else { "in the bag" };
+            (format!("{}/{} {verb}", quest.progress, quest.required), ui_theme::TEXT)
+        },
+    }
+}
+
+/// The Quests tab: the quests under way, then each giver's next, and how
+/// many are done.
+fn draw_quests(image: &mut RgbaImage, font: &Font, view: &BountyView) {
+    let shown = view
+        .quests
+        .iter()
+        .filter(|quest| quest.state == QuestLogPacket::ACTIVE)
+        .chain(view.quests.iter().filter(|quest| quest.state == QuestLogPacket::AVAILABLE))
+        .take(QUEST_ROWS)
+        .collect::<Vec<_>>();
+    if shown.is_empty() {
+        say(image, font, "No quests under way. Ask the generals of the cities", ui_theme::TEXT_MUTED, 24, 70);
+        say(image, font, "for a task: Old General Yang waits in Twin City.", ui_theme::TEXT_MUTED, 24, 90);
+    }
+    for (index, quest) in shown.into_iter().enumerate() {
+        let card = UiRect::new(20, QUEST_TOP + index as i32 * QUEST_ROW, 480, QUEST_ROW - 4);
+        let active = quest.state == QuestLogPacket::ACTIVE;
+        draw_card(image, card, if active { WidgetState::Selected } else { WidgetState::Normal });
+        let colour = if active { ui_theme::TEXT_GOLD } else { ui_theme::TEXT };
+        say(image, font, &clip(&quest.name, 38), colour, card.x + 10, card.y + 4);
+        let (status, status_colour) = quest_status(quest);
+        say(image, font, &status, status_colour, card.x + 330, card.y + 4);
+        let line = if quest.giver.is_empty() {
+            quest.description.clone()
+        } else {
+            format!("{}: {}", quest.giver, quest.description)
+        };
+        labels::text_sized(
+            image,
+            font,
+            &[(clip(&line, 86).as_str(), ui_theme::TEXT_MUTED)],
+            [card.x as f32 + 10.0, card.y as f32 + 22.0],
+            11.0,
+        );
+    }
+    let done = view.quests.iter().filter(|quest| quest.state == QuestLogPacket::DONE).count();
+    say(image, font, &format!("Quests completed: {done}"), ui_theme::TEXT_GOLD, 22, 372);
+}
+
 /// Draws the board onto the quick panel's contents.
 pub fn draw(image: &mut RgbaImage, font: &Font, view: Option<&BountyView>) {
-    let Some(view) = view else {
+    let showing_quests = view.is_some_and(|view| view.showing_quests);
+    for (index, label) in ["Bounties", "Quests"].into_iter().enumerate() {
+        draw_tab(image, font, PAGE_TABS[index], label, (index == 1) == showing_quests, false);
+    }
+    if let Some(view) = view.filter(|view| view.showing_quests) {
+        draw_quests(image, font, view);
+        return;
+    }
+    let Some(view) = view.filter(|view| view.has_board) else {
         say(image, font, "Bounty Tasks", ui_theme::TEXT_GOLD, 24, 56);
         say(image, font, "Waiting for the server...", ui_theme::TEXT_MUTED, 24, 84);
         return;
@@ -322,6 +420,12 @@ pub fn draw(image: &mut RgbaImage, font: &Font, view: Option<&BountyView>) {
 
 /// The action under `cursor`, in the panel's own coordinates.
 pub fn action_at(view: &BountyView, cursor: [f32; 2]) -> Option<BountyAction> {
+    if let Some(index) = (0..2).find(|index| PAGE_TABS[*index].contains_local(cursor)) {
+        return Some(BountyAction::ShowQuests(index == 1));
+    }
+    if view.showing_quests || !view.has_board {
+        return None;
+    }
     let board = &view.board;
     if DAILY.contains_local(cursor) && board.daily_available != 0 {
         return Some(BountyAction::ClaimDaily);
@@ -538,7 +642,7 @@ mod tests {
     use super::*;
 
     fn board() -> BountyView {
-        BountyView { selected: None, board: BountyState {
+        BountyView { selected: None, has_board: true, showing_quests: false, quests: Vec::new(), board: BountyState {
             points: 20,
             tokens: 2,
             daily_available: 1,
@@ -620,7 +724,7 @@ mod preview {
         hunting.task = BountyTask { monster_type: 3, kills: 158, kills_done: 61, grade: 1, points: 5, experience: 61_620, monster_name: "Robin".into() };
         for (name, board) in [("offers", offers), ("hunting", hunting)] {
             let mut content = image::RgbaImage::new(520, 420);
-            let view = super::BountyView { selected: Some(3), board: board.clone() };
+            let view = super::BountyView { selected: Some(3), has_board: true, board: board.clone(), ..Default::default() };
             super::draw(&mut content, &font, Some(&view));
             // In the game's own frame, like the quick panel.
             let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
@@ -646,5 +750,66 @@ mod preview {
         crate::hud::hud_style_button(&mut assets, "Revive").expect("button").save(format!("{dir}/revive-0.png")).expect("png");
         crate::hud::hud_style_button(&mut assets, "Revive here").expect("button").save(format!("{dir}/revive-here.png")).expect("png");
         crate::labels::monster_image("Robin", 70, 100, true).expect("label").save(format!("{dir}/bounty-label.png")).expect("png");
+    }
+}
+
+#[cfg(test)]
+mod quest_log {
+    use super::*;
+
+    fn line(quest_id: u32, state: u32, kind: u32, progress: u32, name: &str) -> QuestLogPacket {
+        QuestLogPacket {
+            action: QuestLogPacket::ENTRY,
+            quest_id,
+            state,
+            kind,
+            progress,
+            required: 10,
+            min_level: 95,
+            name: name.into(),
+            giver: "VillageHead".into(),
+            description: "Our healer brews a cure from BloodyBat wings. Bring me ten BatWings.".into(),
+        }
+    }
+
+    #[test]
+    fn the_log_is_cleared_and_lines_replace_their_own() {
+        let mut view = BountyView::default();
+        view.apply_quest_line(line(52, 1, 2, 3, "Wings for the Healer"));
+        view.apply_quest_line(line(52, 1, 2, 4, "Wings for the Healer"));
+        view.apply_quest_line(line(60, 0, 2, 0, "Horns of the Devil"));
+        assert_eq!(view.quests.len(), 2);
+        assert_eq!(view.quests[0].progress, 4);
+        view.apply_quest_line(QuestLogPacket::default());
+        assert!(view.quests.is_empty(), "a clear starts it over");
+    }
+
+    #[test]
+    fn the_tabs_switch_and_the_quest_page_has_no_board_buttons() {
+        let mut view = BountyView { has_board: true, ..Default::default() };
+        assert_eq!(action_at(&view, [140.0, 30.0]), Some(BountyAction::ShowQuests(true)));
+        assert_eq!(action_at(&view, [30.0, 30.0]), Some(BountyAction::ShowQuests(false)));
+        view.showing_quests = true;
+        assert_eq!(action_at(&view, [380.0, 55.0]), None, "the daily button is not on this page");
+    }
+
+    /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox quest_log_preview`.
+    #[test]
+    fn quest_log_preview() {
+        let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
+        let font = crate::labels::font().expect("font");
+        let mut view = BountyView { has_board: true, showing_quests: true, ..Default::default() };
+        view.apply_quest_line(line(52, 1, 2, 4, "Wings for the Healer"));
+        view.apply_quest_line(line(50, 1, 3, 0, "Word from the Desert"));
+        view.apply_quest_line(line(11, 1, 0, 17, "Bandit Roads"));
+        view.apply_quest_line(line(60, 0, 2, 0, "Horns of the Devil"));
+        view.apply_quest_line(line(1, 2, 0, 1, "Pheasant Hunt"));
+        let mut content = image::RgbaImage::new(520, 420);
+        draw(&mut content, &font, Some(&view));
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let mut image = crate::original_panels::framed_window(&mut assets, 520, 420).expect("frame");
+        image::imageops::overlay(&mut image, &content, 0, 0);
+        crate::original_panels::label_centered(&mut image, "QUESTS", 15.0, 260, 10, crate::original_panels::LABEL_GOLD);
+        image.save(format!("{dir}/quest-log.png")).expect("png");
     }
 }

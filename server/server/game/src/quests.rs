@@ -2,7 +2,10 @@
 //! a character may take, once the quest before it is done and the character
 //! has the level. A hunt counts every kill of its monster and the last one
 //! pays; a delivery (`target_item`) is paid when the items are brought back
-//! to the NPC. The pay is silver, experience and maybe an item.
+//! to the NPC. The pay is silver, experience and maybe an item. A
+//! collection (`drop_chance`) is a delivery whose items only the hunted
+//! monster drops while it is under way; a message (`target_npc`) is done by
+//! speaking to that NPC.
 
 use crate::entities::{Character, InventoryItem};
 use crate::Error;
@@ -24,6 +27,35 @@ pub struct QuestDefinition {
     pub reward_item: Option<u32>,
     /// For a delivery, the item to bring (`required_count` of them).
     pub target_item: Option<u32>,
+    /// For a message, the NPC to speak to.
+    pub target_npc: Option<u32>,
+    /// For a collection, how often in a hundred a kill of
+    /// `target_monster_type` gives a `target_item`.
+    pub drop_chance: u32,
+}
+
+impl QuestDefinition {
+    /// What the quest asks, in a few words.
+    pub fn kind(&self) -> QuestKind {
+        if self.target_npc.is_some() {
+            QuestKind::Message
+        } else if self.target_item.is_some() && self.drop_chance > 0 {
+            QuestKind::Collection
+        } else if self.target_item.is_some() {
+            QuestKind::Delivery
+        } else {
+            QuestKind::Hunt
+        }
+    }
+}
+
+/// The four kinds of quest goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestKind {
+    Hunt,
+    Delivery,
+    Collection,
+    Message,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +99,8 @@ pub struct DefeatOutcome {
     /// Quests one kill from done whose reward item does not fit in the bag:
     /// they wait, so the item is not lost.
     pub waiting_for_room: Vec<QuestDefinition>,
+    /// Hunts the kill counted for, not done yet, with their new progress.
+    pub progressed: Vec<(QuestDefinition, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,9 +110,16 @@ pub struct QuestState {
     pub completed: bool,
 }
 
+impl QuestState {
+    pub fn required(&self) -> u32 {
+        self.definition.required_count
+    }
+}
+
 /// The columns of a definition, as [`definition`] reads them.
 const COLUMNS: &str = "q.quest_id, q.npc_id, q.name, q.description, q.target_monster_type, q.required_count,
-     q.reward_silver, q.reward_experience, q.required_quest, q.min_level, q.reward_item, q.target_item";
+     q.reward_silver, q.reward_experience, q.required_quest, q.min_level, q.reward_item, q.target_item,
+     q.target_npc, q.drop_chance";
 
 /// A definition from a row with [`COLUMNS`].
 fn read_definition(row: &sqlx::postgres::PgRow) -> Result<QuestDefinition, sqlx::Error> {
@@ -98,6 +139,10 @@ fn read_definition(row: &sqlx::postgres::PgRow) -> Result<QuestDefinition, sqlx:
     ));
     let target_item: Option<i64> = row.try_get("target_item")?;
     quest.target_item = target_item.and_then(|id| u32::try_from(id).ok());
+    let target_npc: Option<i64> = row.try_get("target_npc")?;
+    quest.target_npc = target_npc.and_then(|id| u32::try_from(id).ok());
+    let drop_chance: i32 = row.try_get("drop_chance")?;
+    quest.drop_chance = u32::try_from(drop_chance).unwrap_or_default().min(100);
     Ok(quest)
 }
 
@@ -130,6 +175,8 @@ fn definition(row: DefinitionRow) -> QuestDefinition {
         min_level: u16::try_from(min_level).unwrap_or(u16::MAX),
         reward_item: reward_item.and_then(|id| u32::try_from(id).ok()),
         target_item: None,
+        target_npc: None,
+        drop_chance: 0,
     }
 }
 
@@ -227,6 +274,40 @@ pub async fn offer(pool: &sqlx::PgPool, character_id: i32, level: u16, npc_id: u
     }
 }
 
+/// Each giver's next quest a character has not taken, when nothing of that
+/// giver is under way and the quest before it is done (whatever the level).
+pub async fn next_offers(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<QuestDefinition>, Error> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLUMNS}
+         FROM quest_definitions q
+         WHERE NOT EXISTS (
+                 SELECT 1 FROM character_quests cq WHERE cq.character_id = $1 AND cq.quest_id = q.quest_id
+             )
+           AND (q.required_quest IS NULL OR EXISTS (
+                 SELECT 1 FROM character_quests done
+                 WHERE done.character_id = $1 AND done.quest_id = q.required_quest AND done.state = 2
+             ))
+           AND NOT EXISTS (
+                 SELECT 1 FROM character_quests busy
+                 INNER JOIN quest_definitions bq ON bq.quest_id = busy.quest_id
+                 WHERE busy.character_id = $1 AND busy.state = 1 AND bq.npc_id = q.npc_id
+             )
+         ORDER BY q.npc_id, q.quest_id"
+    ))
+    .bind(i64::from(character_id))
+    .fetch_all(pool)
+    .await?;
+    let mut next: Vec<QuestDefinition> = Vec::new();
+    for row in rows {
+        let quest = read_definition(&row)?;
+        if next.iter().all(|taken| taken.npc_id != quest.npc_id) {
+            next.push(quest);
+        }
+    }
+    next.sort_by_key(|quest| (quest.min_level, quest.quest_id));
+    Ok(next)
+}
+
 pub async fn list(pool: &sqlx::PgPool, character_id: i32) -> Result<Vec<QuestState>, Error> {
     let rows = sqlx::query(
         &format!(
@@ -298,12 +379,92 @@ pub async fn record_monster_defeat(
         .bind(progress)
         .execute(pool)
         .await?;
-        if updated.rows_affected() != 1 || !finishing {
+        if updated.rows_affected() != 1 {
+            continue;
+        }
+        if !finishing {
+            outcome
+                .progressed
+                .push((quest, u32::try_from(next_progress).unwrap_or_default()));
             continue;
         }
         outcome.completed.push(pay(pool, character, quest).await?);
     }
     Ok(outcome)
+}
+
+/// A kill of `monster_type_id` for the collections under way: each that
+/// still needs items gives one `drop_chance` times in a hundred (`roll`),
+/// straight into the bag. The quests and the items given.
+pub async fn collect(
+    pool: &sqlx::PgPool,
+    catalog: &crate::shop::ShopCatalog,
+    character: &Character,
+    monster_type_id: u32,
+    mut roll: impl FnMut() -> u32,
+) -> Result<Vec<(QuestDefinition, InventoryItem)>, Error> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLUMNS}
+         FROM quest_definitions q
+         INNER JOIN character_quests cq ON cq.quest_id = q.quest_id
+         WHERE cq.character_id = $1 AND cq.state = 1 AND q.target_monster_type = $2
+           AND q.target_item IS NOT NULL AND q.drop_chance > 0
+         ORDER BY q.quest_id"
+    ))
+    .bind(i64::from(character.database_id()))
+    .bind(i64::from(monster_type_id))
+    .fetch_all(pool)
+    .await?;
+    let mut given = Vec::new();
+    for row in rows {
+        let quest = read_definition(&row)?;
+        let Some(item_type) = quest.target_item else {
+            continue;
+        };
+        if character.count_items(item_type) >= quest.required_count as usize || roll() % 100 >= quest.drop_chance {
+            continue;
+        }
+        if let Some(item) = character.grant_item(pool, catalog, item_type, false).await? {
+            given.push((quest, item));
+        }
+    }
+    Ok(given)
+}
+
+/// Speaking to `npc_id` finishes the messages for it under way: they are
+/// marked done and paid.
+pub async fn talked_to(pool: &sqlx::PgPool, character: &Character, npc_id: u32) -> Result<Vec<Completion>, Error> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLUMNS}
+         FROM quest_definitions q
+         INNER JOIN character_quests cq ON cq.quest_id = q.quest_id
+         WHERE cq.character_id = $1 AND cq.state = 1 AND q.target_npc = $2
+         ORDER BY q.quest_id"
+    ))
+    .bind(i64::from(character.database_id()))
+    .bind(i64::from(npc_id))
+    .fetch_all(pool)
+    .await?;
+    let mut done = Vec::new();
+    for row in rows {
+        let quest = read_definition(&row)?;
+        if quest.reward_item.is_some() && character.inventory_items().len() >= 40 {
+            continue;
+        }
+        let updated = sqlx::query(
+            "UPDATE character_quests
+             SET progress = 1, state = 2, completed_at = EXTRACT(EPOCH FROM now())::BIGINT
+             WHERE character_id = $1 AND quest_id = $2 AND state = 1",
+        )
+        .bind(i64::from(character.database_id()))
+        .bind(i64::from(quest.quest_id))
+        .execute(pool)
+        .await?;
+        if updated.rows_affected() == 1 {
+            done.push(pay(pool, character, quest).await?);
+        }
+    }
+    Ok(done)
 }
 
 /// Why a delivery was not taken.
@@ -539,6 +700,50 @@ mod tests {
         assert_eq!(character.count_items(1_000_020), 0, "the Painkillers are taken");
         assert_eq!(turn_in(&pool, &character, delivery).await?, TurnIn::Missing(0));
         assert!(matches!(offer(&pool, id, 35, 30081).await?, Offer::Started(quest) if quest.quest_id == 13));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn messages_and_collections_past_level_95() -> Result<(), Error> {
+        let (pool, character) = test_character().await?;
+        let id = character.database_id();
+        // VillageHead's first: speak with the StoneBandit. Before it is taken
+        // the log shows it as each giver's next.
+        let next = next_offers(&pool, id).await?;
+        assert!(next.iter().any(|quest| quest.quest_id == 50) && next.iter().any(|quest| quest.quest_id == 1));
+        assert!(next.iter().all(|quest| quest.quest_id != 51), "only the first of a chain");
+        assert!(matches!(offer(&pool, id, 94, 30_102).await?, Offer::TooLow(_)));
+        let Offer::Started(message) = offer(&pool, id, 95, 30_102).await? else {
+            panic!("VillageHead sends a message");
+        };
+        assert_eq!((message.kind(), message.target_npc), (QuestKind::Message, Some(30_103)));
+        assert!(talked_to(&pool, &character, 30_102).await?.is_empty(), "the giver is not the one to see");
+        let silver = character.silver();
+        let done = talked_to(&pool, &character, 30_103).await?;
+        assert_eq!(done.len(), 1);
+        assert_eq!(character.silver(), silver + 150_000);
+        assert!(talked_to(&pool, &character, 30_103).await?.is_empty(), "paid once");
+
+        // The TombBats, then the BatWings, which only BloodyBats drop.
+        assert!(matches!(offer(&pool, id, 97, 30_102).await?, Offer::Started(quest) if quest.quest_id == 51));
+        sqlx::query("UPDATE character_quests SET state = 2 WHERE character_id = $1")
+            .bind(i64::from(id))
+            .execute(&pool)
+            .await?;
+        let Offer::Started(wings) = offer(&pool, id, 100, 30_102).await? else {
+            panic!("the BatWings are asked for");
+        };
+        assert_eq!(wings.kind(), QuestKind::Collection);
+        let catalog = crate::shop::ShopCatalog::default();
+        // No wings from another monster, nor when the roll misses.
+        assert!(collect(&pool, &catalog, &character, 57, || 0).await?.is_empty());
+        assert!(collect(&pool, &catalog, &character, 56, || 99).await?.is_empty());
+        for _ in 0..12 {
+            collect(&pool, &catalog, &character, 56, || 0).await?;
+        }
+        assert_eq!(character.count_items(722_700), 10, "no more than asked for");
+        assert!(matches!(turn_in(&pool, &character, wings).await?, TurnIn::Completed(_)));
+        assert_eq!(character.count_items(722_700), 0);
         Ok(())
     }
 

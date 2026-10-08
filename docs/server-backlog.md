@@ -59,5 +59,11 @@ Itens marcados `[x]` estão implementados e aguardando teste no jogo.
 - [x] Resistência mágica dos monstros (Redux `MagicDefence`, em %); SnakeKing na Bird Island (1015): golpes
       tiram 1, magia passa 10%, só revida, volta em 2 horas — local, temperamento e drops escolhidos por nós
 
+- [x] GuildBeast (Redux 3120): aparece no mapa da Guild War (1038, 95,95) a cada 2–4 horas e paga 1.000.000
+      ao fundo da guilda de quem o mata (`bosses.rs`; confirmado nos logs do servidor)
+- [x] Skills do renascimento puro (CruelShade, Reflect, Dodge), refinaria completa (301–319), elementos das
+      magias, 2º renascimento, quests de recado e coleta com cadeias até o 125, aba Quests, IA com magia,
+      regra de nível, fuga, matilha, ronda e chefes furiosos — detalhes em `project-backlog.md`
+
 ## A fazer
-- [ ] GuildBeast (Redux 3120, ataque 5000, defesa 60000): é de evento de guilda, ainda sem lugar
+- [ ] Nada pendente desta lista.

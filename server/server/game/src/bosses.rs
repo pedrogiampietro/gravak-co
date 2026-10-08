@@ -88,6 +88,14 @@ fn between(low: Duration, high: Duration, roll: u32) -> Duration {
 }
 
 /// Whether `monster_id` is a boss on the map now.
+/// The kind a world boss calls to its side: the monsters its lair is among.
+pub fn minion_kind(boss_type: u32) -> Option<u32> {
+    BOSSES.iter().find_map(|(id, lair)| match lair {
+        Lair::Among(kind) if *id == boss_type => Some(*kind),
+        _ => None,
+    })
+}
+
 pub fn is_boss(monster_id: u32) -> bool {
     book().lock().values().any(|state| state.alive.is_some_and(|(id, _)| id == monster_id))
 }
@@ -118,7 +126,7 @@ pub(crate) async fn announce(state: &State, text: String) {
 
 pub(crate) async fn monster_type(state: &State, id: u32) -> Result<Option<tq_db::monster::MonsterType>, Error> {
     Ok(sqlx::query_as::<_, tq_db::monster::MonsterType>(
-        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance \
+        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance, dodge, accuracy, magic_skill \
          FROM monster_types WHERE id = $1",
     )
     .bind(i64::from(id))

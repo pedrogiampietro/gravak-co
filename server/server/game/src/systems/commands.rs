@@ -109,7 +109,7 @@ async fn summon_monsters(
 ) -> Result<String, Error> {
     let id = wanted.parse::<i64>().unwrap_or(-1);
     let monster_type = sqlx::query_as::<_, tq_db::monster::MonsterType>(
-        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance \
+        "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance, dodge, accuracy, magic_skill \
          FROM monster_types WHERE id = $1 OR lower(name) = lower($2) ORDER BY (id = $1) DESC, id LIMIT 1",
     )
     .bind(id)

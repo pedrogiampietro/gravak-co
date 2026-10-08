@@ -1,4 +1,5 @@
-use crate::combat::{next_roll, resolve_physical_hit};
+use super::monster_rules as rules;
+use crate::combat::{next_roll, resolve_magic_damage, resolve_physical_hit};
 use crate::entities::GameEntity;
 use crate::packets::{ActionType, InteractAction, MsgAction, MsgInteract, MsgPlayer, MsgUserInfo, MsgWalk};
 use crate::State;
@@ -26,7 +27,7 @@ pub fn provoke(monster_id: u32, character_id: u32) {
 }
 
 /// Who the monster fights back, while it still remembers.
-fn provoker(monster_id: u32) -> Option<u32> {
+pub(crate) fn provoker(monster_id: u32) -> Option<u32> {
     let mut aggro = aggro().lock().unwrap();
     match aggro.get(&monster_id) {
         Some((character_id, since)) if since.elapsed() < AGGRO_TIME => Some(*character_id),
@@ -68,6 +69,7 @@ pub async fn tick(state: &State) {
             .filter_map(|entity| entity.as_monster().map(|m| m.entity().location()))
             .map(|location| (location.x, location.y))
             .collect::<HashSet<_>>();
+        let pack = monsters.clone();
         for monster in monsters {
             let Some(monster_ref) = monster.as_monster() else {
                 continue;
@@ -83,6 +85,9 @@ pub async fn tick(state: &State) {
                     });
                     *due <= now
                 };
+                if should_respawn {
+                    rules::forget(monster.id());
+                }
                 if should_respawn && summoned {
                     map.remove_monster(monster.id());
                     aggro().lock().unwrap().remove(&monster.id());
@@ -144,23 +149,102 @@ pub async fn tick(state: &State) {
                 continue;
             }
             let guard = is_guard(monster_type.id);
-            // Whoever hit it first; otherwise, if it hunts, the nearest player.
+            let champion = rules::is_champion(monster.id(), monster_type);
+            let caster = monster_type.magic_skill > 0;
+            let monster_level = monster_ref.entity().level();
+            let life = monster_ref.entity().hp();
+            let life = (life.current, life.max);
+            // Whoever hit it first; otherwise, if it hunts, the nearest player
+            // (not one far above it, unless it is a guard or a champion).
             let provoked = provoker(monster.id()).and_then(|id| {
                 characters
                     .iter()
                     .find(|entity| entity.id() == id)
-                    .and_then(|entity| reachable(entity, mloc, false, VIEW_RANGE))
+                    .and_then(|entity| reachable(entity, mloc, false, caster, VIEW_RANGE))
             });
+            // Its pack answers the first time it is fought.
+            if let Some((target, _)) = &provoked {
+                if rules::alert(monster.id(), true) {
+                    for other in &pack {
+                        let Some(other_monster) = other.as_monster() else {
+                            continue;
+                        };
+                        if other.id() != monster.id()
+                            && other_monster.monster_type().id == monster_type.id
+                            && !other_monster.entity().is_dead()
+                            && distance_between(other_monster.entity().location(), mloc) <= rules::PACK_RADIUS
+                            && provoker(other.id()).is_none()
+                        {
+                            provoke(other.id(), target.id());
+                        }
+                    }
+                }
+            } else {
+                rules::alert(monster.id(), false);
+            }
             let hunts = guard || monster_type.attack_mode & ACTIVE != 0;
+            let level_cap = (!guard && !champion).then_some(monster_level);
             let found = provoked.or_else(|| {
                 hunts
-                    .then(|| nearest_target(&characters, mloc, guard, view_range))
+                    .then(|| nearest_target(&characters, mloc, guard, caster, view_range, level_cap))
                     .flatten()
             });
+            // A weak monster nearly dead runs from its foe, once.
+            if let Some((target, _)) = &found {
+                if !guard && !champion && (rules::fleeing(monster.id(), now) || rules::start_flee(monster.id(), monster_level, life, now)) {
+                    let away = rules::away_from(mloc, target.basic().location(), 5);
+                    let can_move = next_move.lock().unwrap().get(&monster.id()).is_none_or(|due| *due <= now);
+                    if can_move {
+                        if let Some(next) = next_step(map, mloc, away, &occupied) {
+                            occupied.remove(&(mloc.x, mloc.y));
+                            occupied.insert((next.0.x, next.0.y));
+                            move_to(map, &monster, next.0, next.1).await;
+                        }
+                        next_move.lock().unwrap().insert(monster.id(), now + Duration::from_millis(450));
+                    }
+                    continue;
+                }
+            }
+            // A champion rages, calls its kind, and strikes all around.
+            if champion && found.is_some() {
+                if rules::enrage(monster.id(), life) {
+                    let _ = map
+                        .broadcast(crate::packets::MsgTalk::from_system(
+                            0,
+                            crate::packets::TalkChannel::Center,
+                            format!("{} is enraged!", monster_type.name),
+                        ))
+                        .await;
+                }
+                if rules::summon(monster.id(), life) {
+                    summon_minions(state, map, monster_type.id as u32, mloc).await;
+                }
+                if rules::area_due(monster.id(), now) {
+                    let skill = if caster { monster_type.magic_skill as u32 } else { rules::CHAMPION_MAGIC };
+                    for other in &characters {
+                        let Some(other) = other.as_character() else {
+                            continue;
+                        };
+                        if !other.entity().is_dead() && distance_between(mloc, other.entity().location()) <= rules::AREA_RADIUS {
+                            cast(state, monster_ref, other, skill).await;
+                        }
+                    }
+                }
+            }
             let Some((target, distance)) = found else {
-                // Guards hold their post until a criminal comes along;
-                // only the walk back home (above) moves them.
+                // Guards walk a round about their post until a criminal
+                // comes along.
                 if guard {
+                    let can_move = next_move.lock().unwrap().get(&monster.id()).is_none_or(|due| *due <= now);
+                    if can_move {
+                        let corner = rules::patrol_target(monster.id(), home, mloc);
+                        if let Some(next) = next_step(map, mloc, corner, &occupied) {
+                            occupied.remove(&(mloc.x, mloc.y));
+                            occupied.insert((next.0.x, next.0.y));
+                            move_to(map, &monster, next.0, next.1).await;
+                        }
+                        next_move.lock().unwrap().insert(monster.id(), now + Duration::from_millis(1_400));
+                    }
                     continue;
                 }
                 let can_move = next_move
@@ -189,14 +273,20 @@ pub async fn tick(state: &State) {
             let Some(character) = target.as_character() else {
                 continue;
             };
-            if distance <= attack_range {
+            // A caster's magic reaches farther than its blows.
+            let reach = if caster { attack_range.max(rules::MAGIC_RANGE) } else { attack_range };
+            if distance <= reach {
                 let can_attack = next_attack
                     .lock()
                     .unwrap()
                     .get(&monster.id())
                     .is_none_or(|due| *due <= now);
                 if can_attack {
-                    attack(state, monster_ref, character).await;
+                    if caster && (distance > attack_range || next_roll() % 2 == 0) {
+                        cast(state, monster_ref, character, monster_type.magic_skill as u32).await;
+                    } else {
+                        attack(state, monster_ref, character).await;
+                    }
                     // A boss's blow strikes everyone close to it.
                     if crate::bosses::is_boss(monster.id()) {
                         for other in &characters {
@@ -210,6 +300,8 @@ pub async fn tick(state: &State) {
                         }
                     }
                     let delay = monster_ref.monster_type().attack_speed.max(350) as u64;
+                    // An enraged champion strikes twice as fast.
+                    let delay = if rules::enraged(monster.id()) { (delay / 2).max(350) } else { delay };
                     next_attack
                         .lock()
                         .unwrap()
@@ -243,20 +335,31 @@ fn is_guard(monster_type_id: i32) -> bool {
     matches!(monster_type_id, 900 | 910 | 911)
 }
 
+/// The nearest player the monster may go after. `level_cap`, the monster's
+/// level: heroes far above it are left alone.
 fn nearest_target(
     characters: &[Arc<GameEntity>],
     location: Location,
     guard: bool,
+    caster: bool,
     view_range: i16,
+    level_cap: Option<u16>,
 ) -> Option<(Arc<GameEntity>, i16)> {
     characters
         .iter()
-        .filter_map(|entity| reachable(entity, location, guard, view_range))
+        .filter(|entity| {
+            level_cap.is_none_or(|level| {
+                entity
+                    .as_character()
+                    .is_some_and(|character| !rules::ignores(level, character.entity().level()))
+            })
+        })
+        .filter_map(|entity| reachable(entity, location, guard, caster, view_range))
         .min_by_key(|(_, distance)| *distance)
 }
 
 /// The player and their distance, if the monster may go after them.
-fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, view_range: i16) -> Option<(Arc<GameEntity>, i16)> {
+fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, caster: bool, view_range: i16) -> Option<(Arc<GameEntity>, i16)> {
     let character = entity.as_character()?;
     // Dead, invisible or flying players are out of reach; guards still
     // shoot fliers down (Redux `Monster`: mesh 900).
@@ -264,7 +367,8 @@ fn reachable(entity: &Arc<GameEntity>, location: Location, guard: bool, view_ran
     if character.entity().is_dead()
         || character.revive_protected()
         || flags.contains(crate::entities::Flags::INVISIBILITY)
-        || flags.contains(crate::entities::Flags::FLYING) && !guard
+        // A caster's magic reaches a flier too.
+        || flags.contains(crate::entities::Flags::FLYING) && !guard && !caster
     {
         return None;
     }
@@ -385,7 +489,41 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
         outcome.remaining_health = life_before;
         outcome.defeated = false;
     }
+    // Heroes far above the monster take less, far below it more.
+    crate::combat::scale_outcome(
+        &mut outcome,
+        life_before,
+        rules::level_damage_percent(monster.entity().level(), character.entity().level()),
+    );
+    // Refinery Block stops a monster's blow too.
+    if crate::refinery::blocked(character.refinery_stats().block, 0, next_roll()) {
+        crate::combat::nullify(&mut outcome, life_before);
+    }
     crate::lucky::empower(None, Some(character), &mut outcome, life_before);
+    // A pure Warrior's Reflect sends the blow back to the monster.
+    if outcome.damage > 0 && crate::skills::reflects(character) {
+        let reflected = crate::combat::reflected_damage(outcome.damage, u32::from(monster.entity().hp().current()));
+        monster.entity().apply_damage(reflected);
+        outcome.damage = 0;
+        outcome.remaining_health = life_before;
+        outcome.defeated = false;
+        let location = monster.entity().location();
+        let bounce = MsgInteract {
+            timestamp,
+            character_id: character.id(),
+            target_id: monster.id(),
+            x: location.x,
+            y: location.y,
+            action: InteractAction::Attack as u32,
+            value: reflected,
+            reserved: [0; 12],
+        };
+        let _ = character.owner().send(bounce.clone()).await;
+        if let Ok(screen) = character.try_screen() {
+            let _ = screen.send_message(bounce).await;
+        }
+        let _ = character.owner().send(MsgPlayer::from_monster(monster)).await;
+    }
     character.entity().apply_damage(outcome.damage);
     // MsgInteract is an effect packet; the local HUD receives its actual life
     // through MsgUserInfo. Without this update the server lost HP internally,
@@ -409,6 +547,76 @@ async fn attack(state: &State, monster: &crate::entities::Monster, character: &c
     if character.entity().is_dead() {
         if let Err(error) = crate::death::kill_character(state, character, monster.id(), None).await {
             tracing::warn!(character = character.id(), ?error, "Failed to process character death");
+        }
+    }
+}
+
+/// A caster's magic at `character`: its attack, softened like a blow by
+/// their levels, against the hero's magic defense and resistance to the
+/// magic's element; it cannot be dodged or blocked.
+async fn cast(state: &State, monster: &crate::entities::Monster, character: &crate::entities::Character, skill_id: u32) {
+    if character.revive_protected() || character.entity().is_dead() {
+        return;
+    }
+    let catalog = state.shop_catalog();
+    let stats = monster.combat_stats();
+    let spread = stats.max_attack.saturating_sub(stats.min_attack);
+    let attack = (stats.min_attack + next_roll() % (spread + 1)) * rules::MAGIC_PERCENT / 100;
+    let element = state.skill_catalog().get(skill_id).and_then(|skill| skill.element);
+    let refinery = character.refinery_stats();
+    let defense = character.combat_stats_with_catalog(Some(catalog));
+    let life = character.entity().hp();
+    let life_before = u32::from(life.current);
+    let mut outcome = resolve_magic_damage(
+        attack,
+        character.magic_defense_with_catalog(Some(catalog)),
+        0,
+        defense
+            .damage_reduction_percent
+            .saturating_add(u16::try_from(refinery.magic_defense).unwrap_or(100)),
+        life_before,
+        u32::from(life.max),
+        u16::try_from(refinery.resistance(element)).unwrap_or(100),
+    );
+    crate::combat::scale_outcome(
+        &mut outcome,
+        life_before,
+        rules::level_damage_percent(monster.entity().level(), character.entity().level()),
+    );
+    crate::lucky::empower(None, Some(character), &mut outcome, life_before);
+    character.entity().apply_damage(outcome.damage);
+    let location = character.entity().location();
+    let mut effect = crate::packets::MsgSkillEffect::new(
+        monster.id(),
+        u16::try_from(skill_id).unwrap_or_default(),
+        vec![crate::packets::SkillTarget::hit(character.id(), outcome.damage)],
+    );
+    effect.target_x = location.x;
+    effect.target_y = location.y;
+    let _ = character.owner().send(MsgUserInfo::from(character)).await;
+    let _ = character.owner().send(effect.clone()).await;
+    if let Ok(screen) = character.try_screen() {
+        let _ = screen.send_message(effect).await;
+    }
+    if character.entity().is_dead() {
+        if let Err(error) = crate::death::kill_character(state, character, monster.id(), None).await {
+            tracing::warn!(character = character.id(), ?error, "Failed to process character death");
+        }
+    }
+}
+
+/// A world boss calls its kind to its side.
+async fn summon_minions(state: &State, map: &crate::world::Map, boss_type: u32, at: Location) {
+    let Some(kind) = crate::bosses::minion_kind(boss_type) else {
+        return;
+    };
+    let Ok(Some(minion)) = crate::bosses::monster_type(state, kind).await else {
+        return;
+    };
+    for _ in 0..rules::SUMMONED_MINIONS {
+        if let Err(error) = crate::bosses::spawn_monster(state, map.id(), (at.x, at.y), &minion, 4).await {
+            tracing::warn!(%error, "A boss could not call its kind");
+            return;
         }
     }
 }

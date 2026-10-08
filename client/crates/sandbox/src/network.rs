@@ -238,6 +238,8 @@ pub enum NetworkEvent {
     NobilityRankingClear,
     /// The bounty Task Board.
     Bounty(gravak_protocol::BountyState),
+    /// A line of the quest log, or its clear.
+    QuestLog(gravak_protocol::QuestLogPacket),
     /// One product of the Store catalog.
     StoreProduct(gravak_protocol::StoreProduct),
     /// The buyer's CPs and VIP.
@@ -785,6 +787,7 @@ impl NetworkHandle {
                 | NetworkEvent::NobilityRanking(_)
                 | NetworkEvent::NobilityRankingClear
                 | NetworkEvent::Bounty(_)
+                | NetworkEvent::QuestLog(_)
                 | NetworkEvent::BountyProgress { .. }
                 | NetworkEvent::StoreProduct(_)
                 | NetworkEvent::StoreState(_)
@@ -1640,6 +1643,9 @@ pub(crate) async fn play(
                 }
                 Some(GameEvent::BountyState(board)) => {
                     let _ = events.send(NetworkEvent::Bounty(board));
+                }
+                Some(GameEvent::QuestLog(line)) => {
+                    let _ = events.send(NetworkEvent::QuestLog(line));
                 }
                 Some(GameEvent::Bounty(packet)) if packet.action == gravak_protocol::BountyPacket::PROGRESS => {
                     let _ = events.send(NetworkEvent::BountyProgress {

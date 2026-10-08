@@ -37,6 +37,10 @@ pub struct MonsterType {
     pub dodge: i32,
     #[cfg_attr(feature = "sqlx", sqlx(try_from = "i64", default))]
     pub accuracy: i32,
+    /// The magic it casts (a player magic, for its look and element); 0
+    /// when it only strikes.
+    #[cfg_attr(feature = "sqlx", sqlx(try_from = "i64", default))]
+    pub magic_skill: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -81,7 +85,7 @@ impl MonsterType {
         }
         let ids = ids.iter().map(|&id| i64::from(id)).collect::<Vec<_>>();
         let request = sqlx::query_as::<_, Self>(
-            "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance, dodge, accuracy FROM monster_types WHERE id = ANY($1) ORDER BY id",
+            "SELECT id, name, look, level, life, attack_min, attack_max, defense, attack_speed, respawn_seconds, view_range, attack_range, attack_mode, magic_resistance, dodge, accuracy, magic_skill FROM monster_types WHERE id = ANY($1) ORDER BY id",
         )
         .bind(ids);
         Ok(request.fetch_all(pool).await?)

@@ -45,6 +45,8 @@ bitflags::bitflags! {
     const SIXTH_METEMPSYCHOSIS = 1 << 24;
     const SEVENTH_METEMPSYCHOSIS = 1 << 25;
     const EIGHTH_METEMPSYCHOSIS = 1 << 26;
+    /// The same bit: the Dodge status (Redux `ClientEffect.Dodge`).
+    const DODGE = 1 << 26;
     const FLYING = 1 << 27;
     const NINTH_METEMPSYCHOSIS = 1 << 28;
     const TENTH_METEMPSYCHOSIS = 1 << 29;

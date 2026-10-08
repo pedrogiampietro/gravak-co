@@ -302,15 +302,6 @@ impl AttributeKind {
         }
     }
 
-    fn column(self) -> &'static str {
-        match self {
-            Self::Strength => "strength",
-            Self::Agility => "agility",
-            Self::Vitality => "vitality",
-            Self::Spirit => "spirit",
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Strength => "Strength",
@@ -1343,7 +1334,9 @@ impl Character {
         for effect in self.statuses.tick(now) {
             if matches!(effect, StatusEffect::Burning) {
                 let max_health = u32::from(self.entity.hp().max).max(1);
-                let amount = (max_health / 20).max(1);
+                // Refinery Detoxication takes its share off the poison.
+                let detoxication = self.refinery_stats().detoxication.min(100);
+                let amount = ((max_health / 20) * (100 - detoxication) / 100).max(1);
                 self.entity.apply_damage(amount);
                 damage = damage.saturating_add(amount);
             }
@@ -2030,6 +2023,27 @@ impl Character {
             })
     }
 
+    /// What the refinery of the worn, unbroken equipment adds up to, the
+    /// Dragon Soul artifacts' fire resistance included; a refinery past its
+    /// time adds nothing.
+    pub fn refinery_stats(&self) -> crate::refinery::RefineryStats {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or_default();
+        let mut stats = crate::refinery::RefineryStats::default();
+        for item in self.equipment_items().into_iter().filter(|item| item.durability > 0) {
+            if let Some(effect) = self
+                .refinery_effect(item.uid)
+                .filter(|effect| effect.expires_at == 0 || effect.expires_at > now)
+            {
+                stats.add(effect.refinery_type, effect.effect);
+            }
+        }
+        stats.resist[crate::refinery::Element::Fire.index()] += u32::from(self.fire_resistance_percent());
+        stats.capped()
+    }
+
     pub async fn apply_artifact(
         &self,
         pool: &sqlx::PgPool,
@@ -2131,7 +2145,7 @@ impl Character {
         let Some(definition) = crate::refinery::definition(material.item_type) else {
             return Ok(RefineryOutcome::InvalidMaterial);
         };
-        if definition.equipment_slot != target.position {
+        if !crate::refinery::fits(definition.subtype, target.item_type) {
             return Ok(RefineryOutcome::Incompatible);
         }
 
@@ -5174,8 +5188,8 @@ impl Character {
         self.entity.set_base_resources(health.max(1), mana, refill);
     }
 
-    /// Spend available base-attribute points with one atomic database update.
-    /// The runtime mirror is only changed after the database confirms the update.
+    /// Spend available base-attribute points: checked and spent in memory,
+    /// then stored; a failed store gives them back.
     pub async fn allocate_attribute(
         &self,
         pool: &sqlx::PgPool,
@@ -5189,30 +5203,25 @@ impl Character {
                 remaining: self.attribute_points(),
             });
         }
-        let column = kind.column();
-        let query = format!(
-            "UPDATE characters SET {column} = {column} + $1, attribute_points = attribute_points - $2 \
-             WHERE character_id = $3 AND attribute_points >= $4 AND {column} + $5 <= 65535 \
-             RETURNING {column}, attribute_points"
-        );
-        let updated = sqlx::query_as::<_, (i64, i64)>(&query)
-            .bind(i64::from(amount))
-            .bind(i64::from(amount))
-            .bind(self.inner.character_id)
-            .bind(i64::from(amount))
-            .bind(i64::from(amount))
-            .fetch_optional(pool)
-            .await?;
-        let Some((_new_value, remaining)) = updated else {
-            return Ok(AttributeAllocation::InsufficientPoints {
-                available: self.attribute_points(),
-            });
-        };
-
-        let remaining = remaining.clamp(0, i64::from(u16::MAX)) as u16;
+        // The runtime attributes are authoritative: a level up adds its
+        // points in memory and the database only learns them on the next
+        // save, so the check and the spending happen here, under one lock,
+        // and the database then stores the result.
         let profession = self.current_class() as u16;
-        let (health_delta, mana_delta) = {
+        let (before, after, health_delta, mana_delta) = {
             let mut attributes = self.attributes.lock();
+            let current = match kind {
+                AttributeKind::Strength => attributes.strength,
+                AttributeKind::Agility => attributes.agility,
+                AttributeKind::Vitality => attributes.vitality,
+                AttributeKind::Spirit => attributes.spirit,
+            };
+            if attributes.points < amount || current.checked_add(amount).is_none() {
+                return Ok(AttributeAllocation::InsufficientPoints {
+                    available: attributes.points,
+                });
+            }
+            let before = *attributes;
             let old_derived_health = crate::entities::basic::health_from_attributes(
                 attributes.strength,
                 attributes.agility,
@@ -5226,7 +5235,7 @@ impl Character {
                 AttributeKind::Vitality => attributes.vitality = attributes.vitality.saturating_add(amount),
                 AttributeKind::Spirit => attributes.spirit = attributes.spirit.saturating_add(amount),
             }
-            attributes.points = remaining;
+            attributes.points -= amount;
 
             let new_derived_health = crate::entities::basic::health_from_attributes(
                 attributes.strength,
@@ -5241,14 +5250,34 @@ impl Character {
             } else {
                 0
             };
-            (health_delta, mana_delta)
+            (before, *attributes, health_delta, mana_delta)
         };
+        let stored = sqlx::query(
+            "UPDATE characters SET strength = $1, agility = $2, vitality = $3, spirit = $4, attribute_points = $5 \
+             WHERE character_id = $6",
+        )
+        .bind(i64::from(after.strength))
+        .bind(i64::from(after.agility))
+        .bind(i64::from(after.vitality))
+        .bind(i64::from(after.spirit))
+        .bind(i64::from(after.points))
+        .bind(self.inner.character_id)
+        .execute(pool)
+        .await;
+        if let Err(error) = stored {
+            // Give the points back unless something else changed them since.
+            let mut attributes = self.attributes.lock();
+            if *attributes == after {
+                *attributes = before;
+            }
+            return Err(error.into());
+        }
         self.entity.adjust_base_resource_max(health_delta, mana_delta);
 
         Ok(AttributeAllocation::Allocated {
             kind,
             amount,
-            remaining,
+            remaining: after.points,
         })
     }
 
@@ -5357,15 +5386,26 @@ impl Character {
 
     /// Dodge and accuracy from the worn items (Redux `CombatStatistics`:
     /// `DodgeAdd`, `AccuracyAdd`): how often blows miss this hero, and how
-    /// often theirs land.
+    /// often theirs land. The Dodge status adds its own on top.
     pub fn dodge_and_accuracy(&self, catalog: &ShopCatalog) -> (u32, u32) {
-        self.equipment_items()
+        let (dodge, accuracy) = self
+            .equipment_items()
             .into_iter()
             .filter(|item| item.durability > 0)
             .filter_map(|item| catalog.template(item.item_type))
             .fold((0, 0), |(dodge, accuracy), template| {
                 (dodge + u32::from(template.dodge), accuracy + u32::from(template.accuracy))
-            })
+            });
+        (dodge + self.dodge_status_bonus(), accuracy)
+    }
+
+    /// The Dodge skill's dodge while its status lasts: ten per level.
+    pub fn dodge_status_bonus(&self) -> u32 {
+        if !self.has_status(StatusEffect::Dodge) {
+            return 0;
+        }
+        let level = self.skill_progress(crate::skills::DODGE_ID).map_or(1, |progress| progress.level);
+        u32::from(level.max(1)) * crate::skills::DODGE_PER_LEVEL
     }
 
     pub fn combat_stats_with_catalog(&self, catalog: Option<&ShopCatalog>) -> CombatStats {
@@ -5390,20 +5430,8 @@ impl Character {
                     };
                     let (first_attack, first_reduction) = gem_bonus(item.gem_one);
                     let (second_attack, second_reduction) = gem_bonus(item.gem_two);
-                    let mut next_flat = flat;
-                    let mut next_penetration = penetration;
-                    if let Some(effect) = self.refinery_effect(item.uid) {
-                        match effect.refinery_type {
-                            301 => next_flat = next_flat.saturating_add(effect.effect.max(0) as u32),
-                            312 => next_penetration = next_penetration.saturating_add(effect.effect.max(0) as u16),
-                            313 => {
-                                // Block is represented by the existing
-                                // defensive percentage
-                                // until the dedicated block stat is introduced.
-                            },
-                            _ => {},
-                        }
-                    }
+                    let next_flat = flat;
+                    let next_penetration = penetration;
                     (
                         attack.saturating_add(first_attack).saturating_add(second_attack),
                         reduction
@@ -5449,6 +5477,9 @@ impl Character {
             defense
         };
         let damage_reduction_percent = damage_reduction_percent.saturating_add(self.bless_reduction_percent());
+        // Refinery Penetration ignores that share of the target's defense.
+        let penetration_percent = penetration_percent
+            .saturating_add(u16::try_from(self.refinery_stats().penetration).unwrap_or(u16::MAX));
         CombatStats {
             // As in the original: a point of Strength is a point of
             // attack, the rest is the gear's. Level and Agility add none.
@@ -5484,6 +5515,8 @@ impl Character {
 
     pub fn refresh_equipment_resources(&self, catalog: &ShopCatalog) {
         let (health, mana) = self.equipment_resource_bonuses(catalog);
+        // Refinery Intensification: extra life.
+        let health = health.saturating_add(self.refinery_stats().intensification);
         self.entity.set_equipment_resource_bonuses(health, mana);
     }
 
@@ -6657,6 +6690,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refinery_fits_by_equipment_kind_and_adds_its_effect() -> Result<(), Error> {
+        let (pool, character, database_character_id) = test_character().await?;
+        // A shield, a headgear, a Block for shields and an Intensification
+        // for headgear; the Block does not fit the headgear.
+        insert_equipment_item(&pool, database_character_id, 611, 900_003, 5).await?;
+        insert_equipment_item(&pool, database_character_id, 612, 111_003, 1).await?;
+        insert_inventory_item(&pool, database_character_id, 613, 721_362, 0).await?;
+        insert_inventory_item(&pool, database_character_id, 614, 724_444, 1).await?;
+        character.load_inventory(&pool).await?;
+        character.load_equipment(&pool).await?;
+        character.load_refineries(&pool).await?;
+
+        assert_eq!(character.apply_refinery(&pool, 612, 613).await?, RefineryOutcome::Incompatible);
+        assert!(matches!(character.apply_refinery(&pool, 611, 613).await?, RefineryOutcome::Applied { .. }));
+        assert!(matches!(character.apply_refinery(&pool, 612, 614).await?, RefineryOutcome::Applied { .. }));
+        let stats = character.refinery_stats();
+        assert_eq!((stats.block, stats.intensification), (15, 2_500));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn artifact_consumes_material_and_meteor_before_equipping() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
         insert_inventory_item(&pool, database_character_id, 701, 111003, 0).await?;
@@ -7482,6 +7536,27 @@ mod tests {
         let persisted = tq_db::character::Character::by_id(&pool, database_character_id as i32).await?;
         assert_eq!(persisted.vitality as u16, start_vitality + 2);
         assert_eq!(persisted.attribute_points, 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reborn_level_up_points_can_be_spent_at_once() -> Result<(), Error> {
+        let (pool, character, database_character_id) = test_character().await?;
+        character.set_rebirths(1);
+        assert_eq!(character.attribute_points(), 0);
+        // Level 1 needs 120 experience; 24 at the rate of 5.
+        assert_eq!(character.grant_experience(24), Some(2));
+        assert_eq!(character.attribute_points(), 3);
+        let outcome = character.allocate_attribute(&pool, AttributeKind::Strength, 3).await?;
+        assert!(
+            matches!(outcome, AttributeAllocation::Allocated { remaining: 0, .. }),
+            "{outcome:?}"
+        );
+        let persisted = tq_db::character::Character::by_id(&pool, database_character_id as i32).await?;
+        assert_eq!(persisted.strength as u16, character.strength());
+        assert_eq!(persisted.attribute_points, 0);
+        let rejected = character.allocate_attribute(&pool, AttributeKind::Strength, 1).await?;
+        assert_eq!(rejected, AttributeAllocation::InsufficientPoints { available: 0 });
         Ok(())
     }
 

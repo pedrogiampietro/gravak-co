@@ -1,0 +1,1928 @@
+# Refinery materials (Albetros `refinerytype`): using one refines the worn
+# item it fits for 7 days. Generated with the server's refinery table
+# (server/server/game/src/refinery.rs); the icon is a gem of the same tier.
+
+[[item]]
+id = 721350
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a necklace: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721351
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a necklace: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721352
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a necklace: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721358
+base = 700071
+name = "BlockLv1"
+price = 20000
+description = "Refinery for a shield: Block +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721359
+base = 700071
+name = "BlockLv2"
+price = 40000
+description = "Refinery for a shield: Block +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721360
+base = 700072
+name = "BlockLv3"
+price = 60000
+description = "Refinery for a shield: Block +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721361
+base = 700072
+name = "BlockLv4"
+price = 80000
+description = "Refinery for a shield: Block +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721362
+base = 700073
+name = "BlockLv5"
+price = 100000
+description = "Refinery for a shield: Block +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721373
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a bag: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721374
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a bag: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721375
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a bag: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721376
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a bag: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721377
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a bag: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721380
+base = 700011
+name = "PenetrationLv1"
+price = 20000
+description = "Refinery for a headgear: Penetration +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721381
+base = 700011
+name = "PenetrationLv2"
+price = 40000
+description = "Refinery for a headgear: Penetration +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721382
+base = 700012
+name = "PenetrationLv3"
+price = 60000
+description = "Refinery for a headgear: Penetration +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721383
+base = 700012
+name = "PenetrationLv4"
+price = 80000
+description = "Refinery for a headgear: Penetration +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721384
+base = 700013
+name = "PenetrationLv5"
+price = 100000
+description = "Refinery for a headgear: Penetration +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721390
+base = 700011
+name = "PenetrationLv1"
+price = 20000
+description = "Refinery for a bracelet: Penetration +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721391
+base = 700011
+name = "PenetrationLv2"
+price = 40000
+description = "Refinery for a bracelet: Penetration +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721392
+base = 700012
+name = "PenetrationLv3"
+price = 60000
+description = "Refinery for a bracelet: Penetration +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721393
+base = 700012
+name = "PenetrationLv4"
+price = 80000
+description = "Refinery for a bracelet: Penetration +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721394
+base = 700013
+name = "PenetrationLv5"
+price = 100000
+description = "Refinery for a bracelet: Penetration +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721400
+base = 700011
+name = "CriticalLv1"
+price = 20000
+description = "Refinery for a bow: Critical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721401
+base = 700011
+name = "CriticalLv2"
+price = 40000
+description = "Refinery for a bow: Critical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721402
+base = 700012
+name = "CriticalLv3"
+price = 60000
+description = "Refinery for a bow: Critical +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721403
+base = 700012
+name = "CriticalLv4"
+price = 80000
+description = "Refinery for a bow: Critical +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721404
+base = 700013
+name = "CriticalLv5"
+price = 100000
+description = "Refinery for a bow: Critical +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721405
+base = 700011
+name = "CriticalLv1"
+price = 20000
+description = "Refinery for a one-handed weapon: Critical +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721406
+base = 700011
+name = "CriticalLv2"
+price = 40000
+description = "Refinery for a one-handed weapon: Critical +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721407
+base = 700012
+name = "CriticalLv3"
+price = 60000
+description = "Refinery for a one-handed weapon: Critical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721408
+base = 700012
+name = "CriticalLv4"
+price = 80000
+description = "Refinery for a one-handed weapon: Critical +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721409
+base = 700013
+name = "CriticalLv5"
+price = 100000
+description = "Refinery for a one-handed weapon: Critical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721410
+base = 700011
+name = "CriticalLv1"
+price = 20000
+description = "Refinery for a two-handed weapon: Critical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721411
+base = 700011
+name = "CriticalLv2"
+price = 40000
+description = "Refinery for a two-handed weapon: Critical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721412
+base = 700012
+name = "CriticalLv3"
+price = 60000
+description = "Refinery for a two-handed weapon: Critical +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721413
+base = 700012
+name = "CriticalLv4"
+price = 80000
+description = "Refinery for a two-handed weapon: Critical +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721414
+base = 700013
+name = "CriticalLv5"
+price = 100000
+description = "Refinery for a two-handed weapon: Critical +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721420
+base = 700001
+name = "SkillCriticalLv1"
+price = 20000
+description = "Refinery for a backsword: SkillCritical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721421
+base = 700001
+name = "SkillCriticalLv2"
+price = 40000
+description = "Refinery for a backsword: SkillCritical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721422
+base = 700002
+name = "SkillCriticalLv3"
+price = 60000
+description = "Refinery for a backsword: SkillCritical +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721423
+base = 700002
+name = "SkillCriticalLv4"
+price = 80000
+description = "Refinery for a backsword: SkillCritical +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721424
+base = 700003
+name = "SkillCriticalLv5"
+price = 100000
+description = "Refinery for a backsword: SkillCritical +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721445
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a one-handed weapon: Breakthrough +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721450
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a one-handed weapon: Breakthrough +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721451
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a one-handed weapon: Breakthrough +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721452
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a one-handed weapon: Breakthrough +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721453
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a one-handed weapon: Breakthrough +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721454
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a two-handed weapon: Breakthrough +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721455
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a two-handed weapon: Breakthrough +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721456
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a two-handed weapon: Breakthrough +14% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721457
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a two-handed weapon: Breakthrough +16% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721458
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a two-handed weapon: Breakthrough +18% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721459
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a bow: Breakthrough +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721460
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a bow: Breakthrough +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721461
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a bow: Breakthrough +14% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721462
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a bow: Breakthrough +16% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721463
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a bow: Breakthrough +18% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721483
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a headgear: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721484
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a headgear: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721485
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a headgear: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721486
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a headgear: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721487
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a headgear: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721488
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a armor: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721489
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a armor: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721490
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a armor: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721491
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a armor: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721492
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a armor: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721493
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a boots: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721494
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a boots: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721495
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a boots: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721496
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a boots: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721497
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a boots: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721498
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a necklace: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 721499
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a necklace: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724350
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a necklace: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724351
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a necklace: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724352
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a necklace: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724353
+base = 700071
+name = "BlockLv1"
+price = 20000
+description = "Refinery for a headgear: Block +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724354
+base = 700071
+name = "BlockLv2"
+price = 40000
+description = "Refinery for a headgear: Block +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724355
+base = 700072
+name = "BlockLv3"
+price = 60000
+description = "Refinery for a headgear: Block +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724356
+base = 700072
+name = "BlockLv4"
+price = 80000
+description = "Refinery for a headgear: Block +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724357
+base = 700073
+name = "BlockLv5"
+price = 100000
+description = "Refinery for a headgear: Block +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724358
+base = 700071
+name = "BlockLv1"
+price = 20000
+description = "Refinery for a shield: Block +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724359
+base = 700071
+name = "BlockLv2"
+price = 40000
+description = "Refinery for a shield: Block +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724360
+base = 700072
+name = "BlockLv3"
+price = 60000
+description = "Refinery for a shield: Block +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724361
+base = 700072
+name = "BlockLv4"
+price = 80000
+description = "Refinery for a shield: Block +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724362
+base = 700073
+name = "BlockLv5"
+price = 100000
+description = "Refinery for a shield: Block +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724363
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a bracelet: Breakthrough +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724364
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a bracelet: Breakthrough +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724365
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a bracelet: Breakthrough +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724366
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a bracelet: Breakthrough +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724367
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a bracelet: Breakthrough +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724368
+base = 700061
+name = "CounteractionLv1"
+price = 20000
+description = "Refinery for a bag: Counteraction +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724369
+base = 700061
+name = "CounteractionLv2"
+price = 40000
+description = "Refinery for a bag: Counteraction +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724370
+base = 700062
+name = "CounteractionLv3"
+price = 60000
+description = "Refinery for a bag: Counteraction +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724371
+base = 700062
+name = "CounteractionLv4"
+price = 80000
+description = "Refinery for a bag: Counteraction +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724372
+base = 700063
+name = "CounteractionLv5"
+price = 100000
+description = "Refinery for a bag: Counteraction +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724373
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a bag: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724374
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a bag: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724375
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a bag: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724376
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a bag: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724377
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a bag: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724380
+base = 700011
+name = "PenetrationLv1"
+price = 20000
+description = "Refinery for a headgear: Penetration +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724381
+base = 700011
+name = "PenetrationLv2"
+price = 40000
+description = "Refinery for a headgear: Penetration +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724382
+base = 700012
+name = "PenetrationLv3"
+price = 60000
+description = "Refinery for a headgear: Penetration +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724383
+base = 700012
+name = "PenetrationLv4"
+price = 80000
+description = "Refinery for a headgear: Penetration +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724384
+base = 700013
+name = "PenetrationLv5"
+price = 100000
+description = "Refinery for a headgear: Penetration +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724385
+base = 700011
+name = "PenetrationLv1"
+price = 20000
+description = "Refinery for a bag: Penetration +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724386
+base = 700011
+name = "PenetrationLv2"
+price = 40000
+description = "Refinery for a bag: Penetration +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724387
+base = 700012
+name = "PenetrationLv3"
+price = 60000
+description = "Refinery for a bag: Penetration +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724388
+base = 700012
+name = "PenetrationLv4"
+price = 80000
+description = "Refinery for a bag: Penetration +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724389
+base = 700013
+name = "PenetrationLv5"
+price = 100000
+description = "Refinery for a bag: Penetration +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724390
+base = 700011
+name = "PenetrationLv1"
+price = 20000
+description = "Refinery for a bracelet: Penetration +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724391
+base = 700011
+name = "PenetrationLv2"
+price = 40000
+description = "Refinery for a bracelet: Penetration +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724392
+base = 700012
+name = "PenetrationLv3"
+price = 60000
+description = "Refinery for a bracelet: Penetration +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724393
+base = 700012
+name = "PenetrationLv4"
+price = 80000
+description = "Refinery for a bracelet: Penetration +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724394
+base = 700013
+name = "PenetrationLv5"
+price = 100000
+description = "Refinery for a bracelet: Penetration +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724400
+base = 700011
+name = "CriticalLv1"
+price = 20000
+description = "Refinery for a bow: Critical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724401
+base = 700011
+name = "CriticalLv2"
+price = 40000
+description = "Refinery for a bow: Critical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724402
+base = 700012
+name = "CriticalLv3"
+price = 60000
+description = "Refinery for a bow: Critical +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724403
+base = 700012
+name = "CriticalLv4"
+price = 80000
+description = "Refinery for a bow: Critical +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724404
+base = 700013
+name = "CriticalLv5"
+price = 100000
+description = "Refinery for a bow: Critical +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724405
+base = 700011
+name = "CriticalLv1"
+price = 20000
+description = "Refinery for a one-handed weapon: Critical +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724406
+base = 700011
+name = "CriticalLv2"
+price = 40000
+description = "Refinery for a one-handed weapon: Critical +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724407
+base = 700012
+name = "CriticalLv3"
+price = 60000
+description = "Refinery for a one-handed weapon: Critical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724408
+base = 700012
+name = "CriticalLv4"
+price = 80000
+description = "Refinery for a one-handed weapon: Critical +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724409
+base = 700013
+name = "CriticalLv5"
+price = 100000
+description = "Refinery for a one-handed weapon: Critical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724410
+base = 700011
+name = "CriticalLv1"
+price = 20000
+description = "Refinery for a two-handed weapon: Critical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724411
+base = 700011
+name = "CriticalLv2"
+price = 40000
+description = "Refinery for a two-handed weapon: Critical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724412
+base = 700012
+name = "CriticalLv3"
+price = 60000
+description = "Refinery for a two-handed weapon: Critical +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724413
+base = 700012
+name = "CriticalLv4"
+price = 80000
+description = "Refinery for a two-handed weapon: Critical +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724414
+base = 700013
+name = "CriticalLv5"
+price = 100000
+description = "Refinery for a two-handed weapon: Critical +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724415
+base = 700011
+name = "CriticalLv1"
+price = 20000
+description = "Refinery for a ring: Critical +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724416
+base = 700011
+name = "CriticalLv2"
+price = 40000
+description = "Refinery for a ring: Critical +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724417
+base = 700012
+name = "CriticalLv3"
+price = 60000
+description = "Refinery for a ring: Critical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724418
+base = 700012
+name = "CriticalLv4"
+price = 80000
+description = "Refinery for a ring: Critical +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724419
+base = 700013
+name = "CriticalLv5"
+price = 100000
+description = "Refinery for a ring: Critical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724420
+base = 700001
+name = "SkillCriticalLv1"
+price = 20000
+description = "Refinery for a backsword: SkillCritical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724421
+base = 700001
+name = "SkillCriticalLv2"
+price = 40000
+description = "Refinery for a backsword: SkillCritical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724422
+base = 700002
+name = "SkillCriticalLv3"
+price = 60000
+description = "Refinery for a backsword: SkillCritical +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724423
+base = 700002
+name = "SkillCriticalLv4"
+price = 80000
+description = "Refinery for a backsword: SkillCritical +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724424
+base = 700003
+name = "SkillCriticalLv5"
+price = 100000
+description = "Refinery for a backsword: SkillCritical +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724425
+base = 700001
+name = "SkillCriticalLv1"
+price = 20000
+description = "Refinery for a bracelet: SkillCritical +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724426
+base = 700001
+name = "SkillCriticalLv2"
+price = 40000
+description = "Refinery for a bracelet: SkillCritical +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724427
+base = 700002
+name = "SkillCriticalLv3"
+price = 60000
+description = "Refinery for a bracelet: SkillCritical +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724428
+base = 700002
+name = "SkillCriticalLv4"
+price = 80000
+description = "Refinery for a bracelet: SkillCritical +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724429
+base = 700003
+name = "SkillCriticalLv5"
+price = 100000
+description = "Refinery for a bracelet: SkillCritical +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724430
+base = 700071
+name = "ImmunityLv1"
+price = 20000
+description = "Refinery for a armor: Immunity +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724431
+base = 700071
+name = "ImmunityLv2"
+price = 40000
+description = "Refinery for a armor: Immunity +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724432
+base = 700072
+name = "ImmunityLv3"
+price = 60000
+description = "Refinery for a armor: Immunity +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724433
+base = 700072
+name = "ImmunityLv4"
+price = 80000
+description = "Refinery for a armor: Immunity +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724434
+base = 700073
+name = "ImmunityLv5"
+price = 100000
+description = "Refinery for a armor: Immunity +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724435
+base = 700071
+name = "ImmunityLv1"
+price = 20000
+description = "Refinery for a boots: Immunity +1% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724436
+base = 700071
+name = "ImmunityLv2"
+price = 40000
+description = "Refinery for a boots: Immunity +2% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724437
+base = 700072
+name = "ImmunityLv3"
+price = 60000
+description = "Refinery for a boots: Immunity +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724438
+base = 700072
+name = "ImmunityLv4"
+price = 80000
+description = "Refinery for a boots: Immunity +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724439
+base = 700073
+name = "ImmunityLv5"
+price = 100000
+description = "Refinery for a boots: Immunity +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724440
+base = 700041
+name = "IntensificationLv1"
+price = 20000
+description = "Refinery for a headgear: Intensification +200 HP for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724441
+base = 700041
+name = "IntensificationLv2"
+price = 40000
+description = "Refinery for a headgear: Intensification +500 HP for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724442
+base = 700042
+name = "IntensificationLv3"
+price = 60000
+description = "Refinery for a headgear: Intensification +1000 HP for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724443
+base = 700042
+name = "IntensificationLv4"
+price = 80000
+description = "Refinery for a headgear: Intensification +1600 HP for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724444
+base = 700043
+name = "IntensificationLv5"
+price = 100000
+description = "Refinery for a headgear: Intensification +2500 HP for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724445
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a one-handed weapon: Breakthrough +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724450
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a one-handed weapon: Breakthrough +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724451
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a one-handed weapon: Breakthrough +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724452
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a one-handed weapon: Breakthrough +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724453
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a one-handed weapon: Breakthrough +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724454
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a two-handed weapon: Breakthrough +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724455
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a two-handed weapon: Breakthrough +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724456
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a two-handed weapon: Breakthrough +14% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724457
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a two-handed weapon: Breakthrough +16% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724458
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a two-handed weapon: Breakthrough +18% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724459
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a bow: Breakthrough +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724460
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a bow: Breakthrough +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724461
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a bow: Breakthrough +14% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724462
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a bow: Breakthrough +16% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724463
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a bow: Breakthrough +18% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724464
+base = 700021
+name = "BreakthroughLv1"
+price = 20000
+description = "Refinery for a ring: Breakthrough +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724465
+base = 700021
+name = "BreakthroughLv2"
+price = 40000
+description = "Refinery for a ring: Breakthrough +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724470
+base = 700022
+name = "BreakthroughLv3"
+price = 60000
+description = "Refinery for a ring: Breakthrough +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724471
+base = 700022
+name = "BreakthroughLv4"
+price = 80000
+description = "Refinery for a ring: Breakthrough +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724472
+base = 700023
+name = "BreakthroughLv5"
+price = 100000
+description = "Refinery for a ring: Breakthrough +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724473
+base = 700061
+name = "CounteractionLv1"
+price = 20000
+description = "Refinery for a armor: Counteraction +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724474
+base = 700061
+name = "CounteractionLv2"
+price = 40000
+description = "Refinery for a armor: Counteraction +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724475
+base = 700062
+name = "CounteractionLv3"
+price = 60000
+description = "Refinery for a armor: Counteraction +14% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724476
+base = 700062
+name = "CounteractionLv4"
+price = 80000
+description = "Refinery for a armor: Counteraction +16% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724477
+base = 700063
+name = "CounteractionLv5"
+price = 100000
+description = "Refinery for a armor: Counteraction +18% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724478
+base = 700061
+name = "CounteractionLv1"
+price = 20000
+description = "Refinery for a necklace: Counteraction +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724479
+base = 700061
+name = "CounteractionLv2"
+price = 40000
+description = "Refinery for a necklace: Counteraction +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724480
+base = 700062
+name = "CounteractionLv3"
+price = 60000
+description = "Refinery for a necklace: Counteraction +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724481
+base = 700062
+name = "CounteractionLv4"
+price = 80000
+description = "Refinery for a necklace: Counteraction +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724482
+base = 700063
+name = "CounteractionLv5"
+price = 100000
+description = "Refinery for a necklace: Counteraction +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724483
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a headgear: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724484
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a headgear: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724485
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a headgear: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724486
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a headgear: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724487
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a headgear: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724488
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a armor: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724489
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a armor: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724490
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a armor: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724491
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a armor: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724492
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a armor: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724493
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a boots: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724494
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a boots: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724495
+base = 700052
+name = "DetoxicationLv3"
+price = 60000
+description = "Refinery for a boots: Detoxication +11% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724496
+base = 700052
+name = "DetoxicationLv4"
+price = 80000
+description = "Refinery for a boots: Detoxication +13% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724497
+base = 700053
+name = "DetoxicationLv5"
+price = 100000
+description = "Refinery for a boots: Detoxication +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724498
+base = 700051
+name = "DetoxicationLv1"
+price = 20000
+description = "Refinery for a necklace: Detoxication +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724499
+base = 700051
+name = "DetoxicationLv2"
+price = 40000
+description = "Refinery for a necklace: Detoxication +9% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724500
+base = 700031
+name = "MetalResistLv1"
+price = 20000
+description = "Refinery for a any equipment: MetalResist +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724501
+base = 700031
+name = "MetalResistLv2"
+price = 40000
+description = "Refinery for a any equipment: MetalResist +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724502
+base = 700032
+name = "MetalResistLv3"
+price = 60000
+description = "Refinery for a any equipment: MetalResist +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724503
+base = 700032
+name = "MetalResistLv4"
+price = 80000
+description = "Refinery for a any equipment: MetalResist +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724504
+base = 700033
+name = "MetalResistLv5"
+price = 100000
+description = "Refinery for a any equipment: MetalResist +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724505
+base = 700031
+name = "WoodResistLv1"
+price = 20000
+description = "Refinery for a any equipment: WoodResist +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724506
+base = 700031
+name = "WoodResistLv2"
+price = 40000
+description = "Refinery for a any equipment: WoodResist +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724507
+base = 700032
+name = "WoodResistLv3"
+price = 60000
+description = "Refinery for a any equipment: WoodResist +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724508
+base = 700032
+name = "WoodResistLv4"
+price = 80000
+description = "Refinery for a any equipment: WoodResist +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724509
+base = 700033
+name = "WoodResistLv5"
+price = 100000
+description = "Refinery for a any equipment: WoodResist +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724510
+base = 700031
+name = "WaterResistLv1"
+price = 20000
+description = "Refinery for a any equipment: WaterResist +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724511
+base = 700031
+name = "WaterResistLv2"
+price = 40000
+description = "Refinery for a any equipment: WaterResist +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724512
+base = 700032
+name = "WaterResistLv3"
+price = 60000
+description = "Refinery for a any equipment: WaterResist +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724513
+base = 700032
+name = "WaterResistLv4"
+price = 80000
+description = "Refinery for a any equipment: WaterResist +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724514
+base = 700033
+name = "WaterResistLv5"
+price = 100000
+description = "Refinery for a any equipment: WaterResist +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724515
+base = 700031
+name = "FireResistLv1"
+price = 20000
+description = "Refinery for a any equipment: FireResist +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724516
+base = 700031
+name = "FireResistLv2"
+price = 40000
+description = "Refinery for a any equipment: FireResist +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724517
+base = 700032
+name = "FireResistLv3"
+price = 60000
+description = "Refinery for a any equipment: FireResist +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724518
+base = 700032
+name = "FireResistLv4"
+price = 80000
+description = "Refinery for a any equipment: FireResist +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724519
+base = 700033
+name = "FireResistLv5"
+price = 100000
+description = "Refinery for a any equipment: FireResist +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724520
+base = 700031
+name = "EarthResistLv1"
+price = 20000
+description = "Refinery for a any equipment: EarthResist +3% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724521
+base = 700031
+name = "EarthResistLv2"
+price = 40000
+description = "Refinery for a any equipment: EarthResist +5% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724522
+base = 700032
+name = "EarthResistLv3"
+price = 60000
+description = "Refinery for a any equipment: EarthResist +7% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724523
+base = 700032
+name = "EarthResistLv4"
+price = 80000
+description = "Refinery for a any equipment: EarthResist +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 724524
+base = 700033
+name = "EarthResistLv5"
+price = 100000
+description = "Refinery for a any equipment: EarthResist +15% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725172
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a necklace: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725173
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a necklace: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725174
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a necklace: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725175
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a necklace: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725176
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a necklace: MagicDefense +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725177
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a bag: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725178
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a bag: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725179
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a bag: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725180
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a bag: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725181
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a bag: MagicDefense +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725182
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a bracelet: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725183
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a bracelet: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725184
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a bracelet: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725185
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a bracelet: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725186
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a bracelet: MagicDefense +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725187
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a heavy ring: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725188
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a heavy ring: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725189
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a heavy ring: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725190
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a heavy ring: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725191
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a heavy ring: MagicDefense +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725192
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a necklace: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725193
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a necklace: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725194
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a necklace: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725195
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a necklace: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725196
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a necklace: MagicDefense +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725197
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a bag: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725198
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a bag: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725199
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a bag: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725200
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a bag: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725201
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a bag: MagicDefense +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725202
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a bracelet: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725203
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a bracelet: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725204
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a bracelet: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725205
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a bracelet: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725206
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a bracelet: MagicDefense +12% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725207
+base = 700061
+name = "MagicDefenseLv1"
+price = 20000
+description = "Refinery for a ring: MagicDefense +4% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725208
+base = 700061
+name = "MagicDefenseLv2"
+price = 40000
+description = "Refinery for a ring: MagicDefense +6% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725209
+base = 700062
+name = "MagicDefenseLv3"
+price = 60000
+description = "Refinery for a ring: MagicDefense +8% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725210
+base = 700062
+name = "MagicDefenseLv4"
+price = 80000
+description = "Refinery for a ring: MagicDefense +10% for 7 days. Use it while wearing that item."
+
+[[item]]
+id = 725211
+base = 700063
+name = "MagicDefenseLv5"
+price = 100000
+description = "Refinery for a ring: MagicDefense +12% for 7 days. Use it while wearing that item."

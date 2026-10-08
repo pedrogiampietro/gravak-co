@@ -1,4 +1,6 @@
 # Server-authoritative starter skill catalog.
+# Element= puts a magic in one of the five elements (Metal, Wood, Water,
+# Fire, Earth): only refinery or artifact resistance to it lessens it.
 # Values are intentionally small and easy to tune while the combat vertical
 # slice is being built. Ranges follow the level-0 distance of the original
 # ini/MagicType.dat and the attack magics repeat every 800 ms, as in the
@@ -6,6 +8,7 @@
 
 [Skill]
 ID=1000
+Element=Metal
 Name=Thunder
 Mana=20
 Range=9.0
@@ -17,6 +20,7 @@ Starter=true
 
 [Skill]
 ID=1001
+Element=Fire
 Name=Fire
 Mana=35
 Range=12.0
@@ -29,6 +33,7 @@ RequiredLevel=40
 
 [Skill]
 ID=1002
+Element=Wood
 Name=Tornado
 Mana=45
 Range=15.0
@@ -156,6 +161,7 @@ RequiredLevel=40
 
 [Skill]
 ID=1010
+Element=Metal
 Name=Lightning
 Mana=0
 Xp=true
@@ -168,6 +174,7 @@ Power=100
 
 [Skill]
 ID=1125
+Element=Fire
 Name=Volcano
 Mana=0
 Xp=true
@@ -181,6 +188,7 @@ RequiredLevel=40
 
 [Skill]
 ID=5001
+Element=Metal
 Name=SpeedLightning
 Mana=0
 Xp=true
@@ -205,6 +213,7 @@ RequiredLevel=70
 
 [Skill]
 ID=1150
+Element=Fire
 Name=FireRing
 Mana=32
 Range=9.0
@@ -215,6 +224,7 @@ RequiredLevel=55
 
 [Skill]
 ID=1160
+Element=Fire
 Name=Bomb
 Mana=53
 Range=11.0
@@ -225,6 +235,7 @@ RequiredLevel=82
 
 [Skill]
 ID=1180
+Element=Fire
 Name=FireMeteor
 Mana=62
 Range=10.0
@@ -235,6 +246,7 @@ RequiredLevel=52
 
 [Skill]
 ID=1120
+Element=Fire
 Name=FireCircle
 Mana=150
 Range=8.0
@@ -247,6 +259,7 @@ RequiredLevel=65
 
 [Skill]
 ID=1165
+Element=Fire
 Name=FireofHell
 Mana=120
 Range=6.0
@@ -724,3 +737,44 @@ Range=0.0
 CooldownMs=1000
 Power=0
 RequiredLevel=1
+
+# The skills a pure first rebirth teaches (Redux `reborns`), with their
+# levels from MagicType: CruelShade (Trojan to Trojan) takes 10/14/18/20% of
+# the target's life left for 100 stamina, at most five of the caster's
+# strongest blows; Reflect (Warrior to Warrior) sends one physical blow in ten
+# back, never killing; Dodge (Fire Taoist to Fire Taoist) adds 10/20/30 dodge
+# for 60 seconds.
+[Skill]
+ID=3050
+Name=CruelShade
+Mana=0
+Stamina=100
+Range=5.0
+Radius=0.0
+CooldownMs=1500
+LifePercent=10
+Starter=false
+RequiredLevel=15
+
+[Skill]
+ID=3060
+Name=Reflect
+Mana=0
+Range=0.0
+Radius=0.0
+CooldownMs=0
+Passive=true
+Starter=false
+RequiredLevel=15
+
+[Skill]
+ID=3080
+Name=Dodge
+Mana=200
+Range=0.0
+Radius=0.0
+CooldownMs=1000
+Status=Dodge
+StatusDurationMs=60000
+Starter=false
+RequiredLevel=70

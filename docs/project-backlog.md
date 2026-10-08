@@ -164,16 +164,56 @@ Levantado em 2026-10-04 comparando NPCs, itens, pacotes, eventos e bosses do
       item espera espaço na bolsa em vez de se perder. Testado no servidor real
       com o probe `--quest`.
 - [x] Quests com outros objetivos (entregar itens) e cadeias de outros NPCs e
-      cidades (rodada atual, item 8). Falar com NPCs e coletar drops ainda não.
+      cidades (rodada atual, item 8).
+- [x] Quests de recado (falar com um NPC: `target_npc`) e de coleta (o monstro
+      da quest deixa o item na bolsa com `drop_chance`% enquanto ela corre),
+      migração 79. Cadeias acima do 95: VillageHead (Desert City, 95–110,
+      Mystic Castle) e Mike (Desert City, 110–125, labirinto), com BatWing,
+      DevilHorn e FiendFang (`content/items/quest.toml`). Aba Quests no painel
+      QUESTS (pacote 9102): as quests em andamento, a próxima de cada NPC e
+      quantas foram feitas. Testes: `messages_and_collections_past_level_95`,
+      `quest_log` do cliente.
 - [x] Banca (player shop): nome visível, persistência e volta após reconnect.
 - [x] Trade: voltar à troca após reconnect; rejeições com mensagem clara.
 - [x] Guild: depósito/saque de prata da guild.
 - [x] Guild: ranking e cargos avançados.
 - [x] GuildBeast (Redux 3120) num evento de guilda.
-- [ ] Skills: árvore de spells, demais efeitos, buffs/debuffs e fórmulas por
-      classe; demais elementos de gems e tipos de refinaria.
-- [ ] Reborn: promoção e progressão por classe.
-- [ ] IA: patrulha, regras especiais e drops especiais.
+- [x] Skills do renascimento puro: CruelShade (3050, Trojan: 10/14/18/20% da
+      vida restante do alvo por 100 de stamina, no máximo 5 golpes do herói),
+      Reflect (3060, Warrior, passiva: devolve 1 golpe físico em 10, sem matar)
+      e Dodge (3080, Fire Taoist: +10/20/30 de esquiva por 60 s). Nenhuma das
+      referências as implementa; os números vêm do MagicType.
+- [x] Refinaria completa: os 275 materiais do Albetros (tipos 301–319),
+      encaixe por tipo de equipamento, usados da bolsa (clique direito) no
+      item vestido que servem, por 7 dias. Efeitos: Intensification (+vida),
+      Detoxication (−veneno), Critical/Skill Critical (×1,5), Immunity,
+      Breakthrough, Counteraction, Penetration, Block (para o golpe físico,
+      de jogador ou monstro), resistências a Metal/Madeira/Água/Fogo/Terra e
+      Magic Defense; chances e resistências limitadas a 60%. Itens em
+      `content/items/refinery.toml`; caem só de chefes (um de nível 3–5) e,
+      raramente, de monstros fortes (`special_drops.rs`).
+- [x] Elementos das magias (`Element=` no `skills.dat`): só a resistência ao
+      elemento da magia a reduz (antes a resistência a fogo valia para toda
+      magia).
+- [x] Dano por classe no PvP: decidido manter a paridade com a referência
+      (só o arco muda, ÷3); a identidade de cada classe vem das skills do
+      renascimento e da refinaria.
+- [x] Reborn: 2º renascimento com regra própria (as referências não têm): os
+      pontos somam o bônus do nível do 2º e de novo o do 1º (guardado em
+      `first_rebirth_level`, migração 78), e skill ensinada pelo 1º nunca é
+      esquecida. Teste de ponta a ponta pelo Alex: `rebirth_journey`.
+- [x] Pontos do renascido gastos logo após upar (antes o `+` recusava até o
+      autosave). Teste: `reborn_level_up_points_can_be_spent_at_once`.
+- [x] IA (`systems/monster_rules.rs`): 102 monstros conjuradores (o `SkillType`
+      do Redux, migração 80) atacam com magia de até 7 células; monstro não
+      caça herói 25+ níveis acima (revida se apanhar) e bate mais fraco em
+      quem está acima (−3%/nível, mínimo 30%) e mais forte em quem está
+      abaixo (+2%/nível, máximo 150%); monstro fraco (até nível 70) foge uma
+      vez com 15% de vida; a matilha do mesmo tipo a até 6 células responde
+      quando um apanha; guardas fazem ronda em volta do posto; chefes (de
+      mundo, de campo e do labirinto) ficam furiosos abaixo de 30% (golpes 2×
+      mais rápidos), chamam 3 da sua espécie abaixo de 50% e lançam magia em
+      área (5 células) a cada 10 s. Teste no mapa real: `monster_ai_journey`.
 - [x] Chat por canal: time, guild, amigos, cônjuge e mundo chegavam só a quem
       estava na mesma região do mapa. Agora cada canal vai a quem deve, sempre
       com o nome real de quem fala, e canais do servidor (System, Center,

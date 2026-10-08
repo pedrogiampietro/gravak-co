@@ -18,6 +18,8 @@ pub enum StatusEffect {
     Intensify,
     /// Accuracy and Star of Accuracy.
     Accuracy,
+    /// The Fire Taoist's Dodge: more dodge for a while.
+    Dodge,
 }
 
 impl StatusEffect {
@@ -35,6 +37,7 @@ impl StatusEffect {
             Self::Flying => Flags::FLYING,
             Self::Intensify => Flags::INTENSIFY,
             Self::Accuracy => Flags::STAR_OF_ACCURACY,
+            Self::Dodge => Flags::DODGE,
         }
     }
 }

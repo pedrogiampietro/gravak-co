@@ -147,6 +147,8 @@ mod msg_item_rarity_reroll;
 pub use msg_item_rarity_reroll::MsgItemRarityReroll;
 
 mod msg_bounty;
+mod msg_quest_log;
+pub use msg_quest_log::{send_log as send_quest_log, send_progress as send_quest_progress, MsgQuestLog};
 pub use msg_bounty::{add_kills as add_bounty_kills, send_board, MsgBounty, MsgBountyState};
 
 mod msg_status_timers;

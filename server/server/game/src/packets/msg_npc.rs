@@ -73,6 +73,8 @@ impl PacketProcess for MsgNpc {
             return Ok(());
         }
         let npc_id = npc.id();
+        // A message for this NPC is delivered by speaking to it.
+        crate::quest_givers::arrive(state, actor, character, npc_id).await?;
         // The pole and the gates only talk to the winning guild.
         if crate::guild_war::is_war_structure(npc_id) && crate::guild_war::opening(state, npc_id, character).is_none() {
             return Ok(());

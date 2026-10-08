@@ -1,0 +1,23 @@
+# Items the collection quests (server migration 79_quest_objectives.sql) ask
+# for: they come only while the quest is under way, from its monster.
+
+[[item]]
+id = 722700
+base = 721010
+name = "BatWing"
+price = 0
+description = "A BloodyBat's wing. VillageHead of Desert City wants ten of them."
+
+[[item]]
+id = 722701
+base = 721010
+name = "DevilHorn"
+price = 0
+description = "A Red Devil's horn. Mike of Desert City wants ten of them."
+
+[[item]]
+id = 722702
+base = 721010
+name = "FiendFang"
+price = 0
+description = "A FiendBat's fang. Mike of Desert City wants ten of them."

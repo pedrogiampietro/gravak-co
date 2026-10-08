@@ -25,6 +25,8 @@ pub const MSG_NOBILITY: u16 = 2064;
 pub const MSG_BOUNTY: u16 = 9100;
 /// Gravak's bounty tasks: the whole Task Board.
 pub const MSG_BOUNTY_STATE: u16 = 9101;
+/// Gravak's quest log: one quest a packet (or a clear before the whole log).
+pub const MSG_QUEST_LOG: u16 = 9102;
 /// Gravak's Store: one product of the catalog, and the buyer's CPs and VIP.
 pub const MSG_STORE_PRODUCT: u16 = 9111;
 pub const MSG_STORE_STATE: u16 = 9112;
@@ -516,6 +518,32 @@ pub struct BountyTask {
     pub points: u32,
     pub experience: u64,
     pub monster_name: String,
+}
+
+/// One line of the quest log, or (`action` 0) the clear before a whole log.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9102)]
+pub struct QuestLogPacket {
+    pub action: u32,
+    pub quest_id: u32,
+    /// 0 the giver's next, 1 under way, 2 done.
+    pub state: u32,
+    /// 0 hunt, 1 delivery, 2 collection, 3 message.
+    pub kind: u32,
+    pub progress: u32,
+    pub required: u32,
+    pub min_level: u32,
+    pub name: String,
+    pub giver: String,
+    pub description: String,
+}
+
+impl QuestLogPacket {
+    pub const CLEAR: u32 = 0;
+    pub const ENTRY: u32 = 1;
+    pub const AVAILABLE: u32 = 0;
+    pub const ACTIVE: u32 = 1;
+    pub const DONE: u32 = 2;
 }
 
 /// The Task Board of bounty tasks.
@@ -1839,6 +1867,7 @@ pub enum GameEvent {
     NobilityRanking(NobilityRankingInfo),
     Bounty(BountyPacket),
     BountyState(BountyState),
+    QuestLog(QuestLogPacket),
     StoreProduct(StoreProduct),
     StoreState(StoreState),
     DailyRewardChoice(DailyRewardChoice),
@@ -1951,6 +1980,9 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         )),
         MSG_BOUNTY_STATE => Ok(GameEvent::BountyState(
             BountyState::decode(body).map_err(ProtocolError::Decode)?,
+        )),
+        MSG_QUEST_LOG => Ok(GameEvent::QuestLog(
+            QuestLogPacket::decode(body).map_err(ProtocolError::Decode)?,
         )),
         MSG_STORE_PRODUCT => Ok(GameEvent::StoreProduct(
             StoreProduct::decode(body).map_err(ProtocolError::Decode)?,

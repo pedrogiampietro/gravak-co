@@ -417,6 +417,16 @@ impl MsgInteract {
             );
             return Ok(());
         }
+        if skill.passive {
+            actor
+                .send(MsgTalk::from_system(
+                    character.id(),
+                    TalkChannel::TopLeft,
+                    format!("{} works by itself.", skill.name),
+                ))
+                .await?;
+            return Ok(());
+        }
         if skill.id == crate::lucky::BLESS {
             if let Some(line) = crate::lucky::bless(state, character).await? {
                 actor
@@ -944,6 +954,7 @@ impl MsgInteract {
             && character
                 .equipment_item(4)
                 .is_some_and(|weapon| crate::shop::ShopCatalog::is_bow(weapon.item_type));
+        let attacker_refinery = character.refinery_stats();
         let mut effects = Vec::with_capacity(targets.len());
         let mut defeated = Vec::new();
         let mut defeated_players = Vec::new();
@@ -951,15 +962,23 @@ impl MsgInteract {
         let mut player_owners = Vec::new();
         for target in targets {
             let target_entity = target.basic();
+            let target_refinery = target.as_character().map(|target| target.refinery_stats()).unwrap_or_default();
             let (target_stats, magic_defense, fire_resistance, target_owner) =
                 if let Some(monster) = target.as_monster() {
                     (monster.combat_stats(), 0, 0, None)
                 } else if let Some(target_character) = target.as_character() {
-                    let stats = target_character.combat_stats_with_catalog(Some(state.shop_catalog()));
+                    let mut stats = target_character.combat_stats_with_catalog(Some(state.shop_catalog()));
+                    // Refinery Magic Defense takes its share off a magic.
+                    if !skill.physical {
+                        stats.damage_reduction_percent = stats
+                            .damage_reduction_percent
+                            .saturating_add(u16::try_from(target_refinery.magic_defense).unwrap_or(100));
+                    }
                     (
                         stats,
                         target_character.magic_defense_with_catalog(Some(state.shop_catalog())),
-                        target_character.fire_resistance_percent(),
+                        // Only a resistance to the magic's own element helps.
+                        u16::try_from(target_refinery.resistance(skill.element)).unwrap_or(100),
                         Some(target_character.owner()),
                     )
                 } else {
@@ -1021,7 +1040,13 @@ impl MsgInteract {
                 ),
                 (true, false) => scale_skill_power(physical_stats, crate::combat::BOW_PVP_PERCENT),
             };
-            let mut outcome = if skill.physical {
+            let mut outcome = if skill.life_percent > 0 {
+                crate::combat::resolve_life_cut(
+                    u32::from(health_before.current),
+                    skill.life_percent,
+                    physical_stats.max_attack.saturating_mul(crate::combat::LIFE_CUT_CAP_TIMES),
+                )
+            } else if skill.physical {
                 resolve_physical_hit(
                     scale_skill_power(scale_skill_power(bow_share, physical_power), superman),
                     target_stats,
@@ -1042,6 +1067,15 @@ impl MsgInteract {
                     fire_resistance,
                 )
             };
+            if skill.life_percent == 0 {
+                crate::combat::refine_hit(
+                    &mut outcome,
+                    u32::from(health_before.current),
+                    &attacker_refinery,
+                    &target_refinery,
+                    skill.physical,
+                );
+            }
             if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
                 crate::bounty::empower(
                     &talisman,
@@ -1227,6 +1261,13 @@ pub(crate) async fn reward_monster_defeat(
             crate::leveling::after_level_up(state, recipient, level).await?;
         }
         let quests = crate::quests::record_monster_defeat(state.pool(), recipient, monster_type_id).await?;
+        crate::quest_givers::collect(state, recipient, monster_type_id).await?;
+        for (quest, progress) in &quests.progressed {
+            super::send_quest_progress(recipient, quest, *progress).await?;
+        }
+        if !quests.completed.is_empty() {
+            super::send_quest_log(state, recipient).await?;
+        }
         let bounty_leveled =
             super::msg_bounty::count_kill(state, recipient, monster_type_id, &monster.monster_type().name).await?;
         if let Some(level) = bounty_leveled {
@@ -1342,6 +1383,14 @@ pub(crate) async fn reward_monster_defeat(
                 .map(|item_id| (item_id, 0)),
         );
     }
+    // Special drops: refinery materials from bosses and strong monsters.
+    drops.extend(
+        crate::special_drops::roll(monster_level, crate::bosses::is_boss(monster.id()), next_roll, |item| {
+            state.shop_catalog().template(item).is_some()
+        })
+        .into_iter()
+        .map(|item_id| (item_id, 0)),
+    );
     crate::dis_city::defeated(state, character, monster).await?;
     // A boss: the server hears of its fall, and it drops more.
     drops.extend(
@@ -1640,10 +1689,46 @@ impl PacketProcess for MsgInteract {
             outcome.remaining_health = life_before;
             outcome.defeated = false;
         }
+        // Refinery: the target's Block, then the hero's Critical Strike.
+        let target_refinery = target.as_character().map(|target| target.refinery_stats()).unwrap_or_default();
+        if crate::combat::refine_hit(&mut outcome, life_before, &character.refinery_stats(), &target_refinery, true) {
+            if let Some(victim) = target.as_character() {
+                victim
+                    .owner()
+                    .send(MsgTalk::from_system(victim.id(), TalkChannel::TopLeft, "You blocked the blow!"))
+                    .await?;
+            }
+        }
         if let (Some(talisman), Some(monster)) = (state.talismans().get(character.id()), target.as_monster()) {
             crate::bounty::empower(&talisman, monster_name_of(monster), &mut outcome, life_before);
         }
         crate::lucky::empower(Some(character), target.as_character(), &mut outcome, life_before);
+        // A pure Warrior's Reflect: the blow comes back to whoever struck.
+        if let Some(victim) = target.as_character().filter(|victim| outcome.damage > 0 && crate::skills::reflects(victim)) {
+            let reflected = crate::combat::reflected_damage(outcome.damage, u32::from(character.entity().hp().current()));
+            outcome.damage = 0;
+            outcome.raw_damage = 0;
+            outcome.remaining_health = life_before;
+            outcome.defeated = false;
+            character.entity().apply_damage(reflected);
+            let location = character.entity().location();
+            let bounce = MsgInteract {
+                timestamp: self.timestamp,
+                character_id: victim.id(),
+                target_id: character.id(),
+                x: location.x,
+                y: location.y,
+                action: InteractAction::Attack as u32,
+                value: reflected,
+                reserved: [0; 12],
+            };
+            actor.send(bounce.clone()).await?;
+            actor.screen().send_message(bounce).await?;
+            actor.send(MsgUserInfo::from(character)).await?;
+            actor
+                .send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, format!("{} reflected your blow!", victim.entity().name())))
+                .await?;
+        }
         target_entity.apply_damage(outcome.damage);
         if let Some(monster) = target.as_monster() {
             crate::systems::monster_ai::provoke(monster.id(), character.id());

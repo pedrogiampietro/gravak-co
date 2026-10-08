@@ -211,7 +211,11 @@ impl PacketProcess for MsgBounty {
         let id = character.database_id();
         let pool = state.pool();
         let outcome: Result<Option<String>, Refusal> = match self.action {
-            OPEN => Ok(None),
+            OPEN => {
+                // The QUESTS panel opened: its quest log too.
+                super::send_quest_log(state, character).await?;
+                Ok(None)
+            },
             REROLL => match Difficulty::from_u32(self.param) {
                 Some(difficulty) => crate::bounty::reroll(pool, id, difficulty)
                     .await?

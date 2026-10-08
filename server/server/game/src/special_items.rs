@@ -90,6 +90,36 @@ pub async fn use_item(state: &State, actor: &Actor<ActorState>, character: &Char
         }
         return Ok(true);
     }
+    if let Some(material) = crate::refinery::definition(item.item_type) {
+        // A refinery material refines the worn item it fits (the weapons
+        // first), for a week.
+        let target = [4_u8, 5, 1, 2, 3, 6, 8]
+            .into_iter()
+            .filter_map(|slot| character.equipment_item(slot))
+            .find(|worn| crate::refinery::fits(material.subtype, worn.item_type));
+        let Some(target) = target else {
+            actor.send(notice("Wear an item this refinery fits first.")).await?;
+            return Ok(true);
+        };
+        if let crate::entities::RefineryOutcome::Applied { target, material, effect } =
+            character.apply_refinery(state.pool(), target.uid, item.uid).await?
+        {
+            actor.send(MsgItemInfo::remove_inventory_item(material)).await?;
+            actor.send(MsgItemInfo::equipment_item(target)).await?;
+            actor.send(crate::packets::MsgRefineryInfo::refinery(target.uid, effect)).await?;
+            character.refresh_equipment_resources(state.shop_catalog());
+            refresh(state, actor, character).await?;
+            actor.send(crate::packets::MsgUserInfo::from(character)).await?;
+            actor
+                .send(notice(&format!(
+                    "Refined: {} {} for 7 days.",
+                    crate::refinery::kind_name(effect.refinery_type),
+                    crate::refinery::effect_text(effect.refinery_type, effect.effect)
+                )))
+                .await?;
+        }
+        return Ok(true);
+    }
     if item.item_type == NINJA_AMULET {
         if consume(state, actor, character, item).await? {
             character.entity().set_mesh(other_body(character.entity().mesh()));

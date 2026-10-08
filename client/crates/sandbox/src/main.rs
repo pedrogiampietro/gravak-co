@@ -3402,6 +3402,12 @@ impl App {
             return;
         };
         let (packet, param) = match action {
+            bounty_board::BountyAction::ShowQuests(quests) => {
+                if let Some(view) = &mut self.bounty {
+                    view.showing_quests = quests;
+                }
+                return;
+            }
             bounty_board::BountyAction::Select(difficulty) => {
                 if let Some(view) = &mut self.bounty {
                     view.selected = Some(difficulty);
@@ -4146,8 +4152,13 @@ impl App {
                     self.quick_panel = Some(shop::QuickPanel::Vip);
                 }
             }
+            NetworkEvent::QuestLog(line) => {
+                let view = self.bounty.get_or_insert_with(Default::default);
+                view.apply_quest_line(line);
+            }
             NetworkEvent::Bounty(board) => {
                 let view = self.bounty.get_or_insert_with(Default::default);
+                view.has_board = true;
                 // A new list of the chosen difficulty: the tab is its own again.
                 if view.selected == Some(board.difficulty) {
                     view.selected = None;
