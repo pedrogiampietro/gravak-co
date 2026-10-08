@@ -1907,8 +1907,20 @@ impl Character {
 
     /// What a worn item looks like to others: its skin, or itself.
     pub fn worn_look(&self, slot: u8) -> u32 {
-        self.equipment_item(slot)
-            .map_or(0, |item| if item.skin != 0 { item.skin } else { item.item_type })
+        let Some(weapon) = self.equipment_item(slot) else {
+            return 0;
+        };
+        // The accessory of that hand (15 right, 16 left), on a weapon of
+        // its kind, comes first.
+        let accessory = match slot {
+            4 => self.equipment_item(15),
+            5 => self.equipment_item(16),
+            _ => None,
+        };
+        accessory
+            .and_then(|accessory| crate::shop::accessory_look(accessory.item_type))
+            .filter(|look| crate::systems::commands::skin_fits(weapon.item_type, *look))
+            .unwrap_or(if weapon.skin != 0 { weapon.skin } else { weapon.item_type })
     }
 
     /// Helmet, armor and shield dyes packed for the spawn packet.
@@ -3420,7 +3432,7 @@ impl Character {
         item_uid: u32,
         position: u8,
     ) -> Result<Option<(InventoryItem, Option<InventoryItem>)>, Error> {
-        if !(1..=9).contains(&position) {
+        if !(1..=9).contains(&position) && !matches!(position, 15 | 16) {
             return Ok(None);
         }
         let mut transaction = pool.begin().await?;

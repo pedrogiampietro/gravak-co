@@ -197,6 +197,9 @@ impl Character {
         let models = IdPathCatalog::parse(&assets.read("ini/3dobj.ini")?);
         let textures = IdPathCatalog::parse(&assets.read("ini/3dtexture.ini")?);
         let motions = IdPathCatalog::parse(&assets.read("ini/3dmotion.ini")?);
+        // A garment of ours worn from the neck down (`hide_head` in
+        // content/garments): its cut's headdress is left off.
+        let hide_head = entry.first("GravakHideHead").is_some_and(|value| value.trim() == "1");
         let model_id = entry.first("Mesh0").ok_or("Missing Mesh0")?.parse()?;
         let texture_id = dyed_texture(
             &textures,
@@ -347,7 +350,7 @@ impl Character {
                 }
             }
         }
-        Ok(Self {
+        let mut character = Self {
             parts,
             actions,
             intervals,
@@ -375,7 +378,58 @@ impl Character {
             rebirths: 0,
             kill_points: 0,
             spouse: String::new(),
-        })
+        };
+        if hide_head {
+            let texture = assets.image(&character.parts[0].texture)?;
+            character.parts[0] = character.without_headdress(&character.parts[0], &texture).0;
+        }
+        Ok(character)
+    }
+
+    /// `body` (the armor's part, worn by this body) without its headdress:
+    /// the triangles that stand wholly above the neck in the stand pose and
+    /// show little skin on `texture` (a crown, a hat), leaving the face,
+    /// which is skin. Also the texels of `texture` each triangle covers, the
+    /// headdress's first: what `garment_head` shows.
+    pub fn without_headdress(&self, body: &Part, texture: &image::RgbaImage) -> (Part, Vec<(u32, u32)>, Vec<(u32, u32)>) {
+        // The neck of each body in the stand pose (up is negative), a
+        // little under the nape of its hair.
+        let neck = [-75.0, -76.0, -81.0, -73.0][(self.body_id.clamp(1, 4) - 1) as usize];
+        let vertices = self.vertices(body, 0.0, Action::Idle, 0.0, None);
+        let (width, height) = texture.dimensions();
+        // The texels of a triangle, by a grid of samples over it.
+        let texels = |triangle: &[u16]| -> Vec<(u32, u32)> {
+            let uv = [0, 1, 2].map(|k| vertices[triangle[k] as usize].1.map(|c| c.rem_euclid(1.0)));
+            let mut out = Vec::new();
+            for i in 0..=24 {
+                for j in 0..=24 - i {
+                    let (a, b) = (i as f32 / 24.0, j as f32 / 24.0);
+                    let c = 1.0 - a - b;
+                    let u = a * uv[0][0] + b * uv[1][0] + c * uv[2][0];
+                    let v = a * uv[0][1] + b * uv[1][1] + c * uv[2][1];
+                    out.push((((u * width as f32) as u32).min(width - 1), ((v * height as f32) as u32).min(height - 1)));
+                }
+            }
+            out
+        };
+        let mut part = body.clone();
+        let (mut headdress, mut rest) = (Vec::new(), Vec::new());
+        for indices in [&mut part.mesh.opaque_indices, &mut part.mesh.alpha_indices] {
+            let mut kept = Vec::with_capacity(indices.len());
+            for triangle in indices.chunks_exact(3) {
+                let above = triangle.iter().all(|&k| vertices[k as usize].0[1] < neck);
+                let samples = texels(triangle);
+                let skin = samples.iter().filter(|&&(x, y)| is_skin(texture.get_pixel(x, y))).count();
+                if above && skin * 2 < samples.len() {
+                    headdress.extend(samples);
+                } else {
+                    rest.extend(samples);
+                    kept.extend_from_slice(triangle);
+                }
+            }
+            *indices = kept;
+        }
+        (part, headdress, rest)
     }
 
     /// Takes over what `previous` knew that a model rebuilt for new gear
@@ -857,6 +911,24 @@ impl NpcModel {
             })
             .collect()
     }
+}
+
+/// Whether a texel is skin (a face, hands): warm, half saturated and
+/// light, as `content/textures` paints around it.
+fn is_skin(texel: &image::Rgba<u8>) -> bool {
+    let [r, g, b] = [texel[0], texel[1], texel[2]].map(|c| f32::from(c) / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    if max <= 0.0 || max == min {
+        return false;
+    }
+    let hue = if max == r {
+        ((g - b) / (max - min) / 6.0).rem_euclid(1.0)
+    } else if max == g {
+        ((b - r) / (max - min) + 2.0) / 6.0
+    } else {
+        ((r - g) / (max - min) + 4.0) / 6.0
+    };
+    (0.02..=0.12).contains(&hue) && (0.12..=0.62).contains(&((max - min) / max)) && max >= 0.42
 }
 
 /// Folds a Tinter dye into an item id for the model loader.

@@ -1,0 +1,13 @@
+# The Seraph Bow: a long recurve bow of ice blue and silver with feather
+# blades for wings and a glowing gem, made by content/models/make_seraph_bow.py
+# (model and texture) on the Phoenix Bow's bones (500279), with the Phoenix
+# Bow's own Super glow about it turned to ice, and ice blue sparkles
+# twinkling over it.
+
+[[accessory]]
+id = 370001
+model = 500279
+texture = "textures/370001.png"
+aura_tint = "ice"
+mesh = "models/370001.obj"
+sparkles = 28

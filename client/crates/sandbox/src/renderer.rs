@@ -77,8 +77,9 @@ pub struct SkillEffectInstance {
     pub trail: bool,
 }
 
-/// A slain monster's soul (the original's `soul` effect): it rises over the
-/// body, then flies to the one who slew it.
+/// A slain monster's soul: it rises over the body, then flies to the one
+/// who slew it, a comet of mint light bending to one side, its trail long
+/// behind it (`push_soul`).
 #[derive(Debug, Clone, Copy)]
 struct Soul {
     /// Where the monster fell, in cells.
@@ -117,11 +118,14 @@ const ARROW_SCALE: f32 = 0.6;
 /// How fast a skill's projectile (`MagicType` fly effect) crosses the map.
 const SPELL_CELLS_PER_SECOND: f32 = 14.0;
 
-/// How long a soul lingers over the body, then how long it flies.
-const SOUL_RISE_SECONDS: f32 = 1.0;
-const SOUL_FLIGHT_SECONDS: f32 = 1.6;
-/// How much larger than the world a soul flies to its slayer.
-const SOUL_SCALE: f32 = 1.5;
+/// How long a soul rises over the body, then how long it flies (faster
+/// than the original's 1 and 1.6: ours streak in).
+const SOUL_RISE_SECONDS: f32 = 0.5;
+const SOUL_FLIGHT_SECONDS: f32 = 1.3;
+/// How much of a soul's way its trail covers behind it.
+const SOUL_TRAIL: f32 = 0.5;
+/// The soul's light: mint, white at its heart.
+const SOUL_TINT: [f32; 3] = [0.45, 1.0, 0.68];
 
 /// The original `born` effect (`3DEffect.ini`) over a respawning monster:
 /// 151 frames of 40 ms. The monster itself fades in over the first moments.
@@ -765,6 +769,10 @@ pub struct Renderer {
     pub minimap_shown: bool,
     /// How far Shift Screen has moved the view off the hero.
     pub camera_shift: [f32; 2],
+    /// How large the world is drawn (the mouse wheel, `ZOOM_RANGE`): at 2
+    /// the screen shows half as much of it, twice as large; the interface
+    /// keeps its size.
+    pub zoom: f32,
     hud_signature: Option<u64>,
     shop_signature: Option<u64>,
     last_shop_base_key: Option<String>,
@@ -1045,6 +1053,7 @@ impl Renderer {
             minimap_upload_index: 0,
             minimap_shown: true,
             camera_shift: [0.0, 0.0],
+            zoom: 1.0,
             hud_signature: None,
             shop_signature: None,
             last_shop_base_key: None,
@@ -1210,7 +1219,9 @@ impl Renderer {
             // Legendary and Mythic glow gold or crimson: a Super weapon's own
             // glow turns that colour (never a second glow over it); another
             // weapon takes its kind's top Super glow in that colour.
-            let tint = crate::magic::rarity_tint(rarity[usize::from(left)]);
+            // An accessory's aura keeps the colour it was given.
+            let tint = crate::shop::accessory_aura_tint(assets, weapon)
+                .or_else(|| crate::magic::rarity_tint(rarity[usize::from(left)]));
             let glow = match self.weapon_effect(assets, "999", weapon) {
                 Some(own) => Some(own),
                 None if tint.is_some() => self.kind_glow(assets, weapon),
@@ -1223,6 +1234,117 @@ impl Renderer {
             }
             self.effect_attachment = None;
             self.effect_yaw = None;
+            let sparkles = crate::shop::accessory_sparkles(assets, weapon);
+            if !sparkles.is_empty() {
+                self.push_sparkles(sparkles, matrix, tint, origin, facing, time, sort_depth, viewport, draws);
+            }
+        }
+    }
+
+    /// A soul `elapsed` seconds after its monster fell at `from` (on screen):
+    /// first its head, a star of its light, rising over the body; then
+    /// flying along `path` (0 where it rose to, 1 its slayer), faster and
+    /// faster, its trail a ribbon over the last of its way, broad and bright
+    /// at its head and thinning to nothing.
+    fn push_soul(
+        &mut self,
+        path: impl Fn(f32) -> [f32; 2],
+        from: [f32; 2],
+        elapsed: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        let trail = format!("@soul-trail{}", crate::magic::ADDITIVE_SUFFIX);
+        if !self.textures.contains_key(&trail) {
+            self.upload(&trail, soul_trail_image(SOUL_TINT));
+        }
+        let head = format!("@soul-head{}", crate::magic::ADDITIVE_SUFFIX);
+        if !self.textures.contains_key(&head) {
+            self.upload(&head, sparkle_image(SOUL_TINT));
+        }
+        // It comes in and goes out over a tenth of a second or so.
+        let fade = (elapsed / 0.1).min(1.0) * ((SOUL_RISE_SECONDS + SOUL_FLIGHT_SECONDS - elapsed) / 0.15).clamp(0.0, 1.0);
+        let flight = ((elapsed - SOUL_RISE_SECONDS) / SOUL_FLIGHT_SECONDS).clamp(0.0, 1.0);
+        let head_at = if flight <= 0.0 {
+            let rise = (elapsed / SOUL_RISE_SECONDS).clamp(0.0, 1.0);
+            [from[0], from[1] - 40.0 - rise * (2.0 - rise) * 30.0]
+        } else {
+            path(flight * flight)
+        };
+        let size = 26.0 + 4.0 * (elapsed * 9.0).sin();
+        let vertices = quad_with_alpha([head_at[0] - size / 2.0, head_at[1] - size / 2.0], [size, size], viewport, fade);
+        draws.push(Draw { texture: head, vertices, depth_test: false, sort_depth });
+        if flight <= 0.0 {
+            return;
+        }
+        const STEPS: usize = 28;
+        let way = flight * flight;
+        let start = (way - SOUL_TRAIL).max(0.0);
+        let points: Vec<[f32; 2]> = (0..=STEPS).map(|k| path(start + (way - start) * k as f32 / STEPS as f32)).collect();
+        // Each point's two edges and light: 0 at the tail, full at the head.
+        let edge = |k: usize| -> ([f32; 2], [f32; 2], f32) {
+            let (a, b) = (points[k.saturating_sub(1)], points[(k + 1).min(STEPS)]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let length = dx.hypot(dy).max(0.001);
+            let along = k as f32 / STEPS as f32;
+            let half = 1.0 + 7.0 * along;
+            let normal = [-dy / length * half, dx / length * half];
+            let p = points[k];
+            ([p[0] + normal[0], p[1] + normal[1]], [p[0] - normal[0], p[1] - normal[1]], along * along * fade)
+        };
+        let corner = |p: [f32; 2], v: f32, alpha: f32| Vertex { position: clip(p, 0.5, viewport), uv: [0.5, v], alpha };
+        let mut vertices = Vec::with_capacity(STEPS * 6);
+        for k in 0..STEPS {
+            let ((l0, r0, a0), (l1, r1, a1)) = (edge(k), edge(k + 1));
+            vertices.extend([
+                corner(l0, 0.0, a0),
+                corner(r0, 1.0, a0),
+                corner(r1, 1.0, a1),
+                corner(l0, 0.0, a0),
+                corner(r1, 1.0, a1),
+                corner(l1, 0.0, a1),
+            ]);
+        }
+        draws.push(Draw { texture: trail, vertices, depth_test: false, sort_depth });
+    }
+
+    /// An accessory's sparkles: little stars over the weapon (`points`, in
+    /// its rest pose, carried by the hand's `matrix` as its aura is), each
+    /// twinkling in its own time, white at the heart and `tint` about it.
+    #[allow(clippy::too_many_arguments)]
+    fn push_sparkles(
+        &mut self,
+        points: &[[f32; 3]],
+        matrix: Matrix4,
+        tint: Option<&'static str>,
+        origin: [f32; 2],
+        facing: f32,
+        time: f32,
+        sort_depth: f32,
+        viewport: [f32; 2],
+        draws: &mut Vec<Draw>,
+    ) {
+        let tint = tint.unwrap_or("ice");
+        let key = format!("@sparkle-{tint}{}", crate::magic::ADDITIVE_SUFFIX);
+        if !self.textures.contains_key(&key) {
+            self.upload(&key, sparkle_image(crate::magic::tint(tint).unwrap_or([0.5, 0.8, 1.0])));
+        }
+        let (sin, cos) = (-std::f32::consts::FRAC_PI_4).sin_cos();
+        let scale = self.effect_scale;
+        for (index, point) in points.iter().enumerate() {
+            // Each its own pace and moment, from its place in the list.
+            let seed = (index as f32 * 12.9898).sin() * 43_758.547;
+            let seed = seed - seed.floor();
+            let light = (time * (2.0 + seed * 2.5) + seed * std::f32::consts::TAU).sin().max(0.0).powi(2);
+            if light < 0.02 {
+                continue;
+            }
+            let p = turned(matrix.transform_point(sandbox_data::c3::Vector3 { x: point[0], y: point[1], z: point[2] }), Some(facing));
+            let at = [origin[0] + p.x * scale, origin[1] + (p.y * sin + p.z * cos) * scale];
+            let size = 6.0 + 9.0 * light;
+            let vertices = quad_with_alpha([at[0] - size / 2.0, at[1] - size / 2.0], [size, size], viewport, light);
+            draws.push(Draw { texture: key.clone(), vertices, depth_test: false, sort_depth });
         }
     }
 
@@ -2353,10 +2475,29 @@ impl Renderer {
     /// picture, only black; the hero then walks off the middle.
     pub fn camera(&self, map: &Map, player: &Player) -> [f32; 2] {
         let p = map.project(player.position);
-        let view = [self.config.width as f32, self.config.height as f32];
+        let view = self.world_viewport();
         let wanted = [p[0] - view[0] * 0.5 + self.camera_shift[0], p[1] - view[1] * 0.5 + self.camera_shift[1]];
         clamp_camera(wanted, map.extent, view)
     }
+    /// The part of the world the screen shows, in map pixels: the window
+    /// divided by the zoom.
+    pub fn world_viewport(&self) -> [f32; 2] {
+        [self.config.width as f32 / self.zoom, self.config.height as f32 / self.zoom]
+    }
+
+    /// A point of the window (the cursor) where the world is drawn: in map
+    /// pixels from the camera.
+    pub fn world_point(&self, screen: [f32; 2]) -> [f32; 2] {
+        [screen[0] / self.zoom, screen[1] / self.zoom]
+    }
+
+    /// Zooms the world in (`steps` above 0) or out by tenths, within
+    /// `ZOOM_RANGE`.
+    pub fn zoom_by(&mut self, steps: f32) {
+        let zoom = ((self.zoom + steps * 0.1) * 10.0).round() / 10.0;
+        self.zoom = zoom.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+    }
+
     /// The revive button under `position`: `Some(true)` revives here.
     pub fn revive_at(&self, position: [f32; 2]) -> Option<bool> {
         self.revive_rects
@@ -2878,7 +3019,11 @@ impl Renderer {
         }
         let asset_phase_finished = Instant::now();
         let camera = self.camera(map, player);
-        let viewport = [self.config.width as f32, self.config.height as f32];
+        // The world is drawn over the window as `zoom` makes it: its
+        // viewport is the part of the map shown; the interface's is the
+        // window (`screen`, from the minimap on).
+        let screen = [self.config.width as f32, self.config.height as f32];
+        let viewport = self.world_viewport();
         self.ensure_static_map_cache(map);
         let mut draws = Vec::with_capacity(map.sprites.len() / 3 + remote_actors.len() * 2 + 64);
 
@@ -3857,27 +4002,17 @@ impl Renderer {
         self.souls
             .retain(|soul| time - soul.started < SOUL_RISE_SECONDS + SOUL_FLIGHT_SECONDS);
         for soul in self.souls.clone() {
-            let elapsed = time - soul.started;
             let killer = remote_actors
                 .get(&soul.killer_id)
                 .map(|actor| actor.position)
                 .unwrap_or(player.position);
-            let flight = ((elapsed - SOUL_RISE_SECONDS) / SOUL_FLIGHT_SECONDS).clamp(0.0, 1.0);
-            let eased = flight * flight * (3.0 - 2.0 * flight);
-            let from = map.project(soul.from);
-            let to = map.project(killer);
-            let rise = (elapsed / SOUL_RISE_SECONDS).clamp(0.0, 1.0) * 30.0;
-            let arc = (eased * std::f32::consts::PI).sin() * 30.0;
-            let origin = [
-                from[0] + (to[0] - from[0]) * eased - camera[0],
-                from[1] + (to[1] - from[1]) * eased - camera[1] - 40.0 - rise * (1.0 - eased) - arc,
-            ];
-            if world_point_visible(origin, viewport, 128.0) {
-                let depth = soul.from[0] + soul.from[1] + 0.07;
-                let scale = self.effect_scale;
-                self.effect_scale = scale * SOUL_SCALE;
-                self.push_looping_effect(assets, "soul", origin, elapsed, depth, viewport, &mut draws);
-                self.effect_scale = scale;
+            let (from, to) = (map.project(soul.from), map.project(killer));
+            let from = [from[0] - camera[0], from[1] - camera[1]];
+            let to = [to[0] - camera[0], to[1] - camera[1]];
+            let elapsed = time - soul.started;
+            let path = |way: f32| soul_path(soul, from, to, way);
+            if world_point_visible(from, viewport, 512.0) || world_point_visible(to, viewport, 512.0) {
+                self.push_soul(path, from, elapsed, soul.from[0] + soul.from[1] + 0.07, viewport, &mut draws);
             }
         }
         // Arrows from the bows to their targets, with the effect some bows
@@ -4085,6 +4220,7 @@ impl Renderer {
             let beside = insignia_beside_name(origin, &character.name);
             self.push_looping_effect(assets, effect, beside, time, WORLD_OVERLAY_SORT, viewport, &mut draws);
         }
+        let viewport = screen;
         if minimap_visible && self.minimap_map != Some(map.id) {
             self.minimap_map = Some(map.id);
             self.minimap = None;
@@ -6563,6 +6699,50 @@ fn show_feedback(status: &str) -> bool {
 
 /// A point of an effect turned by its wielder's facing, as the character's
 /// own vertices are (`Character::project`).
+/// Where a soul's flight is `way` along (0 over the monster slain at `from`,
+/// where it rose to, 1 over its slayer at `to`; both on screen): a curve to
+/// one side, which side and how far its own (by where it fell), and a
+/// little up, 40 pixels over the ground at its end.
+fn soul_path(soul: Soul, from: [f32; 2], to: [f32; 2], way: f32) -> [f32; 2] {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let length = dx.hypot(dy).max(1.0);
+    let seed = ((soul.from[0] * 12.9898 + soul.from[1] * 78.233).sin() * 43_758.547).rem_euclid(1.0);
+    let bend = if seed >= 0.5 { 1.0 } else { -1.0 } * (0.12 + 0.22 * seed) * length.min(400.0);
+    let swing = (way * std::f32::consts::PI).sin();
+    [
+        from[0] + dx * way - dy / length * bend * swing,
+        from[1] + dy * way + dx / length * bend * swing - 40.0 - 30.0 * (1.0 - way) - swing * 30.0,
+    ]
+}
+
+/// A soul's trail across its width: white at the middle, its tint toward
+/// the edges, fading out to them.
+fn soul_trail_image(tint: [f32; 3]) -> image::RgbaImage {
+    image::RgbaImage::from_fn(4, 32, |_, y| {
+        let across = ((y as f32 + 0.5) / 32.0 * 2.0 - 1.0).abs();
+        let light = (1.0 - across).max(0.0).powf(1.5);
+        let heart = (1.0 - across * 3.0).max(0.0);
+        let colour = |channel: usize| ((tint[channel] * (1.0 - heart) + heart) * light * 255.0) as u8;
+        image::Rgba([colour(0), colour(1), colour(2), (light * 255.0) as u8])
+    })
+}
+
+/// A sparkle: a four pointed star with a soft glow, white at its heart and
+/// `tint` (per channel) toward its edge, for drawing additively.
+fn sparkle_image(tint: [f32; 3]) -> image::RgbaImage {
+    const SIZE: u32 = 32;
+    image::RgbaImage::from_fn(SIZE, SIZE, |x, y| {
+        let (dx, dy) = ((x as f32 + 0.5) / SIZE as f32 * 2.0 - 1.0, (y as f32 + 0.5) / SIZE as f32 * 2.0 - 1.0);
+        let r = dx.hypot(dy);
+        let rays = (1.0 - (dx.abs() * dy.abs()).sqrt() * 9.0).max(0.0) * (1.0 - r).max(0.0);
+        let glow = (1.0 - r).max(0.0).powi(3) * 0.8;
+        let light = (rays + glow).min(1.0);
+        let heart = (1.0 - r * 2.5).max(0.0);
+        let colour = |channel: usize| ((tint[channel] * (1.0 - heart) + heart) * light * 255.0) as u8;
+        image::Rgba([colour(0), colour(1), colour(2), (light * 255.0) as u8])
+    })
+}
+
 fn turned(p: sandbox_data::c3::Vector3, yaw: Option<f32>) -> sandbox_data::c3::Vector3 {
     let Some(yaw) = yaw else {
         return p;
@@ -6581,6 +6761,11 @@ pub(crate) const REMOTE_FADING: u16 = 1160;
 
 /// `wanted` kept so the view stays on the map; a map smaller than the view
 /// sits in its middle.
+/// How far the world zooms out and in: a tenth of the way per notch of the
+/// wheel. Past 0.8 the screen would show more than the server tells of
+/// (`VIEW_DISTANCE`, 34 cells about the hero) on a large window.
+pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.8..=2.0;
+
 fn clamp_camera(wanted: [f32; 2], extent: [f32; 2], view: [f32; 2]) -> [f32; 2] {
     [0, 1].map(|axis| {
         let room = extent[axis] - view[axis];

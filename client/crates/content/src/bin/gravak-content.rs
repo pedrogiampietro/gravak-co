@@ -17,6 +17,9 @@ Comandos:
   item <id>             mostra todas as colunas de um item
   decrypt <in> <out>    itemtype.dat -> texto
   encrypt <in> <out>    texto -> itemtype.dat
+  weapon-obj <arma> <saída.obj>
+                        o modelo de uma arma original (ex.: 500279) em .obj,
+                        no espaço em que se faz o modelo de um acessório
 
 Opções:
   --assets <pasta>      instalação 5065 (padrão: GRAVAK_ASSETS ou R:\\5065)
@@ -68,12 +71,14 @@ fn run() -> gravak_content::Result<()> {
             }
             let report = build(&mut installation, &content)?;
             println!(
-                "{} itens novos, {} alterados, {} ícones, {} objetos em {} mapas -> {}",
+                "{} itens novos, {} alterados, {} ícones, {} objetos em {} mapas, {} garments, {} acessórios -> {}",
                 report.added,
                 report.changed,
                 report.icons,
                 report.objects,
                 report.maps,
+                report.garments,
+                report.accessories,
                 report.output.display()
             );
         }
@@ -129,6 +134,16 @@ fn run() -> gravak_content::Result<()> {
                 };
                 println!("{mark}{id:>8}  {name}");
             }
+        }
+        "weapon-obj" => {
+            let (Some(weapon), Some(out)) = (positional.get(1).and_then(|id| id.parse::<u32>().ok()), positional.get(2)) else {
+                return Err("weapon-obj <arma> <saída.obj>".into());
+            };
+            let mut installation = Installation::open(&assets)?;
+            let path = gravak_content::accessories::model_path(&mut installation, weapon)?;
+            let obj = gravak_content::c3mesh::rest_obj(&installation.read(&path)?)?;
+            std::fs::write(out, obj)?;
+            println!("{path} -> {out}");
         }
         "item" => {
             let id = positional

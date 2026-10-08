@@ -453,6 +453,86 @@ mod tests {
         }
         sheet.save(format!("{dir}/garments.png")).expect("sheet");
     }
+
+    /// `GARMENT_HEAD=dir GARMENT_IDS=181335 cargo test -p conquer-sandbox
+    /// garment_head`: each body in each garment without its headdress
+    /// (`Character::without_headdress`, what `hide_head` does), from the
+    /// front and the back, `cut-<id>-<body>.png`; and `head-<id>-<body>.png`,
+    /// the texels of the headdress (white), of the rest (grey), and where
+    /// they meet (red).
+    #[test]
+    fn garment_head() {
+        let Ok(dir) = std::env::var("GARMENT_HEAD") else { return };
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let ids: Vec<u32> =
+            std::env::var("GARMENT_IDS").unwrap_or_default().split(',').filter_map(|id| id.trim().parse().ok()).collect();
+        for id in ids {
+            for body in [1, 2, 3, 4] {
+                let Some(mut hero) = Hero::load_armor(&mut assets, body, id) else { continue };
+                let texture = hero.textures[&hero.character.parts[0].texture].clone();
+                let (part, headdress, rest) = hero.character.without_headdress(&hero.character.parts[0], &texture);
+                let cut = (hero.character.parts[0].mesh.opaque_indices.len() + hero.character.parts[0].mesh.alpha_indices.len()
+                    - part.mesh.opaque_indices.len()
+                    - part.mesh.alpha_indices.len())
+                    / 3;
+                hero.character.parts[0] = part;
+                let mut mask = RgbaImage::from_pixel(texture.width(), texture.height(), Rgba([0, 0, 0, 255]));
+                for (x, y) in rest {
+                    mask.put_pixel(x, y, Rgba([90, 90, 90, 255]));
+                }
+                let mut shared = 0;
+                for (x, y) in headdress {
+                    let grey = mask.get_pixel(x, y)[1] == 90;
+                    shared += usize::from(grey);
+                    mask.put_pixel(x, y, if grey { Rgba([255, 0, 0, 255]) } else { Rgba([255, 255, 255, 255]) });
+                }
+                println!("{id} body {body}: {cut} triangles cut, {shared} samples shared");
+                mask.save(format!("{dir}/head-{id}-{body}.png")).expect("mask");
+                let cell = [160u32, 220u32];
+                let mut sheet = RgbaImage::from_pixel(cell[0] * 2, cell[1], Rgba([40, 60, 45, 255]));
+                for (column, facing) in [0.6, 0.6 + std::f32::consts::PI].into_iter().enumerate() {
+                    image::imageops::overlay(&mut sheet, &hero.render(cell, 190.0, 0.0, facing), i64::from(column as u32 * cell[0]), 0);
+                }
+                sheet.save(format!("{dir}/cut-{id}-{body}.png")).expect("sheet");
+            }
+        }
+    }
+
+    /// `WEAPON_PREVIEW=dir WEAPON_IDS=500229,500909 cargo test -p
+    /// conquer-sandbox weapon_preview`: each weapon held by a man in the
+    /// archer's coat, from the front, the side and the back, in one sheet;
+    /// and each one's texture.
+    #[test]
+    fn weapon_preview() {
+        let Ok(dir) = std::env::var("WEAPON_PREVIEW") else { return };
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let ids: Vec<u32> = std::env::var("WEAPON_IDS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|id| id.trim().parse().ok())
+            .collect();
+        let cell: [u32; 2] = std::env::var("WEAPON_CELL").ok().and_then(|size| size.parse().ok()).map_or([200, 240], |height: u32| [height * 5 / 6, height]);
+        let mut sheet = RgbaImage::from_pixel(cell[0] * 3, cell[1] * ids.len().max(1) as u32, Rgba([40, 60, 45, 255]));
+        for (row, id) in ids.iter().enumerate() {
+            let Ok(character) = Character::load_remote(&mut assets, 3, STARTER_COAT, 0, HAIR, *id, 0, String::new(), 1) else {
+                continue;
+            };
+            let textures: HashMap<String, RgbaImage> = character
+                .parts
+                .iter()
+                .filter_map(|part| Some((part.texture.clone(), assets.image(&part.texture).ok()?)))
+                .collect();
+            let hero = Hero { character, textures };
+            for (column, facing) in [0.6, 0.6 + std::f32::consts::FRAC_PI_2, 0.6 + std::f32::consts::PI].into_iter().enumerate() {
+                let image = hero.render(cell, cell[1] as f32 * 0.71, 0.0, facing);
+                image::imageops::overlay(&mut sheet, &image, i64::from(column as u32 * cell[0]), i64::from(row as u32 * cell[1]));
+            }
+            if let Some((_, texture)) = hero.part_textures().into_iter().find(|(path, _)| path.contains("weapon") || path.contains("gravak")) {
+                texture.save(format!("{dir}/weapon-{id}-texture.png")).expect("texture");
+            }
+        }
+        sheet.save(format!("{dir}/weapons.png")).expect("sheet");
+    }
 }
 
 #[cfg(test)]

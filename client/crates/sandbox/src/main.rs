@@ -751,6 +751,13 @@ impl ApplicationHandler for App {
                 if amount != 0.0 && self.scroll_warehouse_page(amount < 0.0) {
                     return;
                 }
+                // Over the world, the wheel zooms it.
+                if amount != 0.0
+                    && !self.cursor_over_interface()
+                    && let Some(renderer) = self.renderer.as_mut()
+                {
+                    renderer.zoom_by(amount.signum());
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Focused(false) => {
@@ -2031,20 +2038,10 @@ impl App {
             .find(|item| item.position == 1)
             .map(|item| character::dyed(item.item_type, item.color))
             .unwrap_or(0);
-        // A weapon in a skin wears the skin's look.
-        let look = |item: &network::OwnedItem| if item.skin != 0 { item.skin } else { item.item_type };
-        let right_weapon = self
-            .equipment
-            .iter()
-            .find(|item| item.position == 4)
-            .map(look)
-            .unwrap_or(0);
-        let left_weapon = self
-            .equipment
-            .iter()
-            .find(|item| item.position == 5)
-            .map(|item| character::dyed(look(item), item.color))
-            .unwrap_or(0);
+        // A weapon wears its hand's accessory, or its skin.
+        let right_weapon = shop::worn_look(&mut self.assets, &self.equipment, 4);
+        let left_color = self.equipment.iter().find(|item| item.position == 5).map_or(0, |item| item.color);
+        let left_weapon = character::dyed(shop::worn_look(&mut self.assets, &self.equipment, 5), left_color);
         debug_log::write(format_args!(
             "refresh world model: helmet={} armor_or_garment={} right_weapon={} left_weapon={} equipment_count={}",
             helmet,
@@ -3522,8 +3519,9 @@ impl App {
     /// The action of the Gravak object under the cursor (the Reward
     /// Shrine's `daily_rewards`), by its image's box on screen.
     fn gravak_action_at_cursor(&mut self) -> Option<String> {
-        let camera = self.renderer.as_ref()?.camera(&self.map, &self.player);
-        let point = [self.cursor[0] + camera[0], self.cursor[1] + camera[1]];
+        let renderer = self.renderer.as_ref()?;
+        let (camera, cursor) = (renderer.camera(&self.map, &self.player), renderer.world_point(self.cursor));
+        let point = [cursor[0] + camera[0], cursor[1] + camera[1]];
         let actions = self.map.actions.clone();
         actions.into_iter().find_map(|object| {
             let size = match self.gravak_object_sizes.get(&object.image) {
@@ -4663,10 +4661,10 @@ impl App {
         self.selected_inventory_uid = None;
         self.selected_warehouse_uid = None;
         if let Some(renderer) = &self.renderer {
-            let camera = renderer.camera(&self.map, &self.player);
+            let (camera, cursor) = (renderer.camera(&self.map, &self.player), renderer.world_point(self.cursor));
             let target = self
                 .map
-                .unproject([self.cursor[0] + camera[0], self.cursor[1] + camera[1]])
+                .unproject([cursor[0] + camera[0], cursor[1] + camera[1]])
                 .map(|v| v.round() as i32);
             if self.modifiers.control_key() {
                 self.pending_attack = None;
@@ -6273,15 +6271,16 @@ impl App {
     fn actor_at_cursor(&self) -> Option<(u32, bool, u16, String)> {
         let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera(&self.map, &self.player);
+        let cursor = renderer.world_point(self.cursor);
         self.remote_actors
             .values()
             .filter_map(|actor| {
                 let projected = self.map.project(actor.position);
                 let origin = [projected[0] - camera[0], projected[1] - camera[1]];
                 let height = if actor.npc { 96.0 } else { 160.0 };
-                let within = (self.cursor[0] - origin[0]).abs() <= 48.0
-                    && self.cursor[1] >= origin[1] - height
-                    && self.cursor[1] <= origin[1] + 24.0;
+                let within = (cursor[0] - origin[0]).abs() <= 48.0
+                    && cursor[1] >= origin[1] - height
+                    && cursor[1] <= origin[1] + 24.0;
                 within.then_some((actor.position[0] + actor.position[1], actor))
             })
             .min_by(|(left, _), (right, _)| left.total_cmp(right))
@@ -6487,16 +6486,17 @@ impl App {
     fn ground_loot_at_cursor(&self) -> Option<(u32, u32, u16, u16)> {
         let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera(&self.map, &self.player);
+        let cursor = renderer.world_point(self.cursor);
         self.ground_loot
             .iter()
             .filter_map(|(uid, position, item_id, _)| {
                 let projected = self.map.project(*position);
                 let origin = [projected[0] - camera[0], projected[1] - camera[1]];
-                let within = (self.cursor[0] - origin[0]).abs() <= 32.0
-                    && self.cursor[1] >= origin[1] - 28.0
-                    && self.cursor[1] <= origin[1] + 30.0;
+                let within = (cursor[0] - origin[0]).abs() <= 32.0
+                    && cursor[1] >= origin[1] - 28.0
+                    && cursor[1] <= origin[1] + 30.0;
                 within.then_some((
-                    (self.cursor[0] - origin[0]).powi(2) + (self.cursor[1] - origin[1]).powi(2),
+                    (cursor[0] - origin[0]).powi(2) + (cursor[1] - origin[1]).powi(2),
                     *uid,
                     *item_id,
                     position[0].round().clamp(0.0, f32::from(u16::MAX)) as u16,
@@ -6690,17 +6690,15 @@ impl App {
     }
 
     /// The bow and arrows `attacker_id` holds, when it holds both.
-    fn bow_and_arrows(&self, attacker_id: u32) -> Option<(u32, u32)> {
+    fn bow_and_arrows(&mut self, attacker_id: u32) -> Option<(u32, u32)> {
         let (bow, arrows) = if self.network_character_id == Some(attacker_id) {
-            // What the hero shows: a bow in a skin shoots the skin's arrows,
-            // as others see them (the original keys them on the look).
-            let held = |position: u8| {
-                self.equipment
-                    .iter()
-                    .find(|item| item.position == position)
-                    .map_or(0, |item| if item.skin != 0 { item.skin } else { item.item_type })
-            };
-            (held(4), held(5))
+            // What the hero shows: a bow in an accessory or a skin shoots
+            // their arrows, as others see them (the original keys them on
+            // the look).
+            (
+                shop::worn_look(&mut self.assets, &self.equipment, 4),
+                shop::worn_look(&mut self.assets, &self.equipment, 5),
+            )
         } else {
             let actor = self.remote_actors.get(&attacker_id)?;
             (actor.right_weapon, actor.left_weapon % 10_000_000)
@@ -7012,10 +7010,10 @@ impl App {
         if self.skill_cooldown_until.get(&skill.id).is_some_and(|until| now < *until) {
             return;
         }
-        let camera = renderer.camera(&self.map, &self.player);
+        let (camera, cursor) = (renderer.camera(&self.map, &self.player), renderer.world_point(self.cursor));
         let cell = self
             .map
-            .unproject([self.cursor[0] + camera[0], self.cursor[1] + camera[1]])
+            .unproject([cursor[0] + camera[0], cursor[1] + camera[1]])
             .map(|value| value.round().max(0.0) as i32);
         let _ = (network, character_id);
         if self.in_air() {
@@ -7129,15 +7127,16 @@ impl App {
     fn player_at_cursor(&self) -> Option<u32> {
         let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera(&self.map, &self.player);
+        let cursor = renderer.world_point(self.cursor);
         self.remote_actors
             .values()
             .filter(|actor| !actor.npc && !(400001..=499999).contains(&actor.id))
             .filter(|actor| {
                 let projected = self.map.project(actor.position);
                 let origin = [projected[0] - camera[0], projected[1] - camera[1]];
-                (self.cursor[0] - origin[0]).abs() <= 32.0
-                    && self.cursor[1] >= origin[1] - 120.0
-                    && self.cursor[1] <= origin[1] + 24.0
+                (cursor[0] - origin[0]).abs() <= 32.0
+                    && cursor[1] >= origin[1] - 120.0
+                    && cursor[1] <= origin[1] + 24.0
             })
             .min_by(|left, right| {
                 (left.position[0] + left.position[1])
@@ -7149,6 +7148,7 @@ impl App {
     fn monster_at_cursor(&self) -> Option<u32> {
         let renderer = self.renderer.as_ref()?;
         let camera = renderer.camera(&self.map, &self.player);
+        let cursor = renderer.world_point(self.cursor);
         self.remote_actors
             .values()
             .filter(|actor| {
@@ -7159,9 +7159,9 @@ impl App {
             .filter(|actor| {
                 let projected = self.map.project(actor.position);
                 let origin = [projected[0] - camera[0], projected[1] - camera[1]];
-                (self.cursor[0] - origin[0]).abs() <= 48.0
-                    && self.cursor[1] >= origin[1] - 160.0
-                    && self.cursor[1] <= origin[1] + 24.0
+                (cursor[0] - origin[0]).abs() <= 48.0
+                    && cursor[1] >= origin[1] - 160.0
+                    && cursor[1] <= origin[1] + 24.0
             })
             .min_by(|left, right| {
                 (left.position[0] + left.position[1])
@@ -8496,6 +8496,13 @@ impl App {
             && !self.equipment.iter().any(|owned| owned.position == 5)
         {
             5
+        } else if item.item_type / 1_000 == 360
+            && self.equipment.iter().any(|owned| owned.position == 15)
+            && !self.equipment.iter().any(|owned| owned.position == 16)
+        {
+            // A one-handed weapon's accessory, as its weapon: the left
+            // when the right is taken.
+            16
         } else {
             primary_slot
         };
@@ -9600,6 +9607,17 @@ impl App {
                 format!("online: withdrawing {amount} silver")
             };
         }
+    }
+
+    /// Whether the cursor is over the main bar or a window the wheel should
+    /// not zoom the world under: the bag and the character window.
+    fn cursor_over_interface(&self) -> bool {
+        let Some(viewport) = self.viewport() else {
+            return true;
+        };
+        crate::hud::contains(viewport, self.cursor)
+            || (self.inventory_open && shop::inventory_panel_at(viewport, self.cursor))
+            || (self.status_open && shop::status_panel_at(viewport, self.cursor))
     }
 
     fn scroll_warehouse_page(&mut self, down: bool) -> bool {

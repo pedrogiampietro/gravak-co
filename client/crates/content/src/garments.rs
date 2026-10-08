@@ -11,10 +11,12 @@
 //!     "textures/182995-3.png",
 //!     "textures/182995-4.png",
 //! ]
+//! hide_head = true               # optional: the cut's headdress left off
+//!                                # (worn from the neck down)
 //! ```
 //!
 //! The build writes `ini/armor.ini` and `ini/3dtexture.ini` (the originals
-//! with our sections and textures after them) and the textures as DDS
+//! with our sections and textures after them, the latter in `build`) and the textures as DDS
 //! (`c3/texture/gravak/<id>-<body>.dds`); the client reads them before the
 //! installation.
 
@@ -35,6 +37,11 @@ pub struct Garment {
     pub look: u32,
     /// Relative to the content directory, one per body of [`BODIES`].
     pub textures: Vec<String>,
+    /// Leave off the cut's headdress (a crown, a hat): the client drops the
+    /// triangles above the neck that are not the face
+    /// (`Character::without_headdress`), told by `GravakHideHead=1`.
+    #[serde(default)]
+    pub hide_head: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -110,17 +117,20 @@ pub fn armor_sections(armor: &str, garments: &[Garment]) -> Result<String> {
                 out.push_str(&line);
                 out.push_str("\r\n");
             }
+            if garment.hide_head {
+                out.push_str("GravakHideHead=1\r\n");
+            }
         }
     }
     Ok(out)
 }
 
-/// Writes the merged `armor.ini` and `3dtexture.ini` and the textures under
-/// `output`; how many garments.
-pub fn build(installation: &mut Installation, content: &Path, output: &Path) -> Result<usize> {
+/// Writes the merged `armor.ini` and the textures under `output`; how many
+/// garments, and the `3dtexture.ini` lines of their textures.
+pub fn build(installation: &mut Installation, content: &Path, output: &Path) -> Result<(usize, String)> {
     let garments = load(content)?;
     if garments.is_empty() {
-        return Ok(0);
+        return Ok((0, String::new()));
     }
     let armor = installation.read(ARMOR)?;
     let ours = armor_sections(&String::from_utf8_lossy(&armor), &garments)?;
@@ -129,10 +139,7 @@ pub fn build(installation: &mut Installation, content: &Path, output: &Path) -> 
     std::fs::create_dir_all(output.join("ini"))?;
     std::fs::write(output.join(ARMOR), merged)?;
 
-    let mut textures = installation.read(TEXTURES)?;
-    if !textures.ends_with(b"\n") {
-        textures.extend_from_slice(b"\r\n");
-    }
+    let mut textures = String::new();
     for garment in &garments {
         for (body, source) in BODIES.into_iter().zip(&garment.textures) {
             let image = image::open(content.join(source))
@@ -142,11 +149,11 @@ pub fn build(installation: &mut Installation, content: &Path, output: &Path) -> 
             let file = output.join(&path);
             std::fs::create_dir_all(file.parent().expect("texture folder"))?;
             std::fs::write(file, crate::dds::encode_dxt5(&image))?;
-            textures.extend_from_slice(format!("{}={path}\r\n", texture_id(body, garment.id)).as_bytes());
+            textures.push_str(&format!("{}={path}
+", texture_id(body, garment.id)));
         }
     }
-    std::fs::write(output.join(TEXTURES), textures)?;
-    Ok(garments.len())
+    Ok((garments.len(), textures))
 }
 
 #[cfg(test)]
@@ -157,12 +164,14 @@ mod tests {
     fn a_garment_takes_the_cut_of_its_look_and_a_texture_of_its_own() {
         let armor = "[1181330]\nPart=1\nMesh0=1137050\nTexture0=1137350\nMixTex0=0\n\n[2181330]\nPart=1\nMesh0=2137050\nTexture0=2137350\n\
                      [3181330]\nMesh0=3137050\nTexture0=3137350\n[4181330]\nMesh0=4137050\nTexture0=4137350\n";
-        let garment = Garment { id: 182995, look: 181335, textures: vec![String::new(); 4] };
+        let garment = Garment { id: 182995, look: 181335, textures: vec![String::new(); 4], hide_head: false };
         let ours = armor_sections(armor, &[garment]).unwrap();
         assert!(ours.contains("[1182990]\r\nPart=1\r\nMesh0=1137050\r\nTexture0=91182995\r\nMixTex0=0\r\n"), "{ours}");
         assert!(ours.contains("[4182990]\r\nMesh0=4137050\r\nTexture0=94182995\r\n"), "{ours}");
         assert_eq!(texture_path(3, 182995), "c3/texture/gravak/182995-3.dds");
-        let missing = Garment { id: 182995, look: 181345, textures: vec![String::new(); 4] };
+        let hidden = Garment { id: 182995, look: 181335, textures: vec![String::new(); 4], hide_head: true };
+        assert!(armor_sections(armor, &[hidden]).unwrap().contains("Texture0=91182995\r\nMixTex0=0\r\nGravakHideHead=1\r\n"));
+        let missing = Garment { id: 182995, look: 181345, textures: vec![String::new(); 4], hide_head: false };
         assert!(armor_sections(armor, &[missing]).is_err());
     }
 }

@@ -249,6 +249,8 @@ pub fn tint(name: &str) -> Option<[f32; 3]> {
     match name {
         "legendary" => Some([0.75, 0.54, 0.15]),
         "mythic" => Some([0.9, 0.2, 0.36]),
+        // Ours, for the auras of accessories (`aura_tint`).
+        "ice" => Some([0.5, 0.8, 1.0]),
         _ => None,
     }
 }
