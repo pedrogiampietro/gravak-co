@@ -27,6 +27,36 @@ use std::{
 };
 
 pub const MANIFEST: &str = "manifest.txt";
+/// The manifest's ed25519 signature (hex), made by `gravak-sign`.
+pub const SIGNATURE: &str = "manifest.sig";
+
+/// The release key built into a release client (`GRAVAK_UPDATE_KEY`, hex,
+/// set by `tools/package-client.ps1`): such a client takes only manifests
+/// signed with it. A development build has none and checks nothing.
+fn update_key() -> Option<[u8; 32]> {
+    let hex = option_env!("GRAVAK_UPDATE_KEY")?;
+    unhex::<32>(hex)
+}
+
+fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
+    let text = text.trim();
+    if text.len() != N * 2 {
+        return None;
+    }
+    let mut out = [0u8; N];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Whether `signature` (hex) is `key`'s over `manifest`.
+pub fn signed(key: [u8; 32], manifest: &[u8], signature: &str) -> bool {
+    let (Ok(key), Some(signature)) = (ed25519_dalek::VerifyingKey::from_bytes(&key), unhex::<64>(signature)) else {
+        return false;
+    };
+    key.verify_strict(manifest, &ed25519_dalek::Signature::from_bytes(&signature)).is_ok()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -103,6 +133,20 @@ fn update(base: &str, root: &Path, events: &Sender<UpdateEvent>) -> Result<Optio
         .body_mut()
         .read_to_string()
         .map_err(|error| format!("update server unavailable ({error})"))?;
+    // A release client takes only what the release key signed: whoever
+    // sits between it and the update host cannot hand it files.
+    if let Some(key) = update_key() {
+        let signature = agent
+            .get(&url(base, SIGNATURE))
+            .call()
+            .map_err(|_| "the update is not signed; refused".to_owned())?
+            .body_mut()
+            .read_to_string()
+            .map_err(|_| "the update is not signed; refused".to_owned())?;
+        if !signed(key, text.as_bytes(), &signature) {
+            return Err("the update's signature is not Gravak's; refused".into());
+        }
+    }
     let manifest = parse(&text)?;
     let mut cache = HashCache::load(root);
     let mut stale = Vec::new();
@@ -305,6 +349,23 @@ impl HashCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_release_keys_signature_passes() {
+        use ed25519_dalek::Signer;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let public = key.verifying_key().to_bytes();
+        let manifest = b"version=1.0
+file=Gravak.exe|10|aa";
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let signature = hex(&key.sign(manifest).to_bytes());
+        assert!(super::signed(public, manifest, &signature));
+        assert!(!super::signed(public, b"version=1.0
+file=Evil.exe|10|aa", &signature), "a changed manifest fails");
+        let other = ed25519_dalek::SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes();
+        assert!(!super::signed(other, manifest, &signature), "another key fails");
+        assert!(!super::signed(public, manifest, "zz"), "garbage fails");
+    }
 
     const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 

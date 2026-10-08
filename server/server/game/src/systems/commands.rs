@@ -1083,6 +1083,78 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
                 .await?;
             Ok(())
         },
+        SubCommands::Ban(info) => {
+            let say = |text: String| MsgTalk::from_system(me.id(), TalkChannel::System, text);
+            let Some(account) = account_of(state, &info.name).await? else {
+                actor.send(say(format!("No character is called {}.", info.name))).await?;
+                return Ok(());
+            };
+            let reason = info.reason.join(" ");
+            sqlx::query(
+                "UPDATE accounts SET banned_until = CASE WHEN $2 = 0 THEN 'infinity'::timestamptz \
+                 ELSE now() + make_interval(hours => $2) END, ban_reason = $3 WHERE account_id = $1",
+            )
+            .bind(account)
+            .bind(i32::try_from(info.hours).unwrap_or(i32::MAX))
+            .bind(&reason)
+            .execute(state.pool())
+            .await?;
+            tracing::warn!(target: "gm", gm = %me.entity().name(), banned = %info.name, hours = info.hours, %reason, "Account banned");
+            // Off the game, every character of the account.
+            for entity in state.entities() {
+                if let Some(other) = entity.as_character() {
+                    if i64::from(other.account_id()) == account {
+                        let _ = other.owner().shutdown().await;
+                    }
+                }
+            }
+            let span = if info.hours == 0 { "for good".to_owned() } else { format!("for {} hours", info.hours) };
+            actor.send(say(format!("{} is banned {span}.", info.name))).await?;
+            Ok(())
+        },
+        SubCommands::Unban(info) => {
+            let say = |text: String| MsgTalk::from_system(me.id(), TalkChannel::System, text);
+            let Some(account) = account_of(state, &info.name).await? else {
+                actor.send(say(format!("No character is called {}.", info.name))).await?;
+                return Ok(());
+            };
+            sqlx::query("UPDATE accounts SET banned_until = NULL, ban_reason = NULL WHERE account_id = $1")
+                .bind(account)
+                .execute(state.pool())
+                .await?;
+            tracing::warn!(target: "gm", gm = %me.entity().name(), unbanned = %info.name, "Account unbanned");
+            actor.send(say(format!("{} may log in again.", info.name))).await?;
+            Ok(())
+        },
+        SubCommands::Gm(info) => {
+            let say = |text: String| MsgTalk::from_system(me.id(), TalkChannel::System, text);
+            let on = match info.state.as_str() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    actor.send(say("Say on or off.".into())).await?;
+                    return Ok(());
+                },
+            };
+            let Some(account) = account_of(state, &info.name).await? else {
+                actor.send(say(format!("No character is called {}.", info.name))).await?;
+                return Ok(());
+            };
+            sqlx::query("UPDATE accounts SET gm = $2 WHERE account_id = $1")
+                .bind(account)
+                .bind(on)
+                .execute(state.pool())
+                .await?;
+            tracing::warn!(target: "gm", gm = %me.entity().name(), account = %info.name, on, "Game master changed");
+            actor
+                .send(say(format!(
+                    "{} is {} a game master from their next login.",
+                    info.name,
+                    if on { "now" } else { "no longer" }
+                )))
+                .await?;
+            Ok(())
+        },
         SubCommands::Skin(info) => {
             let slot = if info.left { 5 } else { 4 };
             let say = |text: String| MsgTalk::from_system(me.id(), TalkChannel::System, text);
@@ -1428,6 +1500,9 @@ enum SubCommands {
     TestHealth(TestHealthCmd),
     TestStun(TestStunCmd),
     Proficiency(ProficiencyCmd),
+    Ban(BanCmd),
+    Unban(UnbanCmd),
+    Gm(GmCmd),
     Skin(SkinCmd),
     Go(GoCmd),
     LearnSkill(LearnSkillCmd),
@@ -1857,6 +1932,52 @@ struct TestHealthCmd {}
 #[argh(subcommand, name = "test-stun")]
 struct TestStunCmd {}
 
+/// Ban a player's account: `$ban <name> <hours> [reason]`, 0 hours for
+/// good. They are disconnected and refused at login.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "ban")]
+struct BanCmd {
+    /// the character's name
+    #[argh(positional)]
+    name: String,
+    /// how many hours; 0 bans for good
+    #[argh(positional)]
+    hours: u32,
+    /// why
+    #[argh(positional, greedy)]
+    reason: Vec<String>,
+}
+
+/// Lift a ban: `$unban <name>`.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "unban")]
+struct UnbanCmd {
+    /// the character's name
+    #[argh(positional)]
+    name: String,
+}
+
+/// Make an account a game master or not: `$gm <name> on|off`. It holds
+/// from their next login.
+#[derive(Debug, Clone, PartialEq, FromArgs)]
+#[argh(subcommand, name = "gm")]
+struct GmCmd {
+    /// the character's name
+    #[argh(positional)]
+    name: String,
+    /// on or off
+    #[argh(positional)]
+    state: String,
+}
+
+/// The account of the character named `name` (any case).
+async fn account_of(state: &crate::State, name: &str) -> Result<Option<i64>, Error> {
+    Ok(sqlx::query_scalar("SELECT account_id FROM characters WHERE lower(name) = lower($1)")
+        .bind(name)
+        .fetch_optional(state.pool())
+        .await?)
+}
+
 /// Dress the worn weapon in another weapon's look: `$skin 410339` (the
 /// right hand; `--left` the left), `$skin 0` takes the skin off.
 #[derive(Debug, Clone, PartialEq, FromArgs)]
@@ -2157,6 +2278,18 @@ mod tests {
         );
         let command = Command::from_args(&["commands"], &["silver"]).expect("silver without amount should parse");
         assert_eq!(command.commands, SubCommands::GiveSilver(super::GiveSilverCmd { amount: None }));
+    }
+
+    #[test]
+    fn game_masters_ban_and_grant() {
+        let ban = Command::from_args(&["commands"], &["ban", "Cheater", "48", "speed", "hack"]).expect("ban parses");
+        assert_eq!(
+            ban.commands,
+            SubCommands::Ban(super::BanCmd { name: "Cheater".into(), hours: 48, reason: vec!["speed".into(), "hack".into()] })
+        );
+        let gm = Command::from_args(&["commands"], &["gm", "Pedro", "on"]).expect("gm parses");
+        assert_eq!(gm.commands, SubCommands::Gm(super::GmCmd { name: "Pedro".into(), state: "on".into() }));
+        assert!(!ban.commands.for_players(), "only game masters ban");
     }
 
     #[test]

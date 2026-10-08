@@ -29,6 +29,8 @@ pub struct World {
     /// The account server, `host:port`.
     pub auth: String,
     pub realm: String,
+    /// The server's login key (`Key=`, hex): passwords are sealed to it.
+    pub key: Option<[u8; 32]>,
 }
 
 impl World {
@@ -37,6 +39,7 @@ impl World {
             name: name.into(),
             auth: auth.into(),
             realm: realm.into(),
+            key: None,
         }
     }
 }
@@ -70,6 +73,7 @@ pub fn parse(text: &str) -> Vec<World> {
         match key.trim().to_ascii_lowercase().as_str() {
             "auth" => world.auth = value.to_owned(),
             "realm" if !value.is_empty() => world.realm = value.to_owned(),
+            "key" => world.key = gravak_protocol::parse_key(value),
             _ => {}
         }
     }

@@ -153,6 +153,7 @@ async fn serve(
     while let Some(command) = commands.recv().await {
         match command {
             LoginCommand::Register { world, username, password } => {
+                gravak_protocol::set_login_key(world.key);
                 send(LoginEvent::Status("creating account".into()));
                 send(match register_account(&world.auth, &username, &password).await {
                     Ok(RegisterAccountResult::Created) => LoginEvent::Registered(username),
@@ -165,6 +166,7 @@ async fn serve(
             LoginCommand::Login { world: chosen, username, password } => {
                 phase = Phase::Idle;
                 world = chosen;
+                gravak_protocol::set_login_key(world.key);
                 send(LoginEvent::Status("authenticating".into()));
                 match login(&world.auth, &username, &password, &world.realm, &send).await {
                     Ok(Login::NeedsCharacter(session, token)) => {

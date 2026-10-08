@@ -145,6 +145,7 @@ pub mod host {
                     match res {
                         -1 => Err(tq_db::Error::AccountNotFound),
                         -2 => Err(tq_db::Error::InvalidPassword),
+                        -3 => Err(tq_db::Error::AccountBanned),
                         _ => unreachable!("Unknown error code"),
                     }
                 }

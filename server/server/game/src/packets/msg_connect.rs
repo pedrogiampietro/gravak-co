@@ -37,6 +37,10 @@ impl PacketProcess for MsgConnect {
             .fetch_optional(state.pool())
             .await?;
         actor.set_gm(gm.unwrap_or(false));
+        // A ban that came after the login is honoured here too.
+        if tq_db::account::Account::banned(state.pool(), info.account_id as i32).await? {
+            return Err(MsgTalk::login_invalid().error_packet().into());
+        }
         let maybe_character = tq_db::character::Character::from_account(state.pool(), info.account_id).await?;
         match maybe_character {
             Some(character) => {

@@ -49,6 +49,7 @@ pub fn process(msg: MsgAccount, actor: &Resource<ActorHandle>) -> Result<(), cra
                 tq_db::Error::AccountNotFound | tq_db::Error::InvalidPassword => {
                     RejectionCode::InvalidPassword.packet()
                 },
+                tq_db::Error::AccountBanned => RejectionCode::AccountBanned.packet(),
                 _ => {
                     tracing::error!("Error authenticating account: {e}");
                     RejectionCode::TryAgainLater.packet()

@@ -171,6 +171,96 @@ impl RegisterCharacter {
     }
 }
 
+/// A login or registration with the password sealed to the server's
+/// X25519 key (project extension 9010): the 5065's RC5 has a published key,
+/// so a password sent with it can be read by anyone listening.
+#[derive(Debug, Serialize, PacketID)]
+#[packet(id = 9010)]
+pub struct SecureLogin {
+    /// 0 a login, 1 a registration.
+    pub kind: u32,
+    pub username: String16,
+    pub realm: String16,
+    pub ephemeral: [u8; 32],
+    pub sealed: [u8; 32],
+}
+
+/// The key the passwords are sealed to, set when a world is chosen (its
+/// `Key=` in `servers.ini`), or `GRAVAK_LOGIN_KEY` (hex). None: the old,
+/// unsealed login (the server takes it only from its own machine).
+static LOGIN_KEY: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+pub fn set_login_key(key: Option<[u8; 32]>) {
+    *LOGIN_KEY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = key;
+}
+
+fn login_key() -> Option<[u8; 32]> {
+    let set = *LOGIN_KEY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    set.or_else(|| std::env::var("GRAVAK_LOGIN_KEY").ok().and_then(|hex| parse_key(&hex)))
+}
+
+/// A key written in hex (64 digits).
+pub fn parse_key(hex: &str) -> Option<[u8; 32]> {
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    for (index, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(key)
+}
+
+/// `password` sealed to `server`: the ephemeral public key and the sealed
+/// bytes (the server's `secure.rs` opens them).
+pub fn seal_password(server: [u8; 32], password: &str) -> ([u8; 32], [u8; 32]) {
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    use sha2::Digest;
+    let ephemeral = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+    let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral).to_bytes();
+    let shared = ephemeral.diffie_hellman(&x25519_dalek::PublicKey::from(server)).to_bytes();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"gravak-login-v1");
+    hasher.update(shared);
+    hasher.update(ephemeral_public);
+    hasher.update(server);
+    let key: [u8; 32] = hasher.finalize().into();
+    let mut padded = [0u8; 16];
+    let bytes = password.as_bytes();
+    let length = bytes.len().min(16);
+    padded[..length].copy_from_slice(&bytes[..length]);
+    let sealed = chacha20poly1305::ChaCha20Poly1305::new(&key.into())
+        .encrypt(&[0u8; 12].into(), padded.as_slice())
+        .expect("sealing sixteen bytes cannot fail");
+    (ephemeral_public, sealed.try_into().expect("sixteen bytes and the tag"))
+}
+
+/// The login or registration packet: sealed when the server has a key.
+fn login_packet(kind: u32, username: &str, password: &str, realm: &str) -> Result<(u16, Bytes), ProtocolError> {
+    match login_key() {
+        Some(server) => {
+            let (ephemeral, sealed) = seal_password(server, password);
+            SecureLogin {
+                kind,
+                username: username.to_owned().into(),
+                realm: realm.to_owned().into(),
+                ephemeral,
+                sealed,
+            }
+            .encode()
+            .map_err(ProtocolError::Encode)
+        },
+        None if kind == 0 => AccountLogin::new(username, password, realm).encode().map_err(ProtocolError::Encode),
+        None => RegisterAccount {
+            username: username.to_owned().into(),
+            password: password.to_owned().into(),
+        }
+        .encode()
+        .map_err(ProtocolError::Encode),
+    }
+}
+
 /// Account registration request (project extension, not part of 5065),
 /// answered by [`MSG_REGISTER_ACCOUNT_RESULT`].
 #[derive(Debug, Serialize, PacketID)]
@@ -2416,9 +2506,7 @@ pub async fn authenticate(
 ) -> Result<AuthResponse, ProtocolError> {
     let stream = TcpStream::connect(address).await?;
     let (mut encoder, mut decoder) = TQCodec::new(stream, CQCipher::new()).split();
-    let packet = AccountLogin::new(username, password, realm)
-        .encode()
-        .map_err(ProtocolError::Encode)?;
+    let packet = login_packet(0, username, password, realm)?;
     encoder.send(packet).await?;
 
     while let Some(packet) = decoder.next().await {
@@ -2443,12 +2531,7 @@ pub async fn register_account(
 ) -> Result<RegisterAccountResult, ProtocolError> {
     let stream = TcpStream::connect(address).await?;
     let (mut encoder, mut decoder) = TQCodec::new(stream, CQCipher::new()).split();
-    let packet = RegisterAccount {
-        username: username.to_owned().into(),
-        password: password.to_owned().into(),
-    }
-    .encode()
-    .map_err(ProtocolError::Encode)?;
+    let packet = login_packet(1, username, password, "")?;
     encoder.send(packet).await?;
     while let Some(packet) = decoder.next().await {
         let (id, body) = packet?;
@@ -3136,3 +3219,4 @@ mod tests {
         assert!(decode_game_event(MSG_TASK_DIALOG, &Bytes::from(vec![0_u8; 7])).is_err());
     }
 }
+

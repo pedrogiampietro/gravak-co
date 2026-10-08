@@ -47,6 +47,8 @@ async fn main() -> Result<(), Error> {
     )?;
     tracing::debug!(target: "auth", "Opening the database");
     let state = State::init().await?;
+    // The key players seal their passwords to (keys/login.key).
+    let login_key = auth::secure::init().map_err(Error::IO)?;
     let published = tq_db::account::Account::with_published_password(state.pool())
         .await
         .unwrap_or_default();
@@ -74,6 +76,7 @@ async fn main() -> Result<(), Error> {
         ("Database", tq_db::database_label()),
         ("Log level", log_level_name(log_verbosity).to_owned()),
         ("Log files", "logs/auth.log.<date>".to_owned()),
+        ("Login key", auth::secure::hex(&login_key.public)),
     ];
     if !published.is_empty() {
         rows.push(("Test accounts", format!("{} (password 123456)", published.join(", "))));
