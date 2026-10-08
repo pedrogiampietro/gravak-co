@@ -112,7 +112,8 @@ pub trait TQServer: Sized + Send + Sync {
 
 /// Waits for a request to stop and names it: Ctrl+C, and on Windows also
 /// Ctrl+Break (which a console started by `start` cannot ignore, so
-/// `scripts/stop-servers.ps1` sends it) and the console window closing.
+/// `scripts/stop-servers.ps1` sends it) and the console window closing;
+/// elsewhere also SIGTERM, which systemd sends to stop a service.
 async fn stop_signal() -> &'static str {
     #[cfg(windows)]
     {
@@ -129,8 +130,15 @@ async fn stop_signal() -> &'static str {
     }
     #[cfg(not(windows))]
     {
-        let _ = tokio::signal::ctrl_c().await;
-        "Ctrl+C"
+        use tokio::signal::unix::{signal, SignalKind};
+        let Ok(mut terminate) = signal(SignalKind::terminate()) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return "Ctrl+C";
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => "Ctrl+C",
+            _ = terminate.recv() => "SIGTERM",
+        }
     }
 }
 

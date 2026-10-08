@@ -138,12 +138,7 @@ pub(crate) fn create_and_compile(
     // even when the outer profile is `Debug`, because the blob built in
     // `Debug` profile is too slow for normal development activities.
     let (compact_blob_path, compact_compressed_blob_path) = if build_config.outer_build_profile.wants_compact() {
-        let compact_blob_path = compact_wasm(
-            &project,
-            &build_config.blob_build_profile,
-            project_cargo_toml,
-            &bloaty_blob_out_name,
-        );
+        let compact_blob_path = compact_wasm(&project, &bloaty_blob_binary, &bloaty_blob_out_name);
         // TODO: Compress the compacted blob.
         (compact_blob_path, None)
     } else {
@@ -772,12 +767,10 @@ fn build_bloaty_blob(
     }
 }
 
-fn compact_wasm(project: &Path, inner_profile: &Profile, cargo_manifest: &Path, out_name: &str) -> Option<WasmBinary> {
-    let default_out_name = get_blob_name(cargo_manifest);
-    let in_path = project
-        .join("target/wasm32-unknown-unknown")
-        .join(inner_profile.directory())
-        .join(format!("{}.wasm", default_out_name));
+/// Compacts the bloaty blob after `process_bloaty_blob`, so the compact blob
+/// keeps the externref imports the processor rewrote.
+fn compact_wasm(project: &Path, bloaty: &WasmBinaryBloaty, out_name: &str) -> Option<WasmBinary> {
+    let in_path = bloaty.bloaty_path();
 
     let wasm_compact_path = project.join(format!("{}.compact.wasm", out_name));
     let start = std::time::Instant::now();
