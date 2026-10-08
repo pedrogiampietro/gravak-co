@@ -208,6 +208,19 @@ async fn send_change(state: &State, change: TeamChange) -> Result<(), Error> {
     Ok(())
 }
 
+/// A member gone offline leaves their team, and the others are told, as
+/// if they had left (a leader's going ends the team). The one leaving is
+/// not written to: their connection is closing.
+pub async fn left_team_on_logout(state: &State, character_id: u32) -> Result<(), Error> {
+    let Ok(mut change) = state.team_manager().apply(character_id, 0, team::LEAVE_TEAM) else {
+        return Ok(());
+    };
+    if let TeamChange::State { recipients, .. } = &mut change {
+        recipients.retain(|recipient| *recipient != character_id);
+    }
+    send_change(state, change).await
+}
+
 #[async_trait]
 impl PacketProcess for MsgTeamAction {
     type ActorState = ActorState;
