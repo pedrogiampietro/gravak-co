@@ -828,6 +828,7 @@ pub struct Renderer {
     effect_tint: Option<&'static str>,
     /// The Shortcuts window, while open (set each frame by the app).
     pub shortcuts: Option<crate::keybinds::ShortcutsView>,
+    pub helper: Option<crate::helper::HelperView>,
     /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
     /// the hero), the effect and when it began.
     weapon_flashes: Vec<(Option<u32>, String, f32)>,
@@ -1076,6 +1077,7 @@ impl Renderer {
             effect_attachment: None,
             effect_tint: None,
             shortcuts: None,
+            helper: None,
             weapon_flashes: Vec::new(),
             last_hero_swing: 0,
             last_remote_swing: HashMap::new(),
@@ -6014,6 +6016,28 @@ impl Renderer {
                 });
             }
         }
+        // The helper's window, over the other windows.
+        if let Some(view) = self.helper.clone() {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            view.hash(&mut hasher);
+            let key = format!("@helper-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                let font = crate::labels::font()?;
+                let mut content = image::RgbaImage::new(crate::helper::SIZE[0], crate::helper::SIZE[1]);
+                crate::helper::draw(&mut content, &font, &view);
+                let close = view.hover == Some(crate::helper::HelperAction::Close);
+                self.upload(&key, crate::shop::framed(assets, content, "Helper", close)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::helper_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         // The Shortcuts window, over the other windows.
         if let Some(view) = self.shortcuts.clone() {
             use std::hash::{Hash, Hasher};
@@ -6400,7 +6424,8 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 19] = [
+const TRANSIENT_PREFIXES: [&str; 20] = [
+    "@helper-",
     "@shortcuts-",
     "@booth-tooltip-",
     "@sell-all-",

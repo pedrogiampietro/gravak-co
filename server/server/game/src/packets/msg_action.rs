@@ -431,7 +431,8 @@ impl MsgAction {
 
     /// MsgAction 106: where a teammate stands, for the minimap pin. The
     /// reply is about the member: data1 is the map (0 when it is not on the
-    /// asker's map) and data2 the packed cell.
+    /// asker's map) and data2 the packed cell. A member on the asker's map
+    /// also has its life told (MsgUserAttrib), for the helper's heals.
     async fn handle_query_team_member(&self, state: &State, actor: &Actor<ActorState>) -> Result<(), Error> {
         let entity = actor.try_entity()?;
         let me = entity.as_character().ok_or(Error::CharacterNotFound)?;
@@ -445,7 +446,16 @@ impl MsgAction {
             .and_then(|member| member.as_character())
             .filter(|member| member.entity().map_id() == map_id)
         {
-            Some(member) => Self::from_character(member, map_id, ActionType::QueryTeamMember),
+            Some(member) => {
+                let life = member.entity().hp();
+                actor
+                    .send(super::MsgUserAttrib::new(member.id(), super::UserAttribute::MaxLife, u64::from(life.max)))
+                    .await?;
+                actor
+                    .send(super::MsgUserAttrib::new(member.id(), super::UserAttribute::Life, u64::from(life.current)))
+                    .await?;
+                Self::from_character(member, map_id, ActionType::QueryTeamMember)
+            },
             None => Self::new(self.data1, 0, 0, 0, ActionType::QueryTeamMember),
         };
         actor.send(reply).await?;

@@ -2,6 +2,7 @@
 mod action;
 mod action_bar;
 mod keybinds;
+mod helper;
 mod cursors;
 mod assets;
 mod audio;
@@ -551,6 +552,12 @@ struct App {
     keybinds: keybinds::Keybinds,
     /// The Shortcuts window, while open.
     shortcuts: Option<keybinds::ShortcutsView>,
+    /// The helper's choices (`settings/helper.ini`), what it remembers
+    /// between frames, its window while open and what it last did.
+    helper: helper::Settings,
+    helper_memory: helper::Memory,
+    helper_window: Option<helper::HelperView>,
+    helper_status: String,
     /// The hero's guild and the guilds at war with or allied to it.
     guild_relations: gravak_protocol::GuildRelations,
     /// The Store, as the server last sent it.
@@ -1316,6 +1323,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::Escape) if self.shortcuts.is_some() => self.shortcuts = None,
+                    PhysicalKey::Code(KeyCode::Escape) if self.helper_window.is_some() => self.helper_window = None,
                     PhysicalKey::Code(KeyCode::Escape) if self.gem_selection_panel.is_some() => {
                         self.gem_selection_panel = None;
                         self.network_status = "seleção de gem cancelada".into();
@@ -1663,8 +1671,10 @@ impl ApplicationHandler for App {
                 let nobility_view = (self.quick_panel == Some(shop::QuickPanel::Nobility)).then(|| self.nobility_view_lit());
                 let guild_view = (self.quick_panel == Some(shop::QuickPanel::Guild)).then(|| self.guild_view_lit());
                 let shortcuts_view = self.shortcuts_view_lit();
+                let helper_view = self.helper_view_lit();
                 if let Some(renderer) = &mut self.renderer {
                     renderer.shortcuts = shortcuts_view;
+                    renderer.helper = helper_view;
                 }
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
@@ -1786,6 +1796,7 @@ impl ApplicationHandler for App {
             self.handle_network_event(event);
         }
         self.poll_team_positions();
+        self.run_helper();
         self.send_ping();
         // Closing the trade window by any means (its X, Escape, another
         // panel) cancels the trade, so the partner's window closes too.
@@ -2062,6 +2073,18 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        // The helper's window: its clicks are its own.
+        if let Some(view) = self.helper_view_lit() {
+            let [left, top] = helper_position(viewport);
+            let local = [self.cursor[0] - left, self.cursor[1] - top];
+            if helper::covers(local) {
+                if let Some(action) = helper::action_at(&view, local) {
+                    self.handle_helper_action(action);
+                }
+                self.held = false;
+                return true;
+            }
+        }
         // The Shortcuts window: its clicks are its own.
         if let Some(view) = self.shortcuts.as_ref() {
             let [left, top] = keybinds_position(viewport);
@@ -3647,6 +3670,13 @@ impl App {
                 }
             }
             C::Shortcuts => self.toggle_shortcuts(),
+            C::Helper => {
+                self.helper_window = match self.helper_window.take() {
+                    Some(_) => None,
+                    None => Some(helper::HelperView::default()),
+                };
+            }
+            C::HelperToggle => self.toggle_helper(),
             C::Stop => {
                 self.pending_attack = None;
                 self.pending_skill_attack = None;
@@ -3767,6 +3797,194 @@ impl App {
             ),
             None => format!("{} is now {}.", binding.label(), command.name()),
         };
+    }
+
+    /// Turns the helper on or off, and says so.
+    fn toggle_helper(&mut self) {
+        self.helper.enabled = !self.helper.enabled;
+        self.helper.save();
+        self.helper_memory = helper::Memory::default();
+        self.helper_status.clear();
+        self.system_line(if self.helper.enabled { "Helper on." } else { "Helper off." });
+    }
+
+    fn handle_helper_action(&mut self, action: helper::HelperAction) {
+        use helper::HelperAction as A;
+        match action {
+            A::Close => self.helper_window = None,
+            A::Power => self.toggle_helper(),
+            A::Tab(tab) => {
+                if let Some(view) = self.helper_window.as_mut() {
+                    view.tab = tab;
+                }
+            }
+            A::Toggle(toggle) => {
+                self.helper.flip(toggle);
+                self.helper.save();
+            }
+            A::Step(stepper, up) => {
+                self.helper.step(stepper, up);
+                self.helper.save();
+            }
+            A::Pick(picker, up) => {
+                self.helper.pick(picker, up);
+                self.helper.save();
+            }
+        }
+    }
+
+    /// The helper's window as drawn: the choices, the skills learned, what
+    /// the cursor is over.
+    fn helper_view_lit(&self) -> Option<helper::HelperView> {
+        let mut view = self.helper_window.clone()?;
+        view.settings = self.helper.clone();
+        view.known = self.known_skills.keys().copied().collect();
+        view.known.sort_unstable();
+        view.toggle_key = self
+            .keybinds
+            .get(keybinds::Command::HelperToggle)
+            .map_or_else(|| "none".to_owned(), keybinds::Binding::label);
+        view.status = self.helper_status.clone();
+        if let Some(viewport) = self.viewport() {
+            let [left, top] = helper_position(viewport);
+            view.hover = helper::action_at(&view, [self.cursor[0] - left, self.cursor[1] - top]);
+        }
+        Some(view)
+    }
+
+    /// The helper's turn: what it decides (`helper.rs`) goes to the server
+    /// as the player's own potion, cast or walk would.
+    fn run_helper(&mut self) {
+        if !self.helper.enabled {
+            return;
+        }
+        let Some(me) = self.network_character_id else {
+            return;
+        };
+        let now = self.started.elapsed().as_secs_f32();
+        let world = self.helper_world(me, now);
+        for act in helper::decide(&self.helper, &world, &mut self.helper_memory, now) {
+            match act {
+                helper::Act::Potion { uid } => {
+                    if let Some(network) = &self.network {
+                        network.use_item(me, uid);
+                    }
+                }
+                helper::Act::Cast { skill, target } => self.helper_cast(me, skill, target, now),
+                helper::Act::Follow(at) => self.helper_follow(at),
+            }
+        }
+    }
+
+    /// What the helper sees: the hero, the bag's potions, the team.
+    fn helper_world(&self, me: u32, now: f32) -> helper::World {
+        let team = self
+            .team_members
+            .iter()
+            .filter(|member| member.member_id != me)
+            .map(|member| {
+                let actor = self.remote_actors.get(&member.member_id);
+                let maximum = u32::from(member.maximum_health);
+                helper::Teammate {
+                    id: member.member_id,
+                    life_percent: (maximum > 0).then(|| (u32::from(member.health) * 100 / maximum).min(100) as u8),
+                    position: actor.map(|actor| actor.position),
+                    flags: actor.map_or(0, |actor| actor.status_flags),
+                    dead: maximum > 0 && member.health == 0,
+                }
+            })
+            .collect();
+        let leader_at = self.team_leader_id.and_then(|leader| {
+            self.remote_actors.get(&leader).map(|actor| actor.position).or_else(|| {
+                self.team_positions
+                    .get(&leader)
+                    .filter(|(map_id, _)| *map_id == self.map.id)
+                    .map(|(_, position)| position.map(|value| value as f32))
+            })
+        });
+        let potions = |restores: fn(u32) -> Option<u16>| {
+            self.inventory
+                .iter()
+                .filter_map(|item| restores(item.item_type).map(|amount| (item.uid, item.item_type, amount)))
+                .collect::<Vec<_>>()
+        };
+        let monster_near = self.remote_actors.values().any(|actor| {
+            !actor.npc
+                && (400_001..495_000).contains(&actor.id)
+                && actor.health > 0
+                && motion_math::skill_distance(self.player.position, actor.position) <= 12.0
+        });
+        let flags = self.status_flags;
+        helper::World {
+            me,
+            position: self.player.position,
+            health: self.character.health,
+            maximum_health: self.character.maximum_health,
+            mana: self.mana,
+            maximum_mana: self.maximum_mana,
+            dead: self.dead_since.is_some(),
+            flags,
+            known: self.known_skills.keys().copied().collect(),
+            cooling: self
+                .skill_cooldown_until
+                .iter()
+                .filter(|(_, until)| now < **until)
+                .map(|(skill, _)| *skill)
+                .collect(),
+            life_potions: potions(shop::health_recovery_for_item),
+            mana_potions: potions(shop::mana_recovery_for_item),
+            team,
+            leader: self.team_leader_id,
+            leader_at,
+            monster_near,
+            xp_ready: flags & network::XP_CIRCLE_FLAG != 0,
+            in_xp: flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG | helper::xp_flag(self.helper.xp_skill)) != 0,
+            busy: self.pending_attack.is_some()
+                || self.pending_skill_attack.is_some()
+                || self.pending_pickup.is_some()
+                || self.player.moving()
+                || !self.pending_network_steps.is_empty(),
+        }
+    }
+
+    /// A cast the helper chose, on the hero or a teammate on screen.
+    fn helper_cast(&mut self, me: u32, skill: u32, target: u32, now: f32) {
+        if self.in_air() {
+            return;
+        }
+        let (cell, name) = if target == me {
+            (self.player.cell(), "you".to_owned())
+        } else {
+            let Some(actor) = self.remote_actors.get(&target) else {
+                return;
+            };
+            (actor.position.map(|value| value.round() as i32), actor.name.clone())
+        };
+        let Some(network) = &self.network else {
+            return;
+        };
+        network.send_magic_attack(me, target, cell[0].max(0) as u16, cell[1].max(0) as u16, skill);
+        let cooldown = action_bar::skill_action(skill).map_or(0.8, |action| action.cooldown_seconds);
+        self.skill_cooldown_until.insert(skill, now + cooldown);
+        if target != me {
+            self.face_towards(cell);
+        }
+        self.helper_status = format!("{} on {name}.", helper::skill_name(skill));
+    }
+
+    /// Walks to a free cell beside the leader, the nearest to the hero.
+    fn helper_follow(&mut self, at: [f32; 2]) {
+        let goal = at.map(|value| value.round() as i32);
+        let here = self.player.cell();
+        let mut cells: Vec<[i32; 2]> = (-1..=1)
+            .flat_map(|dx| (-1..=1).map(move |dy| [goal[0] + dx, goal[1] + dy]))
+            .filter(|cell| *cell != goal)
+            .collect();
+        cells.sort_by_key(|cell| (cell[0] - here[0]).abs().max((cell[1] - here[1]).abs()));
+        if let Some(cell) = cells.into_iter().find(|cell| self.map.walkable(*cell)) {
+            self.travel(cell);
+            self.helper_status = "Following the leader.".into();
+        }
     }
 
     /// The window as drawn: what the cursor is over lit.
@@ -4796,6 +5014,11 @@ impl App {
                 if let Some(actor) = self.remote_actors.get_mut(&id) {
                     actor.health = scaled_life(life, max);
                     actor.maximum_health = 1_000;
+                }
+                // A teammate's life, told once a second (MsgAction 106).
+                if let Some(member) = self.team_members.iter_mut().find(|member| member.member_id == id) {
+                    member.health = life.min(u32::from(u16::MAX)) as u16;
+                    member.maximum_health = max.min(u32::from(u16::MAX)) as u16;
                 }
             }
             NetworkEvent::SkillForgotten(skill_id) => {
@@ -6581,7 +6804,7 @@ impl App {
             self.pending_pickup = None;
             self.pending_skill_attack = Some((target, skill.id));
             self.process_pending_skill_attack();
-        } else if action_bar::is_support_skill(skill.id)
+        } else if (action_bar::is_support_skill(skill.id) || helper::is_ally_buff(skill.id))
             && let Some(ally) = self.player_at_cursor()
         {
             self.cast_support_skill(skill, ally);
@@ -9464,6 +9687,14 @@ fn sync_slot_keys(keybinds: &keybinds::Keybinds, bar: &mut action_bar::ActionBar
     }
 }
 
+/// The helper's window's corner: centred on the screen.
+pub(crate) fn helper_position(viewport: [f32; 2]) -> [f32; 2] {
+    [
+        ((viewport[0] - helper::SIZE[0] as f32) * 0.5).max(8.0).round(),
+        ((viewport[1] - helper::SIZE[1] as f32) * 0.5).max(8.0).round(),
+    ]
+}
+
 /// The Shortcuts window's corner: centred on the screen.
 pub(crate) fn keybinds_position(viewport: [f32; 2]) -> [f32; 2] {
     [
@@ -10148,6 +10379,10 @@ fn run() -> Result<()> {
         guild_view: guild_panel::GuildView::default(),
         keybinds: keybinds::Keybinds::load(),
         shortcuts: None,
+        helper: helper::Settings::load(),
+        helper_memory: helper::Memory::default(),
+        helper_window: None,
+        helper_status: String::new(),
         guild_relations: Default::default(),
         store: None,
         daily_rewards: None,
