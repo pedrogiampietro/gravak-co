@@ -31,3 +31,6 @@ Thumbs.db
 
 # Built content (gravak-content build / the editor)
 content/build/
+
+# Test accounts made by server/game/src/seed_tests.rs (local passwords)
+server/test-accounts.txt
