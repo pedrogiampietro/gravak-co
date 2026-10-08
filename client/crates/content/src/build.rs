@@ -69,6 +69,8 @@ pub struct Report {
     /// Maps with objects of ours, and how many objects.
     pub maps: usize,
     pub objects: usize,
+    /// Garments of ours (`content/garments`).
+    pub garments: usize,
     pub output: PathBuf,
 }
 
@@ -123,6 +125,7 @@ pub fn build(installation: &mut Installation, content: &Path) -> Result<Report> 
         report.icons += 1;
     }
     (report.maps, report.objects) = crate::maps::build(content, &report.output)?;
+    report.garments = crate::garments::build(installation, content, &report.output)?;
     // Last, so an interrupted build never looks finished.
     std::fs::write(
         report.output.join(MARKER),

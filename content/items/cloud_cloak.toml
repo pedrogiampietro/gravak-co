@@ -1,0 +1,9 @@
+# The Cloud Cloak (content/garments/cloud_cloak.toml): a garment of ours.
+
+[[item]]
+id = 182995
+base = 181335
+name = "CloudCloak"
+price = 0
+cps_price = 0
+description = "A long black cloak strewn with red clouds."

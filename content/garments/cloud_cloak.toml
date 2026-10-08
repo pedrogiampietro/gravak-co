@@ -1,0 +1,12 @@
+# The Cloud Cloak: the WeddingGown's long robe, black with red clouds.
+# Textures painted by content/textures/paint_cloud_cloak.py.
+
+[[garment]]
+id = 182995
+look = 181335
+textures = [
+    "textures/182995-1.png",
+    "textures/182995-2.png",
+    "textures/182995-3.png",
+    "textures/182995-4.png",
+]

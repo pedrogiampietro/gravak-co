@@ -76,6 +76,27 @@ impl Hero {
         Some(Self { character, textures })
     }
 
+    /// `body` wearing `armor` (a coat or a garment) and nothing else: the
+    /// garment previews.
+    pub fn load_armor(assets: &mut Assets, body: u32, armor: u32) -> Option<Self> {
+        let character = Character::load_remote(assets, body, armor, 0, HAIR, 0, 0, String::new(), 1).ok()?;
+        let textures = character
+            .parts
+            .iter()
+            .filter_map(|part| Some((part.texture.clone(), assets.image(&part.texture).ok()?)))
+            .collect();
+        Some(Self { character, textures })
+    }
+
+    /// The textures of its parts, by path.
+    pub fn part_textures(&self) -> Vec<(String, RgbaImage)> {
+        self.character
+            .parts
+            .iter()
+            .filter_map(|part| Some((part.texture.clone(), self.textures.get(&part.texture)?.clone())))
+            .collect()
+    }
+
     /// `body` in the starter coat dyed `dye`, with nothing else worn: what
     /// a new character looks like.
     pub fn load_coat(assets: &mut Assets, body: u32, dye: u8) -> Option<Self> {
@@ -390,4 +411,61 @@ pub fn start(root: std::path::PathBuf) -> (std::sync::mpsc::Receiver<Loaded>, st
         }
     });
     (receiver, look_sender)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `GARMENT_PREVIEW=dir cargo test -p conquer-sandbox garment_preview`:
+    /// each garment (`GARMENT_IDS`, comma separated, or the originals) worn
+    /// by a man and a woman, from the front and the back, in one sheet; and
+    /// each one's texture.
+    #[test]
+    fn garment_preview() {
+        let Ok(dir) = std::env::var("GARMENT_PREVIEW") else { return };
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let ids: Vec<u32> = std::env::var("GARMENT_IDS")
+            .ok()
+            .map(|ids| ids.split(',').filter_map(|id| id.trim().parse().ok()).collect())
+            .unwrap_or_else(|| {
+                [181305, 181315, 181325, 181335, 181345, 181355, 181365, 181375, 181385, 181395, 182305, 182315, 182325, 182335, 182345, 182355, 182365, 182385]
+                    .to_vec()
+            });
+        let cell = [160u32, 220u32];
+        let mut sheet = RgbaImage::from_pixel(cell[0] * 4, cell[1] * ids.len() as u32, Rgba([40, 60, 45, 255]));
+        for (row, id) in ids.iter().enumerate() {
+            for (column, (body, facing)) in [(1, 0.6), (1, 0.6 + std::f32::consts::PI), (3, 0.6), (3, 0.6 + std::f32::consts::PI)]
+                .into_iter()
+                .enumerate()
+            {
+                let Some(hero) = Hero::load_armor(&mut assets, body, *id) else {
+                    continue;
+                };
+                let image = hero.render(cell, 190.0, 0.0, facing);
+                image::imageops::overlay(&mut sheet, &image, i64::from(column as u32 * cell[0]), i64::from(row as u32 * cell[1]));
+                if column == 0 {
+                    for (index, (_, texture)) in hero.part_textures().into_iter().enumerate() {
+                        texture.save(format!("{dir}/garment-{id}-texture{index}.png")).expect("texture");
+                    }
+                }
+            }
+        }
+        sheet.save(format!("{dir}/garments.png")).expect("sheet");
+    }
+}
+
+#[cfg(test)]
+mod texture_dump {
+    /// `TEXTURE_DUMP=dir TEXTURE_PATHS=a.dds,b.dds cargo test -p conquer-sandbox texture_dump`
+    #[test]
+    fn texture_dump() {
+        let Ok(dir) = std::env::var("TEXTURE_DUMP") else { return };
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        for path in std::env::var("TEXTURE_PATHS").unwrap_or_default().split(',') {
+            let image = assets.image(path).expect(path);
+            let name = path.rsplit('/').next().unwrap_or(path).replace(".dds", ".png");
+            image.save(format!("{dir}/{name}")).expect("png");
+        }
+    }
 }

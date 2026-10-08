@@ -10,6 +10,7 @@
 pub mod assets;
 pub mod build;
 pub mod dds;
+pub mod garments;
 pub mod items;
 pub mod itemtype;
 pub mod maps;
