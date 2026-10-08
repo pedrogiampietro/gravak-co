@@ -233,6 +233,50 @@ pub struct EffectLayer {
     pub additive: bool,
 }
 
+/// A texture key's mark that the renderer recolours it (see [`tinted`]),
+/// before any `ADDITIVE_SUFFIX`: `<texture>#tint-<name>[#additive]`.
+pub const TINT_MARK: &str = "#tint-";
+
+/// The colour a rarity's weapon glow takes, by the name the texture keys
+/// carry: Legendary gold, Mythic crimson. Per channel, times the light.
+pub fn tint(name: &str) -> Option<[f32; 3]> {
+    match name {
+        "legendary" => Some([0.75, 0.54, 0.15]),
+        "mythic" => Some([0.9, 0.2, 0.36]),
+        _ => None,
+    }
+}
+
+/// The tint name of a rarity whose weapon glows: Legendary and Mythic.
+pub fn rarity_tint(rarity: u8) -> Option<&'static str> {
+    match rarity {
+        3 => Some("legendary"),
+        4.. => Some("mythic"),
+        _ => None,
+    }
+}
+
+/// `key` recoloured with `tint`: the mark before the additive suffix, so
+/// the glow still draws additively.
+pub fn tinted_key(key: &str, tint: &str) -> String {
+    match key.strip_suffix(ADDITIVE_SUFFIX) {
+        Some(base) => format!("{base}{TINT_MARK}{tint}{ADDITIVE_SUFFIX}"),
+        None => format!("{key}{TINT_MARK}{tint}"),
+    }
+}
+
+/// An image recoloured: its light (luminance) times the tint's colour.
+pub fn tinted(mut image: image::RgbaImage, tint: [f32; 3]) -> image::RgbaImage {
+    for pixel in image.pixels_mut() {
+        let [r, g, b, _] = pixel.0;
+        let light = (0.3 * f32::from(r) + 0.59 * f32::from(g) + 0.11 * f32::from(b)) / 255.0;
+        for (channel, factor) in pixel.0.iter_mut().zip(tint) {
+            *channel = (light * factor * 255.0).min(255.0) as u8;
+        }
+    }
+    image
+}
+
 /// A texture key the renderer loads glowing: see [`additive_image`].
 pub const ADDITIVE_SUFFIX: &str = "#additive";
 
@@ -491,6 +535,17 @@ pub fn effect(assets: &mut Assets, name: &str) -> Option<EffectDefinition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rarity_glows_are_tinted_keys_that_still_add_light() {
+        assert_eq!(rarity_tint(2), None, "Epic does not glow");
+        assert_eq!(rarity_tint(3), Some("legendary"));
+        assert_eq!(rarity_tint(4), Some("mythic"));
+        let key = tinted_key(&format!("c3/effect/bow/129.dds{ADDITIVE_SUFFIX}"), "mythic");
+        assert_eq!(key, format!("c3/effect/bow/129.dds#tint-mythic{ADDITIVE_SUFFIX}"));
+        let image = tinted(image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])), tint("legendary").unwrap());
+        assert_eq!(image.get_pixel(0, 0).0, [191, 137, 38, 255], "white turns gold");
+    }
 
     #[test]
     fn sounds_named_by_the_tables_are_files() {

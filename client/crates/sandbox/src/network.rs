@@ -479,6 +479,9 @@ pub struct RemoteActor {
     pub flung: u8,
     /// The Top titles a player holds (`top_title::PROFESSIONS` flags).
     pub top_flags: u32,
+    /// The rarity of the weapon in each hand (right, left): Legendary and
+    /// Mythic glow.
+    pub weapon_rarity: [u8; 2],
     /// A player's nobility rank (the server's id; 0 none).
     pub nobility_rank: u32,
 }
@@ -2495,6 +2498,8 @@ fn player_actor(player: ServerPlayer) -> RemoteActor {
         flung: 0,
         // The Top titles ride in reserved2.
         top_flags: player.reserved2.max(0) as u32,
+        // The weapons' rarity rides in reserved1's top byte.
+        weapon_rarity: [((player.reserved1 >> 24) & 7) as u8, ((player.reserved1 >> 27) & 7) as u8],
         nobility_rank: player.nobility_rank.max(0) as u32,
     }
 }
@@ -2547,6 +2552,7 @@ fn npc_actor(npc: ServerNpcInfo) -> RemoteActor {
         flung: 0,
         top_flags: 0,
         nobility_rank: 0,
+        weapon_rarity: [0, 0],
     }
 }
 

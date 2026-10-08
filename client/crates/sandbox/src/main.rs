@@ -1,6 +1,7 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 mod action;
 mod action_bar;
+mod keybinds;
 mod cursors;
 mod assets;
 mod audio;
@@ -546,6 +547,10 @@ struct App {
     bounty: Option<bounty_board::BountyView>,
     /// The Guild System window, as the server last sent it.
     guild_view: guild_panel::GuildView,
+    /// The key bound to each command (`settings/keybinds.ini`).
+    keybinds: keybinds::Keybinds,
+    /// The Shortcuts window, while open.
+    shortcuts: Option<keybinds::ShortcutsView>,
     /// The hero's guild and the guilds at war with or allied to it.
     guild_relations: gravak_protocol::GuildRelations,
     /// The Store, as the server last sent it.
@@ -704,6 +709,16 @@ impl ApplicationHandler for App {
                 };
                 if amount != 0.0
                     && let Some(viewport) = self.viewport()
+                    && let Some(view) = self.shortcuts.as_mut()
+                {
+                    let [left, top] = keybinds_position(viewport);
+                    if keybinds::covers([self.cursor[0] - left, self.cursor[1] - top]) {
+                        view.scroll_by(if amount > 0.0 { -1 } else { 1 });
+                        return;
+                    }
+                }
+                if amount != 0.0
+                    && let Some(viewport) = self.viewport()
                     && self.chat_log.contains(viewport, self.cursor)
                     && !self.chat_log.minimized
                 {
@@ -723,6 +738,17 @@ impl ApplicationHandler for App {
                 self.queued_jump = None;
                 self.chat_focused = false;
                 self.player.stop();
+            }
+            // The Shortcuts window waits for a key: the next one pressed (with
+            // its modifiers) is the command's; Escape gives up.
+            WindowEvent::KeyboardInput { event, .. }
+                if self.shortcuts.as_ref().is_some_and(|view| view.capturing.is_some()) =>
+            {
+                if event.state == ElementState::Pressed
+                    && let PhysicalKey::Code(code) = event.physical_key
+                {
+                    self.capture_shortcut(code);
+                }
             }
             // The booth's hawk box takes the keyboard while open.
             WindowEvent::KeyboardInput { event, .. } if self.booth.hawk_editing => {
@@ -1289,6 +1315,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match event.physical_key {
+                    PhysicalKey::Code(KeyCode::Escape) if self.shortcuts.is_some() => self.shortcuts = None,
                     PhysicalKey::Code(KeyCode::Escape) if self.gem_selection_panel.is_some() => {
                         self.gem_selection_panel = None;
                         self.network_status = "seleção de gem cancelada".into();
@@ -1397,32 +1424,22 @@ impl ApplicationHandler for App {
                             self.chat_name_focused = false;
                         }
                     }
-                    PhysicalKey::Code(KeyCode::F1) => self.cast_action_slot(0),
-                    PhysicalKey::Code(KeyCode::F2) => self.cast_action_slot(1),
-                    PhysicalKey::Code(KeyCode::F3) => self.cast_action_slot(2),
-                    PhysicalKey::Code(KeyCode::F4) => self.cast_action_slot(3),
-                    PhysicalKey::Code(KeyCode::F5) => self.cast_action_slot(4),
-                    PhysicalKey::Code(KeyCode::F6) => self.cast_action_slot(5),
-                    PhysicalKey::Code(KeyCode::F7) => self.cast_action_slot(6),
-                    PhysicalKey::Code(KeyCode::F8) => self.cast_action_slot(7),
-                    PhysicalKey::Code(KeyCode::F9) => self.cast_action_slot(8),
-                    PhysicalKey::Code(KeyCode::F10) => self.cast_action_slot(9),
-                    PhysicalKey::Code(KeyCode::F11) => {
-                        self.performance_overlay = !self.performance_overlay;
+                    // Everything else: the command bound to the key (the
+                    // Shortcuts window). Held keys repeat only the F keys
+                    // and Stop.
+                    PhysicalKey::Code(code) => {
+                        let binding = keybinds::Binding {
+                            code,
+                            ctrl: self.modifiers.control_key(),
+                            alt: self.modifiers.alt_key(),
+                            shift: self.modifiers.shift_key(),
+                        };
+                        if let Some(command) = self.keybinds.command_for(binding)
+                            && (!event.repeat || command.slot().is_some() || command == keybinds::Command::Stop)
+                        {
+                            self.run_command(command);
+                        }
                     }
-                    PhysicalKey::Code(KeyCode::Space) => {
-                        self.pending_attack = None;
-                        self.pending_skill_attack = None;
-                        self.player.stop();
-                    }
-                    PhysicalKey::Code(KeyCode::Slash) => self.player.running = !self.player.running,
-                    PhysicalKey::Code(KeyCode::KeyC) => self.send_network_action(120),
-                    PhysicalKey::Code(KeyCode::KeyX) => self.toggle_sit(),
-                    PhysicalKey::Code(KeyCode::KeyM) => self.request_mining(),
-                    PhysicalKey::Code(KeyCode::KeyB) => self.toggle_bounty_board(),
-                    PhysicalKey::Code(KeyCode::KeyP) => self.toggle_store(),
-                    PhysicalKey::Code(KeyCode::KeyH) => self.toggle_highscores(),
-                    PhysicalKey::Code(KeyCode::KeyN) => self.toggle_nobility(),
                     _ => {}
                 }
             }
@@ -1645,6 +1662,10 @@ impl ApplicationHandler for App {
                 }
                 let nobility_view = (self.quick_panel == Some(shop::QuickPanel::Nobility)).then(|| self.nobility_view_lit());
                 let guild_view = (self.quick_panel == Some(shop::QuickPanel::Guild)).then(|| self.guild_view_lit());
+                let shortcuts_view = self.shortcuts_view_lit();
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.shortcuts = shortcuts_view;
+                }
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -2041,6 +2062,18 @@ impl App {
         };
         let size = window.inner_size();
         let viewport = [size.width as f32, size.height as f32];
+        // The Shortcuts window: its clicks are its own.
+        if let Some(view) = self.shortcuts.as_ref() {
+            let [left, top] = keybinds_position(viewport);
+            let local = [self.cursor[0] - left, self.cursor[1] - top];
+            if keybinds::covers(local) {
+                if let Some(action) = keybinds::action_at(view, local) {
+                    self.handle_shortcut_action(action);
+                }
+                self.held = false;
+                return true;
+            }
+        }
         // The channel list: a channel picked; a Whisper wants a name.
         if self.chat_channel_menu {
             self.chat_channel_menu = false;
@@ -2185,6 +2218,16 @@ impl App {
                 if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
                     network.cancel_fly(character_id);
                 }
+                self.held = false;
+                return true;
+            }
+            // An XP skill is used at once, as the original's XP icons are;
+            // one that needs a target waits for the next click on one.
+            if crate::main_hud::is_xp_skill(&mut self.assets, skill_id)
+                && let Some(skill) = action_bar::skill_action(skill_id).filter(|skill| !skill.requires_target)
+            {
+                self.cast_skill(skill);
+                self.skill_bar_open = false;
                 self.held = false;
                 return true;
             }
@@ -2698,7 +2741,8 @@ impl App {
                 self.network_status = "Delete: characters are deleted from the login screen.".into();
                 return;
             }
-            A::Hotkey | A::Help => {
+            A::Hotkey => self.toggle_shortcuts(),
+            A::Help => {
                 self.network_status = "F1-F10 hotkeys | Ctrl+click attack / jump | Shift+click player menu | F11 performance | Esc close".into();
                 return;
             }
@@ -3567,6 +3611,174 @@ impl App {
 
     /// The Status button opens the Character window on its first tab,
     /// Attributes, as the original does.
+    /// Does what a shortcut's command says.
+    fn run_command(&mut self, command: keybinds::Command) {
+        use keybinds::Command as C;
+        if let Some(slot) = command.slot() {
+            self.cast_action_slot(slot);
+            return;
+        }
+        match command {
+            C::Inventory => {
+                self.inventory_open = !self.inventory_open;
+                self.close_quick_panel_unless_trading();
+                if !self.inventory_open {
+                    self.selected_inventory_uid = None;
+                }
+            }
+            C::Character => {
+                self.toggle_status();
+                self.inventory_open = false;
+                self.close_quick_panel_unless_trading();
+            }
+            C::Skills => self.skill_bar_open = !self.skill_bar_open,
+            C::Guild => self.toggle_quick_panel(shop::QuickPanel::Guild),
+            C::Friends => self.toggle_quick_panel(shop::QuickPanel::Friends),
+            C::Team => self.toggle_quick_panel(shop::QuickPanel::Team),
+            C::Options => self.toggle_quick_panel(shop::QuickPanel::Settings),
+            C::Bounty => self.toggle_bounty_board(),
+            C::Store => self.toggle_store(),
+            C::Highscores => self.toggle_highscores(),
+            C::Nobility => self.toggle_nobility(),
+            C::Emotes => self.action_panel_open = !self.action_panel_open,
+            C::Map => {
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.minimap_shown = !renderer.minimap_shown;
+                }
+            }
+            C::Shortcuts => self.toggle_shortcuts(),
+            C::Stop => {
+                self.pending_attack = None;
+                self.pending_skill_attack = None;
+                self.player.stop();
+            }
+            C::RunWalk => self.player.running = !self.player.running,
+            C::Sit => self.toggle_sit(),
+            C::Mine => self.request_mining(),
+            C::Land => self.send_network_action(120),
+            C::Performance => self.performance_overlay = !self.performance_overlay,
+            _ => {}
+        }
+    }
+
+    /// Opens a quick panel (closing the bag and the character window), or
+    /// closes it when it is the one open.
+    fn toggle_quick_panel(&mut self, panel: shop::QuickPanel) {
+        if self.quick_panel == Some(panel) {
+            self.quick_panel = None;
+            return;
+        }
+        self.status_open = false;
+        self.inventory_open = false;
+        self.quick_panel = Some(panel);
+        if panel == shop::QuickPanel::Guild {
+            self.open_guild_window();
+        }
+    }
+
+    fn toggle_shortcuts(&mut self) {
+        self.shortcuts = match self.shortcuts.take() {
+            Some(_) => None,
+            None => Some(keybinds::ShortcutsView { binds: self.keybinds.clone(), ..Default::default() }),
+        };
+    }
+
+    fn handle_shortcut_action(&mut self, action: keybinds::ShortcutAction) {
+        use keybinds::ShortcutAction as A;
+        let Some(view) = self.shortcuts.as_mut() else {
+            return;
+        };
+        match action {
+            A::Close => self.shortcuts = None,
+            A::Category(category) => {
+                view.category = category;
+                view.scroll = 0;
+                view.capturing = None;
+            }
+            A::Bind(command) => {
+                view.capturing = (view.capturing != Some(command)).then_some(command);
+            }
+            A::Clear(command) => {
+                self.keybinds.set(command, None);
+                self.keybinds.save();
+                sync_slot_keys(&self.keybinds, &mut self.action_bar);
+                view.binds = self.keybinds.clone();
+                view.capturing = None;
+                view.message = format!("{} has no key now.", command.name());
+            }
+            A::Restore => {
+                self.keybinds = keybinds::Keybinds::default();
+                self.keybinds.save();
+                sync_slot_keys(&self.keybinds, &mut self.action_bar);
+                view.binds = self.keybinds.clone();
+                view.capturing = None;
+                view.message = "Every shortcut is back to its default.".into();
+            }
+        }
+    }
+
+    /// The key pressed while the window waits for one.
+    fn capture_shortcut(&mut self, code: KeyCode) {
+        let Some(view) = self.shortcuts.as_mut() else {
+            return;
+        };
+        let Some(command) = view.capturing else {
+            return;
+        };
+        // The modifiers alone do not make a key.
+        if matches!(
+            code,
+            KeyCode::ControlLeft
+                | KeyCode::ControlRight
+                | KeyCode::AltLeft
+                | KeyCode::AltRight
+                | KeyCode::ShiftLeft
+                | KeyCode::ShiftRight
+                | KeyCode::SuperLeft
+                | KeyCode::SuperRight
+        ) {
+            return;
+        }
+        view.capturing = None;
+        if code == KeyCode::Escape {
+            view.message = "Nothing changed.".into();
+            return;
+        }
+        if !keybinds::Binding::bindable(code) {
+            view.message = "That key is the game's own; choose another.".into();
+            return;
+        }
+        let binding = keybinds::Binding {
+            code,
+            ctrl: self.modifiers.control_key(),
+            alt: self.modifiers.alt_key(),
+            shift: self.modifiers.shift_key(),
+        };
+        let moved = self.keybinds.set(command, Some(binding));
+        self.keybinds.save();
+        sync_slot_keys(&self.keybinds, &mut self.action_bar);
+        view.binds = self.keybinds.clone();
+        view.message = match moved {
+            Some(previous) => format!(
+                "{} is now {}; {} lost it.",
+                binding.label(),
+                command.name(),
+                previous.name()
+            ),
+            None => format!("{} is now {}.", binding.label(), command.name()),
+        };
+    }
+
+    /// The window as drawn: what the cursor is over lit.
+    fn shortcuts_view_lit(&self) -> Option<keybinds::ShortcutsView> {
+        let mut view = self.shortcuts.clone()?;
+        if let Some(viewport) = self.viewport() {
+            let [left, top] = keybinds_position(viewport);
+            view.hover = keybinds::action_at(&view, [self.cursor[0] - left, self.cursor[1] - top]);
+        }
+        Some(view)
+    }
+
     fn toggle_status(&mut self) {
         self.status_open = !self.status_open;
         if self.status_open {
@@ -9244,6 +9456,22 @@ fn fling_cells(blow: u32, life: u16, roll: u32) -> Option<i32> {
     }
 }
 
+/// The F key slots' tooltips name the keys they are bound to.
+fn sync_slot_keys(keybinds: &keybinds::Keybinds, bar: &mut action_bar::ActionBar) {
+    for (index, slot) in bar.slots.iter_mut().enumerate().take(10) {
+        let command = keybinds::Command::ALL[index];
+        slot.hotkey = keybinds.get(command).map(keybinds::Binding::label).unwrap_or_default();
+    }
+}
+
+/// The Shortcuts window's corner: centred on the screen.
+pub(crate) fn keybinds_position(viewport: [f32; 2]) -> [f32; 2] {
+    [
+        ((viewport[0] - keybinds::SIZE[0] as f32) * 0.5).max(8.0).round(),
+        ((viewport[1] - keybinds::SIZE[1] as f32) * 0.5).max(8.0).round(),
+    ]
+}
+
 /// NPC type 16: a ShopFlag, where a booth is set up (Redux `RoleBoothFlag`).
 const BOOTH_FLAG: u16 = 16;
 
@@ -9918,6 +10146,8 @@ fn run() -> Result<()> {
         server_clock_offset: 0,
         bounty: None,
         guild_view: guild_panel::GuildView::default(),
+        keybinds: keybinds::Keybinds::load(),
+        shortcuts: None,
         guild_relations: Default::default(),
         store: None,
         daily_rewards: None,
@@ -9954,6 +10184,7 @@ fn run() -> Result<()> {
         saved.apply_chat(&mut app.chat_log);
         app.saved_hud = Some(saved);
     }
+    sync_slot_keys(&app.keybinds, &mut app.action_bar);
     match event_loop {
         Some(mut event_loop) => event_loop.run_app_on_demand(&mut app)?,
         None => EventLoop::new()?.run_app(&mut app)?,
