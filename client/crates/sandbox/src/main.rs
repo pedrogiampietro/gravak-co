@@ -3842,27 +3842,14 @@ impl App {
     }
 
     fn handle_helper_action(&mut self, action: helper::HelperAction) {
-        use helper::HelperAction as A;
-        match action {
-            A::Close => self.helper_window = None,
-            A::Power => self.toggle_helper(),
-            A::Tab(tab) => {
-                if let Some(view) = self.helper_window.as_mut() {
-                    view.tab = tab;
-                }
-            }
-            A::Toggle(toggle) => {
-                self.helper.flip(toggle);
-                self.helper.save();
-            }
-            A::Step(stepper, up) => {
-                self.helper.step(stepper, up);
-                self.helper.save();
-            }
-            A::Pick(picker, up) => {
-                self.helper.pick(picker, up);
-                self.helper.save();
-            }
+        let Some(window) = self.helper_window.as_mut() else {
+            return;
+        };
+        match helper::apply(&mut self.helper, window, action) {
+            helper::Effect::Close => self.helper_window = None,
+            helper::Effect::Power => self.toggle_helper(),
+            helper::Effect::Save => self.helper.save(),
+            helper::Effect::Nothing => {}
         }
     }
 
@@ -3878,6 +3865,34 @@ impl App {
             .get(keybinds::Command::HelperToggle)
             .map_or_else(|| "none".to_owned(), keybinds::Binding::label);
         view.status = self.helper_status.clone();
+        // The bag's potions, one entry a kind, with how many.
+        let mut potions: Vec<(u32, u32)> = Vec::new();
+        for item in &self.inventory {
+            if shop::health_recovery_for_item(item.item_type).is_none() && shop::mana_recovery_for_item(item.item_type).is_none() {
+                continue;
+            }
+            match potions.iter_mut().find(|(kind, _)| *kind == item.item_type) {
+                Some((_, count)) => *count += 1,
+                None => potions.push((item.item_type, 1)),
+            }
+        }
+        potions.sort_unstable();
+        view.potions = potions;
+        let me = self.network_character_id;
+        view.party = std::iter::once(self.character.name.clone())
+            .chain(
+                self.team_members
+                    .iter()
+                    .filter(|member| Some(member.member_id) != me && !member.name.is_empty())
+                    .map(|member| member.name.clone()),
+            )
+            .collect();
+        view.leader = self.team_leader_id.and_then(|leader| {
+            if Some(leader) == me {
+                return Some(self.character.name.clone());
+            }
+            self.team_members.iter().find(|member| member.member_id == leader).map(|member| member.name.clone())
+        });
         if let Some(viewport) = self.viewport() {
             let [left, top] = helper_position(viewport);
             view.hover = helper::action_at(&view, [self.cursor[0] - left, self.cursor[1] - top]);
@@ -3920,6 +3935,7 @@ impl App {
                 let maximum = u32::from(member.maximum_health);
                 helper::Teammate {
                     id: member.member_id,
+                    name: member.name.clone(),
                     life_percent: (maximum > 0).then(|| (u32::from(member.health) * 100 / maximum).min(100) as u8),
                     position: actor.map(|actor| actor.position),
                     flags: actor.map_or(0, |actor| actor.status_flags),
@@ -3935,21 +3951,18 @@ impl App {
                     .map(|(_, position)| position.map(|value| value as f32))
             })
         });
-        let potions = |restores: fn(u32) -> Option<u16>| {
-            self.inventory
-                .iter()
-                .filter_map(|item| restores(item.item_type).map(|amount| (item.uid, item.item_type, amount)))
-                .collect::<Vec<_>>()
-        };
-        let monster_near = self.remote_actors.values().any(|actor| {
-            !actor.npc
-                && (400_001..495_000).contains(&actor.id)
-                && actor.health > 0
-                && motion_math::skill_distance(self.player.position, actor.position) <= 12.0
-        });
+        let potions = self
+            .inventory
+            .iter()
+            .filter(|item| {
+                shop::health_recovery_for_item(item.item_type).is_some() || shop::mana_recovery_for_item(item.item_type).is_some()
+            })
+            .map(|item| (item.uid, item.item_type))
+            .collect();
         let flags = self.status_flags;
         helper::World {
             me,
+            my_name: self.character.name.clone(),
             position: self.player.position,
             health: self.character.health,
             maximum_health: self.character.maximum_health,
@@ -3964,14 +3977,11 @@ impl App {
                 .filter(|(_, until)| now < **until)
                 .map(|(skill, _)| *skill)
                 .collect(),
-            life_potions: potions(shop::health_recovery_for_item),
-            mana_potions: potions(shop::mana_recovery_for_item),
+            potions,
             team,
             leader: self.team_leader_id,
             leader_at,
-            monster_near,
             xp_ready: flags & network::XP_CIRCLE_FLAG != 0,
-            in_xp: flags & (network::CYCLONE_FLAG | network::SUPERMAN_FLAG | helper::xp_flag(self.helper.xp_skill)) != 0,
             busy: self.pending_attack.is_some()
                 || self.pending_skill_attack.is_some()
                 || self.pending_pickup.is_some()

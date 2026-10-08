@@ -139,6 +139,14 @@ async fn send_change(state: &State, change: TeamChange) -> Result<(), Error> {
                 if action == team::CREATE {
                     send_notice(state, added_id, "You made a team: invite players with the Team window's Invite.").await?;
                 } else {
+                    // The newcomer learns who leads (the others know).
+                    if let Some(added) = character_entity(state, added_id) {
+                        added
+                            .owner()
+                            .ok_or(Error::CharacterNotFound)?
+                            .send(MsgTeam::new(team::LEADER, leader_id))
+                            .await?;
+                    }
                     send_notice(state, added_id, format!("You joined {}'s team.", name_of(state, leader_id))).await?;
                     let name = name_of(state, added_id);
                     for recipient_id in recipients.iter().filter(|id| **id != added_id) {

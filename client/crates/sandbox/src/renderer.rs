@@ -6076,7 +6076,7 @@ impl Renderer {
             if !self.textures.contains_key(&key) {
                 let font = crate::labels::font()?;
                 let mut content = image::RgbaImage::new(crate::helper::SIZE[0], crate::helper::SIZE[1]);
-                crate::helper::draw(&mut content, &font, &view);
+                crate::helper::draw(&mut content, &font, &view, assets);
                 let close = view.hover == Some(crate::helper::HelperAction::Close);
                 self.upload(&key, crate::shop::framed(assets, content, "Helper", close)?);
             }
