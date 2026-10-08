@@ -5090,7 +5090,12 @@ impl Renderer {
             let selected_target_name = selected_target
                 .and_then(|id| remote_actors.get(&id))
                 .filter(|actor| !actor.npc && !(400001..=499999).contains(&actor.id))
-                .map(|actor| actor.name.as_str());
+                .map(|actor| actor.name.as_str())
+                .or_else(|| {
+                    selected_target.and_then(|id| {
+                        team_members.iter().find(|member| member.member_id == id).map(|member| member.name.as_str())
+                    })
+                });
             selected_target_name.hash(&mut hasher);
             let signature = hasher.finish();
             let key = format!("@quick-panel-{signature}");

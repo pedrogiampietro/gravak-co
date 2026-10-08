@@ -105,6 +105,10 @@ enum TargetPick {
     Trade,
     /// The main bar's View Equipment ([130-1016]).
     ViewEquipment,
+    /// The Team window's Invite: the player clicked is invited.
+    TeamInvite,
+    /// The Team window's Join: the team of the player clicked is asked.
+    TeamJoin,
 }
 
 impl TargetPick {
@@ -115,6 +119,8 @@ impl TargetPick {
             Self::Ignore => "Click a player to add as enemy (click the ground to cancel)",
             Self::Trade => "Click a player to request a trade (click the ground to cancel)",
             Self::ViewEquipment => "Click a player to view their equipment (click the ground to cancel)",
+            Self::TeamInvite => "Click a player to invite to your team (Esc or the ground cancels)",
+            Self::TeamJoin => "Click a player of the team you want to join (Esc or the ground cancels)",
         }
     }
 }
@@ -124,12 +130,13 @@ impl TargetPick {
 const JUMP_REST_SECONDS: f32 = 0.5;
 
 /// Rows of the Shift+click player menu, in order.
-const PLAYER_MENU: [(&str, PlayerMenuAction); 6] = [
+const PLAYER_MENU: [(&str, PlayerMenuAction); 7] = [
     ("TRADE", PlayerMenuAction::Trade),
     ("FOLLOW", PlayerMenuAction::Follow),
     ("WHISPER", PlayerMenuAction::Whisper),
     ("ADD FRIEND", PlayerMenuAction::AddFriend),
     ("TEAM INVITE", PlayerMenuAction::TeamInvite),
+    ("JOIN TEAM", PlayerMenuAction::TeamJoin),
     ("ENEMY", PlayerMenuAction::Enemy),
 ];
 
@@ -140,6 +147,7 @@ enum PlayerMenuAction {
     Whisper,
     AddFriend,
     TeamInvite,
+    TeamJoin,
     Enemy,
     /// A leader or deputy invites a player without a guild.
     GuildInvite,
@@ -2384,6 +2392,12 @@ impl App {
                 {
                     self.selected_target = Some(member_id);
                     self.network_status = format!("team target selected: {member_id}");
+                    if let Some(member) = self.team_members.iter().find(|member| member.member_id == member_id) {
+                        let name = member.name.clone();
+                        if Some(member_id) != self.network_character_id {
+                            self.system_line(&format!("{name} picked: Kick or Leader act on them."));
+                        }
+                    }
                     self.held = false;
                     return true;
                 }
@@ -2699,6 +2713,7 @@ impl App {
             Some(TargetPick::Ignore) => return GameCursor::PickEnemy,
             Some(TargetPick::Trade) => return GameCursor::PickTrade,
             Some(TargetPick::ViewEquipment) => return GameCursor::PickView,
+            Some(TargetPick::TeamInvite | TargetPick::TeamJoin) => return GameCursor::PickTeam,
             None => {}
         }
         if self.ground_loot_at_cursor().is_some() {
@@ -3037,11 +3052,11 @@ impl App {
             (false, true) => self.handle_team_panel_action(shop::TeamPanelAction::AcceptJoin),
             (true, false) => {
                 self.pending_team_invite = None;
-                self.network_status = "convite de grupo recusado".into();
+                self.system_line("Team invite declined.");
             }
             (false, false) => {
                 self.pending_team_join_request = None;
-                self.network_status = "pedido de entrada no grupo recusado".into();
+                self.system_line("Join request declined.");
             }
         }
     }
@@ -3185,6 +3200,10 @@ impl App {
             PlayerMenuAction::TeamInvite => {
                 const REQUEST_INVITE: u32 = 4;
                 self.send_team_action(REQUEST_INVITE, target_id);
+            }
+            PlayerMenuAction::TeamJoin => {
+                const REQUEST_JOIN: u32 = 1;
+                self.send_team_action(REQUEST_JOIN, target_id);
             }
             PlayerMenuAction::Whisper => {
                 self.chat_channel = original_ui_layout::WHISPER_CHANNEL;
@@ -4113,17 +4132,14 @@ impl App {
 
     fn handle_team_panel_action(&mut self, action: shop::TeamPanelAction) {
         const CREATE: u32 = 0;
-        const REQUEST_JOIN: u32 = 1;
         const ACCEPT_INVITE: u32 = 3;
         const ACCEPT_JOIN: u32 = 5;
         const LEAVE_TEAM: u32 = 2;
-        const REQUEST_INVITE: u32 = 4;
         const DISMISS: u32 = 6;
         const KICK: u32 = 7;
         const FORBID_NEW_MEMBERS: u32 = 8;
         const ALLOW_NEW_MEMBERS: u32 = 9;
         const LEADER: u32 = 15;
-        let target = self.selected_target.unwrap_or_default();
         match action {
             shop::TeamPanelAction::Create => self.send_team_action(CREATE, 0),
             shop::TeamPanelAction::AcceptInvite => {
@@ -4134,12 +4150,7 @@ impl App {
                 self.send_team_action(ACCEPT_INVITE, leader_id);
             }
             shop::TeamPanelAction::RequestJoin => {
-                if target == 0 {
-                    self.network_status =
-                        "selecione o líder do grupo para solicitar entrada".into();
-                } else {
-                    self.send_team_action(REQUEST_JOIN, target);
-                }
+                self.target_pick = Some(TargetPick::TeamJoin);
             }
             shop::TeamPanelAction::AcceptJoin => {
                 let Some(requester_id) = self.pending_team_join_request.take() else {
@@ -4149,27 +4160,23 @@ impl App {
                 self.send_team_action(ACCEPT_JOIN, requester_id);
             }
             shop::TeamPanelAction::Invite => {
-                if target == 0 {
-                    self.network_status = "selecione um jogador para convidar".into();
+                if self.team_members.len() >= 5 {
+                    self.system_line("The team is full (5 members).");
+                } else if self.team_leader_id.is_some() && self.team_leader_id != self.network_character_id {
+                    self.system_line("Only the team leader can invite.");
                 } else {
-                    self.send_team_action(REQUEST_INVITE, target);
+                    self.target_pick = Some(TargetPick::TeamInvite);
                 }
             }
             shop::TeamPanelAction::Leave => self.send_team_action(LEAVE_TEAM, 0),
-            shop::TeamPanelAction::Leader => {
-                if target == 0 {
-                    self.network_status = "selecione um membro para passar a liderança".into();
-                } else {
-                    self.send_team_action(LEADER, target);
-                }
-            }
-            shop::TeamPanelAction::Kick => {
-                if target == 0 {
-                    self.network_status = "selecione um membro para expulsar".into();
-                } else {
-                    self.send_team_action(KICK, target);
-                }
-            }
+            shop::TeamPanelAction::Leader => match self.picked_teammate() {
+                Some(member) => self.send_team_action(LEADER, member),
+                None => self.system_line("Click a teammate's picture in the Team window, then Leader."),
+            },
+            shop::TeamPanelAction::Kick => match self.picked_teammate() {
+                Some(member) => self.send_team_action(KICK, member),
+                None => self.system_line("Click a teammate's picture in the Team window, then Kick."),
+            },
             shop::TeamPanelAction::Dismiss => self.send_team_action(DISMISS, 0),
             shop::TeamPanelAction::ToggleJoin => {
                 let action = if self.team_join_enabled {
@@ -4180,6 +4187,14 @@ impl App {
                 self.send_team_action(action, 0);
             }
         }
+    }
+
+    /// The teammate picked in the Team window (not the hero).
+    fn picked_teammate(&self) -> Option<u32> {
+        let target = self.selected_target?;
+        (Some(target) != self.network_character_id
+            && self.team_members.iter().any(|member| member.member_id == target))
+        .then_some(target)
     }
 
     fn handle_guild_panel_action(&mut self, action: shop::GuildPanelAction) {
@@ -4788,6 +4803,14 @@ impl App {
                         self.team_leader_id = None;
                         self.team_join_enabled = true;
                         self.pending_team_join_request = None;
+                    }
+                    // Leaving (2) or being kicked (7): out of the team.
+                    2 | 7 if Some(target_id) == self.network_character_id => {
+                        self.team_members.clear();
+                        self.team_leader_id = None;
+                        self.team_join_enabled = true;
+                        self.pending_team_join_request = None;
+                        self.team_positions.clear();
                     }
                     8 => self.team_join_enabled = false,
                     9 => self.team_join_enabled = true,
@@ -6310,6 +6333,14 @@ impl App {
                 }
                 TargetPick::Trade => self.handle_trade_panel_action(shop::TradePanelAction::Request),
                 TargetPick::ViewEquipment => self.query_equipment(id),
+                TargetPick::TeamInvite => {
+                    const REQUEST_INVITE: u32 = 4;
+                    self.send_team_action(REQUEST_INVITE, id);
+                }
+                TargetPick::TeamJoin => {
+                    const REQUEST_JOIN: u32 = 1;
+                    self.send_team_action(REQUEST_JOIN, id);
+                }
             }
         }
         if let Some(window) = &self.window {

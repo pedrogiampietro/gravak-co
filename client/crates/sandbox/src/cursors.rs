@@ -18,18 +18,21 @@ pub enum GameCursor {
     PickTrade,
     /// View Equipment.
     PickView,
+    /// A team invite or a request to join one.
+    PickTeam,
     /// The shop's Repair: a hammer, until an item is struck.
     Repair,
 }
 
 impl GameCursor {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Arrow,
         Self::Interact,
         Self::PickFriend,
         Self::PickEnemy,
         Self::PickTrade,
         Self::PickView,
+        Self::PickTeam,
         Self::Repair,
     ];
 
@@ -37,7 +40,9 @@ impl GameCursor {
     pub const fn hotspot(self) -> [u16; 2] {
         match self {
             Self::Arrow | Self::Interact => [2, 2],
-            Self::PickFriend | Self::PickEnemy | Self::PickTrade | Self::PickView => [RETICLE[0] as u16, RETICLE[1] as u16],
+            Self::PickFriend | Self::PickEnemy | Self::PickTrade | Self::PickView | Self::PickTeam => {
+                [RETICLE[0] as u16, RETICLE[1] as u16]
+            }
             Self::Repair => [HAMMER_FACE[0] as u16, HAMMER_FACE[1] as u16],
         }
     }
@@ -51,6 +56,7 @@ impl GameCursor {
             Self::PickEnemy => reticle(&mut image, Badge::Cross),
             Self::PickTrade => reticle(&mut image, Badge::Coin),
             Self::PickView => reticle(&mut image, Badge::Eye),
+            Self::PickTeam => reticle(&mut image, Badge::Team),
             Self::Repair => hammer(&mut image),
         }
         image
@@ -232,6 +238,8 @@ enum Badge {
     Coin,
     /// View Equipment.
     Eye,
+    /// Team: two figures side by side.
+    Team,
 }
 
 /// A gold targeting ring with ticks and a centre dot, and a round badge at
@@ -273,6 +281,7 @@ fn reticle(image: &mut RgbaImage, badge: Badge) {
         Badge::Cross => ([196.0, 52.0, 44.0], [64.0, 12.0, 10.0]),
         Badge::Coin => (GOLD, [96.0, 60.0, 14.0]),
         Badge::Eye => ([70.0, 128.0, 196.0], [14.0, 34.0, 64.0]),
+        Badge::Team => ([226.0, 140.0, 46.0], [80.0, 40.0, 8.0]),
     };
     let badge_distance = |x: f32, y: f32| (x - center[0]).hypot(y - center[1]) - 6.0;
     paint(image, |x, y| Some((INK, coverage(badge_distance(x, y) - 1.2))));
@@ -301,6 +310,19 @@ fn reticle(image: &mut RgbaImage, badge: Badge) {
             let inner = ((x - bx).hypot(y - by) - 3.6).abs();
             let mark = segment_distance([bx, by - 1.8], [bx, by + 1.8], x, y);
             Some(([110.0, 70.0, 16.0], coverage(inner - 0.5).max(coverage(mark - 0.6))))
+        }),
+        // Two figures: a head over shoulders, side by side.
+        Badge::Team => paint(image, |x, y| {
+            // A figure: a round head over a half disc of shoulders.
+            let figure = |fx: f32, fy: f32, scale: f32| {
+                let head = (x - fx).hypot(y - (fy - 1.9 * scale)) - 1.5 * scale;
+                let shoulders = ((x - fx).hypot(y - (fy + 3.0 * scale)) - 2.7 * scale).max(fy + 0.6 * scale - y);
+                head.min(shoulders)
+            };
+            // One behind on the right, one in front on the left.
+            let front = figure(bx - 1.3, by + 0.4, 1.0);
+            let back = figure(bx + 2.2, by - 0.4, 0.85).max(-(front - 0.9));
+            Some(([255.0; 3], coverage(front.min(back))))
         }),
         // An eye: a white almond (two arcs) and a dark pupil.
         Badge::Eye => {
@@ -337,7 +359,7 @@ mod tests {
             assert_eq!(pixel(&image, SIZE - 1, 0).0[3], 0, "{cursor:?}");
         }
         if let Ok(dir) = std::env::var("CURSOR_PREVIEW_DIR") {
-            let mut sheet = RgbaImage::from_pixel(SIZE * 6 * 4 + 48, SIZE * 4 * 2 + 20, Rgba([0, 0, 0, 0]));
+            let mut sheet = RgbaImage::from_pixel((SIZE * 4 + 8) * GameCursor::ALL.len() as u32, SIZE * 4 * 2 + 20, Rgba([0, 0, 0, 0]));
             for (index, cursor) in GameCursor::ALL.into_iter().enumerate() {
                 let big = image::imageops::resize(&cursor.image(), SIZE * 4, SIZE * 4, image::imageops::FilterType::Nearest);
                 for (row, bg) in [[150u8, 140, 125], [40, 70, 50]].into_iter().enumerate() {

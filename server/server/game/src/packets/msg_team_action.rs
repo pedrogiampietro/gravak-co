@@ -58,17 +58,18 @@ async fn send_notice(state: &State, character_id: u32, message: impl Into<String
     Ok(())
 }
 
+/// A character's name, for the team's notices.
+fn name_of(state: &State, character_id: u32) -> String {
+    state
+        .entity(character_id)
+        .and_then(|entity| entity.as_character().map(|character| character.entity().name().to_owned()))
+        .unwrap_or_else(|| "A player".to_owned())
+}
+
 async fn send_change(state: &State, change: TeamChange) -> Result<(), Error> {
     match change {
         TeamChange::Invite { leader_id, target_id } => {
-            let leader_name = state
-                .entity(leader_id)
-                .and_then(|entity| {
-                    entity
-                        .as_character()
-                        .map(|character| character.entity().name().to_owned())
-                })
-                .unwrap_or_else(|| "a player".to_owned());
+            let leader_name = name_of(state, leader_id);
             if let Some(target) = character_entity(state, target_id) {
                 target
                     .owner()
@@ -76,8 +77,8 @@ async fn send_change(state: &State, change: TeamChange) -> Result<(), Error> {
                     .send(MsgTeam::new(team::REQUEST_INVITE, leader_id))
                     .await?;
             }
-            send_notice(state, leader_id, format!("Team invitation sent to {target_id}.")).await?;
-            send_notice(state, target_id, format!("{leader_name} invited you to a team.")).await?;
+            send_notice(state, leader_id, format!("Team invitation sent to {}.", name_of(state, target_id))).await?;
+            send_notice(state, target_id, format!("{leader_name} invited you to their team.")).await?;
         },
         TeamChange::JoinRequest {
             leader_id,
@@ -90,13 +91,8 @@ async fn send_change(state: &State, change: TeamChange) -> Result<(), Error> {
                     .send(MsgTeam::new(team::REQUEST_JOIN, requester_id))
                     .await?;
             }
-            send_notice(
-                state,
-                leader_id,
-                format!("Character {requester_id} requested to join your team."),
-            )
-            .await?;
-            send_notice(state, requester_id, "Team join request sent.").await?;
+            send_notice(state, leader_id, format!("{} asks to join your team.", name_of(state, requester_id))).await?;
+            send_notice(state, requester_id, format!("You asked to join {}'s team.", name_of(state, leader_id))).await?;
         },
         TeamChange::State {
             action,
@@ -140,7 +136,15 @@ async fn send_change(state: &State, change: TeamChange) -> Result<(), Error> {
                         }
                     }
                 }
-                send_notice(state, added_id, format!("You joined team led by {leader_id}.")).await?;
+                if action == team::CREATE {
+                    send_notice(state, added_id, "You made a team: invite players with the Team window's Invite.").await?;
+                } else {
+                    send_notice(state, added_id, format!("You joined {}'s team.", name_of(state, leader_id))).await?;
+                    let name = name_of(state, added_id);
+                    for recipient_id in recipients.iter().filter(|id| **id != added_id) {
+                        send_notice(state, *recipient_id, format!("{name} joined the team.")).await?;
+                    }
+                }
             }
             if let Some(removed_id) = removed {
                 for recipient_id in &recipients {
@@ -159,10 +163,37 @@ async fn send_change(state: &State, change: TeamChange) -> Result<(), Error> {
                     }
                 }
             }
-            if action == team::DISMISS {
-                for recipient_id in recipients {
-                    send_notice(state, recipient_id, "The team was dismissed.").await?;
+            if let Some(removed_id) = removed.filter(|_| action != team::DISMISS) {
+                let name = name_of(state, removed_id);
+                let (yours, theirs) = if action == team::KICK {
+                    ("You were removed from the team.".to_owned(), format!("{name} was removed from the team."))
+                } else {
+                    ("You left the team.".to_owned(), format!("{name} left the team."))
+                };
+                for recipient_id in &recipients {
+                    let line = if *recipient_id == removed_id { yours.clone() } else { theirs.clone() };
+                    send_notice(state, *recipient_id, line).await?;
                 }
+            }
+            match action {
+                team::DISMISS => {
+                    for recipient_id in recipients {
+                        send_notice(state, recipient_id, "The team was dismissed.").await?;
+                    }
+                },
+                team::LEADER => {
+                    let name = name_of(state, leader_id);
+                    for recipient_id in recipients {
+                        send_notice(state, recipient_id, format!("{name} now leads the team.")).await?;
+                    }
+                },
+                team::FORBID_NEW_MEMBERS => {
+                    send_notice(state, leader_id, "The team takes no new members now.").await?;
+                },
+                team::ALLOW_NEW_MEMBERS => {
+                    send_notice(state, leader_id, "The team takes new members again.").await?;
+                },
+                _ => {},
             }
         },
     }
@@ -188,8 +219,17 @@ impl PacketProcess for MsgTeamAction {
                 | team::ACCEPT_INVITE
                 | team::LEADER
         );
-        if target_required {
-            target_entity(state, character, target_id).map_err(|error| Error::Other(error.message().to_owned()))?;
+        if target_required && target_entity(state, character, target_id).is_err() {
+            actor
+                .send(MsgTalk::from_system(character.id(), TalkChannel::Team, "That player is not near enough."))
+                .await?;
+            return Ok(());
+        }
+        // Inviting without a team makes one first, led by the inviter.
+        if self.action == team::REQUEST_INVITE && state.team_manager().snapshot(character.id()).is_none() {
+            if let Ok(change) = state.team_manager().apply(character.id(), 0, team::CREATE) {
+                send_change(state, change).await?;
+            }
         }
         match state.team_manager().apply(character.id(), target_id, self.action) {
             Ok(change) => send_change(state, change).await,
