@@ -2346,12 +2346,14 @@ impl Renderer {
             }
         }
     }
+    /// The map pixel at the screen's top left: the hero in the middle, but
+    /// never past the map's edges (as the original), where there is no
+    /// picture, only black; the hero then walks off the middle.
     pub fn camera(&self, map: &Map, player: &Player) -> [f32; 2] {
         let p = map.project(player.position);
-        [
-            p[0] - self.config.width as f32 * 0.5 + self.camera_shift[0],
-            p[1] - self.config.height as f32 * 0.5 + self.camera_shift[1],
-        ]
+        let view = [self.config.width as f32, self.config.height as f32];
+        let wanted = [p[0] - view[0] * 0.5 + self.camera_shift[0], p[1] - view[1] * 0.5 + self.camera_shift[1]];
+        clamp_camera(wanted, map.extent, view)
     }
     /// The revive button under `position`: `Some(true)` revives here.
     pub fn revive_at(&self, position: [f32; 2]) -> Option<bool> {
@@ -6549,6 +6551,15 @@ pub(crate) const REMOTE_DEAD: u16 = 1161;
 const NPC_NAME: [u8; 3] = [96, 236, 96];
 pub(crate) const REMOTE_FADING: u16 = 1160;
 
+/// `wanted` kept so the view stays on the map; a map smaller than the view
+/// sits in its middle.
+fn clamp_camera(wanted: [f32; 2], extent: [f32; 2], view: [f32; 2]) -> [f32; 2] {
+    [0, 1].map(|axis| {
+        let room = extent[axis] - view[axis];
+        if room <= 0.0 { room * 0.5 } else { wanted[axis].clamp(0.0, room) }
+    })
+}
+
 fn remote_action(value: u16) -> Action {
     match value {
         REMOTE_DEAD => Action::Die,
@@ -6797,8 +6808,22 @@ fn trail_point(trail: &[(f32, [f32; 2])], when: f32) -> Option<[f32; 2]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Draw, coalesce_adjacent_draws, quad, should_hide_dead_monster, world_point_visible,
+        Draw, clamp_camera, coalesce_adjacent_draws, quad, should_hide_dead_monster, world_point_visible,
     };
+
+    #[test]
+    fn the_view_stays_on_the_map() {
+        let extent = [26_368.0, 17_920.0];
+        let view = [1024.0, 768.0];
+        // In the middle of the map: centred as wanted.
+        assert_eq!(clamp_camera([5_000.0, 6_000.0], extent, view), [5_000.0, 6_000.0]);
+        // Near the top (Twin City's Bird Island portal): no black above.
+        assert_eq!(clamp_camera([13_856.0, -224.0], extent, view), [13_856.0, 0.0]);
+        // Near the bottom right corner.
+        assert_eq!(clamp_camera([26_000.0, 17_500.0], extent, view), [25_344.0, 17_152.0]);
+        // A map smaller than the view sits in its middle.
+        assert_eq!(clamp_camera([10.0, 10.0], [800.0, 600.0], view), [-112.0, -84.0]);
+    }
 
     #[test]
     fn neighbours_of_one_texture_draw_in_one_call() {
