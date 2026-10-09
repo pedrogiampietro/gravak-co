@@ -7,6 +7,7 @@ use crate::components::{draw_button, draw_card, draw_tab, WidgetState};
 use crate::ui::UiRect;
 use crate::{labels, ui_theme};
 use fontdue::Font;
+use crate::cp_shop::{reais, CpPackage, PixCharge};
 use gravak_protocol::{StoreProduct, StorePurchase, StoreState};
 use image::RgbaImage;
 
@@ -15,8 +16,10 @@ pub const CATEGORIES: [&str; 5] = ["VIP", "Experience", "Upgrades", "Blessings",
 pub const HISTORY: u32 = CATEGORIES.len() as u32;
 /// The tab after it: the VIP's city teleports and loot filter.
 pub const SERVICES: u32 = HISTORY + 1;
+/// The last tab: CPs bought with Pix (cp_shop.rs).
+pub const BUY_CPS: u32 = SERVICES + 1;
 /// The tabs after the categories.
-const EXTRA_TABS: [&str; 2] = ["History", "VIP Services"];
+const EXTRA_TABS: [&str; 3] = ["History", "VIP Services", "Buy CPs"];
 
 /// The VIP teleport destinations, in the server's order.
 pub const CITIES: [&str; 6] = ["Twin City", "Phoenix Castle", "Ape Mountain", "Desert City", "Bird Island", "Market"];
@@ -40,6 +43,34 @@ pub struct StoreView {
     pub selected: Option<u32>,
     /// The latest purchases, newest first.
     pub history: Vec<StorePurchase>,
+    /// The Buy CPs tab.
+    pub pix: PixView,
+}
+
+/// The Buy CPs tab: the packages, then the Pix charge until it is paid.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct PixView {
+    pub packages: Vec<CpPackage>,
+    pub stage: PixStage,
+    /// The code went to the clipboard.
+    pub copied: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum PixStage {
+    /// Nothing asked yet.
+    #[default]
+    Idle,
+    /// Waiting for the packages.
+    Loading,
+    Choose,
+    /// Waiting for the charge.
+    Creating,
+    /// The charge, waiting to be paid; `paid` once the website says so.
+    Charge { charge: PixCharge, paid: bool },
+    /// The CPs are on the hero.
+    Credited(u32),
+    Failed(String),
 }
 
 impl StoreView {
@@ -91,6 +122,12 @@ pub enum StoreAction {
     Teleport(u32),
     /// VIP: turns a loot filter bit on or off.
     ToggleLoot(u32),
+    /// Buy CPs: a Pix charge for this package.
+    BuyCps(u32),
+    /// Buy CPs: the Pix code to the clipboard.
+    CopyPix,
+    /// Buy CPs: back to the packages.
+    PixBack,
 }
 
 const LIST_LEFT: i32 = 140;
@@ -114,6 +151,16 @@ fn loot_row(index: usize) -> UiRect {
 }
 /// A row of the purchase history.
 const HISTORY_ROW: i32 = 27;
+
+/// Buy CPs: a package's button.
+fn package_button(index: usize) -> UiRect {
+    UiRect::new(LIST_LEFT, LIST_TOP + 26 + index as i32 * 44, DETAIL_LEFT + DETAIL_WIDTH - LIST_LEFT, 38)
+}
+/// Buy CPs: the QR code, the text and buttons right of it.
+const PIX_QR: UiRect = UiRect::new(LIST_LEFT, LIST_TOP + 26, 176, 176);
+const PIX_TEXT_LEFT: i32 = LIST_LEFT + 188;
+const PIX_COPY: UiRect = UiRect::new(PIX_TEXT_LEFT, LIST_TOP + 150, 150, 26);
+const PIX_BACK: UiRect = UiRect::new(LIST_LEFT, LIST_TOP + 250, 110, 26);
 
 fn category_tab(index: usize) -> UiRect {
     UiRect::new(20, LIST_TOP + index as i32 * 30, 110, 26)
@@ -256,6 +303,10 @@ pub fn draw(image: &mut RgbaImage, assets: &mut Assets, view: Option<&StoreView>
     }
     if view.category == SERVICES {
         draw_services(image, &ui, view);
+        return;
+    }
+    if view.category == BUY_CPS {
+        draw_buy_cps(image, &ui, &view.pix);
         return;
     }
 
@@ -401,6 +452,96 @@ fn draw_services(image: &mut RgbaImage, ui: &Font, view: &StoreView) {
     );
 }
 
+/// The CPs packages, then the Pix charge: its QR code, what it buys, the
+/// copy-and-paste code and where the payment stands.
+fn draw_buy_cps(image: &mut RgbaImage, ui: &Font, pix: &PixView) {
+    say(image, ui, "Buy CPs with Pix", ui_theme::TEXT_GOLD, LIST_LEFT, LIST_TOP, 14.0);
+    match &pix.stage {
+        PixStage::Idle | PixStage::Loading => {
+            say(image, ui, "Opening the shop...", ui_theme::TEXT_MUTED, LIST_LEFT, LIST_TOP + 26, 13.0);
+        }
+        PixStage::Creating => {
+            say(image, ui, "Making your Pix code...", ui_theme::TEXT_MUTED, LIST_LEFT, LIST_TOP + 26, 13.0);
+        }
+        PixStage::Choose => {
+            let base = pix
+                .packages
+                .iter()
+                .map(|package| f64::from(package.cps) / f64::from(package.price_cents.max(1)))
+                .fold(f64::INFINITY, f64::min);
+            for (index, package) in pix.packages.iter().enumerate().take(6) {
+                let rect = package_button(index);
+                draw_card(image, rect, WidgetState::Normal);
+                draw_coin(image, [rect.x + 16, rect.y + 19]);
+                let cps = format!("{} CPs", thousands(u64::from(package.cps)));
+                say(image, ui, &cps, ui_theme::TEXT_GOLD, rect.x + 30, rect.y + 11, 14.0);
+                let bonus = ((f64::from(package.cps) / f64::from(package.price_cents.max(1))) / base - 1.0) * 100.0;
+                if bonus >= 1.0 {
+                    say(image, ui, &format!("+{bonus:.0}% bonus"), [120, 214, 140], rect.x + 130, rect.y + 12, 12.0);
+                }
+                let price = reais(package.price_cents);
+                let x = rect.x + rect.width - 10 - width_of(ui, &price, 14.0) as i32;
+                say(image, ui, &price, ui_theme::TEXT, x, rect.y + 11, 14.0);
+            }
+            let note_y = package_button(pix.packages.len().min(6)).y + 4;
+            say(image, ui, "The CPs go to this character as soon as the Pix is paid.", ui_theme::TEXT_MUTED, LIST_LEFT, note_y, 11.0);
+        }
+        PixStage::Charge { charge, paid } => {
+            crate::components::fill(image, PIX_QR, [255, 255, 255, 255]);
+            if let Ok(qr) = image::load_from_memory(&charge.qr_png) {
+                let size = (PIX_QR.width - 8) as u32;
+                let qr = image::imageops::resize(&qr.to_rgba8(), size, size, image::imageops::FilterType::Nearest);
+                image::imageops::overlay(image, &qr, i64::from(PIX_QR.x + 4), i64::from(PIX_QR.y + 4));
+            }
+            let mut y = PIX_QR.y;
+            let what = format!("{} CPs", thousands(u64::from(charge.cps)));
+            say(image, ui, &what, ui_theme::TEXT_GOLD, PIX_TEXT_LEFT, y, 16.0);
+            y += 22;
+            say(image, ui, &reais(charge.price_cents), ui_theme::TEXT, PIX_TEXT_LEFT, y, 14.0);
+            y += 26;
+            let width = (DETAIL_LEFT + DETAIL_WIDTH - PIX_TEXT_LEFT) as f32;
+            for line in wrap(ui, "Scan the QR code in your bank's app, or copy the Pix code and paste it there.", 11.0, width).iter().take(4) {
+                say(image, ui, line, ui_theme::TEXT, PIX_TEXT_LEFT, y, 11.0);
+                y += 14;
+            }
+            let label = if pix.copied { "Copied!" } else { "Copy Pix code" };
+            draw_button(image, ui, PIX_COPY, label, WidgetState::Normal);
+            let (status, colour) = if *paid {
+                ("Paid! Your CPs are on their way...", [120, 214, 140])
+            } else {
+                ("Waiting for the payment... (valid for 30 minutes)", ui_theme::TEXT_MUTED)
+            };
+            say(image, ui, status, colour, LIST_LEFT, PIX_QR.y + PIX_QR.height + 10, 12.0);
+            draw_button(image, ui, PIX_BACK, "Back", WidgetState::Normal);
+        }
+        PixStage::Credited(cps) => {
+            let text = format!("{} CPs arrived. Thank you!", thousands(u64::from(*cps)));
+            say(image, ui, &text, [120, 214, 140], LIST_LEFT, LIST_TOP + 26, 14.0);
+            draw_button(image, ui, PIX_BACK, "Buy more", WidgetState::Normal);
+        }
+        PixStage::Failed(message) => {
+            let width = (DETAIL_LEFT + DETAIL_WIDTH - LIST_LEFT) as f32;
+            for (line, text) in wrap(ui, message, 13.0, width).iter().take(4).enumerate() {
+                say(image, ui, text, [214, 91, 68], LIST_LEFT, LIST_TOP + 26 + line as i32 * 17, 13.0);
+            }
+            draw_button(image, ui, PIX_BACK, "Back", WidgetState::Normal);
+        }
+    }
+}
+
+fn buy_cps_action_at(pix: &PixView, cursor: [f32; 2]) -> Option<StoreAction> {
+    match &pix.stage {
+        PixStage::Choose => (0..pix.packages.len().min(6))
+            .find(|index| package_button(*index).contains_local(cursor))
+            .map(|index| StoreAction::BuyCps(pix.packages[index].id)),
+        PixStage::Charge { .. } if PIX_COPY.contains_local(cursor) => Some(StoreAction::CopyPix),
+        PixStage::Charge { .. } | PixStage::Credited(_) | PixStage::Failed(_) => {
+            PIX_BACK.contains_local(cursor).then_some(StoreAction::PixBack)
+        }
+        _ => None,
+    }
+}
+
 /// The action under `cursor`, in the panel's own coordinates.
 pub fn action_at(view: &StoreView, cursor: [f32; 2]) -> Option<StoreAction> {
     if let Some(index) = (0..CATEGORIES.len() + EXTRA_TABS.len()).find(|index| category_tab(*index).contains_local(cursor)) {
@@ -411,6 +552,9 @@ pub fn action_at(view: &StoreView, cursor: [f32; 2]) -> Option<StoreAction> {
     }
     if view.category == HISTORY {
         return None;
+    }
+    if view.category == BUY_CPS {
+        return buy_cps_action_at(&view.pix, cursor);
     }
     if view.category == SERVICES {
         if !is_vip(view) {
@@ -525,7 +669,8 @@ mod preview {
     #[test]
     fn store_preview() {
         let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
-        let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let root = std::env::var("GRAVAK_ASSETS").unwrap_or_else(|_| "R:/5065".to_owned());
+        let mut assets = Assets::open(std::path::Path::new(&root)).expect("assets");
         let products = [
             (1, 0, 0, 7, 500, u32::MAX, "7 Days of VIP", "VIP for your whole account: +10% experience from monsters, silver, Meteors and DragonBalls from your kills go straight to your bag, and the Conductresses carry you for free."),
             (2, 0, 0, 30, 1_800, u32::MAX, "30 Days of VIP", "VIP for your whole account."),
@@ -572,6 +717,32 @@ mod preview {
         for (name, category, selected) in [("vip", 0, None), ("experience", 1, Some(16)), ("upgrades", 2, Some(22)), ("cosmetics", 4, None), ("history", HISTORY, None), ("services", SERVICES, None)] {
             view.category = category;
             view.selected = selected;
+            let mut content = RgbaImage::new(520, 420);
+            draw(&mut content, &mut assets, Some(&view));
+            let mut image = crate::original_panels::framed_window(&mut assets, 520, 420).expect("frame");
+            image::imageops::overlay(&mut image, &content, 0, 0);
+            image.save(format!("{dir}/store-{name}.png")).expect("png");
+        }
+        // Buy CPs: the packages, a charge (a made-up QR image), paid, failed.
+        view.category = BUY_CPS;
+        view.pix.packages = [(1, 1_000, 20), (2, 2_500, 55), (3, 5_000, 120), (4, 10_000, 260), (5, 20_000, 550)]
+            .into_iter()
+            .map(|(id, price_cents, cps)| CpPackage { id, price_cents, cps })
+            .collect();
+        let qr = RgbaImage::from_fn(29, 29, |x, y| if (x * 7 + y * 13 + x * y) % 3 == 0 { image::Rgba([0, 0, 0, 255]) } else { image::Rgba([255, 255, 255, 255]) });
+        let mut qr_png = Vec::new();
+        qr.write_to(&mut std::io::Cursor::new(&mut qr_png), image::ImageFormat::Png).expect("qr");
+        let charge = PixCharge { order: "x".into(), cps: 55, price_cents: 2_500, code: "00020126".into(), qr_png };
+        let stages = [
+            ("buy-cps", PixStage::Choose, false),
+            ("buy-cps-charge", PixStage::Charge { charge: charge.clone(), paid: false }, false),
+            ("buy-cps-paid", PixStage::Charge { charge, paid: true }, true),
+            ("buy-cps-credited", PixStage::Credited(55), false),
+            ("buy-cps-failed", PixStage::Failed("Too many Pix codes just now. Pay one, or wait a few minutes.".into()), false),
+        ];
+        for (name, stage, copied) in stages {
+            view.pix.stage = stage;
+            view.pix.copied = copied;
             let mut content = RgbaImage::new(520, 420);
             draw(&mut content, &mut assets, Some(&view));
             let mut image = crate::original_panels::framed_window(&mut assets, 520, 420).expect("frame");

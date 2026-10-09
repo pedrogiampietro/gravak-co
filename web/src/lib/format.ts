@@ -31,3 +31,8 @@ export function ago(lang: Locale, seconds: number, now = Date.now() / 1000) {
   if (elapsed < 86_400) return format.format(-Math.round(elapsed / 3_600), "hour");
   return format.format(-Math.round(elapsed / 86_400), "day");
 }
+
+/** Cents as reais: "R$ 25,00" (the shop sells in BRL in both languages). */
+export function money(lang: Locale, cents: number) {
+  return new Intl.NumberFormat(tag(lang), { style: "currency", currency: "BRL" }).format(cents / 100);
+}

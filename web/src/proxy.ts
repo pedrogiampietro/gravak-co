@@ -27,6 +27,6 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Pages only: not Next's files, the pictures, the brand or the installer.
-  matcher: ["/((?!_next|art|brand|downloads|favicon.ico|.*\\.[a-z0-9]+$).*)"],
+  // Pages only: not Next's files, the API, the pictures, the brand or the installer.
+  matcher: ["/((?!_next|api/|art|brand|downloads|favicon.ico|.*\\.[a-z0-9]+$).*)"],
 };

@@ -13,6 +13,7 @@ export function SiteHeader({ lang, dict }: { lang: Locale; dict: Dictionary }) {
     { href: `/${lang}/powergamers`, label: dict.community.powergamers },
     { href: `/${lang}/killers`, label: dict.community.killers },
     { href: `/${lang}/guilds`, label: dict.community.guilds },
+    { href: `/${lang}/shop`, label: dict.nav.shop },
     { href: `/${lang}/download`, label: dict.nav.download },
   ];
   return (
