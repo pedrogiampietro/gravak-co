@@ -29,6 +29,11 @@ pub const LEFT_GATE_ID: u32 = 108_855;
 pub const RIGHT_GATE_ID: u32 = 108_856;
 pub const POLE_LIFE: u32 = 20_000_000;
 pub const GATE_LIFE: u32 = 10_000_000;
+/// Lives other than these for a test server (`GUILD_WAR_POLE_LIFE`,
+/// `GUILD_WAR_GATE_LIFE`), so a round can be fought out in minutes.
+fn life_override(name: &str) -> Option<u32> {
+    std::env::var(name).ok()?.trim().parse().ok().filter(|life| *life > 1)
+}
 const GATE_REPAIR_COST: u32 = 2_000_000;
 /// Closed and open looks of the left and right gates.
 const LEFT_GATE_LOOKS: (u16, u16) = (241, 251);
@@ -87,7 +92,7 @@ impl Default for War {
             manual: false,
             winner: None,
             scores: HashMap::new(),
-            life: HashMap::from([(POLE_ID, POLE_LIFE), (LEFT_GATE_ID, GATE_LIFE), (RIGHT_GATE_ID, GATE_LIFE)]),
+            life: HashMap::from([(POLE_ID, max_life(POLE_ID)), (LEFT_GATE_ID, max_life(LEFT_GATE_ID)), (RIGHT_GATE_ID, max_life(RIGHT_GATE_ID))]),
             open: HashMap::new(),
             new_round_at: None,
             last_scores: Instant::now(),
@@ -100,6 +105,18 @@ fn war() -> &'static Mutex<War> {
     WAR.get_or_init(Default::default)
 }
 
+/// How far past its centre a structure stands, to add to an attacker's
+/// reach: a closed gate keeps everyone `GATE_HALF_WIDTH` cells off its
+/// centre, past a melee weapon's reach of 2, so it is struck from its
+/// edge; the pole is struck from beside it.
+pub fn size(npc_id: u32) -> u16 {
+    if matches!(npc_id, LEFT_GATE_ID | RIGHT_GATE_ID) {
+        GATE_HALF_WIDTH
+    } else {
+        0
+    }
+}
+
 pub fn is_war_structure(npc_id: u32) -> bool {
     matches!(npc_id, POLE_ID | LEFT_GATE_ID | RIGHT_GATE_ID)
 }
@@ -108,11 +125,11 @@ pub fn running() -> bool {
     war().lock().running
 }
 
-fn max_life(npc_id: u32) -> u32 {
+pub fn max_life(npc_id: u32) -> u32 {
     if npc_id == POLE_ID {
-        POLE_LIFE
+        life_override("GUILD_WAR_POLE_LIFE").unwrap_or(POLE_LIFE)
     } else {
-        GATE_LIFE
+        life_override("GUILD_WAR_GATE_LIFE").unwrap_or(GATE_LIFE)
     }
 }
 
@@ -229,7 +246,7 @@ async fn reset_structures(state: &State) {
     {
         let mut war = war().lock();
         war.life = Default::default();
-        war.life.extend([(POLE_ID, POLE_LIFE), (LEFT_GATE_ID, GATE_LIFE), (RIGHT_GATE_ID, GATE_LIFE)]);
+        war.life.extend([POLE_ID, LEFT_GATE_ID, RIGHT_GATE_ID].map(|id| (id, max_life(id))));
         war.open.clear();
         war.scores.clear();
         war.new_round_at = None;
@@ -582,7 +599,7 @@ pub async fn answer(
                     actor.send(MsgUserInfo::from(character)).await?;
                     {
                         let mut war = war().lock();
-                        war.life.insert(npc_id, GATE_LIFE);
+                        war.life.insert(npc_id, max_life(npc_id));
                         war.open.insert(npc_id, false);
                     }
                     refresh(state, npc_id).await;
@@ -650,5 +667,15 @@ mod tests {
         assert!(!blocks(GUILD_MAP, 170, 211, &gates));
         assert!(!blocks(1_002, 163, 211, &gates));
         assert!(pardon_time(30) && !pardon_time(15));
+    }
+
+    #[test]
+    fn a_gate_is_struck_from_outside_the_cells_it_closes() {
+        let gates = [(LEFT_GATE_ID, 163, 210)];
+        // The nearest cell left open, and a melee weapon's reach of 2.
+        let edge = 210 + GATE_HALF_WIDTH + 1;
+        assert!(!blocks(GUILD_MAP, 163, edge, &gates));
+        assert!(edge - 210 <= 2 + size(LEFT_GATE_ID));
+        assert_eq!(size(POLE_ID), 0);
     }
 }

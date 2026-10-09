@@ -247,7 +247,9 @@ impl MsgInteract {
             Some(skill) => skill.range,
             None => f32::from(character.attack_range_with_catalog(Some(state.shop_catalog()))),
         };
-        if npc.entity().map_id() != player.map_id() || f32::from(distance) > reach.max(1.0) {
+        // A gate is struck from its edge, not its centre.
+        let reach = reach.max(1.0) + f32::from(crate::guild_war::size(npc.id()));
+        if npc.entity().map_id() != player.map_id() || f32::from(distance) > reach {
             return Ok(());
         }
 
