@@ -47,14 +47,14 @@ export function RegisterForm({ lang, copy }: { lang: "pt" | "en"; copy: Copy }) 
         label={copy.username}
         hint={copy.usernameHint}
         error={message(errors.username)}
-        input={{ name: "username", autoComplete: "username", defaultValue: values.username, maxLength: 16, required: true, spellCheck: false, autoCapitalize: "none" }}
+        input={{ name: "username", autoComplete: "username", defaultValue: values.username, maxLength: 15, required: true, spellCheck: false, autoCapitalize: "none" }}
       />
       <Field
         id="password"
         label={copy.password}
         hint={copy.passwordHint}
         error={message(errors.password)}
-        input={{ name: "password", type: "password", autoComplete: "new-password", minLength: 6, required: true }}
+        input={{ name: "password", type: "password", autoComplete: "new-password", minLength: 6, maxLength: 15, required: true }}
       />
       <Field
         id="confirm"

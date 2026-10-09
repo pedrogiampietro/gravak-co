@@ -17,11 +17,14 @@ export type RegisterState =
 
 export type ErrorCode = "username" | "password" | "confirm" | "email" | "taken" | "offline" | "tooMany" | "captcha";
 
-// The server's `accounts` table: usernames up to 16, emails up to 64.
+// What the game client takes (launcher.rs `valid_account`, `valid_password`):
+// usernames up to 15, passwords of up to 15 printable ASCII characters, no
+// spaces. Its login carries 16 bytes of password, so a longer one could never
+// log in. Emails up to 64, as the `accounts` table.
 const schema = z
   .object({
-    username: z.string().regex(/^[A-Za-z0-9]{4,16}$/),
-    password: z.string().min(6).max(72),
+    username: z.string().regex(/^[A-Za-z0-9]{4,15}$/),
+    password: z.string().regex(/^[\x21-\x7e]{6,15}$/),
     confirm: z.string(),
     email: z.union([z.literal(""), z.string().email().max(64)]),
   })
