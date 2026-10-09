@@ -799,6 +799,9 @@ pub struct Renderer {
     quick_panel_shown: Option<(crate::shop::QuickPanel, String)>,
     /// Where the bounty line under the minimap was drawn, for clicks.
     bounty_tracker_rect: Option<[f32; 4]>,
+    /// The team's Rift run and when the server told of it; the tracker
+    /// goes under the bounty's.
+    pub rift: Option<(gravak_protocol::RiftState, Instant)>,
     /// Where the Store icon was drawn, for clicks.
     store_icon_rect: Option<[f32; 4]>,
     ranking_icon_rect: Option<[f32; 4]>,
@@ -1075,6 +1078,7 @@ impl Renderer {
             quick_panel_signature: None,
             quick_panel_shown: None,
             bounty_tracker_rect: None,
+            rift: None,
             store_icon_rect: None,
             ranking_icon_rect: None,
             helper_icon_rect: None,
@@ -3765,7 +3769,10 @@ impl Renderer {
                                         // Over the head, not across the chest.
                                         122.0
                                     } else if monster {
-                                        68.0
+                                        // Over its head: a tall creature lifts it.
+                                        remote_monsters
+                                            .get(&actor.id)
+                                            .map_or(68.0, |model| (model.head + 4.0).max(68.0))
                                     } else {
                                         // A guild line over the name, or a shield hanging
                                         // under it, keeps the name in place.
@@ -4566,6 +4573,33 @@ impl Renderer {
             }
         }
         self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
+        // The Rift run under way, under the bounty's tracker.
+        let rift = self
+            .rift
+            .as_ref()
+            .and_then(|(state, since)| crate::rift_tracker::Tracker::now(state, since.elapsed().as_secs_f32()));
+        let rift_key = rift.as_ref().map(|rift| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            rift.hash(&mut hasher);
+            format!("@rift-tracker-{}", hasher.finish())
+        });
+        if let (Some(rift), Some(key)) = (&rift, &rift_key) {
+            if !self.textures.contains_key(key) {
+                self.upload(key, crate::rift_tracker::image(assets, rift)?);
+            }
+            let top = self.bounty_tracker_rect.map_or(190.0, |[_, top, _, height]| top + height + 6.0);
+            if let Some(texture) = self.textures.get(key) {
+                let left = viewport[0] - texture.size[0] - 8.0;
+                draws.push(Draw {
+                    texture: key.clone(),
+                    vertices: quad([left, top], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        self.prune_textures("@rift-tracker-", &[rift_key.as_deref()]);
         // The Store button, past the quiver over the bar.
         let [left, top, width, height] = crate::hud::store_button_rect(viewport);
         self.store_icon_rect = Some([left, top, width, height]);

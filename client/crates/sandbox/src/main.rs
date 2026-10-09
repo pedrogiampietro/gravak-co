@@ -14,6 +14,7 @@ mod assets;
 mod audio;
 mod booth;
 mod bounty_board;
+mod rift_tracker;
 mod guild_emblems;
 mod guild_panel;
 mod forge_rules;
@@ -4947,6 +4948,11 @@ impl App {
             }
             NetworkEvent::DailyRewardChoice(choice) => {
                 self.daily_rewards.get_or_insert_with(Default::default).receive(choice);
+            }
+            NetworkEvent::Rift(state) => {
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.rift = (state.phase != 0).then(|| (state, Instant::now()));
+                }
             }
             NetworkEvent::DailyRewardState(state) => {
                 let view = self.daily_rewards.get_or_insert_with(Default::default);
@@ -10096,6 +10102,10 @@ fn map_name(map_id: u32) -> String {
         1036 => "Market".into(),
         1039 => "Training Ground".into(),
         6000 | 6001 => "Jail".into(),
+        // The Rifts (content/rifts.toml).
+        9101..=9109 => "Fenda Menor".into(),
+        9111..=9119 => "Fenda Maior".into(),
+        9121..=9129 => "Fenda Abissal".into(),
         _ => format!("Map {map_id}"),
     }
 }

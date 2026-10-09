@@ -1432,6 +1432,7 @@ dependencies = [
  "image",
  "sandbox-data",
  "serde",
+ "serde_json",
  "toml",
 ]
 

@@ -1,0 +1,179 @@
+# Monstros nossos: o modelo e as animações de um monstro original com uma
+# pele pintada por nós (veja client/crates/content/src/monsters.rs e
+# docs/conteudo-custom.md). `look` é o visual novo, que o servidor usa em
+# monster_types.look; `base` é o monstro original de onde vêm o modelo e as
+# animações. A pele vai para `colour` (mantendo a luz de cada pixel),
+# `strength` do caminho; `light` clareia ou escurece (menos o brilho); com
+# `glow`, as partes
+# mais claras (acima de `glow_from`, de 0 a 1) brilham nessa cor.
+
+# --- Fenda Menor: a cripta fria, ossos e almas em azul e verde ---
+
+[[monster]]
+look = 951
+base = 211                 # Skeleton
+name = "Esqueleto"
+colour = [150, 170, 205]
+strength = 0.85
+light = 0.95
+glow = [140, 230, 255]
+glow_from = 0.78
+
+[[monster]]
+look = 952
+base = 206                 # TombBat
+name = "MorcegoCripta"
+colour = [120, 80, 170]
+strength = 0.9
+light = 1.05
+
+[[monster]]
+look = 953
+base = 200                 # Ghost
+name = "AlmaPenada"
+colour = [110, 200, 150]
+strength = 0.85
+light = 1.0
+glow = [200, 255, 220]
+glow_from = 0.72
+
+[[monster]]
+look = 959
+base = 162                 # NagaLord
+name = "GuardiaoMenor"
+colour = [70, 110, 170]
+strength = 0.9
+light = 1.0
+glow = [120, 230, 255]
+glow_from = 0.6
+
+# --- Fenda Maior: sangue e ossos velhos ---
+
+[[monster]]
+look = 961
+base = 211                 # Skeleton
+name = "EsqueletoAntigo"
+colour = [170, 120, 60]
+strength = 0.95
+light = 0.95
+glow = [255, 70, 40]
+glow_from = 0.8
+
+[[monster]]
+look = 962
+base = 148                 # BloodyBat
+name = "MorcegoSangue"
+colour = [190, 30, 40]
+strength = 0.9
+light = 1.0
+
+[[monster]]
+look = 963
+base = 308                 # WarGhost
+name = "Espectro"
+colour = [150, 150, 160]
+strength = 0.9
+light = 0.85
+glow = [255, 60, 60]
+glow_from = 0.7
+
+[[monster]]
+look = 969
+base = 225                 # LightningApe
+name = "GuardiaoMaior"
+colour = [120, 20, 25]
+strength = 0.95
+light = 0.9
+glow = [255, 140, 60]
+glow_from = 0.55
+
+# --- Fenda Abissal: o vazio, roxo, negro e ouro ---
+
+[[monster]]
+look = 971
+base = 205                 # TrojanDevil
+name = "CavaleiroAbismo"
+colour = [60, 50, 80]
+strength = 0.9
+light = 0.9
+glow = [255, 200, 90]
+glow_from = 0.65
+
+[[monster]]
+look = 972
+base = 148                 # BloodyBat
+name = "MorcegoAbissal"
+colour = [70, 30, 110]
+strength = 0.95
+light = 0.9
+glow = [255, 80, 220]
+glow_from = 0.7
+
+[[monster]]
+look = 973
+base = 200                 # Ghost
+name = "EspectroAbissal"
+colour = [110, 60, 170]
+strength = 0.9
+light = 0.95
+glow = [240, 230, 255]
+glow_from = 0.7
+
+[[monster]]
+look = 979
+base = 329                 # IcyBladeDevil
+name = "GuardiaoAbismo"
+colour = [45, 35, 55]
+strength = 1.0
+light = 0.35
+glow = [255, 180, 50]
+glow_from = 0.85
+
+# --- Criaturas novas: modelos gerados no Meshy (walk.glb com o rig e a
+# textura; run/idle/attack/death.glb opcionais, senão o build cria parado,
+# golpe e queda pelo esqueleto). `height` é a altura em pé (um monstro comum
+# do 5065 tem uns 200). Veja client/crates/content/src/creatures.rs.
+
+# Fenda Maior (nível 100)
+[[creature]]
+look = 981
+folder = "art/monstros/sacerdote-de-sangue"
+name = "SacerdoteSangue"
+height = 210
+
+[[creature]]
+look = 982
+folder = "art/monstros/guerreiro-esqueleto"
+name = "GuerreiroOsso"
+height = 200
+
+[[creature]]
+look = 984
+folder = "art/monstros/colosso-de-sangue"
+name = "ColossoSangue"
+height = 320
+
+# Fenda Abissal (nível 120)
+[[creature]]
+look = 985
+folder = "art/monstros/cavaleiro-do-vazio"
+name = "CavaleiroAbismo"
+height = 210
+
+[[creature]]
+look = 986
+folder = "art/monstros/espreitador-abissal"
+name = "Espreitador"
+height = 195
+
+[[creature]]
+look = 987
+folder = "art/monstros/espectro-acorrentado"
+name = "EspectroAbissal"
+height = 205
+
+[[creature]]
+look = 988
+folder = "art/monstros/tita-do-abismo"
+name = "TitaAbismo"
+height = 340

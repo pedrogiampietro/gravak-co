@@ -111,7 +111,17 @@ impl Floor {
             trace!("we didn't found the map at {}", map_path.display());
             let mut p = self.path.clone();
             p.set_extension("DMap");
-            let orignal_path = data_path.join("GameMaps").join("map").join(p);
+            let mut orignal_path = data_path.join("GameMaps").join("map").join(&p);
+            // Maps of ours (the Rifts' labyrinths) come from the content
+            // build, as the client's do.
+            if !orignal_path.exists() {
+                if let Some(content) = env::var_os("GRAVAK_CONTENT") {
+                    let ours = PathBuf::from(content).join("map").join("map").join(&p);
+                    if ours.exists() {
+                        orignal_path = ours;
+                    }
+                }
+            }
             self.convert_and_load(orignal_path).await?;
         }
         Ok(())

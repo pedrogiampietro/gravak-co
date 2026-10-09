@@ -159,6 +159,8 @@ mod msg_whisper_card;
 pub use msg_whisper_card::MsgWhisperCard;
 mod msg_highscores;
 pub use msg_highscores::{MsgHighscoreRow, MsgHighscoreState, MsgHighscores};
+mod msg_rift;
+pub use msg_rift::MsgRift;
 mod msg_daily_reward;
 pub use msg_daily_reward::{send_wall, MsgDailyReward, MsgDailyRewardChoice, MsgDailyRewardState};
 mod msg_store;

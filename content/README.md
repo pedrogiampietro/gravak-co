@@ -15,6 +15,7 @@ content/
   accessories/ acessórios de arma: o modelo de uma arma original com textura
               e efeito nossos, num slot próprio
   textures/   texturas dos garments e acessórios (PNG) e os scripts que as pintam
+  rifts.toml  as Fendas: labirintos que o build gera (veja abaixo)
   build/      gerado pelo build; não editar, não versionar
 ```
 
@@ -219,3 +220,27 @@ Um objeto com `action` responde ao clique (esquerdo ou direito) no jogo:
 - **Aparência equipado** (arma na mão, armadura no corpo) vem de `weapon.ini`,
   `armor.ini`, `3dobj.ini` e dos modelos `.c3`. Isso ainda não passa pelo
   editor; veja `docs/editor-roadmap.md`.
+
+## As Fendas (`rifts.toml`)
+
+Cada `[[rift]]` é um mapa nosso, uma cripta de corredores de 5 células que o
+build monta com a arte de `art/cripta/` (`client/crates/content/src/rifts.rs`):
+o piso (`chao-*.png`, texturas vistas de cima), as paredes (`parede-face.png` e
+`parede-topo.png`, montadas em blocos isométricos) e os enfeites (`tocha`,
+`pilar`, `bau`... com fundo transparente).
+A mesma `seed` gera sempre o mesmo labirinto; trocar a `seed` gera outro.
+
+```toml
+[[rift]]
+id = 9101              # o id do mapa (não pode existir na instalação)
+name = "Fenda Menor I"
+seed = 1
+rooms = [9, 9]         # salas do labirinto na horizontal e na vertical
+```
+
+O build grava, em `content/build/client`, `map/puzzle/gravak-rift-<id>.pul`,
+`map/map/gravak-rift-<id>.DMap`, o mapa em `ini/GameMap.dat`, o minimapa
+(`ani/MiniMap.Ani`), as paredes e enfeites (`gravak/maps/<id>.txt`) e
+`gravak/rifts/<id>.txt` (as células de cada sala, para o servidor). O servidor
+lê o `.DMap` pelo `GRAVAK_CONTENT`; a linha do mapa na tabela `maps` vem de
+uma migration (`server/migrations/95_rift_maps.sql`).

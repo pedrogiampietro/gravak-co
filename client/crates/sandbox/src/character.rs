@@ -69,6 +69,9 @@ pub struct NpcModel {
     lie_motion: Option<C3Motion>,
     fly_motion: Option<C3Motion>,
     short_fly_motion: Option<C3Motion>,
+    /// How far over its feet the top of its head stands, on screen, when it
+    /// stands still: where its name and life go.
+    pub head: f32,
 }
 
 #[derive(Clone)]
@@ -695,7 +698,9 @@ impl NpcModel {
             lie_motion,
             fly_motion,
             short_fly_motion,
-        })
+            head: 0.0,
+        }
+        .measured())
     }
 
     pub fn load(assets: &mut Assets, catalog: &NpcCatalog, kind: u16, look: u16) -> Result<Self> {
@@ -792,7 +797,19 @@ impl NpcModel {
             lie_motion: None,
             fly_motion: None,
             short_fly_motion: None,
-        })
+            head: 0.0,
+        }
+        .measured())
+    }
+
+    /// The model with its head's height measured from its standing pose.
+    fn measured(mut self) -> Self {
+        self.head = self
+            .vertices_static(0.0)
+            .iter()
+            .map(|(p, _)| -p[1])
+            .fold(0.0, f32::max);
+        self
     }
 
     pub fn uses_generic_fallback(&self) -> bool {
@@ -887,14 +904,32 @@ impl NpcModel {
             .vertices
             .iter()
             .map(|vertex| {
-                let transform = motion
-                    .and_then(|_| {
-                        (0..2)
-                            .find(|i| vertex.bone_weights[*i] > 0.0)
-                            .map(|i| bones.get(vertex.bone_indices[i] as usize).copied().unwrap_or(self.mesh.initial_matrix))
-                    })
-                    .unwrap_or(self.mesh.initial_matrix);
-                let p = transform.transform_point(vertex.position);
+                // Both bones, by their weights: one alone tears a skin at
+                // the joints (our creatures are skinned smoothly).
+                let p = match motion {
+                    Some(_) => {
+                        let mut sum = Vector3::default();
+                        let mut total = 0.0;
+                        for i in 0..2 {
+                            let weight = vertex.bone_weights[i];
+                            if weight <= 0.0 {
+                                continue;
+                            }
+                            let bone = bones.get(vertex.bone_indices[i] as usize).copied().unwrap_or(self.mesh.initial_matrix);
+                            let q = bone.transform_point(vertex.position);
+                            sum.x += q.x * weight;
+                            sum.y += q.y * weight;
+                            sum.z += q.z * weight;
+                            total += weight;
+                        }
+                        if total > 0.0 {
+                            Vector3 { x: sum.x / total, y: sum.y / total, z: sum.z / total }
+                        } else {
+                            self.mesh.initial_matrix.transform_point(vertex.position)
+                        }
+                    }
+                    None => self.mesh.initial_matrix.transform_point(vertex.position),
+                };
                 let rotated = Vector3 {
                     x: p.x * c - p.y * s,
                     y: p.x * s + p.y * c,

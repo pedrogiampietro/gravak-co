@@ -256,6 +256,8 @@ pub enum NetworkEvent {
     DailyRewardChoice(gravak_protocol::DailyRewardChoice),
     /// Where the hero stands in the cycle: the Reward Wall opens on it.
     DailyRewardState(gravak_protocol::DailyRewardState),
+    /// Where the team's Rift run stands.
+    Rift(gravak_protocol::RiftState),
     /// One ranked character of the Highscores.
     HighscoreRow(gravak_protocol::HighscoreRow),
     WhisperCard(gravak_protocol::WhisperCard),
@@ -842,6 +844,7 @@ impl NetworkHandle {
                 | NetworkEvent::StorePurchase(_)
                 | NetworkEvent::DailyRewardChoice(_)
                 | NetworkEvent::DailyRewardState(_)
+                | NetworkEvent::Rift(_)
                 | NetworkEvent::HighscoreRow(_)
                 | NetworkEvent::WhisperCard(_)
                 | NetworkEvent::HighscoreState(_)
@@ -1681,6 +1684,9 @@ pub(crate) async fn play(
                 }
                 Some(GameEvent::DailyRewardState(state)) => {
                     let _ = events.send(NetworkEvent::DailyRewardState(state));
+                }
+                Some(GameEvent::Rift(state)) => {
+                    let _ = events.send(NetworkEvent::Rift(state));
                 }
                 Some(GameEvent::WhisperCard(card)) => {
                     let _ = events.send(NetworkEvent::WhisperCard(card));

@@ -6334,6 +6334,13 @@ impl Character {
             location.x = 430;
             location.y = 380;
             1_002
+        } else if crate::rifts::is_crypt(self.entity.map_id()) {
+            // Nor in a rift: the run lives in memory, and the copy goes to
+            // the next team.
+            let (map_id, x, y) = crate::rifts::wake_up_place();
+            location.x = x;
+            location.y = y;
+            map_id
         } else if crate::dis_city::is_dis_city(self.entity.map_id()) {
             // Nor in Dis City: its way is kept in memory, not on the map.
             let (map_id, x, y) = crate::dis_city::wake_up_place();
