@@ -49,7 +49,7 @@ pub fn next_quality(item_type: u32, exists: impl Fn(u32) -> bool) -> Option<u32>
     Some(base + 1).filter(|next| exists(*next))
 }
 
-fn quality_chance(item_type: u32, requirement: u32) -> u32 {
+pub fn quality_chance(item_type: u32, requirement: u32) -> u32 {
     let quality = quality(item_type);
     if quality == 9 || quality < 3 {
         return 0;
@@ -80,7 +80,7 @@ pub fn next_level(item_type: u32, exists: impl Fn(u32) -> bool) -> Option<u32> {
         .filter(|next| next / 1_000 == item_type / 1_000)
 }
 
-fn level_chance(item_type: u32) -> u32 {
+pub fn level_chance(item_type: u32) -> u32 {
     let level = equipment_level(item_type);
     let chance: u32 = if armour_like(item_type) {
         match level {

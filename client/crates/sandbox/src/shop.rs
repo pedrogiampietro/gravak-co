@@ -4093,7 +4093,7 @@ fn upgrade_action_panel_image(
     Ok(image)
 }
 
-fn draw_upgrade_action_button(
+pub(crate) fn draw_upgrade_action_button(
     image: &mut RgbaImage,
     font: &fontdue::Font,
     rect: UiRect,
@@ -6672,6 +6672,35 @@ mod icon_tests {
         let info = super::item_info(&mut assets, 410_339);
         super::equipment_tooltip_image(7, 410_339, info.as_ref(), 70, 70, 12, 13, 13, 2, [0x1004, 0x8002, 0, 0], 3, 120)?
             .save(output.join("tooltip.png"))?;
+        Ok(())
+    }
+
+    /// `GRAVAK_FORGE_PREVIEW=dir cargo test -p conquer-sandbox
+    /// export_forge_preview -- --ignored`: the QUALITY, LEVEL and UPGRADE
+    /// panels for a bow, with Meteors and DragonBalls in the bag.
+    #[test]
+    #[ignore = "Requires a local 5065 installation; exports the forge panels"]
+    fn export_forge_preview() -> super::Result<()> {
+        let output = std::path::PathBuf::from(std::env::var("GRAVAK_FORGE_PREVIEW")?);
+        std::fs::create_dir_all(&output)?;
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065"))?;
+        let item = crate::network::OwnedItem { uid: 1, item_type: 500_323, position: 4, durability: 50, max_durability: 50, plus: 3, ..Default::default() };
+        let bag: Vec<_> = (0..6)
+            .map(|index| crate::network::OwnedItem {
+                uid: 10 + index,
+                item_type: if index < 3 { crate::forge_rules::METEOR } else { crate::forge_rules::DRAGONBALL },
+                position: index as u8,
+                ..Default::default()
+            })
+            .collect();
+        for (name, action, price) in [
+            ("quality", super::ItemContextAction::ImproveQuality, crate::forge_rules::quality_price(item.item_type, 100, |_| true)),
+            ("level", super::ItemContextAction::UpgradeLevel, crate::forge_rules::level_price(item.item_type, 100, |_| true)),
+            ("upgrade", super::ItemContextAction::Upgrade, crate::forge_rules::plus_price(item, &bag)),
+        ] {
+            let panel = super::ItemActionPanel { item, action, selected_rarity: 0, selected_affix: None, price };
+            super::item_action_panel_image(&mut assets, panel, None, &bag, false, None)?.save(output.join(format!("forge-{name}.png")))?;
+        }
         Ok(())
     }
 

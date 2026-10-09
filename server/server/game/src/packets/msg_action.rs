@@ -69,6 +69,10 @@ pub enum ActionType {
     QueryFriendInfo = 140,
     // QueryLeaveWord = 141,
     ChangeFace = 142,
+    /// Gravak's: the exit confirmation's Exercise button. The character
+    /// goes to offline training; the answer echoes it, `data1` 1 when they
+    /// went (the client then closes), 0 when not (a line says why).
+    Exercise = 9010,
 }
 
 #[derive(Copy, Clone, Debug, Default, FromPrimitive, IntoPrimitive)]
@@ -641,6 +645,24 @@ impl PacketProcess for MsgAction {
                 Ok(())
             },
             ActionType::Reborn => self.handle_reborn(state, actor).await,
+            ActionType::Exercise => {
+                let entity = actor.try_entity()?;
+                let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
+                let went = match crate::offline_tg::enter(state, character).await? {
+                    Ok(minutes) => {
+                        tracing::info!(target: "world", character = %character.entity().name(), minutes, "Offline training from the exit");
+                        true
+                    },
+                    Err(reason) => {
+                        actor.send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, reason)).await?;
+                        false
+                    },
+                };
+                actor
+                    .send(MsgAction::new(character.id(), u32::from(went), 0, 0, ActionType::Exercise))
+                    .await?;
+                Ok(())
+            },
             ActionType::SendAssociates => {
                 // Friends and the ignore list.
                 let entity = actor.try_entity()?;

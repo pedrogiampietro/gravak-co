@@ -1,6 +1,7 @@
 #![allow(non_upper_case_globals)]
 
 pub mod affixes;
+pub mod artisan_wind;
 pub mod artisans;
 pub mod bounty;
 pub mod city_npcs;

@@ -7,6 +7,8 @@ mod action_bar;
 mod keybinds;
 mod helper;
 mod travel_cube;
+mod exit_confirm;
+mod forge_window;
 mod cursors;
 mod assets;
 mod audio;
@@ -532,6 +534,12 @@ struct App {
     team_positions_polled: f32,
     /// Exit was chosen in the Options window; the event loop ends next.
     exit_requested: bool,
+    /// "Are you sure you want to exit?" (`escape`), while it is open.
+    exit_confirm: Option<exit_confirm::ExitConfirm>,
+    /// A city artisan's forge window, while it is open.
+    forge: Option<forge_window::ForgeWindow>,
+    /// When to write the options (the window's size) after it changed.
+    options_save_at: Option<Instant>,
     /// The last ping round trip, and when the last ping was sent.
     ping_ms: Option<u32>,
     ping_sent: f32,
@@ -654,14 +662,9 @@ impl ApplicationHandler for App {
         }
         let result = (|| -> Result<_> {
             let window = match self.login_window.take() {
-                // Entering from the login screens: the same window, grown to
-                // the game's size unless the player has maximised it.
-                Some(window) => {
-                    if !window.is_maximized() {
-                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(1366, 768));
-                    }
-                    window
-                }
+                // Entering from the login screens: the same window, at the
+                // size the player last gave it (`restore_window`).
+                Some(window) => window,
                 None => Arc::new(
                     event_loop.create_window(
                         Window::default_attributes()
@@ -689,7 +692,7 @@ impl ApplicationHandler for App {
                 }
                 self.window = Some(window);
                 self.renderer = Some(renderer);
-                self.apply_window_options();
+                self.restore_window();
                 self.apply_frame_options();
                 self.last = Instant::now();
                 self.next_frame_at = self.last;
@@ -707,11 +710,20 @@ impl ApplicationHandler for App {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // Closing the window is the original's IDCANCEL, as Escape:
+            // a window closes first, and the game asks before it ends.
+            WindowEvent::CloseRequested => {
+                if self.network_character_id.is_some() {
+                    self.escape();
+                } else {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height)
                 }
+                self.remember_window_size(size);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = [position.x as f32, position.y as f32];
@@ -1097,6 +1109,33 @@ impl ApplicationHandler for App {
                 return;
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // The exit confirmation holds every click while it is open.
+                if let Some(confirm) = self.exit_confirm {
+                    if button == MouseButton::Left
+                        && state == ElementState::Pressed
+                        && let Some(choice) = confirm.button_at(self.cursor)
+                    {
+                        self.answer_exit(choice);
+                    }
+                    self.held = false;
+                    return;
+                }
+                // The forge window's clicks are its own.
+                if button == MouseButton::Left
+                    && state == ElementState::Pressed
+                    && self.forge.is_some()
+                    && let Some(viewport) = self.viewport()
+                {
+                    let [left, top] = forge_window::position(viewport);
+                    let local = [self.cursor[0] - left, self.cursor[1] - top];
+                    if forge_window::covers(local) {
+                        if let Some(action) = forge_window::action_at(&self.equipment, local) {
+                            self.forge_action(action);
+                        }
+                        self.held = false;
+                        return;
+                    }
+                }
                 if button == MouseButton::Left {
                     debug_log::write(format_args!(
                         "mouse {state:?} cursor=({:.1},{:.1}) inventory_open={} shop={} warehouse={} dragging_inventory={:?} dragging_shop={:?}",
@@ -1359,60 +1398,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 match event.physical_key {
-                    PhysicalKey::Code(KeyCode::Escape) if self.shortcuts.is_some() => self.shortcuts = None,
-                    PhysicalKey::Code(KeyCode::Escape) if self.helper_window.is_some() => self.helper_window = None,
-                    PhysicalKey::Code(KeyCode::Escape) if self.travel_cube.is_some() => self.travel_cube = None,
-                    PhysicalKey::Code(KeyCode::Escape) if self.gem_selection_panel.is_some() => {
-                        self.gem_selection_panel = None;
-                        self.network_status = "seleção de gem cancelada".into();
+                    // Escape closes one window, and with none left asks
+                    // whether to leave (`escape`).
+                    PhysicalKey::Code(KeyCode::Escape) => self.escape(),
+                    // Enter on the exit confirmation is its OK.
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) if self.exit_confirm.is_some() => {
+                        self.answer_exit(exit_confirm::ExitButton::Ok);
                     }
-                    PhysicalKey::Code(KeyCode::Escape) if self.item_action_panel.is_some() => {
-                        self.item_action_panel = None;
-                        self.action_animation_started = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape)
-                        if self.player_menu.is_some() || self.pk_menu_open =>
-                    {
-                        self.player_menu = None;
-                        self.pk_menu_open = false;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.viewed_equipment.is_some() => {
-                        self.viewed_equipment = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.target_pick.is_some() => {
-                        self.target_pick = None;
-                        self.network_status = "seleção de alvo cancelada".into();
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.item_context.is_some() => {
-                        self.item_context = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.sell_all.is_some() || self.shop_buy_menu.is_some() => {
-                        self.sell_all = None;
-                        self.shop_buy_menu = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.shop.is_some() => {
-                        self.shop = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.repairing() => self.stop_repairing(),
-                    PhysicalKey::Code(KeyCode::Escape) if self.warehouse.is_some() => {
-                        self.warehouse = None;
-                        self.warehouse_npc_id = None;
-                        self.guild_warehouse_open = false;
-                        self.selected_inventory_uid = None;
-                        self.selected_warehouse_uid = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.dialog.is_some() => {
-                        self.dialog = None
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.status_open => {
-                        self.status_open = false;
-                        self.inventory_open = false;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape)
-                        if self
-                            .renderer
-                            .as_mut()
-                            .is_some_and(renderer::Renderer::collapse_minimap) => {}
                     // The NPC dialog: 1 to 9 pick its answers.
                     PhysicalKey::Code(
                         code @ (KeyCode::Digit1
@@ -1447,19 +1439,6 @@ impl ApplicationHandler for App {
                         };
                         self.choose_dialog_option(index);
                     }
-                    PhysicalKey::Code(KeyCode::Escape) if self.hotkey_popup.is_some() => {
-                        self.hotkey_popup = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.inventory_open => {
-                        self.inventory_open = false;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.trade_request_pending() => {
-                        self.handle_trade_panel_action(shop::TradePanelAction::Cancel);
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) if self.quick_panel.is_some() => {
-                        self.quick_panel = None;
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
                     // Enter at any time: to the line (the private chat's,
                     // when its window is open).
                     PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
@@ -1808,6 +1787,8 @@ impl ApplicationHandler for App {
                         choice_menu,
                         notice,
                         prompt,
+                        self.exit_confirm,
+                        self.forge,
                         self.sell_all.as_ref().map(|view| (view, self.inventory.as_slice(), sell_all_hovered)),
                         hovered_player,
                         self.item_action_panel,
@@ -1828,7 +1809,15 @@ impl ApplicationHandler for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The window's size is written once the player stops dragging it.
+        if self.options_save_at.is_some_and(|at| Instant::now() >= at) {
+            self.options_save_at = None;
+            settings::save_options(&self.hud_config);
+        }
         if self.exit_requested {
+            if self.options_save_at.take().is_some() {
+                settings::save_options(&self.hud_config);
+            }
             event_loop.exit();
             return;
         }
@@ -2820,7 +2809,8 @@ impl App {
             A::ToggleInfo => options.show_info = !options.show_info,
             A::ToggleFullscreen => options.fullscreen = !options.fullscreen,
             A::Exit => {
-                self.exit_requested = true;
+                self.quick_panel = None;
+                self.ask_to_exit();
                 return;
             }
             A::Delete => {
@@ -2857,7 +2847,7 @@ impl App {
         }
     }
 
-    /// Fullscreen or the chosen window size.
+    /// Fullscreen or the window size chosen in the Options window.
     fn apply_window_options(&mut self) {
         let Some(window) = &self.window else {
             return;
@@ -2867,8 +2857,45 @@ impl App {
             return;
         }
         window.set_fullscreen(None);
+        window.set_maximized(false);
         let [width, height] = hud::RESOLUTIONS[usize::from(self.hud_config.resolution).min(hud::RESOLUTIONS.len() - 1)];
         let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(width, height));
+    }
+
+    /// The window as the player left it: fullscreen, maximised, or the size
+    /// they dragged it to; without any, at least 1366x768.
+    fn restore_window(&mut self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        if self.hud_config.fullscreen {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        } else if self.hud_config.maximized || window.is_maximized() {
+            window.set_maximized(true);
+        } else if let Some([width, height]) = self.hud_config.window_size {
+            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(width, height));
+        } else {
+            let size = window.inner_size();
+            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(size.width.max(1366), size.height.max(768)));
+        }
+    }
+
+    /// Keeps the size the game window was given (not while fullscreen or
+    /// minimised), to open it that way again; written a moment later.
+    fn remember_window_size(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        if self.hud_config.fullscreen || window.fullscreen().is_some() || size.width < 640 || size.height < 480 {
+            return;
+        }
+        let maximized = window.is_maximized();
+        let window_size = if maximized { self.hud_config.window_size } else { Some([size.width, size.height]) };
+        if (maximized, window_size) != (self.hud_config.maximized, self.hud_config.window_size) {
+            self.hud_config.maximized = maximized;
+            self.hud_config.window_size = window_size;
+            self.options_save_at = Some(Instant::now() + std::time::Duration::from_millis(800));
+        }
     }
 
     /// Pings the server every two seconds (MsgItem 27) for the ping shown
@@ -3047,6 +3074,132 @@ impl App {
             name,
             text,
         ))
+    }
+
+    /// Escape, as the original's (Conquer.exe 0x475251, its IDCANCEL):
+    /// closes the window on top, one a press, and with none left asks
+    /// whether to leave. Closing the game window does the same.
+    fn escape(&mut self) {
+        if self.exit_confirm.is_some() {
+            self.exit_confirm = None;
+        } else if self.forge.is_some() {
+            self.forge = None;
+        } else if self.shortcuts.is_some() {
+            self.shortcuts = None;
+        } else if self.helper_window.is_some() {
+            self.helper_window = None;
+        } else if self.travel_cube.is_some() {
+            self.travel_cube = None;
+        } else if self.gem_selection_panel.is_some() {
+            self.gem_selection_panel = None;
+            self.network_status = "seleção de gem cancelada".into();
+        } else if self.item_action_panel.is_some() {
+            self.item_action_panel = None;
+            self.action_animation_started = None;
+        } else if self.player_menu.is_some() || self.pk_menu_open {
+            self.player_menu = None;
+            self.pk_menu_open = false;
+        } else if self.viewed_equipment.is_some() {
+            self.viewed_equipment = None;
+        } else if self.target_pick.is_some() {
+            self.target_pick = None;
+            self.network_status = "seleção de alvo cancelada".into();
+        } else if self.item_context.is_some() {
+            self.item_context = None;
+        } else if self.sell_all.is_some() || self.shop_buy_menu.is_some() {
+            self.sell_all = None;
+            self.shop_buy_menu = None;
+        } else if self.shop.is_some() {
+            self.shop = None;
+        } else if self.repairing() {
+            self.stop_repairing();
+        } else if self.warehouse.is_some() {
+            self.warehouse = None;
+            self.warehouse_npc_id = None;
+            self.guild_warehouse_open = false;
+            self.selected_inventory_uid = None;
+            self.selected_warehouse_uid = None;
+        } else if self.dialog.is_some() {
+            self.dialog = None;
+        } else if self.status_open {
+            self.status_open = false;
+            self.inventory_open = false;
+        } else if self.renderer.as_mut().is_some_and(renderer::Renderer::collapse_minimap) {
+        } else if self.hotkey_popup.is_some() {
+            self.hotkey_popup = None;
+        } else if self.inventory_open {
+            self.inventory_open = false;
+        } else if self.trade_request_pending() {
+            self.handle_trade_panel_action(shop::TradePanelAction::Cancel);
+        } else if self.quick_panel.is_some() {
+            self.quick_panel = None;
+        } else {
+            self.ask_to_exit();
+        }
+    }
+
+    /// A click in the forge window: choose an item or what to raise, or
+    /// send the upgrade (again and again, as each answer comes back).
+    fn forge_action(&mut self, action: forge_window::ForgeAction) {
+        use forge_window::ForgeAction;
+        let Some(mut forge) = self.forge else {
+            return;
+        };
+        match action {
+            ForgeAction::Close => {
+                self.forge = None;
+                return;
+            }
+            ForgeAction::Select(uid) => forge.selected = Some(uid),
+            ForgeAction::Craft(craft) => forge.craft = craft,
+            ForgeAction::Upgrade => {
+                if !forge_window::ready(&mut self.assets, &forge, &self.equipment, &self.inventory) {
+                    return;
+                }
+                if let (Some(network), Some(character_id), Some(uid)) = (&self.network, self.network_character_id, forge.selected) {
+                    network.artisan(character_id, uid, forge.craft.action());
+                    forge.busy = true;
+                    forge.last = None;
+                }
+            }
+        }
+        self.forge = Some(forge);
+    }
+
+    /// "Are you sure you want to exit?": in the game, its confirmation
+    /// dialog; elsewhere (no hero yet) the game simply closes.
+    fn ask_to_exit(&mut self) {
+        match (self.network_character_id, self.viewport()) {
+            (Some(_), Some(viewport)) => self.exit_confirm = Some(exit_confirm::ExitConfirm::new(viewport)),
+            _ => self.exit_requested = true,
+        }
+    }
+
+    /// A button of the exit confirmation: OK leaves, Cancel stays, and
+    /// Exercise sends the hero to offline training first (the game closes
+    /// when the server says they went).
+    fn answer_exit(&mut self, button: exit_confirm::ExitButton) {
+        use exit_confirm::ExitButton;
+        let Some(confirm) = self.exit_confirm.as_mut() else {
+            return;
+        };
+        if confirm.exercising {
+            return;
+        }
+        match button {
+            ExitButton::Ok => {
+                self.exit_confirm = None;
+                self.exit_requested = true;
+            }
+            ExitButton::Cancel => self.exit_confirm = None,
+            ExitButton::Exercise => match (&self.network, self.network_character_id) {
+                (Some(network), Some(character_id)) => {
+                    network.exercise(character_id);
+                    confirm.exercising = true;
+                }
+                _ => self.exit_confirm = None,
+            },
+        }
     }
 
     fn answer_prompt(&mut self, accept: bool) {
@@ -3759,6 +3912,7 @@ impl App {
             bounty_board::BountyAction::Unlist { avoided, index } => {
                 (BountyPacket::UNLIST, u32::from(avoided) * 10 + index)
             }
+            bounty_board::BountyAction::Quest(quest_id) => (BountyPacket::QUEST, quest_id),
         };
         network.send_bounty(packet, param);
     }
@@ -4865,6 +5019,7 @@ impl App {
             NetworkEvent::GuildRelations(relations) => self.guild_relations = relations,
             NetworkEvent::QuestLog(line) => {
                 let view = self.bounty.get_or_insert_with(Default::default);
+                view.hero_level = self.level;
                 view.apply_quest_line(line);
             }
             NetworkEvent::Bounty(board) => {
@@ -5212,6 +5367,31 @@ impl App {
                 experience,
             } => {
                 self.weapon_skills.insert(weapon_type, (level, experience));
+            }
+            // The exit's Exercise: gone to offline training, the game
+            // closes; refused (the server says why), the question closes.
+            NetworkEvent::OpenForge => {
+                self.dialog = None;
+                self.forge = Some(forge_window::ForgeWindow::new(&self.equipment));
+            }
+            NetworkEvent::ForgeAnswer { item_uid, outcome } => {
+                if let Some(forge) = &mut self.forge
+                    && forge.selected == Some(item_uid)
+                {
+                    forge.busy = false;
+                    let now = self.started.elapsed().as_secs_f32();
+                    forge.last = match outcome {
+                        1 => Some((forge_window::Outcome::Upgraded, now)),
+                        0 => Some((forge_window::Outcome::Failed, now)),
+                        _ => forge.last,
+                    };
+                }
+            }
+            NetworkEvent::Exercised(went) => {
+                self.exit_confirm = None;
+                if went {
+                    self.exit_requested = true;
+                }
             }
             NetworkEvent::LevelUp { level } => {
                 self.level = self.level.max(level);
@@ -10652,6 +10832,9 @@ fn run() -> Result<()> {
         team_positions: HashMap::new(),
         team_positions_polled: f32::NEG_INFINITY,
         exit_requested: false,
+        exit_confirm: None,
+        forge: None,
+        options_save_at: None,
         ping_ms: None,
         ping_sent: f32::NEG_INFINITY,
         fps_frames: 0,

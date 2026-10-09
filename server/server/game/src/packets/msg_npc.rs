@@ -79,6 +79,10 @@ impl PacketProcess for MsgNpc {
         if crate::guild_war::is_war_structure(npc_id) && crate::guild_war::opening(state, npc_id, character).is_none() {
             return Ok(());
         }
+        // The city artisans work in the forge window.
+        if crate::artisan_wind::NPC_IDS.contains(&npc_id) {
+            return crate::artisan_wind::open(actor, character).await;
+        }
         let npc_name = npc.entity().name();
         let shop_items = state
             .shop_catalog()

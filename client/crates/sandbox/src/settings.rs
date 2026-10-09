@@ -125,6 +125,13 @@ pub fn load_options() -> crate::hud::HudConfig {
                     .unwrap_or(options.max_fps);
             }
             "fullscreen" => options.fullscreen = flag,
+            "maximized" => options.maximized = flag,
+            "window" => {
+                options.window_size = value
+                    .split_once('x')
+                    .and_then(|(width, height)| Some([width.trim().parse().ok()?, height.trim().parse().ok()?]))
+                    .filter(|[width, height]: &[u32; 2]| *width >= 640 && *height >= 480);
+            }
             "resolution" => {
                 options.resolution = number
                     .filter(|index| usize::from(*index) < crate::hud::RESOLUTIONS.len())
@@ -141,7 +148,7 @@ pub fn save_options(options: &crate::hud::HudConfig) {
         return;
     };
     let text = format!(
-        "music={}\nsound={}\nnames={}\ncounter={}\nshadows={}\ninfo={}\nmax_fps={}\nfullscreen={}\nresolution={}\n",
+        "music={}\nsound={}\nnames={}\ncounter={}\nshadows={}\ninfo={}\nmax_fps={}\nfullscreen={}\nresolution={}\nmaximized={}\nwindow={}\n",
         options.music_volume,
         options.sound_volume,
         u8::from(options.show_names),
@@ -151,6 +158,8 @@ pub fn save_options(options: &crate::hud::HudConfig) {
         options.max_fps,
         u8::from(options.fullscreen),
         options.resolution,
+        u8::from(options.maximized),
+        options.window_size.map_or_else(String::new, |[width, height]| format!("{width}x{height}")),
     );
     let result = path
         .parent()

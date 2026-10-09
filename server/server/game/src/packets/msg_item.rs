@@ -72,6 +72,19 @@ pub struct MsgItem {
 pub const TRAVEL_CUBE_WAIT: u32 = 9_001;
 
 impl MsgItem {
+    /// The answer to a forge window's upgrade (`artisan_wind::LEVEL` or
+    /// `QUALITY`) of item `uid`: `outcome` in `param1`.
+    pub fn artisan_answer(character_id: u32, uid: u32, action: u32, outcome: u32) -> Self {
+        Self {
+            character_id,
+            param0: uid,
+            action_type: action,
+            client_timestamp: 0,
+            amount: 0,
+            param1: outcome,
+        }
+    }
+
     /// How many seconds the Travel Cube `uid` waits before it travels
     /// again (0 ready), for its window.
     pub fn travel_cube_wait(character_id: u32, uid: u32, seconds: u32) -> Self {
@@ -117,6 +130,15 @@ impl PacketProcess for MsgItem {
             param1 = self.param1,
             "item action received"
         );
+        // The forge window's upgrades (Gravak's own actions).
+        if matches!(self.action_type, crate::artisan_wind::LEVEL | crate::artisan_wind::QUALITY) {
+            let entity = actor.entity();
+            let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+            if self.character_id == character.id() {
+                crate::artisan_wind::attempt(state, actor, character, self.action_type, self.param0).await?;
+            }
+            return Ok(());
+        }
         let action = self.action_type.into();
         match action {
             ItemActionType::Ping => {

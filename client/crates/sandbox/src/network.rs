@@ -379,6 +379,17 @@ pub enum NetworkEvent {
     LevelUp {
         level: u8,
     },
+    /// The server's answer to the exit's Exercise: whether the hero went
+    /// to offline training.
+    Exercised(bool),
+    /// A city artisan opened the forge window (MsgAction OpenDialog 9020).
+    OpenForge,
+    /// The forge window's upgrade came back: the item, the action, and 0
+    /// failed, 1 upgraded, 2 refused.
+    ForgeAnswer {
+        item_uid: u32,
+        outcome: u32,
+    },
     RemoteCombat {
         id: u32,
         target_id: u32,
@@ -541,6 +552,14 @@ pub(crate) enum NetworkCommand {
     Revive {
         character_id: u32,
         here: bool,
+    },
+    Exercise {
+        character_id: u32,
+    },
+    Artisan {
+        character_id: u32,
+        item_uid: u32,
+        action: u32,
     },
     Mine {
         character_id: u32,
@@ -776,6 +795,9 @@ impl NetworkHandle {
                 | NetworkEvent::RemoteJump { .. }
                 | NetworkEvent::RemoteAction { .. }
                 | NetworkEvent::LevelUp { .. }
+                | NetworkEvent::Exercised(_)
+                | NetworkEvent::OpenForge
+                | NetworkEvent::ForgeAnswer { .. }
                 | NetworkEvent::SkillForgotten(_)
                 | NetworkEvent::RemoteCombat { .. }
                 | NetworkEvent::SkillEffect { .. }
@@ -978,6 +1000,17 @@ impl NetworkHandle {
     /// with data 1, Heaven's Blessing only).
     pub fn revive(&self, character_id: u32, here: bool) {
         let _ = self.commands.send(NetworkCommand::Revive { character_id, here });
+    }
+
+    /// Asks to go to offline training before leaving (the exit's Exercise).
+    pub fn exercise(&self, character_id: u32) {
+        let _ = self.commands.send(NetworkCommand::Exercise { character_id });
+    }
+
+    /// A city artisan's upgrade (`forge_window::LEVEL_ACTION` or
+    /// `QUALITY_ACTION`) of item `item_uid`.
+    pub fn artisan(&self, character_id: u32, item_uid: u32, action: u32) {
+        let _ = self.commands.send(NetworkCommand::Artisan { character_id, item_uid, action });
     }
 
     pub fn player_shop_query(&self, character_id: u32, owner_id: u32) {
@@ -1909,6 +1942,16 @@ pub(crate) async fn play(
                         position: unpack_position(action.data2),
                     });
                 }
+                Some(GameEvent::Action(action))
+                    if action.action_type == 126 && action.data1 == crate::forge_window::WINDOW =>
+                {
+                    let _ = events.send(NetworkEvent::OpenForge);
+                }
+                Some(GameEvent::Action(action))
+                    if action.action_type == ActionPacket::EXERCISE && action.character_id == local_character_id =>
+                {
+                    let _ = events.send(NetworkEvent::Exercised(action.data1 == 1));
+                }
                 Some(GameEvent::Action(action)) if action.action_type == 132 => {
                     let _ = events.send(NetworkEvent::RemoveActor(action.character_id));
                 }
@@ -2083,6 +2126,10 @@ pub(crate) async fn play(
                         let _ = events.send(NetworkEvent::BoothItemGone(word(4)));
                     } else if word(8) == 9_001 && body.len() >= 20 {
                         let _ = events.send(NetworkEvent::TravelCubeWait(word(16)));
+                    } else if matches!(word(8), crate::forge_window::LEVEL_ACTION | crate::forge_window::QUALITY_ACTION)
+                        && body.len() >= 24
+                    {
+                        let _ = events.send(NetworkEvent::ForgeAnswer { item_uid: word(4), outcome: word(20) });
                     }
                 }
                 Some(_) => {}
@@ -2145,6 +2192,18 @@ pub(crate) async fn play(
                 Some(NetworkCommand::Revive { character_id, here }) => {
                     session
                         .send(&ActionPacket::reborn(character_id, here))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Exercise { character_id }) => {
+                    session
+                        .send(&ActionPacket::exercise(character_id))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Artisan { character_id, item_uid, action }) => {
+                    session
+                        .send(&ItemActionPacket::artisan(character_id, item_uid, action))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

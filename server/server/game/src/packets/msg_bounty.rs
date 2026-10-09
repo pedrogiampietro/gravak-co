@@ -27,6 +27,10 @@ pub const AVOID: u32 = 6;
 /// Client: take a name off a list; `param` is the list (0 preferred, 1
 /// avoided) times ten plus the name's place.
 pub const UNLIST: u32 = 7;
+/// Client: the QUESTS panel asks the giver of quest `param` for it, from
+/// anywhere: it starts the giver's next quest, or takes a delivery's items
+/// (`quest_givers::ask`, as speaking to the giver does).
+pub const QUEST: u32 = 8;
 /// Server: the task counted kills; `param` done of `extra`.
 pub const PROGRESS: u32 = 10;
 
@@ -210,6 +214,12 @@ impl PacketProcess for MsgBounty {
         let character = entity.as_character().ok_or(Error::CharacterNotFound)?;
         let id = character.database_id();
         let pool = state.pool();
+        if self.action == QUEST {
+            if let Some(quest) = crate::quests::load_definition(pool, self.param).await? {
+                crate::quest_givers::ask(state, actor, character, quest.npc_id).await?;
+            }
+            return Ok(());
+        }
         let outcome: Result<Option<String>, Refusal> = match self.action {
             OPEN => {
                 // The QUESTS panel opened: its quest log too.

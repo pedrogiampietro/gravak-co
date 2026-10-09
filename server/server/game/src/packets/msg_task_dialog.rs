@@ -464,7 +464,7 @@ impl PacketProcess for MsgTaskDialog {
             if equipped.is_empty() {
                 dialog = dialog.with_option(255, "I have no equipment ready.");
             } else {
-                for item in equipped {
+                for item in equipped.into_iter().filter(|item| crate::artisan_wind::upgradable(item.item_type)) {
                     dialog = dialog.with_option(
                         10_u8.saturating_add(item.position),
                         format!(
@@ -503,7 +503,7 @@ impl PacketProcess for MsgTaskDialog {
             if equipped.is_empty() {
                 dialog = dialog.with_option(255, "I have no equipment ready.");
             } else {
-                for item in equipped {
+                for item in equipped.into_iter().filter(|item| crate::artisan_wind::upgradable(item.item_type)) {
                     let chance = crate::entities::Character::quality_upgrade_chance(item.item_type);
                     dialog = dialog.with_option(
                         20_u8.saturating_add(item.position),

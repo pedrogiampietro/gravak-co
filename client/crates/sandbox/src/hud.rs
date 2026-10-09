@@ -37,6 +37,10 @@ pub struct HudConfig {
     pub resolution: u8,
     /// The Options window shows its second page ("Other").
     pub options_page: u8,
+    /// The size the player last gave the game window, and whether they
+    /// left it maximised: the game opens that way again.
+    pub window_size: Option<[u32; 2]>,
+    pub maximized: bool,
 }
 
 impl Default for HudConfig {
@@ -56,6 +60,8 @@ impl Default for HudConfig {
             fullscreen: false,
             resolution: 0,
             options_page: 0,
+            window_size: None,
+            maximized: false,
         }
     }
 }

@@ -4,8 +4,8 @@
 //! training ground (map 601) and may log out; back in, the OfflineTGAdmin
 //! turns the minutes spent there into experience (Redux `GainExpBall`).
 //!
-//! The 5065 client reaches it through a Heaven's Blessing window this
-//! client does not have, so an NPC in Twin City opens the way.
+//! The 5065 client reaches it from its exit confirmation (the Exercise
+//! button, MsgAction `Exercise`); an NPC in Twin City opens the way too.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -114,6 +114,44 @@ pub fn opening(npc_id: u32) -> Option<(String, Options, u16)> {
     Some((text.to_owned(), options, 4))
 }
 
+/// Why `character` may not go to the training ground from where they
+/// stand: not from a prison, the guild war, an event or a map that bars
+/// teleports, nor dead.
+fn refusal(state: &State, character: &Character) -> Option<&'static str> {
+    if !character.heaven_blessing_active() {
+        return Some("You may not enter Offline Training Grounds without Heaven's Blessing.");
+    }
+    if character.entity().is_dead() {
+        return Some("The dead cannot train.");
+    }
+    let map_id = character.entity().map_id();
+    let flags = state.try_map(map_id).map(|map| map.flags()).unwrap_or(crate::packets::MapFlags::empty());
+    let barred = crate::packets::MapFlags::TELEPORT_DISABLED | crate::packets::MapFlags::PRISON_MAP;
+    if flags.intersects(barred)
+        || matches!(map_id, crate::death::JAIL_MAP | 6_001 | crate::events::EVENT_MAP)
+        || map_id == crate::guild_war::GUILD_MAP && crate::guild_war::running()
+    {
+        return Some("You cannot go to the training ground from here.");
+    }
+    None
+}
+
+/// Sends `character` to the training ground with the minutes they have
+/// banked and earned this session: those minutes, or why not.
+pub async fn enter(state: &State, character: &Character) -> Result<Result<i64, &'static str>, Error> {
+    if let Some(reason) = refusal(state, character) {
+        return Ok(Err(reason));
+    }
+    let banked = timer(state, character, CREDIT).await?.unwrap_or(0);
+    let total = (banked + session_minutes(character.id())).min(MAX_MINUTES);
+    set_timer(state, character, CREDIT, Some(total)).await?;
+    set_timer(state, character, ENTERED, Some(now_unix())).await?;
+    logged_in(character.id());
+    character.teleport(state, OFFLINE_TG_MAP, TRAINING_SPOT).await?;
+    character.save(state).await?;
+    Ok(Ok(total))
+}
+
 async fn say(actor: &Actor<ActorState>, npc_id: u32, text: impl Into<String>, option: &str) -> Result<(), Error> {
     let dialog = MsgTaskDialog::builder()
         .text(text.into())
@@ -140,18 +178,13 @@ pub async fn answer(
             say(actor, npc_id, format!("You can train offline for {total} minutes."), "I see.").await?;
         },
         (GATE_ID, 2) => {
-            if !character.heaven_blessing_active() {
-                say(actor, npc_id, "You may not enter Offline Training Grounds without Heaven's Blessing.", "I see.")
-                    .await?;
-                return Ok(true);
-            }
-            let banked = timer(state, character, CREDIT).await?.unwrap_or(0);
-            let total = (banked + session_minutes(character.id())).min(MAX_MINUTES);
-            set_timer(state, character, CREDIT, Some(total)).await?;
-            set_timer(state, character, ENTERED, Some(now_unix())).await?;
-            logged_in(character.id());
-            character.teleport(state, OFFLINE_TG_MAP, TRAINING_SPOT).await?;
-            character.save(state).await?;
+            let total = match enter(state, character).await? {
+                Ok(total) => total,
+                Err(reason) => {
+                    say(actor, npc_id, reason, "I see.").await?;
+                    return Ok(true);
+                },
+            };
             say(
                 actor,
                 npc_id,

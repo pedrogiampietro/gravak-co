@@ -559,7 +559,8 @@ async fn pay(pool: &sqlx::PgPool, character: &Character, quest: QuestDefinition)
     }
 }
 
-async fn load_definition(pool: &sqlx::PgPool, quest_id: u32) -> Result<Option<QuestDefinition>, Error> {
+/// Quest `quest_id`, if there is one.
+pub async fn load_definition(pool: &sqlx::PgPool, quest_id: u32) -> Result<Option<QuestDefinition>, Error> {
     let row = sqlx::query(&format!("SELECT {COLUMNS} FROM quest_definitions q WHERE q.quest_id = $1"))
         .bind(i64::from(quest_id))
         .fetch_optional(pool)

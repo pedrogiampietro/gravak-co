@@ -534,12 +534,27 @@ pub fn tooltip_image(label: &str) -> Result<RgbaImage> {
     Ok(image)
 }
 
-pub fn loot_name_image(name: &str) -> Result<RgbaImage> {
+/// A dropped item's name in `colour` (its quality's, `loot_colour`).
+pub fn loot_name_image_in(name: &str, colour: [u8; 3]) -> Result<RgbaImage> {
     let font = font()?;
     let width = width(&font, name).ceil() as u32 + 8;
     let mut image = RgbaImage::new(width.max(24), 18);
-    text(&mut image, &font, &[(name, [255, 236, 150])], [4.0, 2.0]);
+    text(&mut image, &font, &[(name, colour)], [4.0, 2.0]);
     Ok(image)
+}
+
+/// The colour of a dropped item's name, by quality: Super gold, Elite
+/// red, Unique blue, Refined cyan; DragonBalls and Meteors yellow; the rest
+/// as before.
+pub fn loot_colour(item_type: u32) -> [u8; 3] {
+    match crate::shop::item_light(item_type) {
+        Some("FireLight") => [255, 190, 60],
+        Some("RedLight") => [255, 110, 120],
+        Some("BlueLight") => [120, 170, 255],
+        Some("RoyalBlueLight") => [120, 225, 255],
+        Some("YellowLight" | "GoldEnLight") => [255, 230, 90],
+        _ => [255, 236, 150],
+    }
 }
 
 /// Compact, readable status banner used for important client/server feedback.

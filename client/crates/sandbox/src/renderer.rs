@@ -2966,6 +2966,8 @@ impl Renderer {
         choice_menu: Option<crate::shop::ChoiceMenu>,
         notice: Option<&str>,
         prompt: Option<crate::shop::PromptDialog>,
+        exit_confirm: Option<crate::exit_confirm::ExitConfirm>,
+        forge: Option<crate::forge_window::ForgeWindow>,
         sell_all: Option<(
             &crate::sell_all::SellAllView,
             &[crate::network::OwnedItem],
@@ -3978,12 +3980,18 @@ impl Renderer {
         let mut finished = Vec::new();
         for (index, (actor_id, effect, started)) in self.role_effects.clone().into_iter().enumerate() {
             let elapsed = time - started;
-            let position = remote_actors
-                .get(&actor_id)
-                .map(|actor| actor.position)
-                .unwrap_or(player.position);
+            let actor = remote_actors.get(&actor_id);
+            let position = actor.map(|actor| actor.position).unwrap_or(player.position);
+            // It stays on the body: up with a jump, up with a flight.
+            let lift = match actor {
+                Some(actor) => {
+                    let flying = actor.status_flags & crate::network::FLY_FLAG != 0;
+                    remote_jump_lift(actor, time) + if flying { crate::movement::FLY_HEIGHT } else { 0.0 }
+                }
+                None => player.height + player.hover,
+            };
             let projected = map.project(position);
-            let mut origin = [projected[0] - camera[0], projected[1] - camera[1]];
+            let mut origin = [projected[0] - camera[0], projected[1] - camera[1] - lift];
             // A rank's fiery name rises over the name and its titles
             // (`3DEffect.ini` lifts the letters 145 over the hero).
             if effect.starts_with("letter") {
@@ -4134,6 +4142,21 @@ impl Renderer {
                 self.upload(&key, icon?);
             }
             let icon_size = self.textures.get(&key).map(|texture| texture.size);
+            // The light of its quality under it, as the bag shows it
+            // (Super, Elite, Unique, Refined; DragonBalls, Meteors).
+            if let (Some(light), Some(size)) = (crate::shop::item_light(*item_id), icon_size) {
+                let frame = crate::shop::item_light_frame(light, time);
+                self.texture(assets, &frame);
+                if self.textures.contains_key(&frame) {
+                    let side = size[0].max(size[1]) * 1.25;
+                    draws.push(Draw {
+                        texture: frame,
+                        vertices: quad([origin[0] - side * 0.5, origin[1] - side * 0.5], [side, side], viewport),
+                        depth_test: false,
+                        sort_depth: WORLD_OVERLAY_SORT,
+                    });
+                }
+            }
             if let Some(texture) = self.textures.get(&key) {
                 draws.push(Draw {
                     texture: key,
@@ -4152,7 +4175,7 @@ impl Renderer {
             let name_key = format!("@loot-name-{loot_id}-{item_id}");
             if !self.textures.contains_key(&name_key) {
                 let name = crate::shop::item_name(assets, *item_id);
-                self.upload(&name_key, crate::labels::loot_name_image(&name)?);
+                self.upload(&name_key, crate::labels::loot_name_image_in(&name, crate::labels::loot_colour(*item_id))?);
             }
             if let Some(name) = self.textures.get(&name_key) {
                 draws.push(Draw {
@@ -5908,6 +5931,46 @@ impl Renderer {
                 });
             }
         }
+        // A city artisan's forge window.
+        if let Some(view) = forge {
+            let origin = crate::forge_window::position(viewport);
+            let local = [cursor[0] - origin[0], cursor[1] - origin[1]];
+            let hovered = crate::forge_window::covers(local)
+                .then(|| crate::forge_window::action_at(equipment, local))
+                .flatten();
+            let flashing = view.last.is_some_and(|(_, at)| time - at < 2.0);
+            let gear: Vec<_> = equipment.iter().map(|item| (item.uid, item.item_type, item.position, item.plus, item.durability)).collect();
+            let catalysts = [crate::forge_rules::METEOR, crate::forge_rules::DRAGONBALL]
+                .map(|catalyst| crate::forge_rules::count(inventory, catalyst, 0));
+            let key = format!("@forge-{:?}-{hovered:?}-{flashing}-{gear:?}-{catalysts:?}", (view.selected, view.craft, view.busy, view.last.map(|(outcome, _)| outcome)));
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, crate::forge_window::image(assets, &view, equipment, inventory, hovered, "ArtisanWind", time)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(origin, texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // "Are you sure you want to exit?", over everything.
+        if let Some(confirm) = exit_confirm {
+            let hovered = if confirm.exercising { None } else { confirm.button_at(cursor) };
+            let key = format!("@exit-confirm-{hovered:?}");
+            if !self.textures.contains_key(&key) {
+                self.upload(&key, confirm.image(assets, hovered)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(confirm.position.map(|value| value as f32), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         if let Some(notice) = notice {
             let key = format!("@notice-{notice}");
             if !self.textures.contains_key(&key) {
@@ -6640,7 +6703,8 @@ fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> boo
 /// recreated on demand, so the renderer may free them once unused (see
 /// `release_unused_transients`). Images redrawn only when their signature
 /// changes (inventory, status, panels) are not among them.
-const TRANSIENT_PREFIXES: [&str; 21] = [
+const TRANSIENT_PREFIXES: [&str; 23] = [
+    "@exit-confirm-",
     "@travel-cube-",
     "@helper-",
     "@shortcuts-",
@@ -6656,6 +6720,7 @@ const TRANSIENT_PREFIXES: [&str; 21] = [
     "@minimap-pin-name-",
     "@choice-menu-",
     "@prompt-",
+    "@forge-",
     "@notice-",
     "@shop-tooltip-",
     "@trade-partner-",

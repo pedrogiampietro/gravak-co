@@ -342,6 +342,9 @@ impl BountyPacket {
     /// Takes a name off a list: `param` = list (0 preferred, 1 avoided) * 10
     /// + the name's place.
     pub const UNLIST: u32 = 7;
+    /// The QUESTS panel asks the giver of quest `param` for it, from
+    /// anywhere: to take it, or to hand in a delivery.
+    pub const QUEST: u32 = 8;
     pub const PROGRESS: u32 = 10;
 
     pub fn new(action: u32, param: u32) -> Self {
@@ -1223,6 +1226,22 @@ impl ActionPacket {
         }
     }
 
+    /// Gravak's MsgAction 9010: the exit confirmation's Exercise button, off
+    /// to offline training; the server echoes it, `data1` 1 when the hero
+    /// went.
+    pub fn exercise(character_id: u32) -> Self {
+        Self {
+            client_timestamp: unix_timestamp(),
+            character_id,
+            data1: 0,
+            data2: 0,
+            details: 0,
+            action_type: Self::EXERCISE,
+        }
+    }
+
+    pub const EXERCISE: u16 = 9010;
+
     pub fn mine(character_id: u32) -> Self {
         Self {
             client_timestamp: unix_timestamp(),
@@ -1456,6 +1475,19 @@ impl ItemActionPacket {
             character_id,
             item_id: item_uid,
             action_type: 44,
+            client_timestamp: unix_timestamp(),
+            amount: 1,
+            data2: 0,
+        }
+    }
+
+    /// A city artisan's upgrade from the forge window (Gravak's MsgItem
+    /// 9011 level, 9012 quality) of item `item_uid`.
+    pub fn artisan(character_id: u32, item_uid: u32, action: u32) -> Self {
+        Self {
+            character_id,
+            item_id: item_uid,
+            action_type: action,
             client_timestamp: unix_timestamp(),
             amount: 1,
             data2: 0,

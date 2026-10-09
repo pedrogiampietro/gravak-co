@@ -2861,6 +2861,38 @@ impl Character {
         Ok(Some((item, catalysts)))
     }
 
+    /// A failed artisan upgrade: one `catalyst_type` from the bag is lost
+    /// and the item's durability halved. `None` without the catalyst.
+    pub async fn fail_upgrade(
+        &self,
+        pool: &sqlx::PgPool,
+        item_uid: u32,
+        catalyst_type: u32,
+    ) -> Result<Option<(InventoryItem, Vec<InventoryItem>)>, Error> {
+        let Some((mut item, worn)) = self.worn_or_bag(item_uid) else {
+            return Ok(None);
+        };
+        let Some(catalysts) = self.catalysts(catalyst_type, 1, item_uid) else {
+            return Ok(None);
+        };
+        let mut transaction = pool.begin().await?;
+        if !self.delete_catalysts(&mut transaction, &catalysts).await? {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        item.durability = (item.durability / 2).max(1);
+        let table = if worn { "equipment_items" } else { "inventory_items" };
+        sqlx::query(&format!("UPDATE {table} SET durability = $1 WHERE item_uid = $2 AND character_id = $3"))
+            .bind(i64::from(item.durability))
+            .bind(i64::from(item.uid))
+            .bind(self.inner.character_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        self.mirror(item, &catalysts);
+        Ok(Some((item, catalysts)))
+    }
+
     async fn save_sockets(
         &self,
         transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,

@@ -168,6 +168,18 @@ impl Bot {
             .map_err(|e| e.to_string())
     }
 
+    /// The exit's Exercise: whether the server says the hero went, its
+    /// lines, and the map the hero is on after.
+    async fn exercise(&mut self) -> Result<(Option<bool>, Vec<String>, u32)> {
+        self.session.send(&ActionPacket::exercise(self.id)).await.map_err(|e| e.to_string())?;
+        let events = self.collect(Duration::from_millis(900)).await?;
+        let went = events.iter().find_map(|event| match event {
+            GameEvent::Action(action) if action.action_type == ActionPacket::EXERCISE => Some(action.data1 == 1),
+            _ => None,
+        });
+        Ok((went, talks(&events), self.map))
+    }
+
     async fn walk(&mut self, direction: u8) -> Result<()> {
         self.session.send(&WalkPacket::new(self.id, direction)).await.map_err(|e| e.to_string())
     }
@@ -602,4 +614,68 @@ pub async fn run(address: &str) -> std::result::Result<(), String> {
 
     println!("\n{} passed, {} failed {:?}", report.passed, report.failed.len(), report.failed);
     if report.failed.is_empty() { Ok(()) } else { Err(format!("{} checks failed", report.failed.len())) }
+}
+
+/// `probe --exercise <auth address>`: the exit confirmation's Exercise
+/// (MsgAction 9010) against a running server: refused without Heaven's
+/// Blessing and from the jail, granted with it (the hero goes to the
+/// offline training ground, map 601).
+pub async fn run_exercise(address: &str) -> std::result::Result<(), String> {
+    let mut report = Report { passed: 0, failed: Vec::new() };
+    let mut bot = Bot::login(address, "gwtesta2", "gwtest123", "GwAlphaMate").await?;
+    bot.tele(1_002, 430, 380).await?;
+    let (went, lines, map) = bot.exercise().await?;
+    let without = went == Some(false) && lines.iter().any(|line| line.contains("Heaven's Blessing"));
+    // A character blessed by an earlier run goes: then the rest still holds.
+    report.check(
+        "without Heaven's Blessing, Exercise is refused",
+        without || went == Some(true),
+        format!("went {went:?}, map {map}, {lines:?}"),
+    );
+    if went == Some(true) {
+        bot.tele(1_002, 430, 380).await?;
+    } else {
+        bot.say("$item 1200000").await?;
+        let item = bot
+            .until(Duration::from_secs(2), |event| matches!(event, GameEvent::ItemInfo(item) if item.item_type == 1_200_000))
+            .await?;
+        let Some(GameEvent::ItemInfo(item)) = item else {
+            return Err("no Heaven's Blessing item".to_owned());
+        };
+        bot.session
+            .send(&gravak_protocol::ItemActionPacket::use_item(bot.id, item.item_uid))
+            .await
+            .map_err(|e| e.to_string())?;
+        println!("  blessing: {:?}", talks(&bot.collect(Duration::from_millis(800)).await?));
+    }
+    bot.tele(6_000, 29, 72).await?;
+    let (went, lines, map) = bot.exercise().await?;
+    report.check(
+        "Exercise is refused in the jail",
+        went == Some(false) && map == 6_000,
+        format!("went {went:?}, map {map}, {lines:?}"),
+    );
+    bot.tele(1_002, 430, 380).await?;
+    let (went, lines, map) = bot.exercise().await?;
+    report.check(
+        "with Heaven's Blessing, Exercise sends the hero to offline training",
+        went == Some(true) && map == 601,
+        format!("went {went:?}, map {map}, {lines:?}"),
+    );
+    bot.tele(1_002, 430, 380).await?;
+    println!("\n{} passed, {} failed {:?}", report.passed, report.failed.len(), report.failed);
+    if report.failed.is_empty() { Ok(()) } else { Err(format!("{} checks failed", report.failed.len())) }
+}
+
+/// `probe --commands <auth address> <account> <password> <character> <line>...`:
+/// logs a test account in, says each line (GM `$` commands among them) and
+/// prints what comes back.
+pub async fn run_commands(address: &str, account: &str, password: &str, character: &str, lines: &[String]) -> std::result::Result<(), String> {
+    let mut bot = Bot::login(address, account, password, character).await?;
+    println!("{} (id {}) on map {}", bot.name, bot.id, bot.map);
+    for line in lines {
+        let answer = bot.command(line).await?;
+        println!("> {line}\n  {answer:?}");
+    }
+    Ok(())
 }

@@ -34,6 +34,8 @@ pub struct BountyView {
     pub showing_quests: bool,
     /// The quest log, as the server sent it.
     pub quests: Vec<QuestLogPacket>,
+    /// The hero's level, for the quests it can take.
+    pub hero_level: u8,
 }
 
 impl BountyView {
@@ -75,6 +77,8 @@ pub enum BountyAction {
     Avoid(u32),
     /// Takes the `index`th name off a list.
     Unlist { avoided: bool, index: u32 },
+    /// Takes quest `id`, or hands in its delivery, from the Quests tab.
+    Quest(u32),
 }
 
 const DAILY: UiRect = UiRect::new(372, 50, 128, 22);
@@ -219,28 +223,53 @@ fn quest_status(quest: &QuestLogPacket) -> (String, [u8; 3]) {
     }
 }
 
-/// The Quests tab: the quests under way, then each giver's next, and how
-/// many are done.
-fn draw_quests(image: &mut RgbaImage, font: &Font, view: &BountyView) {
-    let shown = view
-        .quests
+/// The quests the tab shows, in its order: under way, then each giver's
+/// next.
+fn shown_quests(view: &BountyView) -> Vec<&QuestLogPacket> {
+    view.quests
         .iter()
         .filter(|quest| quest.state == QuestLogPacket::ACTIVE)
         .chain(view.quests.iter().filter(|quest| quest.state == QuestLogPacket::AVAILABLE))
         .take(QUEST_ROWS)
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn quest_card(index: usize) -> UiRect {
+    UiRect::new(20, QUEST_TOP + index as i32 * QUEST_ROW, 480, QUEST_ROW - 4)
+}
+
+/// The button on a quest's card: Accept for a giver's next, Deliver for a
+/// delivery or a collection under way (a hunt pays at its last kill, a
+/// message where it is taken); whether it can be pressed now.
+fn quest_button(view: &BountyView, quest: &QuestLogPacket, index: usize) -> Option<(UiRect, &'static str, bool)> {
+    let card = quest_card(index);
+    let rect = UiRect::new(card.x + card.width - 82, card.y + 3, 74, 18);
+    match (quest.state, quest.kind) {
+        (QuestLogPacket::AVAILABLE, _) => Some((rect, "Accept", u32::from(view.hero_level) >= quest.min_level)),
+        (QuestLogPacket::ACTIVE, 1 | 2) => Some((rect, "Deliver", quest.progress >= quest.required)),
+        _ => None,
+    }
+}
+
+/// The Quests tab: the quests under way, then each giver's next, and how
+/// many are done.
+fn draw_quests(image: &mut RgbaImage, font: &Font, view: &BountyView) {
+    let shown = shown_quests(view);
     if shown.is_empty() {
         say(image, font, "No quests under way. Ask the generals of the cities", ui_theme::TEXT_MUTED, 24, 70);
         say(image, font, "for a task: Old General Yang waits in Twin City.", ui_theme::TEXT_MUTED, 24, 90);
     }
     for (index, quest) in shown.into_iter().enumerate() {
-        let card = UiRect::new(20, QUEST_TOP + index as i32 * QUEST_ROW, 480, QUEST_ROW - 4);
+        let card = quest_card(index);
         let active = quest.state == QuestLogPacket::ACTIVE;
         draw_card(image, card, if active { WidgetState::Selected } else { WidgetState::Normal });
         let colour = if active { ui_theme::TEXT_GOLD } else { ui_theme::TEXT };
         say(image, font, &clip(&quest.name, 38), colour, card.x + 10, card.y + 4);
         let (status, status_colour) = quest_status(quest);
-        say(image, font, &status, status_colour, card.x + 330, card.y + 4);
+        say(image, font, &status, status_colour, card.x + 270, card.y + 4);
+        if let Some((rect, label, enabled)) = quest_button(view, quest, index) {
+            button(image, font, rect, label, enabled);
+        }
         let line = if quest.giver.is_empty() {
             quest.description.clone()
         } else {
@@ -423,7 +452,13 @@ pub fn action_at(view: &BountyView, cursor: [f32; 2]) -> Option<BountyAction> {
     if let Some(index) = (0..2).find(|index| PAGE_TABS[*index].contains_local(cursor)) {
         return Some(BountyAction::ShowQuests(index == 1));
     }
-    if view.showing_quests || !view.has_board {
+    if view.showing_quests {
+        return shown_quests(view).into_iter().enumerate().find_map(|(index, quest)| {
+            let (rect, _, enabled) = quest_button(view, quest, index)?;
+            (enabled && rect.contains_local(cursor)).then_some(BountyAction::Quest(quest.quest_id))
+        });
+    }
+    if !view.has_board {
         return None;
     }
     let board = &view.board;
@@ -642,7 +677,7 @@ mod tests {
     use super::*;
 
     fn board() -> BountyView {
-        BountyView { selected: None, has_board: true, showing_quests: false, quests: Vec::new(), board: BountyState {
+        BountyView { selected: None, has_board: true, showing_quests: false, quests: Vec::new(), hero_level: 1, board: BountyState {
             points: 20,
             tokens: 2,
             daily_available: 1,
@@ -793,12 +828,30 @@ mod quest_log {
         assert_eq!(action_at(&view, [380.0, 55.0]), None, "the daily button is not on this page");
     }
 
+    #[test]
+    fn the_quest_buttons_take_a_quest_or_hand_in_a_delivery() {
+        let mut view = BountyView { has_board: true, showing_quests: true, hero_level: 100, ..Default::default() };
+        view.apply_quest_line(line(52, 1, 2, 10, "Wings for the Healer")); // a collection, all in the bag
+        view.apply_quest_line(line(11, 1, 0, 3, "Bandit Roads")); // a hunt: no button
+        view.apply_quest_line(line(60, 0, 2, 0, "Horns of the Devil")); // the next, level 95
+        let press = |view: &BountyView, index: usize| {
+            let card = quest_card(index);
+            action_at(view, [(card.x + card.width - 50) as f32, (card.y + 10) as f32])
+        };
+        assert_eq!(press(&view, 0), Some(BountyAction::Quest(52)), "Deliver");
+        assert_eq!(press(&view, 1), None, "a hunt pays by itself");
+        assert_eq!(press(&view, 2), Some(BountyAction::Quest(60)), "Accept");
+        view.hero_level = 90;
+        assert_eq!(press(&view, 2), None, "too low for it");
+    }
+
     /// `BOUNTY_PREVIEW=dir cargo test -p conquer-sandbox quest_log_preview`.
     #[test]
     fn quest_log_preview() {
         let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
         let font = crate::labels::font().expect("font");
-        let mut view = BountyView { has_board: true, showing_quests: true, ..Default::default() };
+        let mut view = BountyView { has_board: true, showing_quests: true, hero_level: 100, ..Default::default() };
+        view.apply_quest_line(line(53, 1, 1, 10, "Herbs for the Village"));
         view.apply_quest_line(line(52, 1, 2, 4, "Wings for the Healer"));
         view.apply_quest_line(line(50, 1, 3, 0, "Word from the Desert"));
         view.apply_quest_line(line(11, 1, 0, 17, "Bandit Roads"));

@@ -11,6 +11,27 @@ mod guild_war;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(index) = args.iter().position(|argument| argument == "--commands") {
+        let rest = &args[index + 1..];
+        let address = args.first().filter(|argument| !argument.starts_with("--")).map_or("127.0.0.1:9958", String::as_str);
+        if rest.len() < 3 {
+            eprintln!("--commands <account> <password> <character> <line>...");
+            std::process::exit(1);
+        }
+        if let Err(error) = guild_war::run_commands(address, &rest[0], &rest[1], &rest[2], &rest[3..]).await {
+            eprintln!("Commands failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.iter().any(|argument| argument == "--exercise") {
+        let address = args.iter().find(|argument| !argument.starts_with("--")).map_or("127.0.0.1:9958", String::as_str);
+        if let Err(error) = guild_war::run_exercise(address).await {
+            eprintln!("Exercise smoke failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|argument| argument == "--guild-war") {
         let address = args.iter().find(|argument| !argument.starts_with("--")).map_or("127.0.0.1:9958", String::as_str);
         if let Err(error) = guild_war::run(address).await {
