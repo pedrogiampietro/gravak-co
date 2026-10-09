@@ -1,4 +1,4 @@
-//! Broadcasts (the original's 2050): a player of level 50 or more pays 5 CPs
+//! Broadcasts (the original's 2050): a player of level 50 or more pays 25 CPs
 //! and their message reaches the whole server, one a minute in the order
 //! they were paid for (Redux `Process_Broadcast` and `PlayerManager`).
 
@@ -12,7 +12,7 @@ use crate::packets::{MsgTalk, TalkChannel};
 use crate::{Error, State};
 
 pub const MIN_LEVEL: u16 = 50;
-pub const PRICE_CPS: u64 = 5;
+pub const PRICE_CPS: u64 = 25;
 /// The longest message, in characters.
 pub const MAX_LENGTH: usize = 80;
 /// Time between two broadcasts.

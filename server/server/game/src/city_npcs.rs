@@ -183,7 +183,7 @@ pub fn opening(npc_id: u32, character: &Character) -> Option<(String, Options, u
         ),
         CP_ADMIN_ID => (
             "I can help you turn DragonBalls into CP.".into(),
-            options(&[(1, "DragonBall (215 CP)"), (2, "DBScroll (2150 CP)"), (255, "No thank you.")]),
+            options(&[(1, "DragonBall (170 CP)"), (2, "DBScroll (1700 CP)"), (255, "No thank you.")]),
         ),
         SURGEON_ID => (
             "Hello, are you satisfield with your stature? I can change your body size for 1 DragonBall. Would you like to change it?".into(),
@@ -447,10 +447,12 @@ pub async fn answer(
             }
         },
         (CP_ADMIN_ID, 1 | 2) => {
+            // Never more than the Store asks (175 and 1,700 CPs; a DBScroll
+            // opens into ten DragonBalls): buying there to sell here gains nothing.
             let (item, cps, name) = if option == 1 {
-                (DRAGONBALL, 215, "DragonBall")
+                (DRAGONBALL, 170, "DragonBall")
             } else {
-                (DRAGONBALL_SCROLL, 2_150, "DBScroll")
+                (DRAGONBALL_SCROLL, 1_700, "DBScroll")
             };
             if take(state, actor, character, item, 1).await? {
                 character.grant_cps(state.pool(), cps).await?;
