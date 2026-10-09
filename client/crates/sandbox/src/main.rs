@@ -1,4 +1,7 @@
 // Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
+// The players' build (packed-only) opens no console window; development keeps
+// it for the log.
+#![cfg_attr(all(windows, feature = "packed-only"), windows_subsystem = "windows")]
 mod action;
 mod action_bar;
 mod keybinds;

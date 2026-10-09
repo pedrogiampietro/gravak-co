@@ -1,9 +1,10 @@
 "use server";
 
 import bcrypt from "bcryptjs";
-import { headers } from "next/headers";
 import { z } from "zod";
 import { pool } from "@/lib/db";
+import { clientAddress } from "@/lib/request";
+import { passedTurnstile } from "@/lib/turnstile";
 
 export type RegisterState =
   | { status: "idle" }
@@ -14,7 +15,7 @@ export type RegisterState =
       values: { username: string; email: string };
     };
 
-export type ErrorCode = "username" | "password" | "confirm" | "email" | "taken" | "offline" | "tooMany";
+export type ErrorCode = "username" | "password" | "confirm" | "email" | "taken" | "offline" | "tooMany" | "captcha";
 
 // The server's `accounts` table: usernames up to 16, emails up to 64.
 const schema = z
@@ -62,7 +63,10 @@ export async function register(_previous: RegisterState, form: FormData): Promis
     return { status: "error", errors, values };
   }
 
-  const address = (await headers()).get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+  const address = await clientAddress();
+  if (!(await passedTurnstile(form.get("cf-turnstile-response"), address))) {
+    return { status: "error", errors: { form: "captcha" }, values };
+  }
   if (!allowed(address)) {
     return { status: "error", errors: { form: "tooMany" }, values };
   }
