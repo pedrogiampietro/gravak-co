@@ -321,6 +321,54 @@ fn marketing_tech() {
     post.save(out.join("15-tech-em-breve.png")).unwrap();
 }
 
+/// The pages' covers: Facebook's (1640 by 624, its middle kept clear for
+/// the phone's crop) and a square post, Twin City behind the four
+/// professions and the name.
+/// `cargo test --release -p conquer-sandbox covers -- --ignored`
+#[test]
+#[ignore]
+fn covers() {
+    let root = std::env::var("GRAVAK_ASSETS").unwrap_or_else(|_| "R:/5065".into());
+    let mut assets = crate::assets::Assets::open(std::path::Path::new(&root)).expect("assets");
+    art::set_frame_source(crate::original_panels::general_bg(&mut assets).expect("frame art"));
+    let out = output();
+    let mut maps = Vec::new();
+    let heroes: Vec<_> = (0..4)
+        .map(|class| crate::showcase::Hero::load(&mut assets, if class % 2 == 0 { 3 } else { 2 }, class).expect("hero"))
+        .collect();
+
+    // Facebook: two heroes either side of the name, turned towards it.
+    let mut cover = world(&mut assets, &mut maps, 1002, [430.0, 380.0], [1640, 624]);
+    frame_for_text(&mut cover, 0.25, 0.3);
+    art::radial_glow(&mut cover, 820, 300, 420, [255, 190, 96, 56]);
+    for (class, (centre, facing)) in [(140, 0.55), (330, 0.45), (1320, -0.45), (1500, -0.55)].into_iter().enumerate() {
+        let picture = heroes[class].render([440, 520], 440.0, 0.6, facing);
+        hero_shadow(&mut cover, centre, 80 + (520.0 * 0.93) as i32, [70, 11]);
+        image::imageops::overlay(&mut cover, &picture, i64::from(centre - 220), 80);
+    }
+    art::embers(&mut cover, 2.0);
+    wordmark(&mut cover, 130.0, 820, 120, Some("CONQUER ONLINE  ·  5065"));
+    art::label(&mut cover, "5x EXP  ·  Nível 130  ·  Forja +12  ·  Guerra de guildas", 30.0, 820, 470, art::GOLD_BRIGHT);
+    gold_border(&mut cover, 14);
+    image::DynamicImage::ImageRgba8(cover).to_rgb8().save(out.join("capa-facebook.jpg")).unwrap();
+
+    // The square post: the name over the four professions.
+    let mut post = world(&mut assets, &mut maps, 1002, [430.0, 380.0], SQUARE);
+    frame_for_text(&mut post, 0.32, 0.28);
+    art::radial_glow(&mut post, 540, 640, 460, [255, 190, 96, 56]);
+    wordmark(&mut post, 140.0, 540, 70, Some("CONQUER ONLINE  ·  5065"));
+    for class in 0..4 {
+        let picture = heroes[class].render([440, 560], 450.0, 0.6, 0.3);
+        let centre = 150 + class as i32 * 260;
+        hero_shadow(&mut post, centre, 380 + (560.0 * 0.93) as i32, [80, 12]);
+        image::imageops::overlay(&mut post, &picture, i64::from(centre - 220), 380);
+    }
+    art::label(&mut post, "O clássico voltou. Do jeito que você lembra.", 40.0, 540, 980, art::GOLD_BRIGHT);
+    art::embers(&mut post, 3.0);
+    gold_border(&mut post, 24);
+    image::DynamicImage::ImageRgba8(post).to_rgb8().save(out.join("capa-instagram.jpg")).unwrap();
+}
+
 /// The website's pictures (`web/public/art`): views of the world and the
 /// four professions' heroes on clear ground.
 /// `cargo test --release -p conquer-sandbox site_art -- --ignored`

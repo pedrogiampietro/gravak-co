@@ -71,7 +71,7 @@ fn run() -> gravak_content::Result<()> {
             }
             let report = build(&mut installation, &content)?;
             println!(
-                "{} itens novos, {} alterados, {} ícones, {} objetos em {} mapas, {} garments, {} acessórios -> {}",
+                "{} itens novos, {} alterados, {} ícones, {} objetos em {} mapas, {} garments, {} acessórios, {} fendas, {} monstros -> {}",
                 report.added,
                 report.changed,
                 report.icons,
@@ -79,6 +79,8 @@ fn run() -> gravak_content::Result<()> {
                 report.maps,
                 report.garments,
                 report.accessories,
+                report.rifts,
+                report.monsters,
                 report.output.display()
             );
         }

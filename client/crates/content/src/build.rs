@@ -73,6 +73,10 @@ pub struct Report {
     pub garments: usize,
     /// Weapon accessories of ours (`content/accessories`).
     pub accessories: usize,
+    /// The Rifts' labyrinths (`content/rifts.toml`).
+    pub rifts: usize,
+    /// Monsters of ours (`content/monsters.toml`).
+    pub monsters: usize,
     pub output: PathBuf,
 }
 
@@ -130,7 +134,49 @@ pub fn build(installation: &mut Installation, content: &Path) -> Result<Report> 
     let (garments, garment_textures) = crate::garments::build(installation, content, &report.output)?;
     let (accessories, accessory_textures) = crate::accessories::build(installation, content, &report.output)?;
     (report.garments, report.accessories) = (garments, accessories);
-    let ours = garment_textures + &accessory_textures;
+    report.rifts = crate::rifts::build(installation, content, &report.output)?;
+    let monsters = crate::monsters::build(installation, content, &report.output)?;
+    report.monsters = monsters.monsters;
+    if monsters.monsters > 0 {
+        // Over the garments' armor.ini when they wrote one.
+        let written = report.output.join(crate::garments::ARMOR);
+        let mut armor = match std::fs::read(&written) {
+            Ok(bytes) => bytes,
+            Err(_) => installation.read(crate::garments::ARMOR)?,
+        };
+        if !armor.ends_with(b"
+") {
+            armor.extend_from_slice(b"
+");
+        }
+        armor.extend_from_slice(monsters.armor.as_bytes());
+        std::fs::create_dir_all(written.parent().expect("ini folder"))?;
+        std::fs::write(written, armor)?;
+        let mut motions = installation.read(crate::monsters::MOTIONS)?;
+        if !motions.ends_with(b"
+") {
+            motions.extend_from_slice(b"
+");
+        }
+        motions.extend_from_slice(monsters.motions.as_bytes());
+        std::fs::write(report.output.join(crate::monsters::MOTIONS), motions)?;
+        if !monsters.models.is_empty() {
+            // Over the accessories' 3dobj.ini when they wrote one.
+            let written = report.output.join(crate::accessories::MODELS);
+            let mut models = match std::fs::read(&written) {
+                Ok(bytes) => bytes,
+                Err(_) => installation.read(crate::accessories::MODELS)?,
+            };
+            if !models.ends_with(b"
+") {
+                models.extend_from_slice(b"
+");
+            }
+            models.extend_from_slice(monsters.models.as_bytes());
+            std::fs::write(written, models)?;
+        }
+    }
+    let ours = garment_textures + &accessory_textures + &monsters.textures;
     if !ours.is_empty() {
         let mut textures = installation.read(crate::garments::TEXTURES)?;
         if !textures.ends_with(b"

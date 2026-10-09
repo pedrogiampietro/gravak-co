@@ -23,7 +23,13 @@ server/data/GameMaps/ScenePart/
 server/data/GameMaps/GameMap.dat
 
 # Previews visuais gerados localmente
+marketing/
 docs/ui-preview*/
+
+# The creatures' GLBs from Meshy (~20 MB each, their textures embedded):
+# kept outside git, on the machine that builds the client. The build skips a
+# creature whose walk.glb is missing (docs/conteudo-custom.md).
+content/art/monstros/*/*.glb
 
 # Editor / OS files
 .DS_Store

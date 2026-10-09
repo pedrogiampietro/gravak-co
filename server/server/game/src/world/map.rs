@@ -232,9 +232,11 @@ impl Map {
     }
 
     /// Whether there is anything to fight here besides players: monsters
-    /// or the training dummies.
+    /// (spawned, or put here as a rift's creatures are) or the training
+    /// dummies.
     pub fn has_foes(&self) -> bool {
         !self.monsters.is_empty()
+            || !self.monster_entities.read().is_empty()
             || self.npcs.values().any(|entity| entity.as_npc().is_some_and(Npc::is_training_goal))
     }
 

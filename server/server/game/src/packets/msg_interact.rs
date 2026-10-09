@@ -1519,6 +1519,7 @@ pub(crate) async fn reward_monster_defeat(
         .map(|item_id| (item_id, 0)),
     );
     crate::dis_city::defeated(state, character, monster).await?;
+    crate::rifts::defeated(state, character, monster).await?;
     // A boss: the server hears of its fall, and it drops more.
     drops.extend(
         crate::bosses::slain(state, character, monster)

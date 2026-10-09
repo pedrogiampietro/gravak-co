@@ -799,6 +799,9 @@ pub struct Renderer {
     quick_panel_shown: Option<(crate::shop::QuickPanel, String)>,
     /// Where the bounty line under the minimap was drawn, for clicks.
     bounty_tracker_rect: Option<[f32; 4]>,
+    /// The team's Rift run and when the server told of it; the tracker
+    /// goes under the bounty's.
+    pub rift: Option<(gravak_protocol::RiftState, Instant)>,
     /// Where the Store icon was drawn, for clicks.
     store_icon_rect: Option<[f32; 4]>,
     ranking_icon_rect: Option<[f32; 4]>,
@@ -1075,6 +1078,7 @@ impl Renderer {
             quick_panel_signature: None,
             quick_panel_shown: None,
             bounty_tracker_rect: None,
+            rift: None,
             store_icon_rect: None,
             ranking_icon_rect: None,
             helper_icon_rect: None,
@@ -3765,7 +3769,10 @@ impl Renderer {
                                         // Over the head, not across the chest.
                                         122.0
                                     } else if monster {
-                                        68.0
+                                        // Over its head: a tall creature lifts it.
+                                        remote_monsters
+                                            .get(&actor.id)
+                                            .map_or(68.0, |model| (model.head + 4.0).max(68.0))
                                     } else {
                                         // A guild line over the name, or a shield hanging
                                         // under it, keeps the name in place.
@@ -4142,20 +4149,29 @@ impl Renderer {
                 self.upload(&key, icon?);
             }
             let icon_size = self.textures.get(&key).map(|texture| texture.size);
-            // The light of its quality under it, as the bag shows it
-            // (Super, Elite, Unique, Refined; DragonBalls, Meteors).
+            // The light of its quality under it (Super, Elite, Unique,
+            // Refined; gems, DragonBalls, Meteors): a soft glow lying on the
+            // ground in the quality's colour, breathing slowly, not the
+            // bag's square.
             if let (Some(light), Some(size)) = (crate::shop::item_light(*item_id), icon_size) {
-                let frame = crate::shop::item_light_frame(light, time);
-                self.texture(assets, &frame);
-                if self.textures.contains_key(&frame) {
-                    let side = size[0].max(size[1]) * 1.25;
-                    draws.push(Draw {
-                        texture: frame,
-                        vertices: quad([origin[0] - side * 0.5, origin[1] - side * 0.5], [side, side], viewport),
-                        depth_test: false,
-                        sort_depth: WORLD_OVERLAY_SORT,
-                    });
+                let key = format!("@ground-glow-{light}{}", crate::magic::ADDITIVE_SUFFIX);
+                if !self.textures.contains_key(&key) {
+                    self.upload(&key, ground_glow_image(ground_glow_colour(light)));
                 }
+                let width = size[0].max(size[1]) * 1.6;
+                let height = width * 0.5;
+                let alpha = 0.6 + 0.25 * (time * 2.2).sin();
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad_with_alpha(
+                        [origin[0] - width * 0.5, origin[1] + size[1] * 0.15 - height * 0.5],
+                        [width, height],
+                        viewport,
+                        alpha,
+                    ),
+                    depth_test: false,
+                    sort_depth: WORLD_OVERLAY_SORT,
+                });
             }
             if let Some(texture) = self.textures.get(&key) {
                 draws.push(Draw {
@@ -4566,6 +4582,33 @@ impl Renderer {
             }
         }
         self.prune_textures("@bounty-tracker-", &[tracker_key.as_deref()]);
+        // The Rift run under way, under the bounty's tracker.
+        let rift = self
+            .rift
+            .as_ref()
+            .and_then(|(state, since)| crate::rift_tracker::Tracker::now(state, since.elapsed().as_secs_f32()));
+        let rift_key = rift.as_ref().map(|rift| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            rift.hash(&mut hasher);
+            format!("@rift-tracker-{}", hasher.finish())
+        });
+        if let (Some(rift), Some(key)) = (&rift, &rift_key) {
+            if !self.textures.contains_key(key) {
+                self.upload(key, crate::rift_tracker::image(assets, rift)?);
+            }
+            let top = self.bounty_tracker_rect.map_or(190.0, |[_, top, _, height]| top + height + 6.0);
+            if let Some(texture) = self.textures.get(key) {
+                let left = viewport[0] - texture.size[0] - 8.0;
+                draws.push(Draw {
+                    texture: key.clone(),
+                    vertices: quad([left, top], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        self.prune_textures("@rift-tracker-", &[rift_key.as_deref()]);
         // The Store button, past the quiver over the bar.
         let [left, top, width, height] = crate::hud::store_button_rect(viewport);
         self.store_icon_rect = Some([left, top, width, height]);
@@ -6789,6 +6832,32 @@ fn soul_trail_image(tint: [f32; 3]) -> image::RgbaImage {
         let heart = (1.0 - across * 3.0).max(0.0);
         let colour = |channel: usize| ((tint[channel] * (1.0 - heart) + heart) * light * 255.0) as u8;
         image::Rgba([colour(0), colour(1), colour(2), (light * 255.0) as u8])
+    })
+}
+
+/// The colour a quality's light glows on the ground.
+fn ground_glow_colour(light: &str) -> [f32; 3] {
+    match light {
+        "FireLight" => [1.0, 0.72, 0.3],
+        "RedLight" => [0.95, 0.3, 0.28],
+        "BlueLight" => [0.35, 0.75, 1.0],
+        "RoyalBlueLight" => [0.35, 0.45, 1.0],
+        "GoldEnLight" => [1.0, 0.85, 0.4],
+        _ => [1.0, 0.92, 0.45],
+    }
+}
+
+/// A glow lying on the ground: an ellipse twice as wide as tall, `colour`
+/// at its heart fading to nothing at its edge, for drawing additively.
+fn ground_glow_image(colour: [f32; 3]) -> image::RgbaImage {
+    const WIDTH: u32 = 128;
+    const HEIGHT: u32 = 64;
+    image::RgbaImage::from_fn(WIDTH, HEIGHT, |x, y| {
+        let dx = (x as f32 + 0.5) / WIDTH as f32 * 2.0 - 1.0;
+        let dy = (y as f32 + 0.5) / HEIGHT as f32 * 2.0 - 1.0;
+        let light = (1.0 - dx.hypot(dy)).max(0.0).powf(1.8);
+        let channel = |c: f32| (c * light * 255.0) as u8;
+        image::Rgba([channel(colour[0]), channel(colour[1]), channel(colour[2]), (light * 255.0) as u8])
     })
 }
 

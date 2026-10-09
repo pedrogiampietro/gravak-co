@@ -1,0 +1,64 @@
+# As Fendas do Gravak: os labirintos que o build gera (veja
+# client/crates/content/src/rifts.rs e docs/fendas-design.md).
+#
+# Cada fenda é um mapa nosso: uma cripta de corredores de 5 células, com a
+# arte de content/art/cripta. A mesma `seed` gera sempre o mesmo labirinto;
+# trocar a seed gera outro. `rooms` são as salas do labirinto na horizontal e
+# na vertical (cada sala tem 5 por 5 células, as paredes 2 de espessura).
+
+# Fenda Menor (nível 70+)
+[[rift]]
+id = 9101
+name = "Fenda Menor I"
+seed = 1
+rooms = [9, 9]
+
+[[rift]]
+id = 9102
+name = "Fenda Menor II"
+seed = 2
+rooms = [9, 9]
+
+[[rift]]
+id = 9103
+name = "Fenda Menor III"
+seed = 3
+rooms = [9, 9]
+
+# Fenda Maior (nível 100+)
+[[rift]]
+id = 9111
+name = "Fenda Maior I"
+seed = 11
+rooms = [11, 11]
+
+[[rift]]
+id = 9112
+name = "Fenda Maior II"
+seed = 12
+rooms = [11, 11]
+
+[[rift]]
+id = 9113
+name = "Fenda Maior III"
+seed = 13
+rooms = [11, 11]
+
+# Fenda Abissal (nível 120+)
+[[rift]]
+id = 9121
+name = "Fenda Abissal I"
+seed = 21
+rooms = [13, 13]
+
+[[rift]]
+id = 9122
+name = "Fenda Abissal II"
+seed = 22
+rooms = [13, 13]
+
+[[rift]]
+id = 9123
+name = "Fenda Abissal III"
+seed = 23
+rooms = [13, 13]

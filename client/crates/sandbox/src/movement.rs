@@ -71,26 +71,36 @@ pub fn nearest_walkable_spawn(map: &Map, origin: [i32; 2], max_radius: i32) -> O
 
 impl Player {
     pub fn new(map: &Map, spawn: Option<[i32; 2]>) -> Result<Self, String> {
-        let spawn = spawn
-            .or_else(|| {
-                let center = [map.data.width as i32 / 2, map.data.height as i32 / 2];
-                (0..map.data.width.max(map.data.height) as i32).find_map(|r| {
-                    (-r..=r)
-                        .flat_map(|i| {
-                            [
-                                [center[0] + i, center[1] - r],
-                                [center[0] + i, center[1] + r],
-                                [center[0] - r, center[1] + i],
-                                [center[0] + r, center[1] + i],
-                            ]
-                        })
-                        .find(|p| map.walkable(*p))
-                })
+        // The walkable cell nearest `from`, rings outward.
+        let nearest = |from: [i32; 2]| {
+            (0..map.data.width.max(map.data.height) as i32 * 2).find_map(|r| {
+                (-r..=r)
+                    .flat_map(|i| {
+                        [
+                            [from[0] + i, from[1] - r],
+                            [from[0] + i, from[1] + r],
+                            [from[0] - r, from[1] + i],
+                            [from[0] + r, from[1] + i],
+                        ]
+                    })
+                    .find(|p| map.walkable(*p))
             })
-            .ok_or("Map has no walkable spawn")?;
-        if !map.walkable(spawn) {
-            return Err("Requested spawn is blocked or outside map".into());
-        }
+        };
+        let center = [map.data.width as i32 / 2, map.data.height as i32 / 2];
+        // A spawn on a blocked cell or outside the map (a map that changed
+        // under a saved place) stands on the nearest floor instead of
+        // failing; the server corrects it if it disagrees.
+        let spawn = match spawn {
+            Some(spawn) if map.walkable(spawn) => spawn,
+            Some(spawn) => {
+                let inside = [
+                    spawn[0].clamp(0, map.data.width as i32 - 1),
+                    spawn[1].clamp(0, map.data.height as i32 - 1),
+                ];
+                nearest(inside).ok_or("Map has no walkable spawn")?
+            }
+            None => nearest(center).ok_or("Map has no walkable spawn")?,
+        };
         Ok(Self {
             position: spawn.map(|v| v as f32),
             facing: -std::f32::consts::FRAC_PI_4,

@@ -44,6 +44,8 @@ pub const MSG_STATUS_TIMERS: u16 = 9120;
 /// hero stands in it.
 pub const MSG_DAILY_REWARD_CHOICE: u16 = 9131;
 pub const MSG_DAILY_REWARD_STATE: u16 = 9132;
+/// Gravak's Rifts: where the team's run stands.
+pub const MSG_RIFT: u16 = 9180;
 /// Gravak's Highscores: one ranked character, and the page shown.
 pub const MSG_HIGHSCORE_ROW: u16 = 9141;
 pub const MSG_WHISPER_CARD: u16 = 9150;
@@ -485,6 +487,20 @@ pub struct DailyRewardState {
     pub day: u32,
     pub claimed: u32,
     pub next_day_at: u64,
+}
+
+/// Where a Rift run stands (`phase` 0 hides the tracker; 1 clearing, 2 the
+/// Guardian, 3 won, 4 lost), its tier (0 Menor, 1 Maior, 2 Abissal), the
+/// creatures slain of all, and the seconds until the time runs out (or,
+/// won or lost, until the rift closes).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9180)]
+pub struct RiftState {
+    pub phase: u32,
+    pub tier: u32,
+    pub killed: u32,
+    pub total: u32,
+    pub seconds_left: u32,
 }
 
 /// A Highscores request: a page of `category` narrowed to `profession`
@@ -2150,6 +2166,7 @@ pub enum GameEvent {
     StoreState(StoreState),
     DailyRewardChoice(DailyRewardChoice),
     DailyRewardState(DailyRewardState),
+    Rift(RiftState),
     HighscoreRow(HighscoreRow),
     WhisperCard(WhisperCard),
     HighscoreState(HighscoreState),
@@ -2286,6 +2303,7 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_DAILY_REWARD_STATE => Ok(GameEvent::DailyRewardState(
             DailyRewardState::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_RIFT => Ok(GameEvent::Rift(RiftState::decode(body).map_err(ProtocolError::Decode)?)),
         MSG_WHISPER_CARD => Ok(GameEvent::WhisperCard(
             WhisperCard::decode(body).map_err(ProtocolError::Decode)?,
         )),
