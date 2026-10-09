@@ -4149,20 +4149,29 @@ impl Renderer {
                 self.upload(&key, icon?);
             }
             let icon_size = self.textures.get(&key).map(|texture| texture.size);
-            // The light of its quality under it, as the bag shows it
-            // (Super, Elite, Unique, Refined; DragonBalls, Meteors).
+            // The light of its quality under it (Super, Elite, Unique,
+            // Refined; gems, DragonBalls, Meteors): a soft glow lying on the
+            // ground in the quality's colour, breathing slowly, not the
+            // bag's square.
             if let (Some(light), Some(size)) = (crate::shop::item_light(*item_id), icon_size) {
-                let frame = crate::shop::item_light_frame(light, time);
-                self.texture(assets, &frame);
-                if self.textures.contains_key(&frame) {
-                    let side = size[0].max(size[1]) * 1.25;
-                    draws.push(Draw {
-                        texture: frame,
-                        vertices: quad([origin[0] - side * 0.5, origin[1] - side * 0.5], [side, side], viewport),
-                        depth_test: false,
-                        sort_depth: WORLD_OVERLAY_SORT,
-                    });
+                let key = format!("@ground-glow-{light}{}", crate::magic::ADDITIVE_SUFFIX);
+                if !self.textures.contains_key(&key) {
+                    self.upload(&key, ground_glow_image(ground_glow_colour(light)));
                 }
+                let width = size[0].max(size[1]) * 1.6;
+                let height = width * 0.5;
+                let alpha = 0.6 + 0.25 * (time * 2.2).sin();
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad_with_alpha(
+                        [origin[0] - width * 0.5, origin[1] + size[1] * 0.15 - height * 0.5],
+                        [width, height],
+                        viewport,
+                        alpha,
+                    ),
+                    depth_test: false,
+                    sort_depth: WORLD_OVERLAY_SORT,
+                });
             }
             if let Some(texture) = self.textures.get(&key) {
                 draws.push(Draw {
@@ -6823,6 +6832,32 @@ fn soul_trail_image(tint: [f32; 3]) -> image::RgbaImage {
         let heart = (1.0 - across * 3.0).max(0.0);
         let colour = |channel: usize| ((tint[channel] * (1.0 - heart) + heart) * light * 255.0) as u8;
         image::Rgba([colour(0), colour(1), colour(2), (light * 255.0) as u8])
+    })
+}
+
+/// The colour a quality's light glows on the ground.
+fn ground_glow_colour(light: &str) -> [f32; 3] {
+    match light {
+        "FireLight" => [1.0, 0.72, 0.3],
+        "RedLight" => [0.95, 0.3, 0.28],
+        "BlueLight" => [0.35, 0.75, 1.0],
+        "RoyalBlueLight" => [0.35, 0.45, 1.0],
+        "GoldEnLight" => [1.0, 0.85, 0.4],
+        _ => [1.0, 0.92, 0.45],
+    }
+}
+
+/// A glow lying on the ground: an ellipse twice as wide as tall, `colour`
+/// at its heart fading to nothing at its edge, for drawing additively.
+fn ground_glow_image(colour: [f32; 3]) -> image::RgbaImage {
+    const WIDTH: u32 = 128;
+    const HEIGHT: u32 = 64;
+    image::RgbaImage::from_fn(WIDTH, HEIGHT, |x, y| {
+        let dx = (x as f32 + 0.5) / WIDTH as f32 * 2.0 - 1.0;
+        let dy = (y as f32 + 0.5) / HEIGHT as f32 * 2.0 - 1.0;
+        let light = (1.0 - dx.hypot(dy)).max(0.0).powf(1.8);
+        let channel = |c: f32| (c * light * 255.0) as u8;
+        image::Rgba([channel(colour[0]), channel(colour[1]), channel(colour[2]), (light * 255.0) as u8])
     })
 }
 
