@@ -64,7 +64,6 @@ pub trait TQServer: Sized + Send + Sync {
                         tracing::debug!("Got Connection from {}", s.peer_addr()?);
                         s.set_nodelay(true)?;
                         s.set_linger(None)?;
-                        s.set_ttl(5)?;
                         s
                     },
                     Err(e) => {
