@@ -18,7 +18,7 @@ use crate::original_ui::overlay_asset;
 use image::RgbaImage;
 
 pub const MIN_DONATION: u64 = 3_000_000;
-pub const SILVER_PER_CP: u64 = 50_000;
+pub const SILVER_PER_CP: u64 = 10_000;
 const MAX_AMOUNT_DIGITS: usize = 10;
 const PAGE_ROWS: usize = 10;
 

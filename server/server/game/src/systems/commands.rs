@@ -1312,7 +1312,7 @@ pub async fn parse_and_execute(state: &crate::State, actor: &Actor<ActorState>, 
             // characters can exercise the whole trade window.
             const KIT_ITEMS: [u32; 4] = [410003, 130003, 150003, 1_000_030];
             const KIT_SILVER: u32 = 1_000_000;
-            const KIT_CPS: u32 = 10_000;
+            const KIT_CPS: u32 = 50_000;
             let mut created = 0;
             for item_type in KIT_ITEMS {
                 let Some(item) = me.add_ground_item(state.pool(), item_type, crate::shop::fresh_durability(item_type).0, crate::shop::fresh_durability(item_type).1).await? else {
