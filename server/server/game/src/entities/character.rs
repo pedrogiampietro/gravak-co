@@ -5155,14 +5155,17 @@ impl Character {
         self.cps.store(cps, Ordering::Relaxed);
     }
 
-    /// Adds Conquer Points and saves them.
+    /// Adds Conquer Points and saves them. Added in the database, not written
+    /// from memory: CPs changed there meanwhile (a refunded purchase taken
+    /// back, payments.rs) are kept.
     pub async fn grant_cps(&self, pool: &sqlx::PgPool, amount: u64) -> Result<u64, Error> {
-        let total = self.cps.fetch_add(amount, Ordering::Relaxed).saturating_add(amount);
-        sqlx::query("UPDATE characters SET cps = $1 WHERE character_id = $2")
-            .bind(i64::try_from(total).unwrap_or(i64::MAX))
+        let total: i64 = sqlx::query_scalar("UPDATE characters SET cps = cps + $1 WHERE character_id = $2 RETURNING cps")
+            .bind(i64::try_from(amount).unwrap_or(i64::MAX))
             .bind(self.inner.character_id)
-            .execute(pool)
+            .fetch_one(pool)
             .await?;
+        let total = u64::try_from(total).unwrap_or_default();
+        self.set_cps(total);
         Ok(total)
     }
 

@@ -99,6 +99,12 @@ export async function getPayment(id: string | number): Promise<Payment> {
   return call<Payment>(`/v1/payments/${encodeURIComponent(String(id))}`, { method: "GET" });
 }
 
+/** A chargeback (a buyer's dispute with the card issuer) and the payments it is about. */
+export async function getChargeback(id: string | number): Promise<{ payments: (string | number)[] }> {
+  const chargeback = await call<{ payments?: (string | number)[] }>(`/v1/chargebacks/${encodeURIComponent(String(id))}`, { method: "GET" });
+  return { payments: chargeback.payments ?? [] };
+}
+
 /**
  * Whether a notification carries Mercado Pago's signature: x-signature is
  * "ts=<ts>,v1=<hmac>", the HMAC-SHA256 (MP_WEBHOOK_SECRET) of
