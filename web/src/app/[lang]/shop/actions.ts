@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { trackEvent } from "@/lib/analytics";
 import { pool } from "@/lib/db";
 import { createPreference } from "@/lib/mercadopago";
 import { createOrder } from "@/lib/orders";
@@ -33,6 +34,7 @@ export async function buy(_previous: BuyState, form: FormData): Promise<BuyState
     if (!character) return { status: "error", error: "character" };
     const order = await createOrder({ accountId: account.id, characterId, characterName: character.name, packageId, channel: "site" });
     if (!order) return { status: "error", error: "package" };
+    await trackEvent("compra-iniciada", { cps: order.cps, reais: order.priceCents / 100 });
     try {
       checkout = await createPreference(order, lang);
     } catch (error) {

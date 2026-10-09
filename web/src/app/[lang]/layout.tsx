@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Alegreya_Sans, Cinzel } from "next/font/google";
 import { notFound } from "next/navigation";
+import Script from "next/script";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getDictionary, hasLocale, locales } from "@/i18n/dictionaries";
@@ -9,6 +10,11 @@ import "../globals.css";
 // Cinzel is the face the game's own windows use for their titles.
 const display = Cinzel({ variable: "--font-display", subsets: ["latin"], weight: ["600", "700"] });
 const body = Alegreya_Sans({ variable: "--font-body", subsets: ["latin"], weight: ["400", "500", "700"] });
+
+// Umami (gravak.fun/stats): page views, clicks on data-umami-event links,
+// and the recorder for heatmaps and sampled session replays (inputs masked).
+// Off without the website id (developing).
+const UMAMI_WEBSITE_ID = process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID;
 
 export const viewport: Viewport = { themeColor: "#0c1729", colorScheme: "dark" };
 
@@ -48,6 +54,12 @@ export default async function LocaleLayout({ children, params }: LayoutProps<"/[
           {children}
         </main>
         <SiteFooter dict={dict} />
+        {UMAMI_WEBSITE_ID ? (
+          <>
+            <Script src="/stats/g.js" data-website-id={UMAMI_WEBSITE_ID} strategy="afterInteractive" />
+            <Script src="/stats/recorder.js" data-website-id={UMAMI_WEBSITE_ID} strategy="afterInteractive" />
+          </>
+        ) : null}
       </body>
     </html>
   );

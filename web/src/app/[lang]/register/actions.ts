@@ -2,6 +2,7 @@
 
 import bcrypt from "bcryptjs";
 import { z } from "zod";
+import { trackEvent } from "@/lib/analytics";
 import { pool } from "@/lib/db";
 import { clientAddress } from "@/lib/request";
 import { passedTurnstile } from "@/lib/turnstile";
@@ -95,5 +96,6 @@ export async function register(_previous: RegisterState, form: FormData): Promis
     console.error("account creation failed", error);
     return { status: "error", errors: { form: "offline" }, values };
   }
+  await trackEvent("cadastro");
   return { status: "created", username: parsed.data.username };
 }
