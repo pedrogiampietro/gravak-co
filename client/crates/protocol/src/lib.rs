@@ -2585,7 +2585,6 @@ fn parse_auth_response(body: &Bytes) -> Result<AuthResponse, ProtocolError> {
         return Err(ProtocolError::MalformedResponse("missing response header"));
     }
 
-    let first = u32::from_le_bytes(body[0..4].try_into().unwrap());
     let second = u32::from_le_bytes(body[4..8].try_into().unwrap());
 
     if body.len() >= 28 {
@@ -2607,10 +2606,7 @@ fn parse_auth_response(body: &Bytes) -> Result<AuthResponse, ProtocolError> {
     } else {
         String::new()
     };
-    Ok(AuthResponse::Rejected(LoginRejection {
-        code: second,
-        message: format!("{message} (reserved={first})"),
-    }))
+    Ok(AuthResponse::Rejected(LoginRejection { code: second, message }))
 }
 
 fn fixed_string(bytes: &[u8]) -> Result<String, ProtocolError> {

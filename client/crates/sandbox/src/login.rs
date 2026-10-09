@@ -7,7 +7,7 @@
 use crate::network::{NetworkEvent, NetworkHandle};
 use crate::worlds::World;
 use gravak_protocol::{
-    AuthResponse, ForwardedGameServer, GameEvent, GameSession, RegisterAccountResult,
+    AuthResponse, ForwardedGameServer, GameEvent, GameSession, LoginRejection, RegisterAccountResult,
     RegisterCharacter, UserInfo, authenticate, register_account,
 };
 use std::{
@@ -258,6 +258,22 @@ fn register_message(result: RegisterAccountResult) -> &'static str {
     }
 }
 
+/// What the account server's refusal means, for the player (its codes are
+/// the server's `RejectionCode`).
+fn rejection_message(rejection: &LoginRejection) -> String {
+    match rejection.code {
+        1 => "Wrong account or password.".into(),
+        12 => "This account is banned.".into(),
+        22 => "This account is locked.".into(),
+        51 => "Too many wrong passwords. Wait a few minutes and try again.".into(),
+        73 => "This client is out of date. Restart it to update.".into(),
+        10 | 42 | 70 => "The server is closed right now. Try again later.".into(),
+        11 | 20 => "The server is busy. Try again in a moment.".into(),
+        _ if !rejection.message.is_empty() => rejection.message.clone(),
+        code => format!("The login was refused (code {code})."),
+    }
+}
+
 async fn login(
     auth: &str,
     username: &str,
@@ -267,13 +283,7 @@ async fn login(
 ) -> Result<Login, String> {
     let server = match authenticate(auth, username, password, realm).await {
         Ok(AuthResponse::Forwarded(server)) => server,
-        Ok(AuthResponse::Rejected(rejection)) => {
-            return Err(if rejection.message.is_empty() {
-                "wrong account or password".into()
-            } else {
-                rejection.message
-            });
-        }
+        Ok(AuthResponse::Rejected(rejection)) => return Err(rejection_message(&rejection)),
         Err(error) => return Err(format!("account server unavailable ({error})")),
     };
     send(LoginEvent::Status("connecting to the game server".into()));
@@ -356,6 +366,20 @@ async fn create_character(
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refusals_say_what_happened() {
+        let refusal = |code| rejection_message(&LoginRejection { code, message: String::new() });
+        assert_eq!(refusal(1), "Wrong account or password.");
+        assert_eq!(refusal(51), "Too many wrong passwords. Wait a few minutes and try again.");
+        assert_eq!(refusal(99), "The login was refused (code 99).");
+        assert_eq!(rejection_message(&LoginRejection { code: 99, message: "Closed".into() }), "Closed");
+    }
+}
+
+#[cfg(test)]
 mod smoke {
     use super::*;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -368,6 +392,31 @@ mod smoke {
             }
             assert!(Instant::now() < deadline, "timed out waiting for the login session");
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Five wrong passwords lock this address out of logging in, the right
+    /// one included, against a running auth server (GRAVAK_AUTH) reached
+    /// over the network: this machine's own address is never locked out.
+    #[test]
+    #[ignore = "Needs the auth server running, and locks this address out for minutes"]
+    fn wrong_passwords_lock_the_address_out() {
+        let auth = std::env::var("GRAVAK_AUTH").unwrap_or_else(|_| "127.0.0.1:9958".into());
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 1_000_000;
+        let account = format!("lock{suffix}");
+        let world = World::new("Gravak", auth, "Gravak");
+        let client = LoginClient::start();
+        client.send(LoginCommand::Register { world: world.clone(), username: account.clone(), password: "pass1234".into() });
+        assert!(matches!(next(&client), LoginEvent::Registered(_)));
+
+        for _ in 0..5 {
+            client.send(LoginCommand::Login { world: world.clone(), username: account.clone(), password: "wrong".into() });
+            assert!(matches!(next(&client), LoginEvent::LoginFailed(message) if message == "Wrong account or password."));
+        }
+        client.send(LoginCommand::Login { world: world.clone(), username: account.clone(), password: "pass1234".into() });
+        match next(&client) {
+            LoginEvent::LoginFailed(message) => assert!(message.starts_with("Too many wrong passwords"), "{message}"),
+            _ => panic!("expected the address locked out"),
         }
     }
 
