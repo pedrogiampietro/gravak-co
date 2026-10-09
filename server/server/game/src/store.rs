@@ -482,10 +482,10 @@ mod tests {
     #[tokio::test]
     async fn buying_spends_cps_gives_items_and_vip() -> Result<(), Error> {
         let pool = tq_db::testing::pool().await;
-        let character = character(&pool, 1_000).await;
+        let character = character(&pool, 200).await;
 
         let meteor = buy(&pool, &character, 1, 20).await?.expect("a Meteor");
-        assert_eq!((meteor.cps_left, character.cps(), meteor.items.len()), (990, 990, 1));
+        assert_eq!((meteor.cps_left, character.cps(), meteor.items.len()), (198, 198, 1));
         assert_eq!(meteor.items[0].item_type, 1_088_001);
 
         let vip = buy(&pool, &character, 1, 1).await?.expect("VIP");
@@ -493,17 +493,26 @@ mod tests {
         assert!(week >= now_secs() + 7 * 86_400 - 5);
         assert_eq!(vip_until(&pool, 1).await?, week);
 
-        assert_eq!(buy(&pool, &character, 1, 2).await?, Err(Refusal::NotEnoughCps(1_450)));
-        assert_eq!(character.cps(), 540, "a refused purchase costs nothing");
+        assert_eq!(buy(&pool, &character, 1, 2).await?, Err(Refusal::NotEnoughCps(290)));
+        assert_eq!(character.cps(), 108, "a refused purchase costs nothing");
         assert_eq!(buy(&pool, &character, 1, 999).await?, Err(Refusal::NoSuchProduct));
 
         let past = history(&pool, character.database_id()).await?;
         let names: Vec<_> = past.iter().map(|purchase| (purchase.name.as_str(), purchase.price_cps)).collect();
-        assert_eq!(names, [("7 Days of VIP", 450), ("Meteor", 10)], "newest first, refusals left out");
+        assert_eq!(names, [("7 Days of VIP", 90), ("Meteor", 2)], "newest first, refusals left out");
 
         assert_eq!(loot_filter(&pool, character.database_id()).await?, loot::DEFAULT);
         save_loot_filter(&pool, character.database_id(), loot::GEMS | loot::SILVER).await?;
         assert_eq!(loot_filter(&pool, character.database_id()).await?, loot::GEMS | loot::SILVER);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_celestial_stone_for_the_first_rebirth_is_on_sale() -> Result<(), Error> {
+        let pool = tq_db::testing::pool().await;
+        let character = character(&pool, 250).await;
+        let stone = buy(&pool, &character, 1, 24).await?.expect("a Celestial Stone");
+        assert_eq!((stone.items.len(), stone.items[0].item_type, stone.cps_left), (1, 721_259, 50));
         Ok(())
     }
 
@@ -519,7 +528,7 @@ mod tests {
         assert_eq!(buy(&pool, &character, 1, 11).await?, Err(Refusal::SoldOut));
         let ball = catalog(&pool, character.database_id()).await?.into_iter().find(|product| product.product_id == 11).expect("Exp Ball");
         assert_eq!(ball.stock_left, Some(0));
-        assert_eq!(character.cps(), 100_000 - 600);
+        assert_eq!(character.cps(), 100_000 - 120);
         Ok(())
     }
 
@@ -534,15 +543,15 @@ mod tests {
     #[tokio::test]
     async fn the_exp_potion_costs_more_each_time_today() -> Result<(), Error> {
         let pool = tq_db::testing::pool().await;
-        let character = character(&pool, 5_000).await;
+        let character = character(&pool, 1_000).await;
         let price = |products: Vec<Product>| products.into_iter().find(|product| product.product_id == 10).map(|product| product.price_cps);
-        assert_eq!(price(catalog(&pool, character.database_id()).await?), Some(150));
-        for paid in [150, 225, 450] {
+        assert_eq!(price(catalog(&pool, character.database_id()).await?), Some(30));
+        for paid in [30, 45, 90] {
             let potion = buy(&pool, &character, 1, 10).await?.expect("an Exp Potion");
             assert_eq!(potion.product.price_cps, paid);
         }
-        assert_eq!(price(catalog(&pool, character.database_id()).await?), Some(800), "the fourth");
-        assert_eq!(character.cps(), 5_000 - 825);
+        assert_eq!(price(catalog(&pool, character.database_id()).await?), Some(160), "the fourth");
+        assert_eq!(character.cps(), 1_000 - 165);
         Ok(())
     }
 }

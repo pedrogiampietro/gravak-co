@@ -67,7 +67,7 @@ pub const MIN_DONATION: u64 = 3_000_000;
 /// What a Knight gives.
 pub const KNIGHT_DONATION: u64 = 30_000_000;
 /// The silver one CP stands for, when CPs are given.
-pub const SILVER_PER_CP: u64 = 10_000;
+pub const SILVER_PER_CP: u64 = 50_000;
 /// How many seats there are: the ranking the clients show.
 pub const SEATS: u32 = 50;
 
