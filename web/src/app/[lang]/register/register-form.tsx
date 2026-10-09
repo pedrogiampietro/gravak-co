@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useActionState, useEffect, useRef } from "react";
+import { Turnstile } from "@/components/turnstile";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -68,6 +69,7 @@ export function RegisterForm({ lang, copy }: { lang: "pt" | "en"; copy: Copy }) 
         error={message(errors.email)}
         input={{ name: "email", type: "email", autoComplete: "email", defaultValue: values.email, maxLength: 64, spellCheck: false }}
       />
+      <Turnstile lang={lang} reset={state} />
       <p className="text-sm text-destructive empty:hidden" role="alert" aria-live="polite">
         {errors.form ? copy.errors[errors.form] : null}
       </p>
