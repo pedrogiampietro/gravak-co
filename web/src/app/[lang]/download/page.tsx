@@ -5,9 +5,13 @@ import { notFound } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button";
 import { getDictionary, hasLocale } from "@/i18n/dictionaries";
 import { cn } from "@/lib/utils";
+import { DownloadForm } from "./download-form";
 
-// Where the installer is published (package-client.bat makes GravakSetup.exe).
-const INSTALLER = process.env.NEXT_PUBLIC_DOWNLOAD_URL ?? "/downloads/GravakSetup.exe";
+// An installer published elsewhere, linked as it is; without it the installer
+// on this server, behind the Turnstile check (DownloadForm).
+const EXTERNAL_INSTALLER = process.env.NEXT_PUBLIC_DOWNLOAD_URL;
+// A second place to download it from (MediaFire), linked under the button.
+const MIRROR = process.env.NEXT_PUBLIC_DOWNLOAD_MIRROR_URL;
 
 export async function generateMetadata({ params }: PageProps<"/[lang]/download">): Promise<Metadata> {
   const { lang } = await params;
@@ -24,10 +28,22 @@ export default async function DownloadPage({ params }: PageProps<"/[lang]/downlo
         <div>
           <h1 className="gold-leaf text-4xl font-bold sm:text-5xl">{dict.download.title}</h1>
           <p className="mt-4 max-w-[58ch] text-lg text-parchment/80">{dict.download.lead}</p>
-          <a href={INSTALLER} className={cn(buttonVariants(), "mt-8 h-12 px-7 text-base font-bold")}>
-            {dict.download.button}
-          </a>
+          {EXTERNAL_INSTALLER ? (
+            <a href={EXTERNAL_INSTALLER} className={cn(buttonVariants(), "mt-8 h-12 px-7 text-base font-bold")}>
+              {dict.download.button}
+            </a>
+          ) : (
+            <DownloadForm lang={lang} copy={dict.download} />
+          )}
           <p className="mt-3 text-sm text-slate-blue">GravakSetup.exe · {dict.download.size}</p>
+          {MIRROR ? (
+            <p className="mt-2 text-sm text-parchment/75">
+              {dict.download.mirrorLead}{" "}
+              <a href={MIRROR} target="_blank" rel="noopener noreferrer" className="text-heraldic underline-offset-4 hover:underline">
+                {dict.download.mirror}
+              </a>
+            </p>
+          ) : null}
         </div>
         <div className="relative hidden aspect-[7/9] max-h-[460px] w-full max-w-full lg:block" aria-hidden="true">
           <div className="absolute inset-x-[22%] bottom-[5%] h-[5%] rounded-[50%] bg-black/55 blur-md" />
