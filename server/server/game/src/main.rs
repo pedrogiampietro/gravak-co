@@ -183,6 +183,7 @@ async fn main() -> Result<(), Error> {
     );
     tracing::info!(target: "server", port = game_port, "Ready for players");
     game::status::start(state, started);
+    game::payments::start(state);
 
     GameServer::run(format!("0.0.0.0:{}", game_port), state).await?;
     unsafe {
