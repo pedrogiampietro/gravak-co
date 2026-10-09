@@ -46,6 +46,36 @@ pub fn chosen_hair(hair: u16) -> Option<u16> {
     .then_some(hair)
 }
 
+/// Gives a new character the `starter_items` of its class (and of every
+/// class): a weapon it can use from the first levels and some potions.
+/// Returns how many items it got; an item that does not fit is left out.
+pub async fn give_starter_items(
+    pool: &sqlx::PgPool,
+    catalog: &crate::shop::ShopCatalog,
+    character: &Character,
+    class: u16,
+) -> Result<usize, Error> {
+    let gifts: Vec<(i64, i32)> = sqlx::query_as(
+        "SELECT item_type, amount FROM starter_items WHERE class IS NULL OR class = $1 ORDER BY sort, starter_id",
+    )
+    .bind(i32::from(class))
+    .fetch_all(pool)
+    .await?;
+    let mut given = 0;
+    for (item_type, amount) in gifts {
+        let Ok(item_type) = u32::try_from(item_type) else {
+            continue;
+        };
+        for _ in 0..amount {
+            if character.grant_item(pool, catalog, item_type, false).await?.is_none() {
+                return Ok(given);
+            }
+            given += 1;
+        }
+    }
+    Ok(given)
+}
+
 /// Every new character starts in the plain coat (any profession, any body,
 /// level 1), worn, in the dye chosen on the creation screen.
 pub const STARTER_COAT: u32 = 132_003;
@@ -226,6 +256,7 @@ impl PacketProcess for MsgRegister {
         me.load_equipment(state.pool()).await?;
         me.load_skills(state.pool(), state.skill_catalog()).await?;
         me.load_weapon_proficiencies(state.pool()).await?;
+        give_starter_items(state.pool(), state.shop_catalog(), &me, self.class).await?;
         let skills = me.skills();
         let screen = Screen::new(actor.handle());
         actor.update(me, screen);
@@ -282,6 +313,42 @@ mod tests {
                 .fetch_optional(&pool)
                 .await?;
             assert_eq!(stored, colour, "dye {dye}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn new_characters_find_a_weapon_of_their_class_and_potions() -> Result<(), Error> {
+        let pool = tq_db::testing::pool().await;
+        let catalog = crate::shop::ShopCatalog::default();
+        for (class, weapons) in [
+            (BaseClass::Trojan, vec![410_302]),
+            (BaseClass::Warrior, vec![510_009]),
+            (BaseClass::Archer, vec![500_009, 1_050_000, 1_050_000]),
+            (BaseClass::Taoist, vec![421_009]),
+        ] {
+            let name = format!("kit{}", u16::from(class));
+            let account: i64 = sqlx::query_scalar("INSERT INTO accounts (username, password) VALUES ($1, '') RETURNING account_id")
+                .bind(&name)
+                .fetch_one(&pool)
+                .await?;
+            let id = MsgRegister::build_character_with(name, BodyType::AgileFemale, class, account as u32, 1)?
+                .save(&pool)
+                .await?;
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            let actor = tq_network::Actor::<crate::ActorState>::new(tx);
+            let character = Character::new(actor.handle(), tq_db::character::Character::by_id(&pool, id).await?);
+            let given = give_starter_items(&pool, &catalog, &character, class.into()).await?;
+
+            let mut bag: Vec<i64> = sqlx::query_scalar("SELECT item_type FROM inventory_items WHERE character_id = $1")
+                .bind(i64::from(id))
+                .fetch_all(&pool)
+                .await?;
+            bag.sort_unstable();
+            let mut expected: Vec<i64> = weapons.into_iter().chain([1_000_010; 5]).chain([1_001_010; 5]).collect();
+            expected.sort_unstable();
+            assert_eq!(given, expected.len());
+            assert_eq!(bag, expected, "{class:?}");
         }
         Ok(())
     }
