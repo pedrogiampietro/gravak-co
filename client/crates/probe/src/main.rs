@@ -6,9 +6,19 @@ use gravak_protocol::{
 };
 use tokio::time::{Duration, Instant, sleep, timeout, timeout_at};
 
+mod guild_war;
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|argument| argument == "--guild-war") {
+        let address = args.iter().find(|argument| !argument.starts_with("--")).map_or("127.0.0.1:9958", String::as_str);
+        if let Err(error) = guild_war::run(address).await {
+            eprintln!("Guild War smoke failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let address = args.first().map(String::as_str).unwrap_or("127.0.0.1:9958");
     let username = args.get(1).map(String::as_str).unwrap_or("test1");
     let password = args.get(2).map(String::as_str).unwrap_or("123456");

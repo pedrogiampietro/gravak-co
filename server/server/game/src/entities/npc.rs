@@ -160,11 +160,7 @@ impl Npc {
             to.send(crate::guild_war::spawn_packet(self)).await?;
             let id = self.id();
             let life = crate::guild_war::life(id);
-            let max = if id == crate::guild_war::POLE_ID {
-                crate::guild_war::POLE_LIFE
-            } else {
-                crate::guild_war::GATE_LIFE
-            };
+            let max = crate::guild_war::max_life(id);
             to.send(crate::packets::MsgUserAttrib::new(id, crate::packets::UserAttribute::MaxLife, u64::from(max)))
                 .await?;
             to.send(crate::packets::MsgUserAttrib::new(id, crate::packets::UserAttribute::Life, u64::from(life)))
