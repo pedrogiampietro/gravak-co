@@ -30,12 +30,49 @@ fn login_limiter() -> &'static std::sync::Mutex<limits::LoginLimiter> {
     LIMITER.get_or_init(Default::default)
 }
 
+/// The wrong passwords of every address.
+fn failed_logins() -> &'static std::sync::Mutex<limits::FailedLogins> {
+    static FAILED: std::sync::OnceLock<std::sync::Mutex<limits::FailedLogins>> = std::sync::OnceLock::new();
+    FAILED.get_or_init(Default::default)
+}
+
+/// Records how a login from `actor` went: a wrong password counts towards
+/// locking its address out, a right one forgets the wrong ones.
+fn record_login(actor: &Actor<()>, succeeded: bool) {
+    let Some(peer) = actor.peer() else {
+        return;
+    };
+    let mut failed = failed_logins().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if succeeded {
+        failed.succeeded(peer.ip());
+    } else if failed.failed(peer.ip(), std::time::Instant::now()) {
+        tracing::warn!(
+            target: "auth",
+            peer = %peer.ip(),
+            minutes = limits::LOCKOUT.as_secs() / 60,
+            "Too many wrong passwords from one address; locked out"
+        );
+    }
+}
+
 /// Whether `actor` may try once more to log in or register; it is told why
 /// not when it may not.
 async fn may_try_login(actor: &Actor<()>, packet_id: u16) -> Result<bool, crate::error::Error> {
     let Some(peer) = actor.peer() else {
         return Ok(true);
     };
+    if packet_id == msg_account::MsgAccount::PACKET_ID {
+        let locked = failed_logins()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked_for(peer.ip(), std::time::Instant::now());
+        if locked.is_some() {
+            actor
+                .send(msg_connect_ex::RejectionCode::AccountMaxLoginAttempts.packet())
+                .await?;
+            return Ok(false);
+        }
+    }
     let allowed = login_limiter()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -78,6 +115,7 @@ impl PacketHandler for Runtime {
                 Some(packet) => packet,
                 None => {
                     actor.send(msg_connect_ex::RejectionCode::InvalidPassword.packet()).await?;
+                    record_login(actor, false);
                     return Ok(());
                 },
             }
@@ -159,6 +197,11 @@ impl PacketHandler for Runtime {
                 let ret = process
                     .call_async(&mut store, (ptr, packet_len as i32, Some(actor)))
                     .await?;
+                // The handler gives the connection its account only for the
+                // right password.
+                if ret == 0 {
+                    record_login(session, session.id() != 0);
+                }
                 match ret {
                     0 => Ok(()),
                     0xdec0de => {
