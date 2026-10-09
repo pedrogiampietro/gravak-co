@@ -17,6 +17,7 @@ mod guild_panel;
 mod forge_rules;
 mod character;
 mod components;
+mod cp_shop;
 mod debug_log;
 mod hud;
 mod labels;
@@ -589,6 +590,10 @@ struct App {
     gravak_object_sizes: HashMap<String, [f32; 2]>,
     /// A purchase waiting for the player's yes.
     store_confirm: Option<u32>,
+    /// The Store's Buy CPs tab: the website's answer awaited, and when to
+    /// ask again how the Pix charge stands.
+    pix_reply: Option<std::sync::mpsc::Receiver<cp_shop::Reply>>,
+    pix_next_poll: f32,
     /// A reroll that would abandon the bounty under way, waiting for a yes:
     /// the difficulty of the new list.
     bounty_confirm: Option<u32>,
@@ -1845,6 +1850,7 @@ impl ApplicationHandler for App {
             self.handle_trade_panel_action(shop::TradePanelAction::Cancel);
         }
         self.poll_remote_model_loader();
+        self.poll_pix();
         // Interpolate remote movement between server walk packets. The server
         // sends tile steps; rendering the whole step immediately makes mobs
         // look like they teleport or freeze between updates.
@@ -3565,6 +3571,34 @@ impl App {
             store_panel::StoreAction::Category(category) => {
                 view.category = category;
                 view.selected = None;
+                if category == store_panel::BUY_CPS
+                    && matches!(view.pix.stage, store_panel::PixStage::Idle | store_panel::PixStage::Failed(_))
+                    && view.pix.packages.is_empty()
+                {
+                    view.pix.stage = store_panel::PixStage::Loading;
+                    self.pix_reply = Some(cp_shop::request_packages());
+                }
+            }
+            store_panel::StoreAction::BuyCps(package) => {
+                view.pix.stage = store_panel::PixStage::Creating;
+                view.pix.copied = false;
+                self.pix_reply = Some(cp_shop::request_charge(self.character.name.clone(), package));
+            }
+            store_panel::StoreAction::CopyPix => {
+                if let store_panel::PixStage::Charge { charge, .. } = &view.pix.stage {
+                    copy_to_clipboard(&charge.code);
+                    view.pix.copied = true;
+                }
+            }
+            store_panel::StoreAction::PixBack => {
+                view.pix.copied = false;
+                self.pix_reply = None;
+                if view.pix.packages.is_empty() {
+                    view.pix.stage = store_panel::PixStage::Loading;
+                    self.pix_reply = Some(cp_shop::request_packages());
+                } else {
+                    view.pix.stage = store_panel::PixStage::Choose;
+                }
             }
             store_panel::StoreAction::Select(product_id) => view.selected = Some(product_id),
             store_panel::StoreAction::Teleport(city) => {
@@ -3582,6 +3616,58 @@ impl App {
             store_panel::StoreAction::VipRights => self.quick_panel = Some(shop::QuickPanel::Vip),
             // The purchase waits for the confirmation prompt.
             store_panel::StoreAction::Buy(product_id) => self.store_confirm = Some(product_id),
+        }
+    }
+
+    /// The website's answers for the Store's Buy CPs tab, and while a Pix
+    /// charge waits, a look at how it stands every few seconds.
+    fn poll_pix(&mut self) {
+        const EVERY: f32 = 5.0;
+        let now = self.started.elapsed().as_secs_f32();
+        let Some(view) = &mut self.store else {
+            return;
+        };
+        if let Some(reply) = self.pix_reply.as_ref().and_then(|receiver| receiver.try_recv().ok()) {
+            self.pix_reply = None;
+            let pix = &mut view.pix;
+            match reply {
+                cp_shop::Reply::Packages(Ok(packages)) => {
+                    pix.packages = packages;
+                    pix.stage = store_panel::PixStage::Choose;
+                }
+                cp_shop::Reply::Charge(Ok(charge)) => {
+                    pix.stage = store_panel::PixStage::Charge { charge, paid: false };
+                    self.pix_next_poll = now + EVERY;
+                }
+                cp_shop::Reply::Packages(Err(message)) | cp_shop::Reply::Charge(Err(message)) => {
+                    pix.stage = store_panel::PixStage::Failed(message);
+                }
+                cp_shop::Reply::Status(status) => {
+                    if let store_panel::PixStage::Charge { charge, paid } = &mut pix.stage {
+                        match status.as_deref() {
+                            Ok("credited") => pix.stage = store_panel::PixStage::Credited(charge.cps),
+                            Ok("approved") => *paid = true,
+                            Ok("expired") => {
+                                pix.stage = store_panel::PixStage::Failed(
+                                    "This Pix code expired. Pick a package to get a new one.".to_owned(),
+                                );
+                            }
+                            Ok("rejected" | "cancelled") => {
+                                pix.stage = store_panel::PixStage::Failed("The payment was not completed.".to_owned());
+                            }
+                            // Pending, or the website out for a moment: ask again.
+                            _ => {}
+                        }
+                    }
+                    self.pix_next_poll = now + EVERY;
+                }
+            }
+        }
+        if self.pix_reply.is_none()
+            && now >= self.pix_next_poll
+            && let store_panel::PixStage::Charge { charge, .. } = &view.pix.stage
+        {
+            self.pix_reply = Some(cp_shop::request_status(charge.order.clone()));
         }
     }
 
@@ -10102,6 +10188,7 @@ fn run() -> Result<()> {
         &root.ok_or("Game data not found: install Gravak again, or pass --assets <directory>")?,
     )?;
     let mut network = None;
+    cp_shop::set_site(update_url.as_deref());
     let mut server_ready = None;
     let mut event_loop = None;
     // The login screens' window, which the game takes over.
@@ -10602,6 +10689,8 @@ fn run() -> Result<()> {
         highscores_asked: false,
         gravak_object_sizes: HashMap::new(),
         store_confirm: None,
+        pix_reply: None,
+        pix_next_poll: 0.0,
         bounty_confirm: None,
         ground_loot: Vec::new(),
         dialog: None,
