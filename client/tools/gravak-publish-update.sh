@@ -35,7 +35,7 @@ done
 # Each listed file, from the stage when uploaded, else the live folder.
 bad=0
 listed=0
-while IFS='|' read -r path size hash; do
+while IFS="|" read -r path size hash || [[ -n "$path" ]]; do
     listed=$((listed + 1))
     if [[ "$path" == /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
         echo "refused: manifest path $path" >&2
