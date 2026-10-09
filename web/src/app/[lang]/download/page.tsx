@@ -29,7 +29,7 @@ export default async function DownloadPage({ params }: PageProps<"/[lang]/downlo
           <h1 className="gold-leaf text-4xl font-bold sm:text-5xl">{dict.download.title}</h1>
           <p className="mt-4 max-w-[58ch] text-lg text-parchment/80">{dict.download.lead}</p>
           {EXTERNAL_INSTALLER ? (
-            <a href={EXTERNAL_INSTALLER} className={cn(buttonVariants(), "mt-8 h-12 px-7 text-base font-bold")}>
+            <a href={EXTERNAL_INSTALLER} data-umami-event="download" className={cn(buttonVariants(), "mt-8 h-12 px-7 text-base font-bold")}>
               {dict.download.button}
             </a>
           ) : (
@@ -39,7 +39,7 @@ export default async function DownloadPage({ params }: PageProps<"/[lang]/downlo
           {MIRROR ? (
             <p className="mt-2 text-sm text-parchment/75">
               {dict.download.mirrorLead}{" "}
-              <a href={MIRROR} target="_blank" rel="noopener noreferrer" className="text-heraldic underline-offset-4 hover:underline">
+              <a href={MIRROR} data-umami-event="download-mediafire" target="_blank" rel="noopener noreferrer" className="text-heraldic underline-offset-4 hover:underline">
                 {dict.download.mirror}
               </a>
             </p>

@@ -1,6 +1,7 @@
 "use server";
 
 import { createHash } from "node:crypto";
+import { trackEvent } from "@/lib/analytics";
 import { clientAddress } from "@/lib/request";
 import { passedTurnstile } from "@/lib/turnstile";
 
@@ -21,6 +22,7 @@ export async function requestDownload(_previous: DownloadState, form: FormData):
   if (!(await passedTurnstile(form.get("cf-turnstile-response"), await clientAddress()))) {
     return { status: "error" };
   }
+  await trackEvent("download");
   const secret = process.env.DOWNLOAD_LINK_SECRET;
   if (!secret) return { status: "ready", url: INSTALLER };
   const expires = Math.floor(Date.now() / 1000) + LINK_SECONDS;
