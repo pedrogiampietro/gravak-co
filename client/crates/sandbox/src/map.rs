@@ -11,6 +11,10 @@ pub struct Map {
     pub extent: [f32; 2],
     /// Gravak objects a click does something with (the Reward Shrine).
     pub actions: Vec<sandbox_data::map::GravakAction>,
+    /// A Rift's crypt: the cells of each of its rooms (`gravak/rifts/<id>.txt`
+    /// of the built content), discovered one at a time (`crate::reveal`);
+    /// empty on every other map.
+    pub rooms: Vec<Vec<[i32; 2]>>,
 }
 impl Map {
     /// The map as `sandbox_data::map::ComposedMap` lays it out, Gravak's own
@@ -31,12 +35,17 @@ impl Map {
             ),
             None => eprintln!("map {id}: Gravak content off (GRAVAK_CONTENT not set or missing)"),
         }
+        let rooms = assets
+            .read(&format!("gravak/rifts/{id}.txt"))
+            .map(|text| rooms(&String::from_utf8_lossy(&text)))
+            .unwrap_or_default();
         Ok(Self {
             id: map.id,
             data: map.data,
             sprites: map.sprites,
             extent: map.extent,
             actions: map.gravak_actions,
+            rooms,
         })
     }
     pub fn project(&self, p: [f32; 2]) -> [f32; 2] {
@@ -53,4 +62,34 @@ impl Map {
                 .cell(p[0] as u32, p[1] as u32)
                 .is_some_and(|c| c.access == 0)
     }
+}
+
+/// The rooms of a crypt's layout: `room <x> <y> <kind> <row>:<first>-<last>...`,
+/// each run a row (y) of cells from x `first` to `last`.
+fn rooms(text: &str) -> Vec<Vec<[i32; 2]>> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("room "))
+        .map(|line| {
+            line.split_whitespace()
+                .skip(3)
+                .filter_map(|run| {
+                    let (row, span) = run.split_once(':')?;
+                    let (first, last) = span.split_once('-')?;
+                    Some((row.parse::<i32>().ok()?, first.parse::<i32>().ok()?, last.parse::<i32>().ok()?))
+                })
+                .flat_map(|(y, first, last)| (first..=last).map(move |x| [x, y]))
+                .collect()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn reads_a_crypts_rooms() {
+    let rooms = rooms("# Covil
+size 80
+room 0 0 entrance 11:11-13 12:11-11
+room 1 0 room 11:18-18
+");
+    assert_eq!(rooms, vec![vec![[11, 11], [12, 11], [13, 11], [11, 12]], vec![[18, 11]]]);
 }

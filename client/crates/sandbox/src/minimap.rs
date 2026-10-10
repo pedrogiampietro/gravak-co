@@ -13,6 +13,9 @@ pub struct Quad {
 
 pub struct Minimap {
     pub images: Vec<(&'static str, image::RgbaImage)>,
+    /// The whole map as drawn, for a crypt's minimap that shows only what
+    /// the hero discovered (`discovered`).
+    base: image::RgbaImage,
     size: [f32; 2],
     single: bool,
     /// The big map over most of the screen instead of the corner one.
@@ -70,6 +73,7 @@ impl Minimap {
             })
             .collect::<Result<Vec<_>>>()?;
         let full = stitch(&frames);
+        let full_base = full.clone();
         let size = [full.width() as f32, full.height() as f32];
         // The corner map lets the world show through; the expanded one is
         // opaque so it reads over anything.
@@ -110,11 +114,50 @@ impl Minimap {
         images.push(("@minimap-expand", expand_button_image(magnifier)));
         Ok(Some(Self {
             images,
+            base: full_base,
             size,
             single: count == 1,
             expanded: false,
             zoom: DEFAULT_ZOOM,
         }))
+    }
+
+    /// A crypt's minimap: only the cells `seen` shows, the rest is the dark
+    /// around the map. Puts the corner and the big map in `images`.
+    pub fn discovered(&mut self, map: &Map, seen: impl Fn([i32; 2]) -> bool) {
+        let raster = [self.base.width() as f32, self.base.height() as f32];
+        let grid = [map.data.width, map.data.height];
+        let drawable = map.extent;
+        let origin = [
+            grid[0] as f32 * 32.0 - drawable[0] * 0.5,
+            grid[1] as f32 * 16.0 - drawable[1] * 0.5 + 16.0 - if grid[1].is_multiple_of(2) { 16.0 } else { 0.0 },
+        ];
+        let mut full = self.base.clone();
+        let dark = *self.base.get_pixel(0, 0);
+        for (px, py, pixel) in full.enumerate_pixels_mut() {
+            // `project_cell` backwards: the pixel's cell.
+            let world = [
+                (px as f32 + 0.5) / raster[0] * drawable[0] + origin[0],
+                (py as f32 + 0.5) / raster[1] * drawable[1] + origin[1],
+            ];
+            let across = (world[0] - grid[0] as f32 * 32.0) / 32.0;
+            let down = (world[1] - 16.0) / 16.0;
+            let cell = [((across + down) * 0.5).round() as i32, ((down - across) * 0.5).round() as i32];
+            if !seen(cell) {
+                *pixel = dark;
+            }
+        }
+        let mut crop = full.clone();
+        for pixel in crop.pixels_mut() {
+            pixel[3] = (u16::from(pixel[3]) * 170 / 255) as u8;
+        }
+        for (key, image) in &mut self.images {
+            match *key {
+                "@minimap-crop" => *image = crop.clone(),
+                "@minimap-full" => *image = full.clone(),
+                _ => {}
+            }
+        }
     }
 
     /// The bottom edge of the corner map, for what sits under it.

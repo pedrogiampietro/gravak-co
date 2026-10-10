@@ -44,9 +44,9 @@ const MARGIN: usize = 9;
 /// Wall blocks stand on wall cells this near the floor: the inner walls
 /// whole, and around the maze a border that hides the floor's tiles past it.
 const WALL_REACH: i64 = 8;
-/// How tall a wall block stands, in pixels: taller than a hero, so what is
-/// behind a wall is hidden (the client lets the hero see through the walls
-/// in front of them).
+/// How tall a wall block stands, in pixels: taller than a hero. What lies
+/// past the walls stays dark until the hero sees into it (the client's
+/// `reveal`), so the walls need not hide it.
 const WALL_HEIGHT: u32 = 136;
 /// The wall's face texture shows this much of its height per 72 pixels.
 const FACE_SPAN: f32 = 0.45;

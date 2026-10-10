@@ -16,7 +16,7 @@ mod audio;
 mod booth;
 mod bounty_board;
 mod rift_tracker;
-mod fog;
+mod reveal;
 mod guild_emblems;
 mod guild_panel;
 mod forge_rules;

@@ -271,10 +271,11 @@ pub fn opening(npc_id: u32, _character: &Character) -> Option<(String, Options, 
                 TIME_LIMIT.as_secs() / 60
             ),
             options(&[
+                // By level; each option keeps its tier's number (`answer`).
+                (4, "Open the Covil dos Goblins (level 30)."),
                 (1, "Open a Fenda Menor (level 70)."),
                 (2, "Open a Fenda Maior (level 100)."),
                 (3, "Open a Fenda Abissal (level 120)."),
-                (4, "Open the Covil dos Goblins (level 30)."),
                 (255, "Not now."),
             ]),
             FACE,

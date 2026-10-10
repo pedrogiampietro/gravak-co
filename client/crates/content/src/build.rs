@@ -330,8 +330,8 @@ pub fn up_to_date(installation: &Installation, content: &Path) -> bool {
     std::fs::read_to_string(marker).is_ok_and(|text| text.lines().any(|line| line == expected))
 }
 
-/// Every file of `content/` (but the build) and the installation's
-/// `itemtype.dat`, by path, size and time.
+/// Every file of `content/` (but the build), the installation's
+/// `itemtype.dat` and the builder, by path, size and time.
 fn fingerprint(installation: &Path, content: &Path) -> u64 {
     use std::hash::{Hash, Hasher};
     fn walk(directory: &Path, skip: &Path, files: &mut Vec<(PathBuf, u64, u128)>) {
@@ -369,6 +369,18 @@ fn fingerprint(installation: &Path, content: &Path) -> u64 {
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |time| time.as_nanos());
         files.push((itemtype, metadata.len(), time));
+    }
+    // The builder itself: a new generator (a rift's walls, a creature's
+    // conversion) builds again though no content changed.
+    if let Ok(builder) = std::env::current_exe()
+        && let Ok(metadata) = std::fs::metadata(&builder)
+    {
+        let time = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |time| time.as_nanos());
+        files.push((builder, metadata.len(), time));
     }
     files.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
