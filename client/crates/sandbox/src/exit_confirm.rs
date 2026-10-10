@@ -60,9 +60,15 @@ impl ExitConfirm {
     /// in its lit frame).
     pub fn image(&self, assets: &mut Assets, hovered: Option<ExitButton>) -> Result<RgbaImage> {
         let mut image = RgbaImage::from_pixel(SIZE[0] as u32, SIZE[1] as u32, Rgba([0, 0, 0, 0]));
-        // The art is half see-through: darken what lies under it.
-        crate::original_panels::fill(&mut image, [0, 0, SIZE[0], SIZE[1]], [0, 0, 0, 150]);
-        art(&mut image, assets, "data/main/DialogConfirm.dds", [0, 0])?;
+        // The art is half see-through: darken what lies under it, and only
+        // there (it is narrower than the dialog, its corners rounded).
+        let frame = assets.image("data/main/DialogConfirm.dds")?;
+        for (x, y, pixel) in frame.enumerate_pixels() {
+            if pixel[3] > 0 && x < image.width() && y < image.height() {
+                image.put_pixel(x, y, Rgba([0, 0, 0, 150]));
+            }
+        }
+        image::imageops::overlay(&mut image, &frame, 0, 0);
         if let Ok(font) = crate::main_hud::font() {
             let width = crate::main_hud::text_width(font, QUESTION, 12.0).min(275);
             crate::main_hud::text(&mut image, font, QUESTION, 12.0, [5 + (275 - width) / 2, 11], [255, 255, 255, 255], Some(275));
