@@ -29,6 +29,29 @@ struct Vertex {
 /// UI, but without the status panel's scissor that INFINITY depth-tested
 /// draws get, and before the INFINITY UI layered over it.
 const PREVIEW_SORT: f32 = f32::MAX;
+/// The fog's cell texture, its sort (over the ground, under everything on
+/// it), and how much of what was seen shows: the ground's darkness and the
+/// walls' light.
+const FOG_CELL: &str = "@fog-cell";
+const FOG_SORT: f32 = -1.0e30;
+const FOG_SEEN_GROUND: f32 = 0.62;
+const FOG_SEEN_WALL: f32 = 0.35;
+
+/// A cell's diamond in black, its edge soft, for the fog.
+fn fog_cell_image() -> image::RgbaImage {
+    image::RgbaImage::from_fn(68, 36, |x, y| {
+        let dx = ((x as f32 + 0.5) - 34.0).abs() / 34.0;
+        let dy = ((y as f32 + 0.5) - 18.0).abs() / 18.0;
+        let edge = 1.0 - (dx + dy);
+        image::Rgba([0, 0, 0, (edge * 12.0).clamp(0.0, 1.0).mul_add(255.0, 0.0) as u8])
+    })
+}
+
+/// How tall a hero stands on screen, and how much of a crypt's wall in
+/// front of them still shows.
+const HERO_SEEN_HEIGHT: f32 = 110.0;
+const WALL_SEEN_THROUGH: f32 = 0.35;
+
 /// Sort depth of what floats over the world (names, nameplates, damage
 /// numbers, ground loot labels): above every world draw but below the UI,
 /// the trade partner card included, so a name never shows through a window.
@@ -151,6 +174,7 @@ struct StaticMapSprite {
     texture: String,
     origin: [f32; 2],
     depth: f32,
+    cell: Option<[i32; 2]>,
 }
 
 struct StaticMapCache {
@@ -802,6 +826,8 @@ pub struct Renderer {
     /// The team's Rift run and when the server told of it; the tracker
     /// goes under the bounty's.
     pub rift: Option<(gravak_protocol::RiftState, Instant)>,
+    /// What the hero has seen of a crypt (`crate::fog`).
+    fog: Option<crate::fog::Fog>,
     /// Where the Store icon was drawn, for clicks.
     store_icon_rect: Option<[f32; 4]>,
     ranking_icon_rect: Option<[f32; 4]>,
@@ -1079,6 +1105,7 @@ impl Renderer {
             quick_panel_shown: None,
             bounty_tracker_rect: None,
             rift: None,
+            fog: None,
             store_icon_rect: None,
             ranking_icon_rect: None,
             helper_icon_rect: None,
@@ -1819,6 +1846,7 @@ impl Renderer {
                 texture: sprite.frames[0].clone(),
                 origin: sprite.origin,
                 depth: sprite.depth,
+                cell: sprite.cell,
             });
         }
         let mut grid = HashMap::<(i32, i32), Vec<usize>>::new();
@@ -3032,6 +3060,30 @@ impl Renderer {
         let viewport = self.world_viewport();
         self.ensure_static_map_cache(map);
         let mut draws = Vec::with_capacity(map.sprites.len() / 3 + remote_actors.len() * 2 + 64);
+        // A crypt's fog: what the hero sees from where they stand.
+        if crate::fog::covers(map.id) {
+            if self.fog.as_ref().map(|fog| fog.map_id) != Some(map.id) {
+                self.fog = Some(crate::fog::Fog::new(map));
+            }
+            let hero = [player.position[0].round() as i32, player.position[1].round() as i32];
+            if let Some(fog) = &mut self.fog {
+                fog.look(map, hero);
+            }
+        } else {
+            self.fog = None;
+        }
+        let fog = self.fog.clone();
+        // How much of a sprite on `cell` shows: none unseen, dim once seen.
+        let fog_alpha = |cell: Option<[i32; 2]>| -> f32 {
+            match (&fog, cell) {
+                (Some(fog), Some(cell)) => match fog.sight(cell) {
+                    crate::fog::Sight::Visible => 1.0,
+                    crate::fog::Sight::Seen => FOG_SEEN_WALL,
+                    crate::fog::Sight::Unknown => 0.0,
+                },
+                _ => 1.0,
+            }
+        };
 
         let dynamic_count = self
             .static_map_cache
@@ -3063,23 +3115,37 @@ impl Renderer {
             if p[0] + size[0] < 0.0 || p[1] + size[1] < 0.0 {
                 continue;
             }
+            let shown = fog_alpha(sprite.cell);
+            if shown <= 0.0 {
+                continue;
+            }
             draws.push(Draw {
                 texture: path.clone(),
-                vertices: quad(p, size, viewport),
+                vertices: if shown < 1.0 { quad_with_alpha(p, size, viewport, shown) } else { quad(p, size, viewport) },
                 depth_test: false,
                 sort_depth: sprite.depth,
             });
         }
+        // The hero on screen, for the walls standing in front of them.
+        let hero_point = {
+            let p = map.project(player.position);
+            [p[0] - camera[0], p[1] - camera[1] - player.height - player.hover]
+        };
+        let hero_depth = player.position[0] + player.position[1];
         let visible_static_indices = self.visible_static_sprite_indices(map, camera, viewport);
         for index in visible_static_indices.iter().copied() {
-            let (texture_path, origin, depth) = {
+            let (texture_path, origin, depth, cell) = {
                 let sprite = &self
                     .static_map_cache
                     .as_ref()
                     .expect("static map cache exists")
                     .static_sprites[index];
-                (sprite.texture.clone(), sprite.origin, sprite.depth)
+                (sprite.texture.clone(), sprite.origin, sprite.depth, sprite.cell)
             };
+            let shown = fog_alpha(cell);
+            if shown <= 0.0 {
+                continue;
+            }
             let p = [origin[0] - camera[0], origin[1] - camera[1]];
             let margin = if depth == f32::NEG_INFINITY {
                 STATIC_GROUND_MARGIN
@@ -3096,12 +3162,50 @@ impl Renderer {
             if p[0] + texture.size[0] < 0.0 || p[1] + texture.size[1] < 0.0 {
                 continue;
             }
+            // A crypt's wall (any theme's) in front of the hero, over them, is seen
+            // through: the walls are taller than a hero.
+            let in_front = texture_path.starts_with("gravak/objects/")
+                && texture_path.contains("/parede-")
+                && depth > hero_depth
+                && hero_point[0] > p[0] - 8.0
+                && hero_point[0] < p[0] + texture.size[0] + 8.0
+                && hero_point[1] > p[1]
+                && hero_point[1] - HERO_SEEN_HEIGHT < p[1] + texture.size[1];
+            let size = texture.size;
+            let alpha = if in_front { WALL_SEEN_THROUGH.min(shown) } else { shown };
             draws.push(Draw {
                 texture: texture_path,
-                vertices: quad(p, texture.size, viewport),
+                vertices: if alpha < 1.0 { quad_with_alpha(p, size, viewport, alpha) } else { quad(p, size, viewport) },
                 depth_test: false,
                 sort_depth: depth,
             });
+        }
+        // The fog on the ground: dark where the hero has never been, dim
+        // where they have been, over the floor and under what stands on it.
+        if let Some(fog) = &fog {
+            if !self.textures.contains_key(FOG_CELL) {
+                self.upload(FOG_CELL, fog_cell_image());
+            }
+            for y in 0..map.data.height as i32 {
+                for x in 0..map.data.width as i32 {
+                    let alpha = match fog.sight([x, y]) {
+                        crate::fog::Sight::Visible => continue,
+                        crate::fog::Sight::Seen => FOG_SEEN_GROUND,
+                        crate::fog::Sight::Unknown => 1.0,
+                    };
+                    let p = map.project([x as f32, y as f32]);
+                    let p = [p[0] - camera[0] - 34.0, p[1] - camera[1] - 18.0];
+                    if p[0] > viewport[0] || p[1] > viewport[1] || p[0] < -68.0 || p[1] < -36.0 {
+                        continue;
+                    }
+                    draws.push(Draw {
+                        texture: FOG_CELL.to_owned(),
+                        vertices: quad_with_alpha(p, [68.0, 36.0], viewport, alpha),
+                        depth_test: false,
+                        sort_depth: FOG_SORT,
+                    });
+                }
+            }
         }
         // Where the hero stands on screen: the middle, but off it near the
         // map's edges, where the view stops (`camera`).
@@ -3360,6 +3464,10 @@ impl Renderer {
         // budget so walking monsters cannot freeze them in the idle pose.
         let mut remote_player_pose_budget = 4usize;
         for actor in remote_actors.values() {
+            // Out of the hero's sight in a crypt: not there for them.
+            if fog.as_ref().is_some_and(|fog| !fog.shows(actor.position)) {
+                continue;
+            }
             let monster = !actor.npc && (400001..=499999).contains(&actor.id);
             if monster
                 && should_hide_dead_monster(
@@ -4275,7 +4383,7 @@ impl Renderer {
         }
         // The Character window is not modal: the minimap and HUD stay visible
         // so world information remains available while the panel is open.
-        if minimap_visible && self.minimap_shown {
+        if minimap_visible && self.minimap_shown && self.fog.is_none() {
             if let Some(minimap) = &self.minimap {
                 for item in minimap.quads(map, player.position, team_pins, camera, viewport) {
                     let mut vertices = quad(

@@ -7,7 +7,29 @@ import { type NobilityRank, nobilityRank, type Profession, professionRange } fro
 /** Online: the server marks those in the world every 30 seconds. */
 const ONLINE_WITHIN = 90;
 
-const catalogue = items as unknown as Record<string, [string, number, string]>;
+/** `site_items` (client/crates/sandbox/src/marketing.rs): an item's name,
+ * level, icon, class required, attack, magic attack, defense, magic defense,
+ * life, mana, accuracy, dodge, kind and description. */
+type Entry = [string, number, string, number, number, number, number, number, number, number, number, number, number, string, string];
+const catalogue = items as unknown as Record<string, Entry>;
+
+/** What an item adds, as its tooltip shows it. */
+export type Stats = {
+  attack: [number, number];
+  magicAttack: number;
+  defense: number;
+  magicDefense: number;
+  life: number;
+  mana: number;
+  accuracy: number;
+  dodge: number;
+};
+
+/** A gem in a socket, or an open socket (`null` name). */
+export type Socket = { name: string | null; icon: string | null; description: string };
+
+/** A rarity affix (server/game/src/affixes.rs): its kind, 1-8, and value. */
+export type Affix = { kind: number; value: number };
 
 export type Worn = {
   position: number;
@@ -17,6 +39,17 @@ export type Worn = {
   icon: string | null;
   plus: number;
   quality: "Normal" | "Refined" | "Unique" | "Elite" | "Super";
+  kind: string;
+  description: string;
+  stats: Stats;
+  /** Rare 1 .. Mythic 4; 0 none. */
+  rarity: number;
+  affixes: Affix[];
+  sockets: Socket[];
+  bless: number;
+  enchant: number;
+  /** Current and maximum, as the game shows them; null when it does not wear. */
+  durability: [number, number] | null;
 };
 
 export type Death = {
@@ -32,8 +65,15 @@ export type Death = {
 export type Character = {
   name: string;
   currentClass: number;
+  /** The class before the last rebirth; 0 before any. */
+  previousClass: number;
   level: number;
   rebirths: number;
+  firstRebirthLevel: number;
+  attributes: { strength: number; agility: number; vitality: number; spirit: number };
+  /** For drawing the hero: their body and hair. */
+  mesh: number;
+  hairStyle: number;
   female: boolean;
   online: boolean;
   lastSeen: number;
@@ -65,13 +105,24 @@ function quality(itemType: number): Worn["quality"] {
   }
 }
 
+const noStats: Stats = { attack: [0, 0], magicAttack: 0, defense: 0, magicDefense: 0, life: 0, mana: 0, accuracy: 0, dodge: 0 };
+
+/** A gem code of a socket (0 none, 255 open) to the gem. */
+function socket(code: number): Socket | null {
+  if (code === 0) return null;
+  if (code === 255) return { name: null, icon: null, description: "" };
+  const gem = catalogue[String(700_000 + code)];
+  return gem ? { name: gem[0], icon: gem[2], description: gem[14] } : { name: `#${700_000 + code}`, icon: null, description: "" };
+}
+
 /** A character by name (any case), `null` when none, `undefined` when the database is down. */
 export async function getCharacter(name: string): Promise<Character | null | undefined> {
   "use cache";
   cacheLife("minutes");
   try {
     const { rows } = await pool.query(
-      `SELECT c.character_id, c.name, c.current_class, c.level, c.rebirths, c.mesh, c.kill_points, c.best_ko,
+      `SELECT c.character_id, c.name, c.current_class, c.level, c.rebirths, c.mesh, c.hair_style, c.previous_class,
+              c.first_rebirth_level, c.strength, c.agility, c.vitality, c.spirit, c.kill_points, c.best_ko,
               c.nobility_donation, c.last_seen, c.created_at,
               EXTRACT(EPOCH FROM now())::BIGINT - c.last_seen AS idle,
               m.spouse_name, g.name AS guild, gm.role
@@ -95,7 +146,10 @@ export async function getCharacter(name: string): Promise<Character | null | und
           )
         : null,
       pool.query(
-        `SELECT e.position, e.item_type, COALESCE(u.plus, 0) AS plus
+        `SELECT e.position, e.item_type, e.durability, e.max_durability,
+                COALESCE(u.plus, 0) AS plus, COALESCE(u.gem_one, 0) AS gem_one, COALESCE(u.gem_two, 0) AS gem_two,
+                COALESCE(u.bless, 0) AS bless, COALESCE(u.enchant, 0) AS enchant, COALESCE(u.rarity, 0) AS rarity,
+                COALESCE((SELECT array_agg(a.affix ORDER BY a.slot) FROM item_affixes a WHERE a.item_uid = e.item_uid), '{}') AS affixes
            FROM equipment_items e LEFT JOIN item_upgrades u ON u.item_uid = e.item_uid
           WHERE e.character_id = $1 ORDER BY e.position`,
         [id],
@@ -123,8 +177,18 @@ export async function getCharacter(name: string): Promise<Character | null | und
     return {
       name: String(row.name),
       currentClass: Number(row.current_class),
+      previousClass: Number(row.previous_class),
       level: Number(row.level),
       rebirths: Number(row.rebirths),
+      firstRebirthLevel: Number(row.first_rebirth_level),
+      attributes: {
+        strength: Number(row.strength),
+        agility: Number(row.agility),
+        vitality: Number(row.vitality),
+        spirit: Number(row.spirit),
+      },
+      mesh: Number(row.mesh),
+      hairStyle: Number(row.hair_style),
       female: Number(row.mesh) % 10_000 >= 2_000,
       online: Number(row.last_seen) > 0 && Number(row.idle) <= ONLINE_WITHIN,
       lastSeen: Number(row.last_seen),
@@ -135,9 +199,10 @@ export async function getCharacter(name: string): Promise<Character | null | und
       nobilityPlace,
       spouse: row.spouse_name ? String(row.spouse_name) : null,
       guild: row.guild ? { name: String(row.guild), role: Number(row.role) } : null,
-      equipment: equipment.rows.map((item) => {
+      equipment: equipment.rows.map((item): Worn => {
         const itemType = Number(item.item_type);
         const known = catalogue[String(itemType)];
+        const max = Number(item.max_durability);
         return {
           position: Number(item.position),
           itemType,
@@ -146,6 +211,30 @@ export async function getCharacter(name: string): Promise<Character | null | und
           icon: known?.[2] ?? null,
           plus: Number(item.plus),
           quality: quality(itemType),
+          kind: known?.[13] ?? "",
+          description: known?.[14] ?? "",
+          stats: known
+            ? {
+                attack: [known[4], known[5]],
+                magicAttack: known[6],
+                defense: known[7],
+                magicDefense: known[8],
+                life: known[9],
+                mana: known[10],
+                accuracy: known[11],
+                dodge: known[12],
+              }
+            : noStats,
+          rarity: Number(item.rarity),
+          affixes: (item.affixes as number[])
+            .map(Number)
+            .map((packed) => ({ kind: packed >> 12, value: packed & 0x0fff }))
+            .filter((affix) => affix.kind >= 1 && affix.kind <= 8),
+          sockets: [socket(Number(item.gem_one)), socket(Number(item.gem_two))].filter((gem): gem is Socket => gem !== null),
+          bless: Number(item.bless),
+          enchant: Number(item.enchant),
+          // The game counts it in hundredths; 65535 is what never wears.
+          durability: max > 0 && max < 65_535 ? [Math.ceil(Number(item.durability) / 100), Math.ceil(max / 100)] : null,
         };
       }),
       deaths: deaths.rows.map(death),

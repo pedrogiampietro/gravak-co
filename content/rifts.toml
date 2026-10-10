@@ -5,6 +5,29 @@
 # arte de content/art/cripta. A mesma `seed` gera sempre o mesmo labirinto;
 # trocar a seed gera outro. `rooms` são as salas do labirinto na horizontal e
 # na vertical (cada sala tem 5 por 5 células, as paredes 2 de espessura).
+# `theme` escolhe a arte (cripta, o padrão, ou fungos).
+
+# Covil dos Goblins (nível 30+): o tema fungos (content/art/fungos)
+[[rift]]
+id = 9091
+name = "Covil dos Goblins I"
+seed = 31
+rooms = [8, 8]
+theme = "fungos"
+
+[[rift]]
+id = 9092
+name = "Covil dos Goblins II"
+seed = 32
+rooms = [8, 8]
+theme = "fungos"
+
+[[rift]]
+id = 9093
+name = "Covil dos Goblins III"
+seed = 33
+rooms = [8, 8]
+theme = "fungos"
 
 # Fenda Menor (nível 70+)
 [[rift]]

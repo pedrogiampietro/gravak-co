@@ -16,6 +16,8 @@ pub struct MapSprite {
     /// Drawing order: the background first, then by `x + y` of the cell.
     pub depth: f32,
     pub interval: u32,
+    /// The cell it stands on; none for the background's tiles.
+    pub cell: Option<[i32; 2]>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +79,7 @@ impl ComposedMap {
                 ],
                 depth: f32::NEG_INFINITY,
                 interval: 100,
+                cell: None,
             });
         }
         for object in &data.terrain_objects {
@@ -90,6 +93,7 @@ impl ComposedMap {
                 origin: [p[0] - object.offset_x as f32, p[1] - object.offset_y as f32],
                 depth: (object.x + object.y) as f32,
                 interval: object.frame_interval_ms.max(1),
+                cell: Some([object.x, object.y]),
             });
         }
         for object in data.scene_objects.clone() {
@@ -105,6 +109,7 @@ impl ComposedMap {
                     origin: [p[0] + part.offset_x as f32, p[1] + part.offset_y as f32],
                     depth: (x + y) as f32,
                     interval: part.frame_interval_ms.max(1),
+                    cell: Some([x, y]),
                 });
             }
             apply_fixed_scene_layers(&mut data, object.x, object.y, &scene);
@@ -146,6 +151,7 @@ impl ComposedMap {
                 ],
                 depth: (object.x + object.y) as f32,
                 interval: 100,
+                cell: Some([object.x, object.y]),
             });
         }
         for &[x, y] in &objects.blocked {

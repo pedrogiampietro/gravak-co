@@ -417,7 +417,12 @@ fn site_items() {
     std::fs::create_dir_all(&icons).expect("items folder");
     // Headgear to garments, weapons, shields and arrows.
     let wearable = |id: u32| {
-        (111_000..200_000).contains(&id) || (400_000..700_000).contains(&id) || (900_000..1_000_000).contains(&id) || (1_050_000..1_052_000).contains(&id)
+        (111_000..200_000).contains(&id)
+            || (400_000..700_000).contains(&id)
+            || (900_000..1_000_000).contains(&id)
+            || (1_050_000..1_052_000).contains(&id)
+            // The gems, named in a worn item's sockets.
+            || (700_001..=700_073).contains(&id)
     };
     let ids: Vec<u32> = crate::shop::all_item_ids(&mut assets).into_iter().filter(|id| wearable(*id)).collect();
     let infos = crate::shop::load_item_infos(&mut assets, &ids);
@@ -455,10 +460,25 @@ fn site_items() {
             icon.save(icons.join(format!("{key}.png"))).expect("icon");
             key
         });
+        // [name, level, icon, class, attack min, attack max, magic attack,
+        // defense, magic defense, life, mana, accuracy, dodge, kind,
+        // description]: the website's tooltips (web/src/lib/characters.ts).
         catalogue.push(format!(
-            "\"{id}\":[{},{},\"{key}\"]",
+            "\"{id}\":[{},{},\"{key}\",{},{},{},{},{},{},{},{},{},{},{},{}]",
             serde_json_string(&info.name),
-            info.level
+            info.level,
+            info.required_class,
+            info.attack_min,
+            info.attack_max,
+            info.magic_attack,
+            info.defense,
+            info.magic_defense,
+            info.health_add,
+            info.mana_add,
+            info.agility_add,
+            info.dodge_add,
+            serde_json_string(&info.item_type),
+            serde_json_string(&info.description),
         ));
     }
     std::fs::write(web.join("src/content/items.json"), format!("{{{}}}\n", catalogue.join(","))).expect("items.json");

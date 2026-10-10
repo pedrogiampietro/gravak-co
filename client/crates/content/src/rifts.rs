@@ -34,7 +34,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 pub const CONFIG: &str = "rifts.toml";
-pub const ART: &str = "art/cripta";
 const TILE: u32 = 256;
 /// A room's floor and a wall's thickness, in cells.
 const CORRIDOR: usize = 5;
@@ -45,19 +44,28 @@ const MARGIN: usize = 9;
 /// Wall blocks stand on wall cells this near the floor: the inner walls
 /// whole, and around the maze a border that hides the floor's tiles past it.
 const WALL_REACH: i64 = 8;
-/// How tall a wall block stands, in pixels.
-const WALL_HEIGHT: u32 = 72;
-/// The floor texture repeats every this many world units (a cell is 32).
-const FLOOR_PERIOD: f32 = 256.0;
-/// The wall textures repeat every this many cells.
-const WALL_PERIOD: usize = 4;
+/// How tall a wall block stands, in pixels: taller than a hero, so what is
+/// behind a wall is hidden (the client lets the hero see through the walls
+/// in front of them).
+const WALL_HEIGHT: u32 = 136;
+/// The wall's face texture shows this much of its height per 72 pixels.
+const FACE_SPAN: f32 = 0.45;
 
 const FLOOR: MapCell = MapCell { access: 0, surface: 12, elevation: 0 };
 const BLOCKED: MapCell = MapCell { access: 1, surface: 12, elevation: 0 };
 
-const PUZZLE_ANI: &str = "ani/gravak-cripta.ani";
-const TILE_DIR: &str = "data/map/puzzle/gravak-cripta";
-const OBJECT_DIR: &str = "gravak/objects/cripta";
+/// A theme's puzzle catalogue, floor tiles and objects.
+fn puzzle_ani(theme: &str) -> String {
+    format!("ani/gravak-{theme}.ani")
+}
+
+fn tile_dir(theme: &str) -> String {
+    format!("data/map/puzzle/gravak-{theme}")
+}
+
+fn object_dir(theme: &str) -> String {
+    format!("gravak/objects/{theme}")
+}
 const MINIMAP_ANI: &str = "ani/MiniMap.Ani";
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +83,13 @@ pub struct RiftDef {
     pub seed: u64,
     /// Rooms of the maze across and down.
     pub rooms: [usize; 2],
+    /// The art: a theme of `THEMES` (`content/art/<theme>`).
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+fn default_theme() -> String {
+    "cripta".to_owned()
 }
 
 pub fn load(content: &Path) -> Result<Config> {
@@ -94,24 +109,138 @@ struct Prop {
     blocks: bool,
 }
 
-const PROPS: [Prop; 10] = [
-    Prop { name: "tocha", height: 64, blocks: false },
-    Prop { name: "pilar", height: 170, blocks: true },
-    Prop { name: "pilar-quebrado", height: 110, blocks: true },
-    Prop { name: "ossos", height: 46, blocks: false },
-    Prop { name: "bau", height: 62, blocks: true },
-    Prop { name: "caixotes", height: 96, blocks: true },
-    Prop { name: "correntes", height: 140, blocks: true },
-    Prop { name: "estatua", height: 175, blocks: true },
-    Prop { name: "braseiro", height: 92, blocks: true },
-    Prop { name: "teia", height: 96, blocks: false },
-];
-
-fn prop(name: &str) -> &'static Prop {
-    PROPS.iter().find(|prop| prop.name == name).expect("a known prop")
+const fn prop(name: &'static str, height: u32, blocks: bool) -> Prop {
+    Prop { name, height, blocks }
 }
 
-/// The art, read from `content/art/cripta`.
+/// A look for the crypts: its art (`content/art/<name>`), how big its
+/// textures are on the ground, its decorations, and where each goes.
+pub struct Theme {
+    pub name: &'static str,
+    props: &'static [Prop],
+    /// World units the floor texture covers (a cell is 32).
+    floor_period: f32,
+    /// Cells the wall texture covers across.
+    wall_period: usize,
+    /// How bright the walls' faces are (a dark texture lit up).
+    wall_light: f32,
+    /// On the walls the camera sees, every few cells.
+    wall_lights: &'static [&'static str],
+    /// On some of those walls, now and then.
+    wall_decor: &'static [&'static str],
+    /// At the Guardian's hall's corners, and two at its far side.
+    hall_corners: &'static str,
+    hall_far: &'static str,
+    /// Along a chamber's old wall line, and in a great room's middle.
+    pillars: &'static [&'static str],
+    /// What a dead end keeps.
+    dead_ends: &'static [&'static str],
+    /// Strewn on the floor, never in the way.
+    strewn: &'static [&'static str],
+}
+
+pub const THEMES: [Theme; 2] = [
+    Theme {
+        name: "cripta",
+        props: &[
+            prop("tocha", 64, false),
+            prop("pilar", 170, true),
+            prop("pilar-quebrado", 110, true),
+            prop("ossos", 46, false),
+            prop("bau", 62, true),
+            prop("caixotes", 96, true),
+            prop("correntes", 140, true),
+            prop("estatua", 175, true),
+            prop("braseiro", 92, true),
+            prop("teia", 96, false),
+        ],
+        floor_period: 256.0,
+        wall_period: 4,
+        wall_light: 1.0,
+        wall_lights: &["tocha"],
+        wall_decor: &["teia"],
+        hall_corners: "braseiro",
+        hall_far: "estatua",
+        pillars: &["pilar", "pilar", "pilar-quebrado"],
+        dead_ends: &["bau", "caixotes", "correntes", "ossos"],
+        strewn: &["ossos"],
+    },
+    Theme {
+        name: "fungos",
+        props: &[
+            prop("tocha", 66, false),
+            prop("lanterna", 70, false),
+            prop("estandarte", 110, false),
+            prop("raizes", 110, false),
+            prop("cogumelos", 64, false),
+            prop("cogumelo-gigante", 175, true),
+            prop("fogueira", 72, true),
+            prop("barricada", 78, true),
+            prop("totem", 170, true),
+            prop("sacos", 58, true),
+            prop("bau", 60, true),
+            prop("ossos", 40, false),
+            prop("barril", 76, true),
+            prop("pedras", 62, true),
+        ],
+        floor_period: 512.0,
+        wall_period: 6,
+        wall_light: 1.5,
+        wall_lights: &["tocha", "lanterna"],
+        wall_decor: &["raizes", "estandarte", "raizes"],
+        hall_corners: "cogumelo-gigante",
+        hall_far: "totem",
+        pillars: &["cogumelo-gigante", "pedras", "barricada", "fogueira"],
+        dead_ends: &["bau", "sacos", "barril", "ossos", "sacos"],
+        strewn: &["cogumelos", "ossos", "cogumelos"],
+    },
+];
+
+pub fn theme(name: &str) -> Result<&'static Theme> {
+    THEMES
+        .iter()
+        .find(|theme| theme.name == name)
+        .ok_or_else(|| format!("tema {name:?} desconhecido (há: cripta, fungos)").into())
+}
+
+impl Theme {
+    fn prop(&self, name: &str) -> &Prop {
+        self.props.iter().find(|prop| prop.name == name).expect("a prop of the theme")
+    }
+}
+
+/// A picture on a plain white or light grey background, the background made
+/// clear (with a soft edge) and cropped to what is left; one already clear
+/// is only cropped (`content/art/tirar_fundo.py` does the same).
+fn cut_out(picture: RgbaImage) -> RgbaImage {
+    let opaque = picture.pixels().all(|pixel| pixel[3] >= 250);
+    let mut clear = picture;
+    if opaque {
+        for pixel in clear.pixels_mut() {
+            let [r, g, b, _] = pixel.0.map(f32::from);
+            let (low, high) = (r.min(g).min(b), r.max(g).max(b));
+            pixel[3] = if high - low >= 30.0 {
+                255
+            } else if low > 205.0 {
+                0
+            } else {
+                (((235.0 - low) / 30.0).clamp(0.0, 1.0) * 255.0) as u8
+            };
+        }
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (clear.width(), clear.height(), 0, 0);
+    for (x, y, pixel) in clear.enumerate_pixels() {
+        if pixel[3] > 8 {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+        }
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return clear;
+    }
+    imageops::crop_imm(&clear, x0, y0, x1 - x0, y1 - y0).to_image()
+}
+
+/// A theme's art, read from `content/art/<theme>`.
 pub struct Art {
     floors: Vec<RgbaImage>,
     face: RgbaImage,
@@ -120,8 +249,8 @@ pub struct Art {
 }
 
 impl Art {
-    pub fn load(content: &Path) -> Result<Self> {
-        let directory = content.join(ART);
+    pub fn load(content: &Path, theme: &Theme) -> Result<Self> {
+        let directory = content.join("art").join(theme.name);
         let open = |name: &str| -> Result<RgbaImage> {
             let path = directory.join(format!("{name}.png"));
             Ok(image::open(&path).map_err(|error| format!("{}: {error}", path.display()))?.to_rgba8())
@@ -133,8 +262,8 @@ impl Art {
             }
         }
         let mut props = HashMap::new();
-        for prop in &PROPS {
-            let picture = open(prop.name)?;
+        for prop in theme.props {
+            let picture = cut_out(open(prop.name)?);
             let width = (picture.width() * prop.height / picture.height().max(1)).max(1);
             props.insert(prop.name, imageops::resize(&picture, width, prop.height, imageops::FilterType::Lanczos3));
         }
@@ -174,8 +303,8 @@ fn world(x: f32, y: f32) -> (f32, f32) {
 /// The floor's tiles: the ground repeats every two tiles across and every
 /// tile down, so each texture gives two; the variations blend a second
 /// texture into a tile's middle, leaving its edges to the first.
-fn floor_tiles(art: &Art) -> Vec<RgbaImage> {
-    let scale = |texture: &RgbaImage| texture.width() as f32 / FLOOR_PERIOD;
+fn floor_tiles(art: &Art, period: f32) -> Vec<RgbaImage> {
+    let scale = |texture: &RgbaImage| texture.width() as f32 / period;
     let mut tiles = Vec::new();
     for variant in 0..art.floors.len() {
         for column in 0..2u32 {
@@ -204,11 +333,11 @@ fn floor_tiles(art: &Art) -> Vec<RgbaImage> {
 /// A wall block for the cell at (`x`, `y`) of the texture's period: the
 /// cell's diamond (64 by 32) at its foot, raised `WALL_HEIGHT`. The image's
 /// point (32, 16 + WALL_HEIGHT) is the cell's.
-fn wall_block(art: &Art, x: usize, y: usize) -> RgbaImage {
+fn wall_block(art: &Art, period: usize, brightness: f32, x: usize, y: usize) -> RgbaImage {
     let height = WALL_HEIGHT as f32;
     let (fw, fh) = (art.face.width() as f32, art.face.height() as f32);
     let (tw, th) = (art.top.width() as f32, art.top.height() as f32);
-    let face_scale = fw / (WALL_PERIOD as f32);
+    let face_scale = fw / (period as f32);
     RgbaImage::from_fn(64, 32 + WALL_HEIGHT, |ix, iy| {
         let px = ix as f32 + 0.5 - 32.0;
         let py = iy as f32 + 0.5 - 16.0 - height;
@@ -217,8 +346,8 @@ fn wall_block(art: &Art, x: usize, y: usize) -> RgbaImage {
         if tx.abs() / 32.0 + ty.abs() / 16.0 <= 1.0 {
             let along_x = (tx / 32.0 + ty / 16.0) / 2.0 + 0.5;
             let along_y = (ty / 16.0 - tx / 32.0) / 2.0 + 0.5;
-            let u = (x as f32 + along_x) / WALL_PERIOD as f32 * tw;
-            let v = (y as f32 + along_y) / WALL_PERIOD as f32 * th;
+            let u = (x as f32 + along_x) / period as f32 * tw;
+            let v = (y as f32 + along_y) / period as f32 * th;
             let rim = 1.0 - (tx.abs() / 32.0 + ty.abs() / 16.0);
             let light = if rim < 0.06 { 0.6 } else { 1.0 };
             return pixel(sample(&art.top, u, v), light, 255);
@@ -230,8 +359,8 @@ fn wall_block(art: &Art, x: usize, y: usize) -> RgbaImage {
                 let rise = (foot - py) / height;
                 let along = (px + 32.0) / 32.0;
                 let u = (x as f32 + along) * face_scale;
-                let v = (1.0 - rise) * fh * 0.45;
-                let light = 0.82 * (0.62 + 0.38 * rise.min(1.0)) * if px > -1.0 { 0.8 } else { 1.0 };
+                let v = (1.0 - rise) * fh * FACE_SPAN * height / 72.0;
+                let light = brightness * 0.82 * (0.62 + 0.38 * rise.min(1.0)) * if px > -1.0 { 0.8 } else { 1.0 };
                 return pixel(sample(&art.face, u, v), light, 255);
             }
         } else if (0.0..=32.0).contains(&px) {
@@ -241,8 +370,8 @@ fn wall_block(art: &Art, x: usize, y: usize) -> RgbaImage {
                 let rise = (foot - py) / height;
                 let along = 1.0 - px / 32.0;
                 let u = (y as f32 + along) * face_scale + fw * 0.37;
-                let v = (1.0 - rise) * fh * 0.45;
-                let light = 0.55 * (0.62 + 0.38 * rise.min(1.0));
+                let v = (1.0 - rise) * fh * FACE_SPAN * height / 72.0;
+                let light = brightness * 0.55 * (0.62 + 0.38 * rise.min(1.0));
                 return pixel(sample(&art.face, u, v), light, 255);
             }
         }
@@ -374,7 +503,7 @@ fn room_origin(room: (usize, usize)) -> (usize, usize) {
     (MARGIN + room.0 * PERIOD + WALL, MARGIN + room.1 * PERIOD + WALL)
 }
 
-pub fn generate(def: &RiftDef, floor_variants: usize) -> Result<Rift> {
+pub fn generate(def: &RiftDef, theme: &Theme, floor_variants: usize) -> Result<Rift> {
     let [width, height] = def.rooms;
     if width < 4 || height < 4 {
         return Err(format!("rift {}: at least 4 by 4 rooms", def.id).into());
@@ -387,13 +516,26 @@ pub fn generate(def: &RiftDef, floor_variants: usize) -> Result<Rift> {
     let hall = (farthest.0.min(width - 2).max(1), farthest.1.min(height - 2).max(1));
     let (hx, hy) = hall;
     open.extend([Opening::Across(hx + 1, hy), Opening::Across(hx + 1, hy + 1), Opening::Down(hx, hy + 1), Opening::Down(hx + 1, hy + 1)]);
+    // Great rooms: a few blocks of two by two rooms opened into one, as the
+    // hall is (its walls' crossing gone too).
+    let mut blocks = vec![hall];
+    for _ in 0..(width * height / 20) {
+        let (x, y) = (rng.below(width - 1), rng.below(height - 1));
+        let touches = |(bx, by): (usize, usize)| x + 2 > bx && bx + 2 > x && y + 2 > by && by + 2 > y;
+        if (x, y) == (0, 0) || x + y == 0 || blocks.iter().any(|block| touches(*block)) || (x <= 1 && y <= 1) {
+            continue;
+        }
+        open.extend([Opening::Across(x + 1, y), Opening::Across(x + 1, y + 1), Opening::Down(x, y + 1), Opening::Down(x + 1, y + 1)]);
+        blocks.push((x, y));
+    }
+    let in_block = |room: (usize, usize)| blocks.iter().any(|(bx, by)| (*bx..bx + 2).contains(&room.0) && (*by..by + 2).contains(&room.1));
     // Chambers: a few pairs of rooms opened into one, with the wall between
     // them gone entirely.
     let mut chambers = HashSet::new();
     for _ in 0..(width * height / 12) {
         let (x, y) = (rng.below(width - 1), rng.below(height));
         let pair = [(x, y), (x + 1, y)];
-        if pair.iter().any(|room| *room == (0, 0) || (hx..hx + 2).contains(&room.0) && (hy..hy + 2).contains(&room.1)) {
+        if pair.iter().any(|room| *room == (0, 0) || in_block(*room)) {
             continue;
         }
         open.insert(Opening::Across(x + 1, y));
@@ -416,20 +558,22 @@ pub fn generate(def: &RiftDef, floor_variants: usize) -> Result<Rift> {
             let (x0, y0) = room_origin((rx, ry));
             carve(x0, y0, x0 + CORRIDOR, y0 + CORRIDOR);
             if rx > 0 && open.contains(&Opening::Across(rx, ry)) {
-                let whole = chambers.contains(&(rx, ry)) || (hx + 1 == rx && (hy..hy + 2).contains(&ry));
+                let whole = chambers.contains(&(rx, ry)) || blocks.iter().any(|(bx, by)| bx + 1 == rx && (*by..by + 2).contains(&ry));
                 let (from, to) = if whole { (y0, y0 + CORRIDOR) } else { (y0 + 1, y0 + CORRIDOR - 1) };
                 carve(x0 - WALL, from, x0, to);
             }
             if ry > 0 && open.contains(&Opening::Down(rx, ry)) {
-                let whole = hy + 1 == ry && (hx..hx + 2).contains(&rx);
+                let whole = blocks.iter().any(|(bx, by)| by + 1 == ry && (*bx..bx + 2).contains(&rx));
                 let (from, to) = if whole { (x0, x0 + CORRIDOR) } else { (x0 + 1, x0 + CORRIDOR - 1) };
                 carve(from, y0 - WALL, to, y0);
             }
         }
     }
-    // The hall's middle: the walls' crossing goes too.
-    let (cx0, cy0) = room_origin((hx + 1, hy + 1));
-    carve(cx0 - WALL, cy0 - WALL, cx0, cy0);
+    // A great room's middle: the walls' crossing goes too.
+    for (bx, by) in &blocks {
+        let (cx0, cy0) = room_origin((bx + 1, by + 1));
+        carve(cx0 - WALL, cy0 - WALL, cx0, cy0);
+    }
     let is_floor = |x: i64, y: i64| x >= 0 && y >= 0 && (x as usize) < size && (y as usize) < size && floor[y as usize * size + x as usize];
 
     let mut cells = vec![BLOCKED; size * size];
@@ -440,28 +584,35 @@ pub fn generate(def: &RiftDef, floor_variants: usize) -> Result<Rift> {
     }
 
     // Decorations, closing their cells where they stand.
+    let objects_dir = object_dir(theme.name);
     let mut objects = Vec::new();
     let place = |objects: &mut Vec<(i32, i32, String, [i32; 2])>, cells: &mut Vec<MapCell>, name: &str, x: usize, y: usize, nudge: [i32; 2]| {
-        let prop = prop(name);
-        objects.push((x as i32, y as i32, format!("{OBJECT_DIR}/{name}.png"), nudge));
-        if prop.blocks {
+        objects.push((x as i32, y as i32, format!("{objects_dir}/{name}.png"), nudge));
+        if theme.prop(name).blocks {
             cells[y * size + x] = BLOCKED;
         }
     };
+    let pick = |rng: &mut Rng, list: &[&'static str]| list[rng.below(list.len())];
     let centre = |room: (usize, usize)| {
         let (x0, y0) = room_origin(room);
         (x0 + CORRIDOR / 2, y0 + CORRIDOR / 2)
     };
-    // The hall: braziers at its corners, two statues at its far side.
+    // The hall: its corners, and two at its far side.
     let (hx0, hy0) = room_origin(hall);
     let hall_end = (hx0 + 2 * CORRIDOR + WALL - 1, hy0 + 2 * CORRIDOR + WALL - 1);
     for (x, y) in [(hx0 + 1, hy0 + 1), (hall_end.0 - 1, hy0 + 1), (hx0 + 1, hall_end.1 - 1), (hall_end.0 - 1, hall_end.1 - 1)] {
-        place(&mut objects, &mut cells, "braseiro", x, y, [0, 0]);
+        place(&mut objects, &mut cells, theme.hall_corners, x, y, [0, 0]);
     }
     for (x, y) in [(hall_end.0 - 1, hy0 + 4), (hall_end.0 - 1, hall_end.1 - 4)] {
-        place(&mut objects, &mut cells, "estatua", x, y, [0, 0]);
+        place(&mut objects, &mut cells, theme.hall_far, x, y, [0, 0]);
     }
     let in_hall = |room: (usize, usize)| (hx..hx + 2).contains(&room.0) && (hy..hy + 2).contains(&room.1);
+    // The other great rooms: something in the middle, where the walls met.
+    for (bx, by) in blocks.iter().skip(1) {
+        let (cx0, cy0) = room_origin((bx + 1, by + 1));
+        let name = pick(&mut rng, theme.pillars);
+        place(&mut objects, &mut cells, name, cx0 - 1, cy0 - 1, [0, 0]);
+    }
     for ry in 0..height {
         for rx in 0..width {
             let room = (rx, ry);
@@ -471,26 +622,31 @@ pub fn generate(def: &RiftDef, floor_variants: usize) -> Result<Rift> {
             let (x, y) = centre(room);
             let exits = neighbours(room, size_rooms, &open).len();
             if chambers.contains(&room) {
-                // A chamber: pillars along the old wall's line.
+                // A chamber: two along the old wall's line.
                 let (x0, y0) = room_origin(room);
                 for py in [y0, y0 + CORRIDOR - 1] {
-                    let name = if rng.chance(0.3) { "pilar-quebrado" } else { "pilar" };
+                    let name = pick(&mut rng, theme.pillars);
                     place(&mut objects, &mut cells, name, x0 - 1, py, [0, 0]);
                 }
-            } else if exits == 1 {
+            } else if exits == 1 && !in_block(room) {
                 // A dead end keeps something.
-                let name = ["bau", "caixotes", "correntes", "ossos"][rng.below(4)];
+                let name = pick(&mut rng, theme.dead_ends);
                 place(&mut objects, &mut cells, name, x, y, [0, 0]);
-            } else if rng.chance(0.25) {
+            }
+            // Something strewn on the floor, in the way of nothing.
+            if rng.chance(0.3) {
                 let (dx, dy) = (rng.below(CORRIDOR), rng.below(CORRIDOR));
                 let (x0, y0) = room_origin(room);
-                place(&mut objects, &mut cells, "ossos", x0 + dx, y0 + dy, [0, 0]);
+                let name = pick(&mut rng, theme.strewn);
+                if !theme.prop(name).blocks && floor[(y0 + dy) * size + x0 + dx] {
+                    place(&mut objects, &mut cells, name, x0 + dx, y0 + dy, [0, 0]);
+                }
             }
         }
     }
 
-    // Walls: a block on every wall cell beside the floor; torches and webs
-    // on some of them.
+    // Walls: a block on every wall cell beside the floor; lights and the
+    // theme's wall decorations on some of the faces the camera sees.
     let near_floor = |x: usize, y: usize| {
         (-WALL_REACH..=WALL_REACH).any(|dy| (-WALL_REACH..=WALL_REACH).any(|dx| is_floor(x as i64 + dx, y as i64 + dy)))
     };
@@ -503,16 +659,20 @@ pub fn generate(def: &RiftDef, floor_variants: usize) -> Result<Rift> {
         }
     }
     for &(x, y) in &walls {
-        let name = format!("{OBJECT_DIR}/parede-{}-{}.png", x % WALL_PERIOD, y % WALL_PERIOD);
+        let name = format!("{objects_dir}/parede-{}-{}.png", x % theme.wall_period, y % theme.wall_period);
         objects.push((x as i32, y as i32, name, [0, 0]));
-        // A torch on a face the camera sees, toward the floor below it.
         let faces_y = is_floor(x as i64, y as i64 + 1) && !is_floor(x as i64 - 1, y as i64 + 1);
         let faces_x = is_floor(x as i64 + 1, y as i64) && !is_floor(x as i64 + 1, y as i64 - 1);
-        if (x + 3 * y) % 9 == 0 && (faces_y || faces_x) {
-            let nudge = if faces_y { [-14, -10] } else { [14, -10] };
-            objects.push((x as i32, y as i32, format!("{OBJECT_DIR}/tocha.png"), nudge));
-        } else if faces_y && faces_x && rng.chance(0.35) {
-            objects.push((x as i32, y as i32, format!("{OBJECT_DIR}/teia.png"), [0, 0]));
+        if !(faces_y || faces_x) {
+            continue;
+        }
+        let side = if faces_y { -14 } else { 14 };
+        if (x + 3 * y) % 9 == 0 {
+            let light = pick(&mut rng, theme.wall_lights);
+            objects.push((x as i32, y as i32, format!("{objects_dir}/{light}.png"), [side, -64]));
+        } else if (x + 5 * y) % 7 == 0 && rng.chance(0.45) {
+            let decor = pick(&mut rng, theme.wall_decor);
+            objects.push((x as i32, y as i32, format!("{objects_dir}/{decor}.png"), [side, -40]));
         }
     }
 
@@ -623,7 +783,7 @@ impl Rift {
 
     pub fn puzzle_bytes(&self) -> Vec<u8> {
         let mut bytes = padded("PUZZLE2", 8);
-        bytes.extend(padded(&PUZZLE_ANI.replace('/', "\\"), 256));
+        bytes.extend(padded(&puzzle_ani(&self.def.theme).replace('/', "\\"), 256));
         bytes.extend((self.columns as i32).to_le_bytes());
         bytes.extend((self.rows as i32).to_le_bytes());
         for tile in &self.tiles {
@@ -784,31 +944,38 @@ pub fn build(installation: &mut Installation, content: &Path, output: &Path) -> 
     if config.rift.is_empty() {
         return Ok(0);
     }
-    let art = Art::load(content)?;
-
-    // The art the rifts share: the floor's tiles and their ani, the wall
-    // blocks and the decorations.
-    let floor = floor_tiles(&art);
-    let mut ani = String::new();
-    for (index, tile) in floor.iter().enumerate() {
-        let path = format!("{TILE_DIR}/{index}.png");
-        save_png(output, &path, tile)?;
-        ani.push_str(&format!("[Puzzle{index}]\r\nFrameAmount=1\r\nFrame0={path}\r\n\r\n"));
-    }
-    write(output, PUZZLE_ANI, ani.as_bytes())?;
+    // Each theme the rifts use: its floor's tiles and their ani, its wall
+    // blocks and its decorations, shared by its rifts.
     let mut sizes = HashMap::new();
-    for y in 0..WALL_PERIOD {
-        for x in 0..WALL_PERIOD {
-            let path = format!("{OBJECT_DIR}/parede-{x}-{y}.png");
-            let block = wall_block(&art, x, y);
-            sizes.insert(path.clone(), [block.width(), block.height()]);
-            save_png(output, &path, &block)?;
+    let mut art_of: HashMap<&'static str, usize> = HashMap::new();
+    for def in &config.rift {
+        let theme = theme(&def.theme)?;
+        if art_of.contains_key(theme.name) {
+            continue;
         }
-    }
-    for (name, picture) in &art.props {
-        let path = format!("{OBJECT_DIR}/{name}.png");
-        sizes.insert(path.clone(), [picture.width(), picture.height()]);
-        save_png(output, &path, picture)?;
+        let art = Art::load(content, theme)?;
+        let floor = floor_tiles(&art, theme.floor_period);
+        let mut ani = String::new();
+        for (index, tile) in floor.iter().enumerate() {
+            let path = format!("{}/{index}.png", tile_dir(theme.name));
+            save_png(output, &path, tile)?;
+            ani.push_str(&format!("[Puzzle{index}]\r\nFrameAmount=1\r\nFrame0={path}\r\n\r\n"));
+        }
+        write(output, &puzzle_ani(theme.name), ani.as_bytes())?;
+        for y in 0..theme.wall_period {
+            for x in 0..theme.wall_period {
+                let path = format!("{}/parede-{x}-{y}.png", object_dir(theme.name));
+                let block = wall_block(&art, theme.wall_period, theme.wall_light, x, y);
+                sizes.insert(path.clone(), [block.width(), block.height()]);
+                save_png(output, &path, &block)?;
+            }
+        }
+        for (name, picture) in &art.props {
+            let path = format!("{}/{name}.png", object_dir(theme.name));
+            sizes.insert(path.clone(), [picture.width(), picture.height()]);
+            save_png(output, &path, picture)?;
+        }
+        art_of.insert(theme.name, art.floors.len());
     }
 
     let mut catalog = GameMapCatalog::parse(&installation.read("ini/GameMap.dat")?)?;
@@ -821,7 +988,9 @@ pub fn build(installation: &mut Installation, content: &Path, output: &Path) -> 
         if catalog.get(def.id).is_some() {
             return Err(format!("rift {}: the installation already has map {}", def.id, def.id).into());
         }
-        let rift = generate(def, art.floors.len())?;
+        let theme = theme(&def.theme)?;
+        let floor_variants = art_of[theme.name];
+        let rift = generate(def, theme, floor_variants)?;
         write(output, &rift.puzzle_path(), &rift.puzzle_bytes())?;
         write(output, &rift.dmap_path(), &rift.dmap_bytes())?;
         write(output, &format!("gravak/rifts/{}.txt", def.id), rift.layout_text().as_bytes())?;
@@ -849,7 +1018,7 @@ mod tests {
     use sandbox_data::map::{DMap, PuzzleLayout};
 
     fn def() -> RiftDef {
-        RiftDef { id: 9101, name: "test".into(), seed: 1, rooms: [9, 9] }
+        RiftDef { id: 9101, name: "test".into(), seed: 1, rooms: [9, 9], theme: "cripta".into() }
     }
 
     #[test]
@@ -863,7 +1032,7 @@ mod tests {
 
     #[test]
     fn corridors_are_five_cells_wide() {
-        let rift = generate(&def(), 3).unwrap();
+        let rift = generate(&def(), &THEMES[0], 3).unwrap();
         // Across the entrance room's middle: wall, five of floor, wall.
         let (x0, y0) = room_origin((0, 0));
         let y = y0 + CORRIDOR / 2;
@@ -876,7 +1045,7 @@ mod tests {
 
     #[test]
     fn rift_files_read_back_as_the_client_reads_them() {
-        let rift = generate(&def(), 3).unwrap();
+        let rift = generate(&def(), &THEMES[0], 3).unwrap();
         let puzzle = PuzzleLayout::parse(&rift.puzzle_bytes()).unwrap();
         assert_eq!(puzzle.tiles, rift.tiles);
         let map = DMap::parse(&rift.dmap_bytes()).unwrap();
@@ -886,6 +1055,6 @@ mod tests {
         assert_eq!(map.width, puzzle.columns * 4);
         assert_eq!(map.width, puzzle.rows * 8);
         // The same seed, the same rift.
-        assert_eq!(generate(&def(), 3).unwrap().tiles, rift.tiles);
+        assert_eq!(generate(&def(), &THEMES[0], 3).unwrap().tiles, rift.tiles);
     }
 }

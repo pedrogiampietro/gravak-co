@@ -129,6 +129,18 @@ light = 0.35
 glow = [255, 180, 50]
 glow_from = 0.85
 
+# --- Covil dos Goblins (nível 30): o GoblinSaqueador ainda é uma pele sobre
+# um monstro do 5065, até o modelo dele vir do Meshy (aí vira um [[creature]]
+# com o mesmo look, e o servidor não muda); os outros são criaturas, abaixo ---
+
+[[monster]]
+look = 941
+base = 201                 # Bandit
+name = "GoblinSaqueador"
+colour = [110, 160, 70]
+strength = 0.75
+light = 0.95
+
 # --- Criaturas novas: modelos gerados no Meshy (walk.glb com o rig e a
 # textura; run/idle/attack/death.glb opcionais, senão o build cria parado,
 # golpe e queda pelo esqueleto). `height` é a altura em pé (um monstro comum
@@ -177,3 +189,28 @@ look = 988
 folder = "art/monstros/tita-do-abismo"
 name = "TitaAbismo"
 height = 340
+
+# Covil dos Goblins (nível 30)
+[[creature]]
+look = 942
+folder = "art/monstros/homem-rato"
+name = "HomemRato"
+height = 185
+
+[[creature]]
+look = 943
+folder = "art/monstros/goblin-xama"
+name = "GoblinXama"
+height = 170
+
+[[creature]]
+look = 944
+folder = "art/monstros/cogumelo-andante"
+name = "CogumeloAndante"
+height = 175
+
+[[creature]]
+look = 949
+folder = "art/monstros/chefe-goblin"
+name = "ChefeGoblin"
+height = 270

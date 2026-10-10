@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import { lang as rootLang } from "next/root-params";
 import { Suspense } from "react";
 import { CharacterLink, CharacterSearch, CommunityNav, GuildLink, roleName } from "@/components/community";
-import { EquipmentWindow } from "@/components/equipment-window";
+import { Armory } from "@/components/armory";
+import { ArmoryHero } from "@/components/armory-hero";
 import { type Dictionary, getDictionary, hasLocale, type Locale } from "@/i18n/dictionaries";
-import { type Character, getCharacter, type Worn } from "@/lib/characters";
+import { armoryEnabled, SHEET } from "@/lib/armory";
+import { type Character, getCharacter } from "@/lib/characters";
 import { ago, date, dateTime, number } from "@/lib/format";
-import { nobilityNames, professionOf } from "@/lib/game";
+import { classNames, nobilityNames, professionOf } from "@/lib/game";
 import { cn } from "@/lib/utils";
 
 export async function generateMetadata({ params }: PageProps<"/[lang]/characters/[name]">): Promise<Metadata> {
@@ -46,38 +49,91 @@ async function Profile({ lang, dict, params }: { lang: Locale; dict: Dictionary;
   const copy = dict.character;
   const profession = professionOf(character.currentClass);
 
+  const rebirth = professionOf(character.previousClass);
+  const className = classNames[character.currentClass] ?? (profession ? dict.ranking.professions[profession] : "—");
+  const still = profession ? (
+    <Image
+      src={`/art/${profession}.png`}
+      alt=""
+      fill
+      sizes="(min-width: 768px) 360px, 60vw"
+      className="object-contain object-bottom drop-shadow-[0_18px_30px_rgb(0_0_0/0.6)]"
+      priority
+    />
+  ) : null;
+  // The client draws the hero as they are dressed, when the server can.
+  const hero = armoryEnabled() ? (
+    <ArmoryHero
+      src={`/api/characters/${encodeURIComponent(character.name)}/appearance`}
+      frames={SHEET.frames}
+      size={[SHEET.width, SHEET.height]}
+      fallback={still}
+      hint={copy.turnHint}
+      label={copy.turn}
+    />
+  ) : (
+    still
+  );
+
   return (
     <div className="mt-10 grid gap-12">
-      {/* Who: the name and whether they are in the world. */}
-      <header className="flex flex-col gap-6 sm:flex-row sm:items-end">
-        <div className="grid gap-2">
+      {/* Who: the name, what they are, and whether they are in the world. */}
+      <header>
+        <div className="grid gap-3">
           <h1 translate="no" className="gold-leaf text-4xl font-bold sm:text-5xl">
             {character.name}
           </h1>
-          <p className="text-lg text-parchment/85">
-            {profession ? dict.ranking.professions[profession] : "—"} · {copy.level} {character.level}
-            {character.rebirths > 0 && ` · ${character.rebirths} ${copy.rebirths.toLowerCase()}`}
-          </p>
+          <ul className="flex flex-wrap gap-2 text-sm">
+            <Chip>
+              {copy.level} {character.level}
+            </Chip>
+            <Chip>{className}</Chip>
+            {character.rebirths > 0 && (
+              <Chip>
+                {character.rebirths} {copy.rebirths.toLowerCase()}
+              </Chip>
+            )}
+            {character.guild && (
+              <Chip>
+                <GuildLink lang={lang} name={character.guild.name} />
+              </Chip>
+            )}
+            {character.nobility && <Chip className="border-gold/50 text-gold">{nobilityNames[character.nobility]}</Chip>}
+          </ul>
           <Presence lang={lang} dict={dict} character={character} />
         </div>
       </header>
 
-      <div className="grid gap-10 md:grid-cols-[minmax(0,396px)_1fr] md:items-start">
-        {/* The game's own Character window, its Equipment tab. */}
-        <section aria-labelledby="equipment" className="grid justify-items-center gap-3 md:justify-items-start">
-          <h2 id="equipment" className="sr-only">
-            {copy.equipment}
+      <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
+        <section aria-labelledby="armory" className="grid gap-3">
+          <h2 id="armory" className="text-xl font-bold text-parchment">
+            {copy.armory}
           </h2>
-          <EquipmentWindow
-            equipment={character.equipment}
-            level={character.level}
-            profession={profession}
-            slotNames={copy.slots}
-            label={`${copy.equipment}: ${character.name}`}
-          />
+          <Armory equipment={character.equipment} copy={copy} hero={hero} label={`${copy.equipment}: ${character.name}`} />
         </section>
 
         <div className="grid min-w-0 gap-8">
+          {character.rebirths > 0 && rebirth && (
+            <section aria-labelledby="rebirth">
+              <h2 id="rebirth" className="text-xl font-bold text-parchment">
+                {copy.rebirthPath}
+              </h2>
+              <ol className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                <li className="rounded-md border border-border bg-card/50 px-3 py-1.5 text-parchment/85">
+                  {classNames[character.previousClass] ?? dict.ranking.professions[rebirth]}
+                  {character.firstRebirthLevel > 0 && (
+                    <span className="block text-xs text-slate-blue">
+                      {copy.firstRebirthAt} {character.firstRebirthLevel}
+                    </span>
+                  )}
+                </li>
+                <li aria-hidden="true" className="text-gold">
+                  →
+                </li>
+                <li className="rounded-md border border-gold/50 bg-card/50 px-3 py-1.5 font-medium text-gold">{className}</li>
+              </ol>
+            </section>
+          )}
           <section aria-labelledby="facts">
             <h2 id="facts" className="sr-only">
               {character.name}
@@ -117,27 +173,15 @@ async function Profile({ lang, dict, params }: { lang: Locale; dict: Dictionary;
               {character.createdAt > 0 && <Fact label={copy.created}>{date(lang, character.createdAt)}</Fact>}
             </dl>
           </section>
-          <section aria-labelledby="worn">
-            <h2 id="worn" className="text-xl font-bold text-parchment">
-              {copy.equipment}
-            </h2>
-            <ul className="mt-3 grid gap-1.5">
-              {copy.slots.map((slot, index) => {
-                const worn = character.equipment.find((item) => item.position === index + 1);
-                if (!worn) return null;
-                return (
-                  <li key={slot} className="grid grid-cols-[7.5rem_1fr] gap-3 text-[0.95rem]">
-                    <span className="text-slate-blue">{slot}</span>
-                    <span className={cn("min-w-0 truncate font-medium", qualityTone[worn.quality])}>
-                      {worn.quality !== "Normal" && `${worn.quality} `}
-                      {worn.name}
-                      {worn.plus > 0 && <span className="text-gold"> +{worn.plus}</span>}
-                    </span>
-                  </li>
-                );
-              })}
-              {character.equipment.length === 0 && <li className="text-parchment/60">{copy.emptySlot}</li>}
-            </ul>
+          <section aria-label={Object.values(copy.attributes).join(", ")}>
+            <dl className="grid grid-cols-4 gap-2 text-center">
+              {(["strength", "agility", "vitality", "spirit"] as const).map((key) => (
+                <div key={key} className="rounded-lg border border-border bg-card/50 px-1 py-2.5">
+                  <dt className="truncate text-[0.7rem] text-slate-blue uppercase">{copy.attributes[key]}</dt>
+                  <dd className="font-display text-lg font-bold text-parchment tabular-nums">{character.attributes[key]}</dd>
+                </div>
+              ))}
+            </dl>
           </section>
         </div>
       </div>
@@ -247,12 +291,8 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-const qualityTone: Record<Worn["quality"], string> = {
-  Super: "text-gold",
-  Elite: "text-violet-300",
-  Unique: "text-sky-300",
-  Refined: "text-emerald-300",
-  Normal: "text-parchment",
-};
+function Chip({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <li className={cn("rounded-full border border-border bg-card/60 px-3 py-1 text-parchment/90", className)}>{children}</li>;
+}
 
 

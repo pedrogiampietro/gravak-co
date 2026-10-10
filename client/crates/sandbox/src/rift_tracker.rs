@@ -39,7 +39,8 @@ fn tier_name(tier: u32) -> &'static str {
     match tier {
         0 => "FENDA MENOR",
         1 => "FENDA MAIOR",
-        _ => "FENDA ABISSAL",
+        2 => "FENDA ABISSAL",
+        _ => "COVIL DOS GOBLINS",
     }
 }
 

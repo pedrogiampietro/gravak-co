@@ -192,6 +192,38 @@ funciona e o jogo tenta conectar no PC do próprio jogador.
   do provedor).
 - [ ] Testar a restauração uma vez.
 
+### 11. Arsenal do site (o herói girando)
+
+A página de cada personagem mostra o herói vestido como no jogo, girando. Quem
+desenha é o próprio cliente, sem janela: `conquer-sandbox --armory` (ver
+`client/crates/sandbox/src/armory.rs`), chamado pelo site em
+`/api/characters/<nome>/appearance` (`web/src/lib/armory.ts`). Cada visual é
+desenhado uma vez (~1 s) e fica guardado em disco; sem `ARMORY_BIN`, a página
+mostra a arte parada da profissão.
+
+- [ ] Compilar o cliente na VPS (a chave do pacote vai embutida no binário):
+  ```bash
+  sudo apt install -y libasound2-dev libudev-dev pkg-config
+  cd client && cargo build --release -p conquer-sandbox
+  sudo install -D target/release/conquer-sandbox /opt/gravak/armory/conquer-sandbox
+  ```
+- [ ] Ele lê os dados do jogo do `gravak.gpk` da pasta de updates do nginx
+  (passo 9): nada a copiar, cada update publicado já vale para o site.
+- [ ] Pasta de cache, do usuário que roda o site:
+  `sudo install -d -o <usuário do site> /var/cache/gravak-armory`
+- [ ] No `.env` do site (`web/.env.example`):
+  ```
+  ARMORY_BIN=/opt/gravak/armory/conquer-sandbox
+  ARMORY_ASSETS=/var/www/gravak-update
+  ARMORY_CACHE=/var/cache/gravak-armory
+  ```
+  e reiniciar o site.
+- [ ] Testar: `curl -I https://<domínio>/api/characters/<nome>/appearance`
+  deve responder `200` com `image/png`. Se der `502`, o log do site diz o erro
+  do cliente (falta de biblioteca, pasta errada).
+- [ ] O cache só cresce com visuais novos (~1–1,5 MB cada); se um dia pesar,
+  apagar a pasta é seguro: os heróis são redesenhados quando visitados.
+
 ## De volta no PC do Pedro: empacotar e testar
 
 - [ ] `installer\servers.ini` (ou `-Auth`), apontando para `<IP ou domínio>:9958`

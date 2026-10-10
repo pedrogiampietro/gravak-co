@@ -76,6 +76,30 @@ impl Hero {
         Some(Self { character, textures })
     }
 
+    /// `body` dressed as a player is seen in the world: what the website's
+    /// Armory turns around. A piece the installation cannot draw is left
+    /// off, the rest kept.
+    pub fn load_worn(assets: &mut Assets, body: u32, [armor, helmet, right, left]: [u32; 4], hair: u16) -> Option<Self> {
+        let character = [
+            (armor, helmet, right, left),
+            (armor, 0, right, left),
+            (armor, helmet, right, 0),
+            (armor, 0, right, 0),
+            (armor, 0, 0, 0),
+            (0, 0, 0, 0),
+        ]
+        .into_iter()
+        .find_map(|(armor, helmet, right, left)| {
+            Character::load_remote(assets, body, armor, helmet, hair, right, left, String::new(), 1).ok()
+        })?;
+        let textures = character
+            .parts
+            .iter()
+            .filter_map(|part| Some((part.texture.clone(), assets.image(&part.texture).ok()?)))
+            .collect();
+        Some(Self { character, textures })
+    }
+
     /// `body` wearing `armor` (a coat or a garment) and nothing else: the
     /// garment previews.
     pub fn load_armor(assets: &mut Assets, body: u32, armor: u32) -> Option<Self> {
@@ -547,5 +571,66 @@ mod texture_dump {
             let name = path.rsplit('/').next().unwrap_or(path).replace(".dds", ".png");
             image.save(format!("{dir}/{name}")).expect("png");
         }
+    }
+}
+
+/// The Rifts' creatures in their poses, side by side: standing, walking,
+/// striking (three moments) and fallen, to check a model from Meshy before
+/// going in the game. `GRAVAK_CONTENT=... cargo test -p conquer-sandbox
+/// creature_poses -- --ignored`, sheets in `marketing/criaturas`.
+#[cfg(test)]
+#[test]
+#[ignore = "Needs the 5065 installation and the built content"]
+fn creature_poses() {
+    let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+    let catalog = crate::character::NpcCatalog::load(&mut assets).expect("catalog");
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../marketing/criaturas");
+    std::fs::create_dir_all(&out).expect("folder");
+    let looks: Vec<u32> = std::env::var("LOOKS")
+        .map(|looks| looks.split(',').filter_map(|look| look.parse().ok()).collect())
+        .unwrap_or_else(|_| vec![942, 943, 944, 949]);
+    const CELL: [u32; 2] = [260, 300];
+    for look in looks {
+        let model = crate::character::NpcModel::load_monster(&mut assets, &catalog, look).expect("model");
+        let texture = assets.image(&model.texture).expect("texture");
+        let facing = 0.8;
+        let poses = [
+            model.vertices(0.5, facing),
+            model.vertices_walk(0.3, facing),
+            model.vertices_attack(0.15, facing),
+            model.vertices_attack(0.4, facing),
+            model.vertices_attack(0.65, facing),
+            model.vertices_dying(0, 2.0, facing),
+        ];
+        // One scale for all, from the standing pose, so sizes compare.
+        let (top, bottom) = poses[0].iter().fold((f32::MAX, f32::MIN), |(t, b), (p, _)| (t.min(p[1]), b.max(p[1])));
+        let scale = CELL[1] as f32 * 0.6 / (bottom - top).max(1.0);
+        let mut sheet = RgbaImage::from_pixel(CELL[0] * poses.len() as u32, CELL[1], Rgba([40, 44, 52, 255]));
+        for (index, vertices) in poses.iter().enumerate() {
+            let mut colour = vec![[0.0f32; 4]; (CELL[0] * CELL[1]) as usize];
+            let mut depth = vec![f32::INFINITY; (CELL[0] * CELL[1]) as usize];
+            let origin = [CELL[0] as f32 * 0.5, CELL[1] as f32 * 0.85];
+            for pass in [false, true] {
+                let indices = if pass { &model.mesh.alpha_indices } else { &model.mesh.opaque_indices };
+                for triangle in indices.chunks_exact(3) {
+                    let corners = [0, 1, 2].map(|k| {
+                        let (p, uv) = vertices[triangle[k] as usize];
+                        ([origin[0] + p[0] * scale, origin[1] + p[1] * scale, p[2]], uv)
+                    });
+                    rasterise(&mut colour, &mut depth, CELL, corners, &texture, pass);
+                }
+            }
+            for y in 0..CELL[1] {
+                for x in 0..CELL[0] {
+                    let [r, g, b, a] = colour[(y * CELL[0] + x) as usize];
+                    if a > 0.0 {
+                        let pixel = sheet.get_pixel_mut(index as u32 * CELL[0] + x, y);
+                        let mix = |c: f32, under: u8| ((c.min(255.0 * a)) + f32::from(under) * (1.0 - a)).min(255.0) as u8;
+                        *pixel = Rgba([mix(r, pixel[0]), mix(g, pixel[1]), mix(b, pixel[2]), 255]);
+                    }
+                }
+            }
+        }
+        sheet.save(out.join(format!("{look}.png"))).expect("save");
     }
 }

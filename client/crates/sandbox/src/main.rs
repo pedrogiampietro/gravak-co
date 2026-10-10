@@ -3,6 +3,7 @@
 // it for the log.
 #![cfg_attr(all(windows, feature = "packed-only"), windows_subsystem = "windows")]
 mod action;
+mod armory;
 mod action_bar;
 mod keybinds;
 mod helper;
@@ -15,6 +16,7 @@ mod audio;
 mod booth;
 mod bounty_board;
 mod rift_tracker;
+mod fog;
 mod guild_emblems;
 mod guild_panel;
 mod forge_rules;
@@ -10103,6 +10105,7 @@ fn map_name(map_id: u32) -> String {
         1039 => "Training Ground".into(),
         6000 | 6001 => "Jail".into(),
         // The Rifts (content/rifts.toml).
+        9091..=9099 => "Covil dos Goblins".into(),
         9101..=9109 => "Fenda Menor".into(),
         9111..=9119 => "Fenda Maior".into(),
         9121..=9129 => "Fenda Abissal".into(),
@@ -10238,6 +10241,10 @@ fn scaled_life(life: u32, maximum: u32) -> u16 {
 
 fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
+    // The website's Armory: draws a hero and leaves, no window.
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--armory") {
+        return armory::run(args.skip(1));
+    }
     let mut root = None;
     let mut map_id = None;
     let mut body =

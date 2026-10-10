@@ -55,18 +55,18 @@ pub struct Tier {
     /// Its crypts (map ids of `content/rifts.toml`).
     pub layouts: [u32; 3],
     /// Its creatures (monster types of `migrations/97_rifts.sql`).
-    pub creatures: [u32; 3],
+    pub creatures: &'static [u32],
     pub guardian: u32,
     /// The level of the gear the Guardian leaves.
     pub gear_level: u16,
 }
 
-pub const TIERS: [Tier; 3] = [
+pub const TIERS: [Tier; 4] = [
     Tier {
         name: "Fenda Menor",
         level: 70,
         layouts: [9_101, 9_102, 9_103],
-        creatures: [9_150, 9_151, 9_152],
+        creatures: &[9_150, 9_151, 9_152],
         guardian: 9_159,
         gear_level: 70,
     },
@@ -74,7 +74,7 @@ pub const TIERS: [Tier; 3] = [
         name: "Fenda Maior",
         level: 100,
         layouts: [9_111, 9_112, 9_113],
-        creatures: [9_160, 9_161, 9_162],
+        creatures: &[9_160, 9_161, 9_162],
         guardian: 9_169,
         gear_level: 100,
     },
@@ -82,9 +82,17 @@ pub const TIERS: [Tier; 3] = [
         name: "Fenda Abissal",
         level: 120,
         layouts: [9_121, 9_122, 9_123],
-        creatures: [9_170, 9_171, 9_172],
+        creatures: &[9_170, 9_171, 9_172],
         guardian: 9_179,
         gear_level: 120,
+    },
+    Tier {
+        name: "Covil dos Goblins",
+        level: 30,
+        layouts: [9_091, 9_092, 9_093],
+        creatures: &[9_140, 9_141, 9_142, 9_143],
+        guardian: 9_149,
+        gear_level: 30,
     },
 ];
 
@@ -266,6 +274,7 @@ pub fn opening(npc_id: u32, _character: &Character) -> Option<(String, Options, 
                 (1, "Open a Fenda Menor (level 70)."),
                 (2, "Open a Fenda Maior (level 100)."),
                 (3, "Open a Fenda Abissal (level 120)."),
+                (4, "Open the Covil dos Goblins (level 30)."),
                 (255, "Not now."),
             ]),
             FACE,
@@ -402,7 +411,7 @@ async fn open(state: &State, leader: &Character, tier: usize, gm: bool) -> Resul
         },
     );
     let mut kinds = Vec::new();
-    for id in tier_def.creatures {
+    for &id in tier_def.creatures {
         if let Some(kind) = crate::bosses::monster_type(state, id).await? {
             kinds.push(kind);
         }
@@ -585,7 +594,9 @@ pub fn treasure(tier: usize, first_today: bool, mut roll: impl FnMut() -> u32, e
     let mut items = match tier {
         0 => vec![METEOR, METEOR, EXP_BALL],
         1 => vec![METEOR, METEOR, METEOR, DRAGONBALL, EXP_BALL],
-        _ => vec![DRAGONBALL, DRAGONBALL, EXP_BALL, EXP_BALL],
+        2 => vec![DRAGONBALL, DRAGONBALL, EXP_BALL, EXP_BALL],
+        // The den, for heroes of 30 to 50.
+        _ => vec![METEOR, EXP_BALL],
     };
     fn chance(roll: &mut impl FnMut() -> u32, percent: u32) -> bool {
         roll() % 100 < percent
@@ -607,21 +618,31 @@ pub fn treasure(tier: usize, first_today: bool, mut roll: impl FnMut() -> u32, e
                 items.push(METEOR_SCROLL);
             }
         },
-        _ => {
+        2 => {
             if chance(&mut roll, 30) {
                 items.push(gem(3, roll()));
             }
         },
+        _ => {
+            if chance(&mut roll, 10) {
+                items.push(DRAGONBALL);
+            }
+            if chance(&mut roll, 20) {
+                items.push(gem(1, roll()));
+            }
+        },
     }
-    // Gear of the tier's level: Elite in a Lesser Rift, Super above.
+    // Gear of the tier's level: Elite in the den and a Lesser Rift, Super
+    // above.
     let (gear_percent, quality) = match tier {
         0 => (20, 8),
         1 => (25, 9),
-        _ => (35, 9),
+        2 => (35, 9),
+        _ => (25, 8),
     };
     if chance(&mut roll, gear_percent) {
         for _ in 0..20 {
-            let gear = crate::drops::gear_id(TIERS[tier.min(2)].gear_level, &mut roll) / 10 * 10 + quality;
+            let gear = crate::drops::gear_id(TIERS[tier.min(TIERS.len() - 1)].gear_level, &mut roll) / 10 * 10 + quality;
             if exists(gear) {
                 items.push(gear);
                 break;
