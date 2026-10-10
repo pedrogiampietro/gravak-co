@@ -69,6 +69,10 @@ pub struct NpcModel {
     lie_motion: Option<C3Motion>,
     fly_motion: Option<C3Motion>,
     short_fly_motion: Option<C3Motion>,
+    /// Struck (320) and missed (310), as a player's (`Action::Hit`,
+    /// `Action::Dodge`): every 5065 monster has its own.
+    hit_motion: Option<C3Motion>,
+    dodge_motion: Option<C3Motion>,
     /// How far over its feet the top of its head stands, on screen, when it
     /// stands still: where its name and life go.
     pub head: f32,
@@ -248,7 +252,9 @@ impl Character {
         let actions = Action::ALL
             .into_iter()
             .map(|action| match action {
-                _ if matches!(action, Action::Die | Action::Fly | Action::Cast | Action::Sweep) || action.emote() => {
+                _ if matches!(action, Action::Die | Action::Fly | Action::Cast | Action::Sweep | Action::Hit | Action::Dodge)
+                    || action.emote() =>
+                {
                     motion(action).or_else(|_| motion(Action::Idle))
                 }
                 _ => motion(action),
@@ -653,6 +659,8 @@ impl NpcModel {
         let lie_motion = load_motion("331");
         let fly_motion = load_motion("340");
         let short_fly_motion = load_motion("370");
+        let hit_motion = load_motion("320");
+        let dodge_motion = load_motion("310");
         let mesh = document
             .meshes
             .first()
@@ -698,6 +706,8 @@ impl NpcModel {
             lie_motion,
             fly_motion,
             short_fly_motion,
+            hit_motion,
+            dodge_motion,
             head: 0.0,
         }
         .measured())
@@ -797,6 +807,8 @@ impl NpcModel {
             lie_motion: None,
             fly_motion: None,
             short_fly_motion: None,
+            hit_motion: None,
+            dodge_motion: None,
             head: 0.0,
         }
         .measured())
@@ -848,6 +860,23 @@ impl NpcModel {
             seconds,
             facing,
         )
+    }
+
+    /// `elapsed` seconds into a blow taken (`dodge`: one that missed): its
+    /// motion played once, held on its last frame; standing without one.
+    pub fn vertices_reacting(&self, dodge: bool, elapsed: f32, facing: f32) -> Vec<([f32; 3], [f32; 2])> {
+        let Some(motion) = (if dodge { &self.dodge_motion } else { &self.hit_motion }) else {
+            return self.vertices_with_motion(self.motion.as_ref(), 0.0, facing);
+        };
+        let last = motion.frame_count.max(1) as f32 - 1.0;
+        self.vertices_at_frame(Some(motion), (elapsed.max(0.0) * 30.0).min(last), facing)
+    }
+
+    /// How long a blow taken plays (`dodge`: one that missed), when the
+    /// monster has the motion.
+    pub fn reaction_seconds(&self, dodge: bool) -> Option<f32> {
+        let motion = if dodge { &self.dodge_motion } else { &self.hit_motion };
+        motion.as_ref().map(|motion| motion.frame_count.max(1) as f32 / 30.0)
     }
 
     /// `elapsed` seconds into a death (`flung`: 0 falling, 1 flung away, 2
@@ -1111,6 +1140,25 @@ fn weapon_motions(assets: &mut Assets, weapon: u32, codes: &[Option<u32>]) -> Ve
 #[cfg(test)]
 mod monster_probe {
     use super::*;
+
+    /// A blow taken plays the weapon's own 320, not the stand, and a miss
+    /// its 310; a 5065 monster has both of its own.
+    #[test]
+    #[ignore = "Needs the 5065 installation"]
+    fn blows_taken_play_their_own_motions() {
+        let mut assets = Assets::open(std::path::Path::new("R:/5065")).unwrap();
+        for (right, left) in [(410_301, 0), (500_301, 1_050_000), (0, 0)] {
+            let hero = Character::load_remote(&mut assets, 3, 0, 0, 310, right, left, String::new(), 1).unwrap();
+            let body = &hero.parts[0];
+            let pose = |action| hero.vertices(body, 0.0, action, 0.0, Some(0.5));
+            assert_ne!(pose(Action::Hit), pose(Action::Idle), "weapon {right}: the bruise is not the stand");
+            assert_ne!(pose(Action::Dodge), pose(Action::Idle), "weapon {right}: the dodge is not the stand");
+            assert_ne!(pose(Action::Hit), pose(Action::Dodge), "weapon {right}");
+        }
+        let catalog = NpcCatalog::load(&mut assets).unwrap();
+        let pheasant = NpcModel::load_monster(&mut assets, &catalog, 104).unwrap();
+        assert!(pheasant.reaction_seconds(false).is_some() && pheasant.reaction_seconds(true).is_some());
+    }
 
     /// Loads every monster look the server spawns and names those that fail
     /// or have no walk.

@@ -856,6 +856,11 @@ impl PacketProcess for MsgItem {
                 character.save(state).await?;
                 actor.send(MsgItemInfo::remove_inventory_item(consumed)).await?;
                 actor.send(MsgUserInfo::from(character)).await?;
+                // The potion's glow on the hero (5065's `gethp`/`getmp`),
+                // for them and whoever sees them.
+                let glow = crate::packets::MsgName::role_effect(character.id(), if mana { "getmp" } else { "gethp" });
+                actor.send(glow.clone()).await?;
+                actor.screen().send_message(glow).await?;
                 actor
                     .send(MsgTalk::from_system(
                         character.id(),

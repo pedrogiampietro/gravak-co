@@ -366,7 +366,6 @@ struct App {
     /// A portal works once the hero has stood off every portal, so arriving
     /// on the destination's own portal does not bounce straight back.
     portal_armed: bool,
-    hit_until: f32,
     level_up_until: f32,
     level: u8,
     initial_sync_complete: bool,
@@ -1732,7 +1731,6 @@ impl ApplicationHandler for App {
                         &self.combat_numbers,
                         &self.skill_effects,
                         &self.ground_loot,
-                        self.hit_until,
                         self.level_up_until,
                         self.dialog
                             .as_ref()
@@ -1851,13 +1849,11 @@ impl ApplicationHandler for App {
         // Arrows that struck: their damage shows and their target reels.
         let (landed, flying): (Vec<_>, Vec<_>) = self.arrow_blows.drain(..).partition(|(_, _, _, at)| *at <= now);
         self.arrow_blows = flying;
-        for (attacker_id, target_id, damage, _) in landed {
+        for (_, target_id, damage, _) in landed {
             if let Some(damage) = damage {
                 self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
             }
-            if self.network_character_id == Some(target_id) {
-                self.play_blow_on_player(attacker_id, target_id, now);
-            }
+            self.play_reaction(target_id, damage.is_some_and(|damage| damage > 0), now);
         }
         // The slain fall once the arrow that slew them strikes.
         let (falling, waiting): (Vec<_>, Vec<_>) = self.pending_falls.drain(..).partition(|(_, _, at)| *at <= now);
@@ -6004,13 +6000,14 @@ impl App {
                 if let Some(at) = arrow {
                     self.arrow_blows.push((id, target_id, number, at));
                     if self.network_character_id == Some(id) {
-                        self.play_blow_on_player(id, target_id, now);
+                        self.play_hero_blow(now);
                     }
                 } else {
                     if let Some(value) = number {
                         self.combat_numbers.push((target_id, value, now + renderer::COMBAT_NUMBER_SECONDS));
                     }
-                    self.play_blow_on_player(id, target_id, now);
+                    // A death (14) falls instead.
+                    self.play_blow_on_player(id, target_id, (action != 14).then_some(value > 0), now);
                 }
             }
             NetworkEvent::SkillEffect {
@@ -6099,13 +6096,16 @@ impl App {
                 if cast || sweep {
                     // The caster's motion is played; a blow shakes the hero
                     // struck, a heal or a buff does not.
-                    if damage > 0 && target_id != attacker_id && self.network_character_id == Some(target_id) {
-                        self.play_blow_on_player(attacker_id, target_id, now);
+                    if damage > 0 && target_id != attacker_id {
+                        self.play_reaction(target_id, true, now);
                     }
                 } else if on_self {
                     // Nothing struck.
-                } else if !carried || self.network_character_id == Some(attacker_id) {
-                    self.play_blow_on_player(attacker_id, target_id, now);
+                } else if !carried {
+                    self.play_blow_on_player(attacker_id, target_id, Some(damage > 0), now);
+                } else if self.network_character_id == Some(attacker_id) {
+                    // The arrows carry the blow to the target.
+                    self.play_hero_blow(now);
                 }
                 self.network_status =
                     format!("online: skill {skill_id} {attacker_id} -> {target_id}, hit {damage}");
@@ -6947,23 +6947,70 @@ impl App {
         }
     }
 
-    /// The player is hit, or strikes; in the air the jump keeps its motion.
-    fn play_blow_on_player(&mut self, attacker_id: u32, target_id: u32, now: f32) {
-        let action = if self.network_character_id == Some(target_id) {
-            self.hit_until = now + 0.45;
-            Action::Hit
-        } else if self.network_character_id == Some(attacker_id) {
-            Action::Attack
-        } else {
-            return;
-        };
-        // In the air the jump plays on to its landing.
+    /// A blow from `attacker_id` on `target_id`: the hero's own blow when
+    /// they strike, and the target's reaction (`struck`: it hurt; none for
+    /// a death, which falls instead).
+    fn play_blow_on_player(&mut self, attacker_id: u32, target_id: u32, struck: Option<bool>, now: f32) {
+        if self.network_character_id == Some(attacker_id) {
+            self.play_hero_blow(now);
+        }
+        if let Some(struck) = struck {
+            self.play_reaction(target_id, struck, now);
+        }
+    }
+
+    /// The hero strikes; in the air the jump plays on to its landing.
+    fn play_hero_blow(&mut self, now: f32) {
         if self.player.jumping() {
             return;
         }
-        self.player.action = action;
+        self.player.action = Action::Attack;
         self.player.action_instance = self.player.action_instance.wrapping_add(1);
-        self.local_action = Some((action, now, now + 0.45));
+        self.local_action = Some((Action::Attack, now, now + 0.45));
+    }
+
+    /// Whoever is struck reacts in the pose of the weapon they hold, as the
+    /// original (0x4bedf7): 320 when the blow hurts, 310 when it missed.
+    /// It never cuts short a step, a run, a jump, a flight, a blow of their
+    /// own or a hurt already playing (0x4b4ad5, 0x4b4b5f).
+    fn play_reaction(&mut self, target_id: u32, struck: bool, now: f32) {
+        let reaction = if struck { Action::Hit } else { Action::Dodge };
+        if self.network_character_id == Some(target_id) {
+            if self.player.jumping() || self.player.moving() || self.player.action == Action::Fly {
+                return;
+            }
+            if let Some((action, _, until)) = self.local_action
+                && now < until
+                && matches!(action, Action::Attack | Action::Cast | Action::Sweep | Action::Hit)
+            {
+                return;
+            }
+            let seconds = self.character.duration(reaction).as_secs_f32().max(0.1);
+            self.player.action = reaction;
+            self.player.action_instance = self.player.action_instance.wrapping_add(1);
+            self.local_action = Some((reaction, now, now + seconds));
+            return;
+        }
+        let seconds = match self.remote_monsters.get(&target_id) {
+            Some(monster) => monster.reaction_seconds(!struck),
+            None => self.remote_models.get(&target_id).map(|model| model.duration(reaction).as_secs_f32()),
+        };
+        let Some(actor) = self.remote_actors.get_mut(&target_id) else {
+            return;
+        };
+        let busy = now < actor.animation_until
+            && matches!(actor.action, 140 | 320 | 403 | 903 | 510 | renderer::REMOTE_DEAD | renderer::REMOTE_FADING);
+        let flying = actor.status_flags & network::FLY_FLAG != 0;
+        if actor.npc || actor.health == 0 || busy || flying || now < actor.movement_until {
+            return;
+        }
+        // A monster without the motion stands its ground.
+        let Some(seconds) = seconds.filter(|seconds| *seconds > 0.0) else {
+            return;
+        };
+        actor.action = reaction.catalog_id() as u16;
+        actor.animation_started = now;
+        actor.animation_until = now + seconds.max(0.1);
     }
 
     /// The bow and arrows `attacker_id` holds, when it holds both.
@@ -10714,7 +10761,6 @@ fn run() -> Result<()> {
         dead_since: None,
         held_pose: None,
         portal_armed: false,
-        hit_until: 0.0,
         level_up_until: 0.0,
         level: server_ready.as_ref().map(|ready| ready.level).unwrap_or(1),
         initial_sync_complete: server_ready.is_some(),

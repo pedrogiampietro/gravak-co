@@ -513,7 +513,7 @@ impl UiTextureJob {
                 ..
             } => {
                 if monster {
-                    crate::labels::monster_image(&name, health, maximum_health, bounty)
+                    crate::labels::monster_image(&name, name_colour, health, maximum_health, bounty)
                 } else {
                     crate::labels::actor_image_with_guild(&name, name_colour, &guild, &guild_rank, shield)
                 }
@@ -2944,7 +2944,6 @@ impl Renderer {
         combat_numbers: &[(u32, u32, f32)],
         skill_effects: &[SkillEffectInstance],
         ground_loot: &[(u32, [f32; 2], u32, f32)],
-        hit_until: f32,
         level_up_until: f32,
         dialog: Option<(&[String], &[(u8, String)], u16)>,
         shop: Option<&crate::shop::ShopState>,
@@ -3222,16 +3221,7 @@ impl Renderer {
         // map's edges, where the view stops (`camera`).
         let projected = map.project(player.position);
         let ground = [projected[0] - camera[0], projected[1] - camera[1]];
-        let (recoil_x, recoil_y) = if time < hit_until {
-            // One short, visible flinch pulse. It is independent of the
-            // motion catalog so a missing emote cannot become a wave.
-            let progress = ((hit_until - time) / 0.45).clamp(0.0, 1.0);
-            let pulse = (progress * std::f32::consts::PI).sin();
-            (-pulse * 9.0, -pulse * 4.0)
-        } else {
-            (0.0, 0.0)
-        };
-        let origin = [ground[0] + recoil_x, ground[1] - player.height - player.hover + recoil_y];
+        let origin = [ground[0], ground[1] - player.height - player.hover];
         let actor_depth = player.position[0] + player.position[1];
         // Each blow sweeps the weapon's flash (Action3DEffect.ini).
         if player.action == Action::Attack && player.action_instance != self.last_hero_swing {
@@ -3443,26 +3433,6 @@ impl Renderer {
             let rarity = [rarity_of(4), rarity_of(5)];
             self.push_weapon_auras(assets, weapons, rarity, origin, player.facing, time, actor_depth + 0.04, viewport, &mut draws);
         }
-        if time < hit_until {
-            if !self.textures.contains_key("@hit-flash") {
-                self.upload("@hit-flash", crate::labels::hit_flash_image()?);
-            }
-            if let Some(flash) = self.textures.get("@hit-flash") {
-                let progress = ((hit_until - time) / 0.45).clamp(0.0, 1.0);
-                let size = 46.0 + (1.0 - progress) * 18.0;
-                draws.push(Draw {
-                    texture: "@hit-flash".into(),
-                    vertices: quad(
-                        [origin[0] - size * 0.5, origin[1] - size * 0.7],
-                        [size, size],
-                        viewport,
-                    ),
-                    depth_test: false,
-                    sort_depth: actor_depth + 0.01,
-                });
-                let _ = flash;
-            }
-        }
         let static_world_phase_finished = Instant::now();
         let mut remote_pose_cache =
             HashMap::<(u64, usize, i8, usize, u32), Arc<Vec<([f32; 3], [f32; 2])>>>::new();
@@ -3619,10 +3589,12 @@ impl Renderer {
                 let dynamic_kind = if actor.action == REMOTE_FADING && time < actor.animation_until {
                     Some(0)
                 } else if time < actor.animation_until {
-                    Some(if matches!(actor.action, 110 | 111 | 120 | 121) {
-                        1
-                    } else {
-                        2
+                        // A blow taken (320) and one missed (310) play once.
+                    Some(match actor.action {
+                        110 | 111 | 120 | 121 => 1,
+                        320 => 3,
+                        310 => 4,
+                        _ => 2,
                     })
                 } else {
                     None
@@ -3633,6 +3605,8 @@ impl Renderer {
                     // A death plays from its own start, not the clock's.
                     let (kind, frame_bucket) = if kind == 0 {
                         (10 + actor.flung, ((time - actor.animation_started).max(0.0) * 30.0).floor() as u32)
+                    } else if kind >= 3 {
+                        (kind, ((time - actor.animation_started).max(0.0) * 30.0).floor() as u32)
                     } else {
                         (kind, (time.max(0.0) * 30.0).floor() as u32)
                     };
@@ -3651,6 +3625,7 @@ impl Renderer {
                                     Arc::new(match kind {
                                         10.. => monster.vertices_dying(actor.flung, time - actor.animation_started, facing),
                                         1 => monster.vertices_walk(time, facing),
+                                        3 | 4 => monster.vertices_reacting(kind == 4, time - actor.animation_started, facing),
                                         _ => monster.vertices_attack(time, facing),
                                     })
                                 })
@@ -3659,6 +3634,7 @@ impl Renderer {
                             let vertices = Arc::new(match kind {
                                 10.. => monster.vertices_dying(actor.flung, time - actor.animation_started, facing),
                                 1 => monster.vertices_walk(time, facing),
+                                3 | 4 => monster.vertices_reacting(kind == 4, time - actor.animation_started, facing),
                                 _ => monster.vertices_attack(time, facing),
                             });
                             remote_monster_pose_cache.insert(key, Arc::clone(&vertices));
@@ -3844,13 +3820,15 @@ impl Renderer {
                 // ShopFlags (type 16) stand nameless, as in the original.
                 && !(actor.npc && actor.npc_kind == 16)
             {
-                // NPCs' names in green, as the original's.
-                let name_colour =
-                    if actor.npc {
-                        NPC_NAME
-                    } else {
-                        crate::labels::vendor_or_name_colour(actor.status_flags, actor.booth.is_some())
-                    };
+                // NPCs' names in green, as the original's; a monster's tells
+                // its level against the hero's.
+                let name_colour = if actor.npc {
+                    NPC_NAME
+                } else if monster {
+                    crate::labels::monster_name_colour(actor.level, u16::from(level))
+                } else {
+                    crate::labels::vendor_or_name_colour(actor.status_flags, actor.booth.is_some())
+                };
                 // The Guild War pole and gates show their life like monsters.
                 let monster = monster || (actor.npc && matches!(actor.npc_kind, 10 | 26));
                 let bounty_target = monster
@@ -3858,7 +3836,7 @@ impl Renderer {
                         .and_then(|view| view.board.active())
                         .is_some_and(|task| task.monster_name == actor.name);
                 let label_key = if monster {
-                    format!("@monster-label-{}-{}-{bounty_target}", actor.id, actor.health)
+                    format!("@monster-label-{}-{}-{bounty_target}-{:?}", actor.id, actor.health, name_colour)
                 } else {
                     format!("@actor-label-{}-{:?}-{}-{}-{}", actor.id, name_colour, actor.guild, actor.guild_rank, actor.shield)
                 };

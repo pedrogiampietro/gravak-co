@@ -82,7 +82,13 @@ pub(crate) fn text_sized(
     for shadow in [true, false] {
         let mut cursor = origin[0].round();
         for &(text, colour) in spans {
-            let colour = if shadow { [0, 0, 0] } else { colour };
+            // A black name keeps a grey shadow, as the original's (0x4b5f1c).
+            let dark = colour.iter().all(|channel| *channel < 0x20);
+            let colour = match (shadow, dark) {
+                (true, true) => [0xaa, 0xaa, 0xaa],
+                (true, false) => [0, 0, 0],
+                (false, _) => colour,
+            };
             let offset = i32::from(shadow);
             for character in text.chars() {
                 let (metrics, bitmap) = font.rasterize(character, font_size);
@@ -461,14 +467,29 @@ pub fn player_plate_with_guild(
 /// Compact monster nameplate: the name followed by a small health bar.
 /// A monster's name over its life bar; the monsters of the bounty under way
 /// have a gold name behind a gold diamond.
-pub fn monster_image(name: &str, health: u16, maximum_health: u16, bounty: bool) -> Result<RgbaImage> {
+/// A monster's name by its level against the hero's, as the original
+/// (0x4b5d9e): black five or more above, red above, white down to four
+/// below, green five or more below.
+pub fn monster_name_colour(monster_level: u16, hero_level: u16) -> [u8; 3] {
+    if monster_level >= hero_level + 5 {
+        [0, 0, 0]
+    } else if monster_level > hero_level {
+        [255, 0, 0]
+    } else if hero_level < monster_level + 5 {
+        [255, 255, 255]
+    } else {
+        [0, 255, 0]
+    }
+}
+
+pub fn monster_image(name: &str, name_colour: [u8; 3], health: u16, maximum_health: u16, bounty: bool) -> Result<RgbaImage> {
     let font = font()?;
     let marker = if bounty { 12 } else { 0 };
     let text_width = width(&font, name).ceil() as u32 + 8 + marker;
     let image_width = text_width.max(36);
     let mut image = RgbaImage::new(image_width, 28);
     let name_x = ((image_width as f32 - width(&font, name) + marker as f32) * 0.5).max(2.0 + marker as f32);
-    let colour = if bounty { [255, 202, 64] } else { [255, 255, 255] };
+    let colour = if bounty { [255, 202, 64] } else { name_colour };
     text(&mut image, &font, &[(name, colour)], [name_x, 1.0]);
     if bounty {
         // A small diamond before the name.
@@ -658,25 +679,6 @@ pub fn performance_image(
     Ok(image)
 }
 
-pub fn hit_flash_image() -> Result<RgbaImage> {
-    let mut image = RgbaImage::new(64, 64);
-    let center = 31.5_f32;
-    for y in 0..64 {
-        for x in 0..64 {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let distance = (dx * dx + dy * dy).sqrt();
-            let alpha = if (20.0..=30.0).contains(&distance) {
-                ((30.0 - distance) * 22.0).clamp(0.0, 210.0) as u8
-            } else {
-                0
-            };
-            image.put_pixel(x, y, Rgba([255, 235, 120, alpha]));
-        }
-    }
-    Ok(image)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +689,17 @@ mod tests {
         pixel.blend(&Rgba([255, 255, 255, 128]));
         assert!(pixel[3] >= 254);
         assert!((127..=129).contains(&pixel[0]));
+    }
+
+    #[test]
+    fn monster_names_tell_their_level_as_the_original() {
+        assert_eq!(monster_name_colour(55, 50), [0, 0, 0]);
+        assert_eq!(monster_name_colour(54, 50), [255, 0, 0]);
+        assert_eq!(monster_name_colour(51, 50), [255, 0, 0]);
+        assert_eq!(monster_name_colour(50, 50), [255, 255, 255]);
+        assert_eq!(monster_name_colour(46, 50), [255, 255, 255]);
+        assert_eq!(monster_name_colour(45, 50), [0, 255, 0]);
+        assert_eq!(monster_name_colour(1, 130), [0, 255, 0]);
     }
 
     #[test]

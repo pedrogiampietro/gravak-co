@@ -779,6 +779,18 @@ mod shape_tests {
     }
 }
 
-
-
-
+/// The potions' glows (the server's `gethp` and `getmp`, on drinking one)
+/// load from the installation, every layer's model there.
+#[cfg(test)]
+#[test]
+#[ignore = "Needs the 5065 installation"]
+fn potion_glows_load() {
+    let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+    for name in ["gethp", "getmp"] {
+        let effect = effect(&mut assets, name).unwrap_or_else(|| panic!("{name} in 3DEffect.ini"));
+        assert!(!effect.layers.is_empty(), "{name} has layers");
+        for layer in &effect.layers {
+            assert!(assets.read(&layer.mesh).is_ok(), "{name}: {}", layer.mesh);
+        }
+    }
+}

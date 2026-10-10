@@ -107,7 +107,7 @@ impl ComposedMap {
                 sprites.push(MapSprite {
                     frames: frames(&ani, &part.section)?,
                     origin: [p[0] + part.offset_x as f32, p[1] + part.offset_y as f32],
-                    depth: (x + y) as f32,
+                    depth: scene_part_depth(part, x, y),
                     interval: part.frame_interval_ms.max(1),
                     cell: Some([x, y]),
                 });
@@ -205,10 +205,35 @@ fn frames(ani: &SectionCatalog, name: &str) -> Result<Vec<String>, String> {
         .map(|i| {
             section
                 .first(&format!("Frame{i}"))
-                .map(|s| s.replace('\\', "/"))
+                .map(|s| picture(&s.replace('\\', "/")))
                 .ok_or_else(|| format!("Missing {name}/Frame{i}"))
         })
         .collect()
+}
+
+/// Where a scene's part sorts among what stands on the map. A part stands
+/// on the cells from (`x`, `y`) back `width` by `height` (`collision`). One
+/// mostly walked on (a bridge's deck, a stair) is a floor: it sorts by its
+/// back corner, behind whoever walks on it. Any other (a house, a wall)
+/// sorts by its front corner, as the original draws them.
+fn scene_part_depth(part: &super::MapScenePart, x: i32, y: i32) -> f32 {
+    let open = part.cells.iter().filter(|cell| cell.mask == 0).count();
+    if !part.cells.is_empty() && open * 2 > part.cells.len() {
+        let back = (x - (part.width as i32 - 1)) + (y - (part.height as i32 - 1));
+        back as f32 - 0.5
+    } else {
+        (x + y) as f32
+    }
+}
+
+/// The picture a frame shows. Some frames name a `.msk` (the bridges over
+/// Twin City's river): the one-bit mask of a picture, which the game keeps
+/// beside it as the `.dds` of the same name; that is what is drawn.
+fn picture(frame: &str) -> String {
+    match frame.len().checked_sub(4).map(|at| frame.split_at(at)) {
+        Some((stem, extension)) if extension.eq_ignore_ascii_case(".msk") => format!("{stem}.dds"),
+        _ => frame.to_owned(),
+    }
 }
 
 /// Gravak's objects of one map, as the content build writes them
@@ -409,4 +434,36 @@ mod tests {
         assert_eq!(GravakObjects::parse(&objects.write()).unwrap(), objects);
         assert!(GravakObjects::parse("object 1 2\n").is_err());
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_bridge_sorts_behind_whoever_walks_on_it() {
+    use super::{MapSceneCell, MapScenePart};
+    let part = |mask: u32| MapScenePart {
+        ani_path: super::VirtualPath::try_from("ani/MapScene.ani").unwrap(),
+        section: "bridge06.tga".into(),
+        offset_x: 0,
+        offset_y: 0,
+        frame_interval_ms: 100,
+        width: 7,
+        height: 9,
+        thickness: 0,
+        scene_offset_x: 0,
+        scene_offset_y: 0,
+        elevation: 0,
+        cells: vec![MapSceneCell { mask, terrain: 0, altitude: 0 }; 63],
+    };
+    // A deck from (634, 674) to (640, 682): behind a hero on (637, 678).
+    assert!(scene_part_depth(&part(0), 640, 682) < (637 + 678) as f32);
+    // A house over the same cells sorts by its front corner.
+    assert_eq!(scene_part_depth(&part(1), 640, 682), (640 + 682) as f32);
+}
+
+#[cfg(test)]
+#[test]
+fn a_mask_frame_draws_its_picture() {
+    assert_eq!(picture("data/map/mapobj/plain/plain/bridge06.msk"), "data/map/mapobj/plain/plain/bridge06.dds");
+    assert_eq!(picture("data/map/mapobj/plain/plain/bridge06.MSK"), "data/map/mapobj/plain/plain/bridge06.dds");
+    assert_eq!(picture("data/map/mapobj/plain/plain/flower19.dds"), "data/map/mapobj/plain/plain/flower19.dds");
 }

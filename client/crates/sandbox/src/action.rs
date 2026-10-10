@@ -9,6 +9,8 @@ pub enum Action {
     RunRight,
     Jump,
     Attack,
+    /// `3dmotion.ini` 320, the bruise (`ActionSound.ini` sounds it
+    /// `bruise0N.wav`): struck, in the pose of the weapon held.
     Hit,
     /// Conquer's action 220 (Kneel), used by the original client while
     /// collecting an item from the ground.
@@ -37,10 +39,13 @@ pub enum Action {
     /// The swept blow of Hercules, WideStrike, SpeedLightning, Snow and
     /// the like: MagicType's motion 403.
     Sweep,
+    /// `3dmotion.ini` 310: a blow that missed, warded off in the pose of
+    /// the weapon held (the original plays it on a blow of 0, 0x4bee26).
+    Dodge,
 }
 
 impl Action {
-    pub const COUNT: usize = 23;
+    pub const COUNT: usize = 24;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Idle,
         Self::WalkLeft,
@@ -65,6 +70,7 @@ impl Action {
         Self::Fly,
         Self::Cast,
         Self::Sweep,
+        Self::Dodge,
     ];
 
     pub const fn index(self) -> usize {
@@ -92,6 +98,7 @@ impl Action {
             Self::Fly => 20,
             Self::Cast => 21,
             Self::Sweep => 22,
+            Self::Dodge => 23,
         }
     }
 
@@ -104,10 +111,7 @@ impl Action {
             Self::RunRight => 121,
             Self::Jump => 130,
             Self::Attack => 140,
-            // Conquer's 150/160/170/180 entries are emotes (laugh, angry,
-            // sad, excited), not a damage reaction. Keep the hit state on
-            // the neutral motion until a dedicated hurt asset is available.
-            Self::Hit => 100,
+            Self::Hit => 320,
             // Action.dat/3dmotion.ini in the original 5065 client names this
             // motion Kneel (220); it is the pickup pose.
             Self::Pickup => 220,
@@ -125,13 +129,14 @@ impl Action {
             Self::Fly => 510,
             Self::Cast => 903,
             Self::Sweep => 403,
+            Self::Dodge => 310,
         }
     }
 
     /// The action for a ChangeAction code, as the original's Action panel
     /// and the server send them.
     pub fn from_catalog_id(id: u32) -> Option<Self> {
-        Self::ALL.into_iter().find(|action| action.catalog_id() == id && *action != Self::Hit)
+        Self::ALL.into_iter().find(|action| action.catalog_id() == id)
     }
 
     /// Emotes whose last frame is held until the player moves: sitting,
@@ -174,9 +179,11 @@ mod tests {
         assert_eq!(Action::ALL.map(Action::index), std::array::from_fn(|index| index));
         assert_eq!(
             Action::ALL.map(Action::catalog_id),
-            [100, 110, 111, 120, 121, 130, 140, 100, 220, 330, 250, 230, 210, 170, 150, 160, 270, 1, 190, 200, 510, 903, 403]
+            [100, 110, 111, 120, 121, 130, 140, 320, 220, 330, 250, 230, 210, 170, 150, 160, 270, 1, 190, 200, 510, 903, 403, 310]
         );
         assert_eq!(Action::from_catalog_id(150), Some(Action::Happy));
         assert_eq!(Action::from_catalog_id(100), Some(Action::Idle));
+        assert_eq!(Action::from_catalog_id(320), Some(Action::Hit));
+        assert_eq!(Action::from_catalog_id(310), Some(Action::Dodge));
     }
 }
