@@ -201,20 +201,27 @@ desenha é o próprio cliente, sem janela: `conquer-sandbox --armory` (ver
 desenhado uma vez (~1 s) e fica guardado em disco; sem `ARMORY_BIN`, a página
 mostra a arte parada da profissão.
 
-- [ ] Compilar o cliente na VPS (a chave do pacote vai embutida no binário):
+- [ ] Compilar o cliente na VPS com a chave do pacote, a mesma de
+  `client\installer\pack.key` no PC (copiar por `scp`, nunca pelo git). Sem
+  ela o binário leva a chave de desenvolvimento, não abre o `gravak.gpk`
+  publicado, e o site responde `502` (`the hero cannot be drawn`):
   ```bash
   sudo apt install -y libasound2-dev libudev-dev pkg-config
-  cd client && cargo build --release -p conquer-sandbox
-  sudo install -D target/release/conquer-sandbox /opt/gravak/armory/conquer-sandbox
+  cd client
+  GRAVAK_PACK_KEY=$(cat <pasta segura>/pack.key) CARGO_TARGET_DIR=target/armory \
+    cargo build --release -p conquer-sandbox
+  sudo install -D target/armory/release/conquer-sandbox /opt/gravak/armory/conquer-sandbox
   ```
+  Recompilar sempre que o código do cliente mudar.
 - [ ] Ele lê os dados do jogo do `gravak.gpk` da pasta de updates do nginx
-  (passo 9): nada a copiar, cada update publicado já vale para o site.
+  (passo 9), na subpasta `game/`, onde o pacote fica: nada a copiar, cada
+  update publicado já vale para o site.
 - [ ] Pasta de cache, do usuário que roda o site:
   `sudo install -d -o <usuário do site> /var/cache/gravak-armory`
 - [ ] No `.env` do site (`web/.env.example`):
   ```
   ARMORY_BIN=/opt/gravak/armory/conquer-sandbox
-  ARMORY_ASSETS=/var/www/gravak-update
+  ARMORY_ASSETS=/var/www/gravak-update/game
   ARMORY_CACHE=/var/cache/gravak-armory
   ```
   e reiniciar o site.
