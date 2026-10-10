@@ -275,7 +275,8 @@ impl Character {
             left: false,
         }];
 
-        if hair != 0 {
+        let (hair_shown, helmet_shown) = head_shown(armor_id, hide_head);
+        if hair != 0 && hair_shown {
             if let Ok(part) = load_attachment(
                 assets,
                 &models,
@@ -288,7 +289,7 @@ impl Character {
                 parts.push(part);
             }
         }
-        if helmet_id != 0 {
+        if helmet_id != 0 && helmet_shown {
             if let Ok(part) = load_dyed_attachment(
                 assets,
                 &models,
@@ -1027,6 +1028,24 @@ fn dyed_texture(textures: &IdPathCatalog, texture: u32, color: u8) -> u32 {
     if textures.get(candidate).is_some() { candidate } else { texture }
 }
 
+/// Whether the hair and the helmet show over `armor` (an armour or a
+/// garment, undyed), as the original's `RoleView.dll` decides (0x10002bef,
+/// 0x10001a6f): a garment of type 18 (181xxx, 182xxx) wears its own head,
+/// so neither shows; one of type 19 (191xxx) shows the hair but no helmet;
+/// nor do the costumes 137xxx whose last two digits run 20 to 90. A garment
+/// of ours without its headdress (`hide_head`) shows both, as any armour.
+fn head_shown(armor: u32, hide_head: bool) -> (bool, bool) {
+    let armor = armor % 1_000_000;
+    let costume = armor / 1_000 == 137 && (20..=90).contains(&(armor % 100));
+    match armor / 10_000 % 100 {
+        _ if hide_head => (true, true),
+        18 => (false, false),
+        19 => (true, false),
+        _ if costume => (false, false),
+        _ => (true, true),
+    }
+}
+
 fn load_attachment(
     assets: &mut Assets,
     models: &IdPathCatalog,
@@ -1181,5 +1200,21 @@ mod monster_probe {
         println!("{}", broken.join("
 "));
         assert!(broken.is_empty(), "{} looks broken", broken.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::head_shown;
+
+    #[test]
+    fn garments_wear_their_own_head_as_the_original() {
+        assert_eq!(head_shown(181355, false), (false, false), "18: no hair, no helmet");
+        assert_eq!(head_shown(182335, false), (false, false));
+        assert_eq!(head_shown(191300, false), (true, false), "19: hair, no helmet");
+        assert_eq!(head_shown(137020, false), (false, false), "a costume");
+        assert_eq!(head_shown(137005, false), (true, true));
+        assert_eq!(head_shown(130305, false), (true, true), "an armour");
+        assert_eq!(head_shown(182995, true), (true, true), "ours, its headdress off");
     }
 }
