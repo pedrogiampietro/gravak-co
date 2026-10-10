@@ -151,6 +151,9 @@ const XP_ORIGIN: [i64; 2] = [0, 48];
 pub struct MainHudArt {
     base: RgbaImage,
     orb_background: RgbaImage,
+    /// The orb frame's left edge, which the original's art cuts where its
+    /// screen ended: drawn just left of the bar.
+    orb_cap: RgbaImage,
     hp: RgbaImage,
     /// The life's art mirrored, for the mana half of heroes without mana.
     hp_mirrored: RgbaImage,
@@ -184,6 +187,96 @@ fn labelled_button(base: &RgbaImage, label: &str) -> Result<RgbaImage> {
     Ok(image)
 }
 
+/// How far the orb frame's scrolls reach past the art's left edge.
+const ORB_CAP_WIDTH: u32 = 4;
+/// Twice the orb's middle (between its two bars, 46.5): a column and its
+/// mirror add up to it.
+const ORB_MIRROR: u32 = 93;
+/// The rows whose scrolls the art's edge cuts (above and below, the frame
+/// lies within it).
+const ORB_CAP_ROWS: std::ops::RangeInclusive<u32> = 76..=106;
+
+/// The orb frame's left edge as its right one, mirrored about the orb's
+/// middle: each row's scroll out from the frame, up to the bar's blue
+/// behind it on the right.
+fn orb_cap(base: &RgbaImage) -> RgbaImage {
+    let mut cap = RgbaImage::new(ORB_CAP_WIDTH, base.height());
+    for y in ORB_CAP_ROWS {
+        // Out to the bar's blue; of that, the gold and one pixel of its
+        // dark outline.
+        let scroll: Vec<Rgba<u8>> = (1..=ORB_CAP_WIDTH)
+            .map(|k| *base.get_pixel(ORB_MIRROR + k, y))
+            .take_while(|pixel| pixel[3] > 0 && pixel[2] <= pixel[0].saturating_add(8))
+            .collect();
+        let Some(last_gold) = scroll.iter().rposition(|&pixel| gold(pixel)) else {
+            continue;
+        };
+        for (k, pixel) in scroll.into_iter().enumerate().take(last_gold + 2) {
+            cap.put_pixel(ORB_CAP_WIDTH - 1 - k as u32, y, pixel);
+        }
+    }
+    cap
+}
+
+/// The columns of the orb frame's left edge rebuilt as its right one.
+const ORB_EDGE_COLUMNS: u32 = 13;
+/// The rows of the frame below its top, where the art's edge cuts it.
+const ORB_EDGE_ROWS: std::ops::RangeInclusive<u32> = 44..=138;
+
+/// The orb's middle, the XP ring's (`XP_ORIGIN`), and the reach of its
+/// frame's scrolls from it.
+const ORB_CENTRE: [f32; 2] = [46.5, 93.0];
+const ORB_FRAME_RADIUS: f32 = 49.0;
+
+/// The orb frame's left edge, cut by the art, made its right one mirrored
+/// (whole on the original's art): the frame's gold and dark only, the
+/// bar's blue behind it on the right left out.
+fn mirror_orb_edge(base: &mut RgbaImage) {
+    for y in ORB_EDGE_ROWS {
+        for x in 0..ORB_EDGE_COLUMNS {
+            let pixel = *base.get_pixel(ORB_MIRROR - x, y);
+            let [r, _, b, a] = pixel.0;
+            if a > 0 && b <= r.saturating_add(8) {
+                base.put_pixel(x, y, pixel);
+            } else if (x as f32 - ORB_CENTRE[0]).hypot(y as f32 - ORB_CENTRE[1]) > ORB_FRAME_RADIUS {
+                // The bar left of the frame, which the original's screen
+                // edge cut.
+                base.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+            }
+        }
+    }
+}
+
+fn gold(pixel: Rgba<u8>) -> bool {
+    let [r, g, b, a] = pixel.0;
+    a > 0 && u16::from(r) + u16::from(g) > 200 && r > b.saturating_add(20)
+}
+
+/// The bar's first row of gold trim and the shadow under it.
+const TRIM_ROWS: std::ops::RangeInclusive<u32> = 68..=72;
+
+/// The bar's right end, which the original's art cuts where its screen
+/// ended, closed by its top trim turned down its last columns.
+fn close_bar_end(base: &mut RgbaImage) {
+    let right = base.width() - 1;
+    let (top, bottom) = (*TRIM_ROWS.start(), base.height() - 1);
+    let Some(bottom) = (top..=bottom).rev().find(|&y| base.get_pixel(right, y)[3] > 0) else {
+        return;
+    };
+    for y in top..=bottom {
+        // Along the trim, so it keeps its grain; the corner meets it.
+        let along = 800 + (y - top);
+        for (depth, row) in TRIM_ROWS.enumerate() {
+            let x = right - depth as u32;
+            if y < row {
+                continue;
+            }
+            let pixel = *base.get_pixel(along, row);
+            base.put_pixel(x, y, pixel);
+        }
+    }
+}
+
 fn visible(assets: &mut Assets, path: &str) -> Result<RgbaImage> {
     crate::original_ui::visible_part(&assets.image(path)?)
 }
@@ -205,6 +298,9 @@ impl MainHudArt {
         }
         // Gravak's emblem over the original's, bottom right.
         crate::logo::draw_emblem(&mut base);
+        close_bar_end(&mut base);
+        mirror_orb_edge(&mut base);
+        let orb_cap = orb_cap(&base);
         let mut buttons = Vec::new();
         for button in MainHudButton::ALL {
             if let Some([normal, pressed]) = button_frames(button) {
@@ -229,6 +325,7 @@ impl MainHudArt {
         }
         Ok(Self {
             base,
+            orb_cap,
             orb_background: assets.image(ORB_BACKGROUND)?,
             hp: clipped(assets, HP_FILL, HP_CLIP)?,
             hp_mirrored: imageops::flip_horizontal(&clipped(assets, HP_FILL, HP_CLIP)?),
@@ -348,6 +445,7 @@ pub fn draw(
     // the frame, which tints them exactly like the original.
     let [x, y] = at([0, 0]);
     imageops::overlay(img, &art.orb_background, x, y);
+    imageops::overlay(img, &art.orb_cap, x - i64::from(art.orb_cap.width()), y);
     let [x, y] = at(HP_ORIGIN);
     draw_gauge(img, &art.hp, [x, y], ratio(state.health, state.max_health));
     let [x, y] = at(MP_ORIGIN);
