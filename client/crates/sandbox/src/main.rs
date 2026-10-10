@@ -498,7 +498,7 @@ struct App {
     ghosts_requested: bool,
     /// Players drawn as ghosts, through `remote_monsters`.
     ghost_actors: HashSet<u32>,
-    combat_numbers: Vec<(u32, u32, f32)>,
+    combat_numbers: Vec<(u32, u32, f32, renderer::NumberTint)>,
     /// What arrows carry until they strike, as the original: the damage
     /// and the blow (attacker, target, damage or none, when it lands).
     arrow_blows: Vec<(u32, u32, Option<u32>, f32)>,
@@ -1845,13 +1845,13 @@ impl ApplicationHandler for App {
         // sends tile steps; rendering the whole step immediately makes mobs
         // look like they teleport or freeze between updates.
         let now = self.started.elapsed().as_secs_f32();
-        self.combat_numbers.retain(|(_, _, expires)| *expires > now);
+        self.combat_numbers.retain(|(_, _, expires, _)| *expires > now);
         // Arrows that struck: their damage shows and their target reels.
         let (landed, flying): (Vec<_>, Vec<_>) = self.arrow_blows.drain(..).partition(|(_, _, _, at)| *at <= now);
         self.arrow_blows = flying;
         for (_, target_id, damage, _) in landed {
             if let Some(damage) = damage {
-                self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
+                self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS, renderer::NumberTint::Blow));
             }
             self.play_reaction(target_id, damage.is_some_and(|damage| damage > 0), now);
         }
@@ -4986,8 +4986,18 @@ impl App {
                     view.spouse = name;
                 }
             }
-            NetworkEvent::RoleEffect { actor_id, effect } => {
+            NetworkEvent::RoleEffect { actor_id, effect, amount } => {
                 let now = self.started.elapsed().as_secs_f32();
+                // What a potion filled rises over the drinker, green for
+                // life and blue for mana.
+                let tint = match effect.as_str() {
+                    "gethp" => Some(renderer::NumberTint::Life),
+                    "getmp" => Some(renderer::NumberTint::Mana),
+                    _ => None,
+                };
+                if let (Some(tint), Some(amount)) = (tint, amount.filter(|amount| *amount > 0)) {
+                    self.combat_numbers.push((actor_id, amount, now + renderer::COMBAT_NUMBER_SECONDS, tint));
+                }
                 if let Some(renderer) = &mut self.renderer {
                     renderer.add_role_effect(actor_id, effect, now);
                 }
@@ -6004,7 +6014,7 @@ impl App {
                     }
                 } else {
                     if let Some(value) = number {
-                        self.combat_numbers.push((target_id, value, now + renderer::COMBAT_NUMBER_SECONDS));
+                        self.combat_numbers.push((target_id, value, now + renderer::COMBAT_NUMBER_SECONDS, renderer::NumberTint::Blow));
                     }
                     // A death (14) falls instead.
                     self.play_blow_on_player(id, target_id, (action != 14).then_some(value > 0), now);
@@ -6063,7 +6073,7 @@ impl App {
                     }
                 }
                 if !carried && damage > 0 {
-                    self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS));
+                    self.combat_numbers.push((target_id, damage, now + renderer::COMBAT_NUMBER_SECONDS, renderer::NumberTint::Blow));
                 }
                 // The caster's motion is MagicType's (0x90), as the original
                 // plays it: 903 casts a magic (Thunder, Cure, Stigma), 403

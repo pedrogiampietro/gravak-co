@@ -36,6 +36,16 @@ impl MsgName {
     pub fn role_effect(uid: u32, effect: &str) -> Self {
         Self::new(uid, ROLE_EFFECT, effect)
     }
+
+    /// An effect with the amount it brings (a potion's life or mana),
+    /// shown rising over the entity.
+    pub fn role_effect_amount(uid: u32, effect: &str, amount: u32) -> Self {
+        Self {
+            uid,
+            action: ROLE_EFFECT,
+            strings: [effect.to_owned(), amount.to_string()].into_iter().collect(),
+        }
+    }
 }
 
 #[cfg(test)]

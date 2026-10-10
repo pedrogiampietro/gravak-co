@@ -2126,13 +2126,13 @@ impl Renderer {
                     };
                     // A rarity's glow: the texture recoloured first.
                     let (texture, tint) = match texture.split_once(crate::magic::TINT_MARK) {
-                        Some((texture, name)) => (texture, crate::magic::tint(name)),
+                        Some((texture, name)) => (texture, Some(name)),
                         None => (texture, None),
                     };
                     let image = assets
                         .image(texture)
                         .map(|image| match tint {
-                            Some(tint) => crate::magic::tinted(image, tint),
+                            Some(tint) => crate::magic::recoloured(image, tint),
                             None => image,
                         })
                         .map(|image| if additive { crate::magic::additive_image(image) } else { image })
@@ -2941,7 +2941,7 @@ impl Renderer {
         remote_monsters: &HashMap<u32, crate::character::NpcModel>,
         local_ghost: Option<&crate::character::NpcModel>,
         revive: Option<(u32, bool)>,
-        combat_numbers: &[(u32, u32, f32)],
+        combat_numbers: &[(u32, u32, f32, NumberTint)],
         skill_effects: &[SkillEffectInstance],
         ground_loot: &[(u32, [f32; 2], u32, f32)],
         level_up_until: f32,
@@ -3907,12 +3907,13 @@ impl Renderer {
             }
         }
         let remote_world_phase_finished = Instant::now();
-        for (index, (target_id, value, expires)) in combat_numbers.iter().enumerate() {
+        for (index, (target_id, value, expires, tint)) in combat_numbers.iter().enumerate() {
             if *expires <= time {
                 continue;
             }
-            // Yellow when the hero is struck, white otherwise. A target
-            // that is gone shows nothing (never on the hero).
+            // Yellow when the hero is struck, white otherwise; a potion's
+            // life green, its mana blue. A target that is gone shows
+            // nothing (never on the hero).
             let hero = network_character_id == Some(*target_id);
             let Some(position) = remote_actors
                 .get(target_id)
@@ -3933,16 +3934,29 @@ impl Renderer {
             let elapsed = (time - (*expires - COMBAT_NUMBER_SECONDS)) * 1_000.0;
             let digits: Vec<u32> = value.to_string().chars().filter_map(|digit| digit.to_digit(10)).collect();
             let mut keys = Vec::with_capacity(digits.len());
+            let colour = match tint {
+                NumberTint::Life => "green",
+                NumberTint::Mana => "blue",
+                NumberTint::Blow if hero => "yellow",
+                NumberTint::Blow => "white",
+            };
             for digit in &digits {
-                let key = format!("@count-{digit}-{}", if hero { "yellow" } else { "white" });
+                let key = format!("@count-{digit}-{colour}");
                 if !self.textures.contains_key(&key) {
                     let Ok(image) = assets.image(&format!("c3/effect/CountB/CountB{digit}.dds")) else {
                         break;
                     };
                     let mut image = image;
-                    if hero {
-                        for pixel in image.pixels_mut() {
-                            pixel.0[2] = 0;
+                    // The digits are white: a tint drops the channels it lacks.
+                    let dropped: &[usize] = match colour {
+                        "yellow" => &[2],
+                        "green" => &[0, 2],
+                        "blue" => &[0],
+                        _ => &[],
+                    };
+                    for pixel in image.pixels_mut() {
+                        for channel in dropped {
+                            pixel.0[*channel] = 0;
                         }
                     }
                     self.upload(&key, image);
@@ -4103,8 +4117,18 @@ impl Renderer {
             if effect.starts_with("letter") {
                 origin[1] -= NOBILITY_LETTER_LIFT;
             }
+            // A potion's rays rise over the drinker: 5065's own `gethp` and
+            // `getmp` are small rings at the feet, so both play `magicfull`
+            // (blue light rising up the body), turned red for life.
+            let (shown, tint) = match effect.as_str() {
+                "gethp" => ("magicfull", Some("life")),
+                "getmp" => ("magicfull", None),
+                other => (other, None),
+            };
+            self.effect_tint = tint;
             let playing = elapsed < 20.0
-                && self.push_effect(assets, &effect, origin, elapsed, position[0] + position[1] + 0.08, viewport, &mut draws);
+                && self.push_effect(assets, shown, origin, elapsed, position[0] + position[1] + 0.08, viewport, &mut draws);
+            self.effect_tint = None;
             if !playing {
                 finished.push(index);
             }
@@ -6756,6 +6780,17 @@ fn clipped_to_character(draw: &Draw) -> bool {
 /// How long a damage number shows (`Conquer.exe` 0x4d49cd: 250 ms coming
 /// in, 1200 ms rising away).
 pub const COMBAT_NUMBER_SECONDS: f32 = 1.45;
+
+/// The colour a number rises in over its actor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberTint {
+    /// A blow: yellow on the hero, white on anyone else.
+    Blow,
+    /// A potion's life.
+    Life,
+    /// A potion's mana.
+    Mana,
+}
 /// The space each digit takes at full size, and a digit's size: the 64
 /// pixel `CountB` sprites on their 92 by 122 unit quad, seen from 45
 /// degrees and not shrunk as the world is (0.3 of it shows a 26 pixel
@@ -7422,5 +7457,3 @@ mod shift_screen_tests {
         assert_eq!(shift_screen_step([350.0, 190.0], [1023.0, 767.0], viewport, 10.0), [356.0, 192.0]);
     }
 }
-
-

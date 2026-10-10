@@ -72,6 +72,12 @@ pub(crate) fn text(
     text_sized(image, font, spans, origin, FONT_SIZE);
 }
 
+/// A name over an actor: as `text`, but a black name keeps a grey shadow,
+/// as the original's (0x4b5f1c).
+fn name_text(image: &mut RgbaImage, font: &fontdue::Font, spans: &[(&str, [u8; 3])], origin: [f32; 2]) {
+    shadowed(image, font, spans, origin, FONT_SIZE, true);
+}
+
 pub(crate) fn text_sized(
     image: &mut RgbaImage,
     font: &fontdue::Font,
@@ -79,11 +85,21 @@ pub(crate) fn text_sized(
     origin: [f32; 2],
     font_size: f32,
 ) {
+    shadowed(image, font, spans, origin, font_size, false);
+}
+
+fn shadowed(
+    image: &mut RgbaImage,
+    font: &fontdue::Font,
+    spans: &[(&str, [u8; 3])],
+    origin: [f32; 2],
+    font_size: f32,
+    grey_under_black: bool,
+) {
     for shadow in [true, false] {
         let mut cursor = origin[0].round();
         for &(text, colour) in spans {
-            // A black name keeps a grey shadow, as the original's (0x4b5f1c).
-            let dark = colour.iter().all(|channel| *channel < 0x20);
+            let dark = grey_under_black && colour.iter().all(|channel| *channel < 0x20);
             let colour = match (shadow, dark) {
                 (true, true) => [0xaa, 0xaa, 0xaa],
                 (true, false) => [0, 0, 0],
@@ -358,7 +374,7 @@ pub fn actor_image_with_guild(name: &str, name_colour: [u8; 3], guild: &str, ran
         let drop = if shield == 0 { 0 } else { SHIELD_DROP };
         let name_width = width(&font, name).ceil() as u32;
         let mut image = RgbaImage::new((name_width + 11 + shield_space).max(16), 16 + drop);
-        text(&mut image, &font, &[(name, name_colour)], [4.0, 2.0]);
+        name_text(&mut image, &font, &[(name, name_colour)], [4.0, 2.0]);
         draw_shield(&mut image, shield, name_width + 9, 4);
         return Ok(image);
     }
@@ -376,7 +392,7 @@ pub fn actor_image_with_guild(name: &str, name_colour: [u8; 3], guild: &str, ran
         [(image_width as f32 - guild_width) * 0.5, 2.0],
     );
     let name_left = (image_width as f32 - name_width) * 0.5;
-    text(&mut image, &font, &[(name, name_colour)], [name_left, 15.0]);
+    name_text(&mut image, &font, &[(name, name_colour)], [name_left, 15.0]);
     draw_shield(&mut image, shield, (name_left + name_width - shield_space as f32 + 5.0).max(0.0) as u32, 17);
     Ok(image)
 }
@@ -417,7 +433,7 @@ pub fn player_plate(
     if let Some(face) = face {
         image::imageops::overlay(&mut image, face, 1, 1);
     }
-    text(&mut image, &font, &[(name, name_colour)], [text_left as f32, 2.0]);
+    name_text(&mut image, &font, &[(name, name_colour)], [text_left as f32, 2.0]);
     let bar_top = 19;
     for y in bar_top..bar_top + 6 {
         for x in text_left..text_left + bar_width + 2 {
@@ -490,7 +506,7 @@ pub fn monster_image(name: &str, name_colour: [u8; 3], health: u16, maximum_heal
     let mut image = RgbaImage::new(image_width, 28);
     let name_x = ((image_width as f32 - width(&font, name) + marker as f32) * 0.5).max(2.0 + marker as f32);
     let colour = if bounty { [255, 202, 64] } else { name_colour };
-    text(&mut image, &font, &[(name, colour)], [name_x, 1.0]);
+    name_text(&mut image, &font, &[(name, colour)], [name_x, 1.0]);
     if bounty {
         // A small diamond before the name.
         let (cx, cy) = (name_x as i32 - 8, 8_i32);
@@ -560,7 +576,7 @@ pub fn loot_name_image_in(name: &str, colour: [u8; 3]) -> Result<RgbaImage> {
     let font = font()?;
     let width = width(&font, name).ceil() as u32 + 8;
     let mut image = RgbaImage::new(width.max(24), 18);
-    text(&mut image, &font, &[(name, colour)], [4.0, 2.0]);
+    name_text(&mut image, &font, &[(name, colour)], [4.0, 2.0]);
     Ok(image)
 }
 

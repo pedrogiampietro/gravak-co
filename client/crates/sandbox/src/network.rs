@@ -266,7 +266,8 @@ pub enum NetworkEvent {
     /// When each of the hero's statuses ends.
     StatusTimers(gravak_protocol::StatusTimers),
     /// A `3DEffect.ini` effect played once on an actor (fireworks...).
-    RoleEffect { actor_id: u32, effect: String },
+    /// `amount`: what a potion filled, shown rising over the actor.
+    RoleEffect { actor_id: u32, effect: String, amount: Option<u32> },
     /// The answer to View Equipment (MsgAction 117): whom, their level and
     /// nobility rank; their items follow.
     ViewedPlayer { id: u32, level: u16, nobility_rank: u32 },
@@ -1714,7 +1715,8 @@ pub(crate) async fn play(
                         _ => None,
                     };
                     if let Some(effect) = effect {
-                        let _ = events.send(NetworkEvent::RoleEffect { actor_id: name.uid, effect });
+                        let amount = name.strings.get(1).and_then(|amount| amount.parse().ok());
+                        let _ = events.send(NetworkEvent::RoleEffect { actor_id: name.uid, effect, amount });
                     }
                 }
                 Some(GameEvent::BountyState(board)) => {

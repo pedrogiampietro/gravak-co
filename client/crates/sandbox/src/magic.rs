@@ -273,6 +273,24 @@ pub fn tinted_key(key: &str, tint: &str) -> String {
     }
 }
 
+/// An image recoloured by the tint `name` names (see [`tint`]); `life`
+/// turns blue red, the white-hot cores a light red: the mana glow
+/// (`magicfull`) made a life potion's.
+pub fn recoloured(mut image: image::RgbaImage, name: &str) -> image::RgbaImage {
+    if name == "life" {
+        for pixel in image.pixels_mut() {
+            let [r, g, b, a] = pixel.0;
+            let core = (f32::from(r.min(g)) * 0.5) as u8;
+            pixel.0 = [b, core, core, a];
+        }
+        return image;
+    }
+    match tint(name) {
+        Some(tint) => tinted(image, tint),
+        None => image,
+    }
+}
+
 /// An image recoloured: its light (luminance) times the tint's colour.
 pub fn tinted(mut image: image::RgbaImage, tint: [f32; 3]) -> image::RgbaImage {
     for pixel in image.pixels_mut() {
@@ -545,6 +563,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_life_glow_is_the_mana_glow_turned_red() {
+        let blue = image::RgbaImage::from_pixel(1, 1, image::Rgba([60, 60, 255, 200]));
+        assert_eq!(recoloured(blue, "life").get_pixel(0, 0).0, [255, 30, 30, 200]);
+        let white = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        assert_eq!(recoloured(white, "life").get_pixel(0, 0).0, [255, 127, 127, 255]);
+    }
+
+    #[test]
     fn rarity_glows_are_tinted_keys_that_still_add_light() {
         assert_eq!(rarity_tint(2), None, "Epic does not glow");
         assert_eq!(rarity_tint(3), Some("legendary"));
@@ -779,14 +805,15 @@ mod shape_tests {
     }
 }
 
-/// The potions' glows (the server's `gethp` and `getmp`, on drinking one)
-/// load from the installation, every layer's model there.
+/// The potions' glows (the server's `gethp` and `getmp`, on drinking one,
+/// drawn as `magicfull`) load from the installation, every layer's model
+/// there.
 #[cfg(test)]
 #[test]
 #[ignore = "Needs the 5065 installation"]
 fn potion_glows_load() {
     let mut assets = Assets::open(std::path::Path::new("R:/5065")).expect("assets");
-    for name in ["gethp", "getmp"] {
+    for name in ["gethp", "getmp", "magicfull"] {
         let effect = effect(&mut assets, name).unwrap_or_else(|| panic!("{name} in 3DEffect.ini"));
         assert!(!effect.layers.is_empty(), "{name} has layers");
         for layer in &effect.layers {
