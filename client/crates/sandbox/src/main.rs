@@ -7,6 +7,7 @@ mod armory;
 mod action_bar;
 mod keybinds;
 mod helper;
+mod idle_report;
 mod travel_cube;
 mod exit_confirm;
 mod forge_window;
@@ -551,6 +552,13 @@ struct App {
     presence: Option<discord::Presence>,
     /// Until when the helper does not try again a way back to its spot.
     helper_home_retry: f32,
+    /// What the server last heard of the hunt: on, x, y, reach and levels.
+    idle_told: Option<[u32; 4]>,
+    /// Whether the server was asked what the time away brought.
+    idle_asked: bool,
+    /// The idle report's lines as they come, then the report shown.
+    idle_lines: Vec<idle_report::Line>,
+    idle_report: Option<idle_report::IdleReportView>,
     /// Frames drawn in the current one-second window, and the last count.
     fps_frames: u32,
     fps_window: f32,
@@ -1698,9 +1706,16 @@ impl ApplicationHandler for App {
                 let shortcuts_view = self.shortcuts_view_lit();
                 let helper_view = self.helper_view_lit();
                 let travel_cube_view = self.travel_cube_view_lit();
+                let idle_report_view = self.idle_report.clone().map(|mut view| {
+                    let report_viewport = self.viewport().unwrap_or([1024.0, 768.0]);
+                    let [left, top] = idle_report_position(report_viewport);
+                    view.ok_hovered = idle_report::ok_rect().contains_local([self.cursor[0] - left, self.cursor[1] - top]);
+                    view
+                });
                 if let Some(renderer) = &mut self.renderer {
                     renderer.shortcuts = shortcuts_view;
                     renderer.helper = helper_view;
+                    renderer.idle_report = idle_report_view.clone();
                     renderer.travel_cube = travel_cube_view;
                     renderer.helper_on = self.helper.enabled;
                     renderer.helper_tip = match self.keybinds.get(keybinds::Command::Helper) {
@@ -2119,6 +2134,18 @@ impl App {
                         self.travel_cube = None;
                     }
                     None => {}
+                }
+                self.held = false;
+                return true;
+            }
+        }
+        // The idle report: OK closes it; its clicks are its own.
+        if self.idle_report.is_some() {
+            let [left, top] = idle_report_position(viewport);
+            let local = [self.cursor[0] - left, self.cursor[1] - top];
+            if idle_report::covers(local) {
+                if idle_report::ok_rect().contains_local(local) {
+                    self.idle_report = None;
                 }
                 self.held = false;
                 return true;
@@ -4209,6 +4236,7 @@ impl App {
     /// The helper's turn: what it decides (`helper.rs`) goes to the server
     /// as the player's own potion, cast or walk would.
     fn run_helper(&mut self) {
+        self.tell_idle_hunt();
         if !self.helper.enabled {
             return;
         }
@@ -4229,6 +4257,19 @@ impl App {
                 helper::Act::Attack(target) => self.helper_attack(target),
                 helper::Act::CastAt { skill, target } => self.helper_cast_at(skill, target),
                 helper::Act::Pickup(uid) => self.helper_pickup(uid),
+                helper::Act::SellJunk => self.helper_sell_junk(),
+                helper::Act::Repair => {
+                    if let Some(network) = &self.network {
+                        network.send_idle(gravak_protocol::IdlePacket::REPAIR, [0; 4]);
+                    }
+                    self.helper_status = "Repairing the worn gear.".into();
+                }
+                helper::Act::Buy { item, count } => {
+                    if let Some(network) = &self.network {
+                        network.send_idle(gravak_protocol::IdlePacket::BUY, [item, u32::from(count), 0, 0]);
+                    }
+                    self.helper_status = format!("Buying {count} {}.", shop::item_name(&mut self.assets, item));
+                }
                 helper::Act::Revive { here } => {
                     self.request_revive(here);
                     self.helper_status = if here { "Reviving here." } else { "Reviving in town." }.into();
@@ -4236,6 +4277,68 @@ impl App {
                 helper::Act::Home(at) => self.helper_home(at, now),
             }
         }
+    }
+
+    /// Tells the server where the helper hunts (or that it stopped), so a
+    /// logout while hunting hunts on (`crate::idle` on the server).
+    fn tell_idle_hunt(&mut self) {
+        if !self.initial_sync_complete || self.network_character_id.is_none() {
+            return;
+        }
+        // In the world: what the idle hunt brought while away (the first
+        // Ready is taken by the login, so it is asked here, once).
+        if !self.idle_asked {
+            self.idle_asked = true;
+            if let Some(network) = &self.network {
+                network.send_idle(gravak_protocol::IdlePacket::BACK, [0; 4]);
+            }
+        }
+        let hunting = (self.helper.enabled && self.helper.hunt).then(|| self.helper_memory.home()).flatten();
+        let told = match hunting {
+            Some(at) => [
+                1,
+                at[0].round().max(0.0) as u32,
+                at[1].round().max(0.0) as u32,
+                u32::from(self.helper.hunt_radius) | (u32::from(self.helper.hunt_levels_above) << 16),
+            ],
+            None => [0; 4],
+        };
+        if self.idle_told == Some(told) {
+            return;
+        }
+        self.idle_told = Some(told);
+        if let Some(network) = &self.network {
+            network.send_idle(gravak_protocol::IdlePacket::HUNT, told);
+        }
+    }
+
+    /// The merchant sells what the Sell All list sells (valuables are
+    /// always kept).
+    fn helper_sell_junk(&mut self) {
+        let Some(viewport) = self.viewport() else {
+            return;
+        };
+        let list = sell_all::SellAllView::open(&mut self.assets, &self.inventory, self.network_character_id, viewport);
+        // What the hunt lives on stays: potions and arrows.
+        let junk: Vec<_> = list
+            .to_sell(&self.inventory)
+            .into_iter()
+            .filter(|item| {
+                shop::health_recovery_for_item(item.item_type).is_none()
+                    && shop::mana_recovery_for_item(item.item_type).is_none()
+                    && !character::is_arrow(item.item_type)
+            })
+            .collect();
+        if junk.is_empty() {
+            self.helper_status = "The bag is full, with nothing to sell.".into();
+            return;
+        }
+        if let Some(network) = &self.network {
+            for item in &junk {
+                network.send_idle(gravak_protocol::IdlePacket::SELL, [item.uid, 0, 0, 0]);
+            }
+        }
+        self.helper_status = format!("Sold {} items of junk.", junk.len());
     }
 
     /// What the helper sees: the hero, the bag's potions, the team.
@@ -4328,6 +4431,12 @@ impl App {
             dead_for: self.dead_since.map_or(0.0, |died_at| now - died_at),
             // Heaven's Blessing (status bit 49).
             blessed: flags & (1 << 49) != 0,
+            free_slots: helper::BAG_SLOTS.saturating_sub(self.inventory.len()),
+            // Worn gear below a third of its durability.
+            worn_low: self
+                .equipment
+                .iter()
+                .any(|item| item.max_durability > 0 && u32::from(item.durability) * 3 < u32::from(item.max_durability)),
         }
     }
 
@@ -5544,6 +5653,24 @@ impl App {
                 self.level = self.level.max(level);
                 self.level_up_until = self.started.elapsed().as_secs_f32() + LEVEL_UP_DURATION;
             }
+            NetworkEvent::IdleLine(line) => {
+                let label = if line.kind == gravak_protocol::IdleLine::KILLS {
+                    line.name.clone()
+                } else {
+                    shop::item_name(&mut self.assets, line.id)
+                };
+                if line.index == 0 {
+                    self.idle_lines.clear();
+                }
+                self.idle_lines.push(idle_report::Line { kind: line.kind, label, amount: line.amount });
+            }
+            NetworkEvent::IdleReport(report) => {
+                self.idle_report = Some(idle_report::IdleReportView {
+                    report,
+                    lines: idle_report::grouped_lines(std::mem::take(&mut self.idle_lines)),
+                    ok_hovered: false,
+                });
+            }
             NetworkEvent::Ready(ready) => {
                 self.own_mesh = ready.mesh;
                 self.player.position = ready.position.map(|value| value as f32);
@@ -5556,6 +5683,10 @@ impl App {
                 self.maximum_mana = ready.maximum_mana;
                 self.level = ready.level;
                 self.initial_sync_complete = true;
+                // In the world (again): the server hears of the hunt anew,
+                // and tells what the idle hunt brought while away.
+                self.idle_told = None;
+                self.idle_asked = false;
                 self.experience = ready.experience;
                 self.character.strength = ready.strength;
                 self.character.agility = ready.agility;
@@ -10365,6 +10496,14 @@ pub(crate) fn travel_cube_position(viewport: [f32; 2]) -> [f32; 2] {
     ]
 }
 
+/// The idle report's corner: centred on the screen.
+pub(crate) fn idle_report_position(viewport: [f32; 2]) -> [f32; 2] {
+    [
+        ((viewport[0] - idle_report::SIZE[0] as f32) * 0.5).max(8.0).round(),
+        ((viewport[1] - idle_report::SIZE[1] as f32) * 0.5).max(8.0).round(),
+    ]
+}
+
 /// The helper's window's corner: centred on the screen.
 pub(crate) fn helper_position(viewport: [f32; 2]) -> [f32; 2] {
     [
@@ -11045,6 +11184,10 @@ fn run() -> Result<()> {
         ping_sent: f32::NEG_INFINITY,
         presence: discord::Presence::start(),
         helper_home_retry: 0.0,
+        idle_told: None,
+        idle_asked: false,
+        idle_lines: Vec::new(),
+        idle_report: None,
         fps_frames: 0,
         fps_window: 0.0,
         fps: 0,

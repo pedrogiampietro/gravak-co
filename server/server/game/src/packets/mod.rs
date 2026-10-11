@@ -162,6 +162,8 @@ pub use msg_highscores::{MsgHighscoreRow, MsgHighscoreState, MsgHighscores};
 mod msg_rift;
 pub use msg_rift::MsgRift;
 mod msg_daily_reward;
+mod msg_idle;
+pub use msg_idle::{MsgIdle, MsgIdleLine, MsgIdleReport};
 pub use msg_daily_reward::{send_wall, MsgDailyReward, MsgDailyRewardChoice, MsgDailyRewardState};
 mod msg_store;
 pub use msg_store::{expire_vip, load_vip, send_store, show_vip, MsgStore, MsgStoreProduct, MsgStoreState};

@@ -256,6 +256,9 @@ pub enum NetworkEvent {
     DailyRewardChoice(gravak_protocol::DailyRewardChoice),
     /// Where the hero stands in the cycle: the Reward Wall opens on it.
     DailyRewardState(gravak_protocol::DailyRewardState),
+    /// What the time away brought, and its lines (which come first).
+    IdleReport(gravak_protocol::IdleReport),
+    IdleLine(gravak_protocol::IdleLine),
     /// Where the team's Rift run stands.
     Rift(gravak_protocol::RiftState),
     /// One ranked character of the Highscores.
@@ -513,6 +516,11 @@ pub(crate) enum NetworkCommand {
     DailyReward {
         action: u32,
         param: u32,
+    },
+    /// A helper's request to the idle hunt or its merchant.
+    Idle {
+        action: u32,
+        params: [u32; 4],
     },
     /// A Highscores page.
     Highscores {
@@ -845,6 +853,8 @@ impl NetworkHandle {
                 | NetworkEvent::StorePurchase(_)
                 | NetworkEvent::DailyRewardChoice(_)
                 | NetworkEvent::DailyRewardState(_)
+                | NetworkEvent::IdleReport(_)
+                | NetworkEvent::IdleLine(_)
                 | NetworkEvent::Rift(_)
                 | NetworkEvent::HighscoreRow(_)
                 | NetworkEvent::WhisperCard(_)
@@ -948,6 +958,12 @@ impl NetworkHandle {
     /// Asks for the hero's own nobility (rank, seat, Top titles).
     pub fn request_nobility_status(&self) {
         let _ = self.commands.send(NetworkCommand::NobilityStatus);
+    }
+
+    /// A helper's request to the idle hunt or its merchant (`IdlePacket`
+    /// constants).
+    pub fn send_idle(&self, action: u32, params: [u32; 4]) {
+        let _ = self.commands.send(NetworkCommand::Idle { action, params });
     }
 
     /// A Reward Shrine request (`DailyRewardPacket` constants).
@@ -1686,6 +1702,12 @@ pub(crate) async fn play(
                 Some(GameEvent::DailyRewardState(state)) => {
                     let _ = events.send(NetworkEvent::DailyRewardState(state));
                 }
+                Some(GameEvent::IdleReport(report)) => {
+                    let _ = events.send(NetworkEvent::IdleReport(report));
+                }
+                Some(GameEvent::IdleLine(line)) => {
+                    let _ = events.send(NetworkEvent::IdleLine(line));
+                }
                 Some(GameEvent::Rift(state)) => {
                     let _ = events.send(NetworkEvent::Rift(state));
                 }
@@ -2290,6 +2312,12 @@ pub(crate) async fn play(
                 Some(NetworkCommand::Highscores { category, profession, page }) => {
                     session
                         .send(&gravak_protocol::HighscoresPacket::new(category, profession, page))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::Idle { action, params }) => {
+                    session
+                        .send(&gravak_protocol::IdlePacket::new(action, params))
                         .await
                         .map_err(|error| error.to_string())?;
                 }

@@ -33,6 +33,10 @@ impl TQServer for GameServer {
             let mymap_id = me.entity().map_id();
             tracing::info!(target: "login", map = mymap_id, "{} left the world", me.entity().name());
             me.save(state).await?;
+            // Hunting with the helper, the time away is hunted on.
+            if let Err(error) = game::idle::logged_out(state, me).await {
+                tracing::warn!(%error, "Could not keep the idle hunt");
+            }
             me.try_screen()?.remove_from_observers().await?;
             ActorState::dispose(&actor, actor.handle()).await?;
             if let Err(error) = game::packets::left_team_on_logout(state, me.id()).await {
@@ -95,6 +99,7 @@ pub enum Handler {
     MsgBounty,
     MsgStore,
     MsgDailyReward,
+    MsgIdle,
     MsgHighscores,
     MsgNobility,
     MsgNobilityRanking,

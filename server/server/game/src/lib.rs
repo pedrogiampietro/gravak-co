@@ -64,6 +64,7 @@ pub use error::Error;
 pub mod packets;
 pub mod player_shop;
 pub mod offline_tg;
+pub mod idle;
 pub mod payments;
 pub mod pets;
 pub mod quest_givers;

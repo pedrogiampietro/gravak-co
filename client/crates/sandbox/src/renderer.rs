@@ -870,6 +870,8 @@ pub struct Renderer {
     /// The Shortcuts window, while open (set each frame by the app).
     pub shortcuts: Option<crate::keybinds::ShortcutsView>,
     pub helper: Option<crate::helper::HelperView>,
+    /// "While you were away", while it is open (set each frame by the app).
+    pub idle_report: Option<crate::idle_report::IdleReportView>,
     pub travel_cube: Option<crate::travel_cube::TravelCubeView>,
     /// Weapon swings playing (`Action3DEffect.ini` `Flash…`): whose (`None`
     /// the hero), the effect and when it began.
@@ -1127,6 +1129,7 @@ impl Renderer {
             effect_tint: None,
             shortcuts: None,
             helper: None,
+            idle_report: None,
             travel_cube: None,
             weapon_flashes: Vec::new(),
             last_hero_swing: 0,
@@ -6478,6 +6481,27 @@ impl Renderer {
                 draws.push(Draw {
                     texture: key,
                     vertices: quad(crate::helper_position(viewport), texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // "While you were away", over the other windows.
+        if let Some(view) = self.idle_report.clone() {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            view.hash(&mut hasher);
+            let key = format!("@idle-report-{}", hasher.finish());
+            if !self.textures.contains_key(&key) {
+                let font = crate::labels::font()?;
+                let mut content = image::RgbaImage::new(crate::idle_report::SIZE[0], crate::idle_report::SIZE[1]);
+                crate::idle_report::draw(&mut content, &font, &view);
+                self.upload(&key, crate::shop::framed(assets, content, "Helper", false)?);
+            }
+            if let Some(texture) = self.textures.get(&key) {
+                draws.push(Draw {
+                    texture: key,
+                    vertices: quad(crate::idle_report_position(viewport), texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });

@@ -5,7 +5,10 @@
 //! get; Pray on the fallen; following the leader; and hunting: the nearest
 //! monster around the spot where the hunt began, with a blow or the skill
 //! bar's skill, and what falls picked up; fallen, revived when the server
-//! allows it and walked back to the spot.
+//! allows it and walked back to the spot. Its merchant sells the junk when
+//! the bag fills, repairs worn gear and buys the slots' potions when they
+//! run out, at the shops' prices, wherever the hero is (`crate::idle` on
+//! the server).
 //!
 //! It only does what a player could: every potion, cast and step goes to the
 //! server as the player's own would, and is checked there the same way. The
@@ -73,6 +76,12 @@ pub const BAG_SLOTS: usize = 40;
 /// and the hunt asks a moment later; refused, it asks again after a while.
 const REVIVE_AFTER: f32 = 20.5;
 const REVIVE_AGAIN: f32 = 5.0;
+/// The merchant sells when this few slots are left free.
+const SELL_WHEN_FREE: usize = 2;
+/// Between two of the merchant's errands of a kind.
+const SELL_GAP: f32 = 30.0;
+const REPAIR_GAP: f32 = 60.0;
+const BUY_GAP: f32 = 30.0;
 
 pub fn skill_name(skill: u32) -> &'static str {
     match skill {
@@ -218,6 +227,13 @@ pub struct Settings {
     pub hunt_levels_above: u8,
     /// Fallen while hunting, revive and walk back to the spot.
     pub hunt_revive: bool,
+    /// The merchant: sell the junk when the bag fills (the Sell All list),
+    /// repair worn gear, buy `buy_amount` of a slot's potion when none is
+    /// left.
+    pub auto_sell: bool,
+    pub auto_repair: bool,
+    pub auto_buy: bool,
+    pub buy_amount: u8,
 }
 
 impl Default for Settings {
@@ -241,6 +257,10 @@ impl Default for Settings {
             hunt_skill: false,
             hunt_levels_above: 3,
             hunt_revive: true,
+            auto_sell: false,
+            auto_repair: true,
+            auto_buy: true,
+            buy_amount: 10,
         }
     }
 }
@@ -254,6 +274,9 @@ pub enum Toggle {
     Loot,
     HuntSkill,
     HuntRevive,
+    AutoSell,
+    AutoRepair,
+    AutoBuy,
 }
 
 /// A number the arrows change.
@@ -264,6 +287,7 @@ pub enum Stepper {
     FollowDistance,
     HuntRadius,
     HuntLevels,
+    BuyAmount,
 }
 
 impl Stepper {
@@ -273,6 +297,7 @@ impl Stepper {
             Self::FollowDistance => (1, 1, 10),
             Self::HuntRadius => (2, 4, 30),
             Self::HuntLevels => (1, 0, 20),
+            Self::BuyAmount => (5, 5, 20),
             _ => (5, 5, 95),
         }
     }
@@ -294,6 +319,9 @@ impl Settings {
             Toggle::Loot => &mut self.loot,
             Toggle::HuntSkill => &mut self.hunt_skill,
             Toggle::HuntRevive => &mut self.hunt_revive,
+            Toggle::AutoSell => &mut self.auto_sell,
+            Toggle::AutoRepair => &mut self.auto_repair,
+            Toggle::AutoBuy => &mut self.auto_buy,
         };
         *value = !*value;
     }
@@ -307,6 +335,7 @@ impl Settings {
             Stepper::FollowDistance => &mut self.follow_distance,
             Stepper::HuntRadius => &mut self.hunt_radius,
             Stepper::HuntLevels => &mut self.hunt_levels_above,
+            Stepper::BuyAmount => &mut self.buy_amount,
         };
         *value = if up { value.saturating_add(step) } else { value.saturating_sub(step) }.clamp(least, most);
     }
@@ -326,6 +355,10 @@ impl Settings {
             format!("hunt_skill={}", flag(self.hunt_skill)),
             format!("hunt_levels_above={}", self.hunt_levels_above),
             format!("hunt_revive={}", flag(self.hunt_revive)),
+            format!("auto_sell={}", flag(self.auto_sell)),
+            format!("auto_repair={}", flag(self.auto_repair)),
+            format!("auto_buy={}", flag(self.auto_buy)),
+            format!("buy_amount={}", self.buy_amount),
         ];
         for (index, slot) in self.slots.iter().enumerate() {
             let using = match slot.using {
@@ -369,6 +402,10 @@ impl Settings {
                 "loot" => settings.loot = flag,
                 "hunt_skill" => settings.hunt_skill = flag,
                 "hunt_revive" => settings.hunt_revive = flag,
+                "auto_sell" => settings.auto_sell = flag,
+                "auto_repair" => settings.auto_repair = flag,
+                "auto_buy" => settings.auto_buy = flag,
+                "buy_amount" => settings.buy_amount = number(5, 20).unwrap_or(settings.buy_amount),
                 "hunt_levels_above" => settings.hunt_levels_above = number(0, 20).unwrap_or(settings.hunt_levels_above),
                 "team_heal_skill" => {
                     settings.team_heal_skill =
@@ -490,6 +527,10 @@ pub struct World {
     pub dead_for: f32,
     /// Under Heaven's Blessing, which revives where the body lies.
     pub blessed: bool,
+    /// The bag's free slots.
+    pub free_slots: usize,
+    /// Some worn gear is low on durability.
+    pub worn_low: bool,
 }
 
 /// A monster as the client knows it.
@@ -519,6 +560,12 @@ pub enum Act {
     Home([f32; 2]),
     /// Revive: where the body lies (`here`), or in town.
     Revive { here: bool },
+    /// The merchant sells the junk in the bag.
+    SellJunk,
+    /// The merchant repairs what is worn.
+    Repair,
+    /// The merchant brings `count` of a potion.
+    Buy { item: u32, count: u8 },
 }
 
 /// What the helper remembers between frames.
@@ -537,6 +584,16 @@ pub struct Memory {
     /// Monsters and items left alone until then.
     left_alone: HashMap<u32, f32>,
     next_revive: f32,
+    next_sell: f32,
+    next_repair: f32,
+    next_buy: f32,
+}
+
+impl Memory {
+    /// Where the hunt began, when it is hunting.
+    pub fn home(&self) -> Option<[f32; 2]> {
+        self.home.map(|(_, at)| at)
+    }
 }
 
 fn distance(from: [f32; 2], to: [f32; 2]) -> f32 {
@@ -615,6 +672,11 @@ pub fn decide(settings: &Settings, world: &World, memory: &mut Memory, now: f32)
         acts.push(Act::Follow(at));
     }
 
+    // The merchant's errands, one a frame.
+    if let Some(errand) = merchant(settings, world, memory, now) {
+        acts.push(errand);
+    }
+
     // Hunting, when not following somewhere.
     if !settings.hunt {
         memory.home = None;
@@ -624,6 +686,31 @@ pub fn decide(settings: &Settings, world: &World, memory: &mut Memory, now: f32)
         acts.push(act);
     }
     acts
+}
+
+/// The merchant's next errand: the junk sold when the bag is nearly full,
+/// worn gear repaired, a slot's potion brought when none is left.
+fn merchant(settings: &Settings, world: &World, memory: &mut Memory, now: f32) -> Option<Act> {
+    if settings.auto_sell && world.free_slots <= SELL_WHEN_FREE && now >= memory.next_sell {
+        memory.next_sell = now + SELL_GAP;
+        return Some(Act::SellJunk);
+    }
+    if settings.auto_repair && world.worn_low && now >= memory.next_repair {
+        memory.next_repair = now + REPAIR_GAP;
+        return Some(Act::Repair);
+    }
+    if settings.auto_buy && world.free_slots > 0 && now >= memory.next_buy {
+        let wanted = settings.slots.iter().find_map(|slot| match slot.using {
+            Use::Item(item) if !world.potions.iter().any(|(_, kind)| *kind == item) => Some(item),
+            _ => None,
+        });
+        if let Some(item) = wanted {
+            memory.next_buy = now + BUY_GAP;
+            let count = settings.buy_amount.min(u8::try_from(world.free_slots).unwrap_or(u8::MAX));
+            return Some(Act::Buy { item, count });
+        }
+    }
+    None
 }
 
 /// The hunt's next step: out of mana, a strike instead of the cast; what
@@ -802,10 +889,11 @@ pub enum Tab {
     Support,
     Follow,
     Hunt,
+    Supplies,
 }
 
 impl Tab {
-    pub const ALL: [Self; 4] = [Self::Healing, Self::Support, Self::Follow, Self::Hunt];
+    pub const ALL: [Self; 5] = [Self::Healing, Self::Support, Self::Follow, Self::Hunt, Self::Supplies];
 
     fn label(self) -> &'static str {
         match self {
@@ -813,6 +901,7 @@ impl Tab {
             Self::Support => "Support",
             Self::Follow => "Follow",
             Self::Hunt => "Hunt",
+            Self::Supplies => "Supplies",
         }
     }
 
@@ -822,6 +911,7 @@ impl Tab {
             Self::Support => "Pick up to two players; the helper looks after only them.",
             Self::Follow => "Walking after the team's leader.",
             Self::Hunt => "Fighting by itself around where the hunt begins.",
+            Self::Supplies => "Selling, repairing and buying potions wherever you are.",
         }
     }
 }
@@ -1121,8 +1211,9 @@ pub fn action_at(view: &HelperView, local: [f32; 2]) -> Option<HelperAction> {
                 return Some(HelperAction::Toggle(Toggle::Follow));
             }
         }
-        Tab::Hunt => {
-            for (index, (toggle, stepper)) in HUNT_ROWS.into_iter().enumerate() {
+        Tab::Hunt | Tab::Supplies => {
+            let rows: &[(Option<Toggle>, Option<Stepper>)] = if view.tab == Tab::Hunt { &HUNT_ROWS } else { &SUPPLY_ROWS };
+            for (index, &(toggle, stepper)) in rows.iter().enumerate() {
                 let row = row_rect(index);
                 if let Some(stepper) = stepper
                     && let Some(action) = stepper_at(row_stepper(row), stepper, local)
@@ -1139,6 +1230,13 @@ pub fn action_at(view: &HelperView, local: [f32; 2]) -> Option<HelperAction> {
     }
     None
 }
+
+/// The Supplies tab's rows.
+const SUPPLY_ROWS: [(Option<Toggle>, Option<Stepper>); 3] = [
+    (Some(Toggle::AutoSell), None),
+    (Some(Toggle::AutoRepair), None),
+    (Some(Toggle::AutoBuy), Some(Stepper::BuyAmount)),
+];
 
 /// The Hunt tab's rows: what each ticks, and what its arrows change.
 const HUNT_ROWS: [(Option<Toggle>, Option<Stepper>); 5] = [
@@ -1299,6 +1397,7 @@ pub fn draw(image: &mut RgbaImage, font: &Font, view: &HelperView, assets: &mut 
         Tab::Support => draw_support(image, font, view, assets),
         Tab::Follow => draw_follow(image, font, view),
         Tab::Hunt => draw_hunt(image, font, view),
+        Tab::Supplies => draw_supplies(image, font, view),
     }
 }
 
@@ -1323,6 +1422,44 @@ fn draw_follow(image: &mut RgbaImage, font: &Font, view: &HelperView) {
     text(image, font, "Walks only while you are not doing something yourself.", MUTED, CONTENT_LEFT, SIZE[1] as i32 - 50, 9.0);
 }
 
+fn draw_supplies(image: &mut RgbaImage, font: &Font, view: &HelperView) {
+    let settings = &view.settings;
+    let rows: [(&str, &str, bool, Option<String>); 3] = [
+        ("Sell the junk when the bag fills", "Your Sell All list; valuables are always kept", settings.auto_sell, None),
+        ("Repair worn gear", "Before it breaks", settings.auto_repair, None),
+        ("Buy potions when they run out", "The Healing slots' own potions", settings.auto_buy, Some(format!("{} each", settings.buy_amount))),
+    ];
+    draw_rows(image, font, view, &rows, &SUPPLY_ROWS);
+    text(image, font, "At the shops' own prices, wherever you are.", MUTED, CONTENT_LEFT, SIZE[1] as i32 - 50, 9.0);
+}
+
+/// Rows of ticks and arrows (the Hunt and Supplies tabs).
+fn draw_rows(
+    image: &mut RgbaImage,
+    font: &Font,
+    view: &HelperView,
+    rows: &[(&str, &str, bool, Option<String>)],
+    controls: &[(Option<Toggle>, Option<Stepper>)],
+) {
+    for (index, ((title, line, on, value), (toggle, stepper))) in rows.iter().zip(controls).enumerate() {
+        let row = row_rect(index);
+        let hovered = toggle.is_some_and(|toggle| view.hover == Some(HelperAction::Toggle(toggle)));
+        draw_card(image, row, if hovered { WidgetState::Hovered } else { WidgetState::Normal });
+        fill(image, UiRect::new(row.x, row.y, 3, row.height), if *on { GREEN } else { [70, 90, 100, 255] });
+        let left = if toggle.is_some() {
+            check(image, UiRect::new(row.x + 12, row.y + 14, 18, 18), *on);
+            row.x + 40
+        } else {
+            row.x + 14
+        };
+        text(image, font, title, if *on { TEXT } else { MUTED }, left, row.y + 8, 11.0);
+        text(image, font, line, MUTED, left, row.y + 25, 9.0);
+        if let (Some(stepper), Some(value)) = (stepper, value) {
+            spinner(image, font, row_stepper(row), value, spinner_hover(view, *stepper));
+        }
+    }
+}
+
 fn draw_hunt(image: &mut RgbaImage, font: &Font, view: &HelperView) {
     let settings = &view.settings;
     let rows: [(&str, &str, bool, Option<String>); 5] = [
@@ -1332,23 +1469,7 @@ fn draw_hunt(image: &mut RgbaImage, font: &Font, view: &HelperView) {
         ("Strongest monsters", "Up to this many levels above yours", true, Some(format!("+{} levels", settings.hunt_levels_above))),
         ("Revive and come back", "Fallen, revives when it may and walks back", settings.hunt_revive, None),
     ];
-    for (index, ((title, line, on, value), (toggle, stepper))) in rows.into_iter().zip(HUNT_ROWS).enumerate() {
-        let row = row_rect(index);
-        let hovered = toggle.is_some_and(|toggle| view.hover == Some(HelperAction::Toggle(toggle)));
-        draw_card(image, row, if hovered { WidgetState::Hovered } else { WidgetState::Normal });
-        fill(image, UiRect::new(row.x, row.y, 3, row.height), if on { GREEN } else { [70, 90, 100, 255] });
-        let left = if toggle.is_some() {
-            check(image, UiRect::new(row.x + 12, row.y + 14, 18, 18), on);
-            row.x + 40
-        } else {
-            row.x + 14
-        };
-        text(image, font, title, if on { TEXT } else { MUTED }, left, row.y + 8, 11.0);
-        text(image, font, line, MUTED, left, row.y + 25, 9.0);
-        if let (Some(stepper), Some(value)) = (stepper, value) {
-            spinner(image, font, row_stepper(row), &value, spinner_hover(view, stepper));
-        }
-    }
+    draw_rows(image, font, view, &rows, &HUNT_ROWS);
     let note = if settings.follow && view.leader.is_some() {
         "Following a leader: hunts around them."
     } else {
@@ -1779,6 +1900,31 @@ mod tests {
     }
 
     #[test]
+    fn the_merchant_sells_repairs_and_brings_potions() {
+        let mut settings = Settings { enabled: true, auto_sell: true, ..Settings::default() };
+        settings.slots[0] = Slot { using: Use::Item(LIFE_POTION), percent: 50 };
+        let mut world = world();
+        world.free_slots = 10;
+        world.potions = vec![(9, LIFE_POTION)];
+        let mut memory = Memory::default();
+        // Nothing wanted.
+        assert!(decide(&settings, &world, &mut memory, 0.0).is_empty());
+        // The bag nearly full: the junk goes, once in a while.
+        world.free_slots = 2;
+        assert_eq!(decide(&settings, &world, &mut memory, 1.0), vec![Act::SellJunk]);
+        assert!(decide(&settings, &world, &mut memory, 2.0).is_empty());
+        // Worn gear.
+        world.worn_low = true;
+        assert_eq!(decide(&settings, &world, &mut memory, 3.0), vec![Act::Repair]);
+        // The slot's potion run out: brought, as many as the bag takes.
+        world.potions.clear();
+        assert_eq!(decide(&settings, &world, &mut memory, 4.0), vec![Act::Buy { item: LIFE_POTION, count: 2 }]);
+        // Turned off, none of it.
+        let off = Settings { auto_sell: false, auto_repair: false, auto_buy: false, ..settings };
+        assert!(decide(&off, &world, &mut Memory::default(), 5.0).is_empty());
+    }
+
+    #[test]
     fn settings_write_and_read_back() {
         let mut settings = on();
         settings.slots[0] = Slot { using: Use::Item(LIFE_POTION), percent: 55 };
@@ -1980,6 +2126,7 @@ mod tests {
             ("support", HelperView { tab: Tab::Support, ..base.clone() }),
             ("choice", HelperView { tab: Tab::Healing, choosing: Some(Choosing::Slot(0)), ..base.clone() }),
             ("follow", HelperView { tab: Tab::Follow, ..base.clone() }),
+            ("supplies", HelperView { tab: Tab::Supplies, ..base.clone() }),
             (
                 "hunt",
                 HelperView {

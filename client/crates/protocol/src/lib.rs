@@ -44,6 +44,9 @@ pub const MSG_STATUS_TIMERS: u16 = 9120;
 /// hero stands in it.
 pub const MSG_DAILY_REWARD_CHOICE: u16 = 9131;
 pub const MSG_DAILY_REWARD_STATE: u16 = 9132;
+/// Gravak's idle hunt: what the time away brought, and its lines.
+pub const MSG_IDLE_REPORT: u16 = 9191;
+pub const MSG_IDLE_LINE: u16 = 9192;
 /// Gravak's Rifts: where the team's run stands.
 pub const MSG_RIFT: u16 = 9180;
 /// Gravak's Highscores: one ranked character, and the page shown.
@@ -487,6 +490,70 @@ pub struct DailyRewardState {
     pub day: u32,
     pub claimed: u32,
     pub next_day_at: u64,
+}
+
+/// A helper's request to the idle hunt and its merchant (`IdlePacket`
+/// constants).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PacketID)]
+#[packet(id = 9190)]
+pub struct IdlePacket {
+    pub action: u32,
+    pub param0: u32,
+    pub param1: u32,
+    pub param2: u32,
+    pub param3: u32,
+}
+
+impl IdlePacket {
+    /// Hunting (`param0` 1) at x `param1`, y `param2`; `param3` the reach
+    /// (low half) and the levels above (high half). `param0` 0: stopped.
+    pub const HUNT: u32 = 1;
+    /// In the world: what the time away brought.
+    pub const BACK: u32 = 2;
+    /// Sell bag item `param0`.
+    pub const SELL: u32 = 3;
+    /// Repair what is worn.
+    pub const REPAIR: u32 = 4;
+    /// Buy `param1` of potion `param0`.
+    pub const BUY: u32 = 5;
+
+    pub fn new(action: u32, params: [u32; 4]) -> Self {
+        let [param0, param1, param2, param3] = params;
+        Self { action, param0, param1, param2, param3 }
+    }
+}
+
+/// What the time away brought (its lines came first).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9191)]
+pub struct IdleReport {
+    pub seconds: u32,
+    pub kills: u32,
+    pub experience: u64,
+    pub level_before: u32,
+    pub level_after: u32,
+    pub silver: u32,
+    pub kept: u32,
+    pub sold: u32,
+}
+
+/// One line of the report, `index` of `total`: monsters felled of a kind
+/// (`name`, kind 0), or an item kept (1) or sold (2) by its type (`id`).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash, PacketID)]
+#[packet(id = 9192)]
+pub struct IdleLine {
+    pub index: u32,
+    pub total: u32,
+    pub kind: u32,
+    pub id: u32,
+    pub amount: u32,
+    pub name: String,
+}
+
+impl IdleLine {
+    pub const KILLS: u32 = 0;
+    pub const KEPT: u32 = 1;
+    pub const SOLD: u32 = 2;
 }
 
 /// Where a Rift run stands (`phase` 0 hides the tracker; 1 clearing, 2 the
@@ -2166,6 +2233,8 @@ pub enum GameEvent {
     StoreState(StoreState),
     DailyRewardChoice(DailyRewardChoice),
     DailyRewardState(DailyRewardState),
+    IdleReport(IdleReport),
+    IdleLine(IdleLine),
     Rift(RiftState),
     HighscoreRow(HighscoreRow),
     WhisperCard(WhisperCard),
@@ -2303,6 +2372,8 @@ fn decode_game_event(id: u16, body: &Bytes) -> Result<GameEvent, ProtocolError> 
         MSG_DAILY_REWARD_STATE => Ok(GameEvent::DailyRewardState(
             DailyRewardState::decode(body).map_err(ProtocolError::Decode)?,
         )),
+        MSG_IDLE_REPORT => Ok(GameEvent::IdleReport(IdleReport::decode(body).map_err(ProtocolError::Decode)?)),
+        MSG_IDLE_LINE => Ok(GameEvent::IdleLine(IdleLine::decode(body).map_err(ProtocolError::Decode)?)),
         MSG_RIFT => Ok(GameEvent::Rift(RiftState::decode(body).map_err(ProtocolError::Decode)?)),
         MSG_WHISPER_CARD => Ok(GameEvent::WhisperCard(
             WhisperCard::decode(body).map_err(ProtocolError::Decode)?,
