@@ -19,6 +19,11 @@ use std::time::{Duration, Instant};
 /// Its art keys: `logo`, `trojan`, `warrior`, `archer`, `taoist`.
 const APPLICATION_ID: &str = "1448499712419168288";
 
+/// The buttons the profile offers whoever sees it (Discord shows them to
+/// others, not to the player): the site, and the community's server.
+const SITE: &str = "https://gravak.fun";
+const DISCORD_INVITE: &str = "https://discord.com/invite/Tzjc5sM9Ry";
+
 /// Discord takes five updates in twenty seconds; one in five is plenty.
 const MIN_INTERVAL: Duration = Duration::from_secs(5);
 /// How long to wait before looking for Discord again.
@@ -105,17 +110,25 @@ fn run(id: String, started: u64, updates: Receiver<Activity>) {
     }
 }
 
-/// The class's art key and name.
-fn class_art(class: u8) -> (&'static str, &'static str) {
-    match class {
-        10..=15 => ("trojan", "Trojan"),
-        20..=25 => ("warrior", "Warrior"),
-        40..=45 => ("archer", "Archer"),
-        100..=101 => ("taoist", "Taoist"),
-        132..=135 => ("taoist", "Water Taoist"),
-        142..=145 => ("taoist", "Fire Taoist"),
-        _ => ("logo", "Adventurer"),
+/// The class's art key and its name as the original's
+/// `ProfessionalName.ini` gives it, spaced: "Tiger Trojan", "Fire Saint".
+fn class_art(class: u8) -> (&'static str, String) {
+    let art = match class {
+        10..=15 => "trojan",
+        20..=25 => "warrior",
+        40..=45 => "archer",
+        100..=199 => "taoist",
+        _ => "logo",
+    };
+    let name = crate::shop::class_name(class);
+    let mut spaced = String::with_capacity(name.len() + 2);
+    for (index, letter) in name.chars().enumerate() {
+        if index > 0 && letter.is_uppercase() {
+            spaced.push(' ');
+        }
+        spaced.push(letter);
     }
+    (art, spaced)
 }
 
 fn activity_json(activity: &Activity, started: u64) -> Value {
@@ -129,11 +142,17 @@ fn activity_json(activity: &Activity, started: u64) -> Value {
             (format!("{name} · Lv {level} {class_name}"), map.clone())
         }
     };
+    let buttons: Vec<Value> = [("Jogar Gravak", SITE), ("Entrar no Discord", DISCORD_INVITE)]
+        .into_iter()
+        .filter(|(_, url)| !url.is_empty())
+        .map(|(label, url)| json!({ "label": label, "url": url }))
+        .collect();
     json!({
         "details": details,
         "state": state,
         "timestamps": { "start": started },
         "assets": assets,
+        "buttons": buttons,
         "instance": false,
     })
 }
@@ -219,11 +238,15 @@ mod tests {
     fn the_profile_shows_the_hero_and_where_they_are() {
         let activity = Activity::Playing { name: "Pedro".into(), level: 130, class: 15, map: "Twin City".into() };
         let json = activity_json(&activity, 1_700_000_000);
-        assert_eq!(json["details"], "Pedro · Lv 130 Trojan");
+        assert_eq!(json["details"], "Pedro · Lv 130 Trojan Master");
         assert_eq!(json["state"], "Twin City");
         assert_eq!(json["assets"]["large_image"], "logo");
         assert_eq!(json["assets"]["small_image"], "trojan");
         assert_eq!(json["timestamps"]["start"], 1_700_000_000u64);
         assert_eq!(activity_json(&Activity::Menu, 0)["details"], "In the menu");
+        assert_eq!(json["buttons"][0]["url"], SITE);
+        assert_eq!(json["buttons"][1]["label"], "Entrar no Discord");
+        assert_eq!(class_art(13), ("trojan", "Tiger Trojan".to_owned()));
+        assert_eq!(class_art(145), ("taoist", "Fire Saint".to_owned()));
     }
 }
