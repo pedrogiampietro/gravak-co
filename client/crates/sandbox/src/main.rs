@@ -52,6 +52,7 @@ mod sell_all;
 mod shop;
 mod store_panel;
 mod daily_rewards_panel;
+mod discord;
 mod highscores_panel;
 mod nobility_panel;
 mod top_title;
@@ -545,6 +546,9 @@ struct App {
     /// The last ping round trip, and when the last ping was sent.
     ping_ms: Option<u32>,
     ping_sent: f32,
+    /// "Playing Gravak-Co" on the player's Discord profile, while Discord
+    /// runs.
+    presence: Option<discord::Presence>,
     /// Frames drawn in the current one-second window, and the last count.
     fps_frames: u32,
     fps_window: f32,
@@ -1834,6 +1838,7 @@ impl ApplicationHandler for App {
         self.poll_team_positions();
         self.run_helper();
         self.send_ping();
+        self.update_presence();
         // Closing the trade window by any means (its X, Escape, another
         // panel) cancels the trade, so the partner's window closes too.
         if self.trade.active && self.quick_panel != Some(shop::QuickPanel::Trade) {
@@ -2907,6 +2912,23 @@ impl App {
         self.ping_sent = now;
         if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
             network.ping(character_id, self.started.elapsed().as_millis() as u32);
+        }
+    }
+
+    /// The hero and their map on the player's Discord profile.
+    fn update_presence(&mut self) {
+        let activity = if self.network_character_id.is_some() && !self.character.name.is_empty() {
+            discord::Activity::Playing {
+                name: self.character.name.clone(),
+                level: self.level,
+                class: self.character.current_class,
+                map: map_name(self.map.id),
+            }
+        } else {
+            discord::Activity::Menu
+        };
+        if let Some(presence) = &mut self.presence {
+            presence.set(activity);
         }
     }
 
@@ -10910,6 +10932,7 @@ fn run() -> Result<()> {
         options_save_at: None,
         ping_ms: None,
         ping_sent: f32::NEG_INFINITY,
+        presence: discord::Presence::start(),
         fps_frames: 0,
         fps_window: 0.0,
         fps: 0,
