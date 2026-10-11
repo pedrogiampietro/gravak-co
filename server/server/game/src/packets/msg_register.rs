@@ -321,11 +321,13 @@ mod tests {
     async fn new_characters_find_a_weapon_of_their_class_and_potions() -> Result<(), Error> {
         let pool = tq_db::testing::pool().await;
         let catalog = crate::shop::ShopCatalog::default();
+        // The level 1 weapons of migration 102: the LuckyBlade, the LuckyBow
+        // with its arrows, the LuckyBacksword.
         for (class, weapons) in [
-            (BaseClass::Trojan, vec![410_302]),
-            (BaseClass::Warrior, vec![510_009]),
-            (BaseClass::Archer, vec![500_009, 1_050_000, 1_050_000]),
-            (BaseClass::Taoist, vec![421_009]),
+            (BaseClass::Trojan, vec![410_301]),
+            (BaseClass::Warrior, vec![410_301]),
+            (BaseClass::Archer, vec![500_301, 1_050_000, 1_050_000]),
+            (BaseClass::Taoist, vec![421_301]),
         ] {
             let name = format!("kit{}", u16::from(class));
             let account: i64 = sqlx::query_scalar("INSERT INTO accounts (username, password) VALUES ($1, '') RETURNING account_id")
