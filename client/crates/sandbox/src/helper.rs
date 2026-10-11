@@ -2,7 +2,10 @@
 //! heals for the hero, each used below its own share of life (or mana, for
 //! a mana potion); heals and the Taoist's Stigma, Magic Shield and Star of
 //! Accuracy on up to two players picked from the team, each with what they
-//! get; Pray on the fallen; and following the leader.
+//! get; Pray on the fallen; following the leader; and hunting: the nearest
+//! monster around the spot where the hunt began, with a blow or the skill
+//! bar's skill, and what falls picked up; fallen, revived when the server
+//! allows it and walked back to the spot.
 //!
 //! It only does what a player could: every potion, cast and step goes to the
 //! server as the player's own would, and is checked there the same way. The
@@ -54,6 +57,22 @@ const BUFF_AGAIN: f32 = 5.0;
 /// Magic Shield and Star of Accuracy last 60 to 80 by their level).
 const BUFF_EVERY: f32 = 70.0;
 const FOLLOW_GAP: f32 = 0.5;
+/// Between two of the hunt's choices.
+const HUNT_GAP: f32 = 0.4;
+/// A target or an item chosen again this soon was not reached: it is left
+/// alone for a while.
+const UNREACHED_WITHIN: f32 = 1.5;
+const LEAVE_ALONE: f32 = 20.0;
+/// The hunt goes back to its spot when farther than this from it.
+const HOME_SLACK: f32 = 3.0;
+/// Below this much mana the hunt strikes instead of casting.
+const HUNT_MANA_PERCENT: u32 = 10;
+/// The bag's slots.
+pub const BAG_SLOTS: usize = 40;
+/// The server lets the fallen revive this long after dying (`REVIVE_DELAY`),
+/// and the hunt asks a moment later; refused, it asks again after a while.
+const REVIVE_AFTER: f32 = 20.5;
+const REVIVE_AGAIN: f32 = 5.0;
 
 pub fn skill_name(skill: u32) -> &'static str {
     match skill {
@@ -188,6 +207,17 @@ pub struct Settings {
     pub revive: bool,
     pub follow: bool,
     pub follow_distance: u8,
+    /// Hunting around where it began, within `hunt_radius` cells.
+    pub hunt: bool,
+    pub hunt_radius: u8,
+    /// Picking up what falls.
+    pub loot: bool,
+    /// Casting the skill bar's skill rather than striking.
+    pub hunt_skill: bool,
+    /// Monsters at most this many levels above the hero.
+    pub hunt_levels_above: u8,
+    /// Fallen while hunting, revive and walk back to the spot.
+    pub hunt_revive: bool,
 }
 
 impl Default for Settings {
@@ -205,6 +235,12 @@ impl Default for Settings {
             revive: true,
             follow: false,
             follow_distance: 3,
+            hunt: false,
+            hunt_radius: 10,
+            loot: true,
+            hunt_skill: false,
+            hunt_levels_above: 3,
+            hunt_revive: true,
         }
     }
 }
@@ -214,6 +250,10 @@ impl Default for Settings {
 pub enum Toggle {
     Revive,
     Follow,
+    Hunt,
+    Loot,
+    HuntSkill,
+    HuntRevive,
 }
 
 /// A number the arrows change.
@@ -222,6 +262,8 @@ pub enum Stepper {
     Slot(usize),
     TeamHeal,
     FollowDistance,
+    HuntRadius,
+    HuntLevels,
 }
 
 impl Stepper {
@@ -229,6 +271,8 @@ impl Stepper {
     fn range(self) -> (u8, u8, u8) {
         match self {
             Self::FollowDistance => (1, 1, 10),
+            Self::HuntRadius => (2, 4, 30),
+            Self::HuntLevels => (1, 0, 20),
             _ => (5, 5, 95),
         }
     }
@@ -246,6 +290,10 @@ impl Settings {
         let value = match toggle {
             Toggle::Revive => &mut self.revive,
             Toggle::Follow => &mut self.follow,
+            Toggle::Hunt => &mut self.hunt,
+            Toggle::Loot => &mut self.loot,
+            Toggle::HuntSkill => &mut self.hunt_skill,
+            Toggle::HuntRevive => &mut self.hunt_revive,
         };
         *value = !*value;
     }
@@ -257,6 +305,8 @@ impl Settings {
             Stepper::Slot(index) => &mut self.slots[index.min(SLOTS - 1)].percent,
             Stepper::TeamHeal => &mut self.team_heal_percent,
             Stepper::FollowDistance => &mut self.follow_distance,
+            Stepper::HuntRadius => &mut self.hunt_radius,
+            Stepper::HuntLevels => &mut self.hunt_levels_above,
         };
         *value = if up { value.saturating_add(step) } else { value.saturating_sub(step) }.clamp(least, most);
     }
@@ -270,6 +320,12 @@ impl Settings {
             format!("revive={}", flag(self.revive)),
             format!("follow={}", flag(self.follow)),
             format!("follow_distance={}", self.follow_distance),
+            format!("hunt={}", flag(self.hunt)),
+            format!("hunt_radius={}", self.hunt_radius),
+            format!("loot={}", flag(self.loot)),
+            format!("hunt_skill={}", flag(self.hunt_skill)),
+            format!("hunt_levels_above={}", self.hunt_levels_above),
+            format!("hunt_revive={}", flag(self.hunt_revive)),
         ];
         for (index, slot) in self.slots.iter().enumerate() {
             let using = match slot.using {
@@ -308,6 +364,12 @@ impl Settings {
                 "follow" => settings.follow = flag,
                 "team_heal_percent" => settings.team_heal_percent = number(5, 95).unwrap_or(settings.team_heal_percent),
                 "follow_distance" => settings.follow_distance = number(1, 10).unwrap_or(settings.follow_distance),
+                "hunt" => settings.hunt = flag,
+                "hunt_radius" => settings.hunt_radius = number(4, 30).unwrap_or(settings.hunt_radius),
+                "loot" => settings.loot = flag,
+                "hunt_skill" => settings.hunt_skill = flag,
+                "hunt_revive" => settings.hunt_revive = flag,
+                "hunt_levels_above" => settings.hunt_levels_above = number(0, 20).unwrap_or(settings.hunt_levels_above),
                 "team_heal_skill" => {
                     settings.team_heal_skill =
                         value.parse::<u32>().ok().filter(|skill| HEALS.contains(skill)).unwrap_or(settings.team_heal_skill);
@@ -413,6 +475,31 @@ pub struct World {
     /// Busy with something of the player's own (walking somewhere, an
     /// attack): the helper does not walk then.
     pub busy: bool,
+    pub map: u32,
+    pub level: u16,
+    /// The monsters on screen.
+    pub monsters: Vec<Monster>,
+    /// What lies on the ground: (uid, cell).
+    pub loot: Vec<(u32, [f32; 2])>,
+    pub bag_full: bool,
+    /// The skill bar's skill, when it strikes a target.
+    pub attack_skill: Option<u32>,
+    /// The skill being cast at a target: (target, skill).
+    pub casting: Option<(u32, u32)>,
+    /// How long the hero has lain dead.
+    pub dead_for: f32,
+    /// Under Heaven's Blessing, which revives where the body lies.
+    pub blessed: bool,
+}
+
+/// A monster as the client knows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Monster {
+    pub id: u32,
+    pub name: String,
+    pub level: u16,
+    pub position: [f32; 2],
+    pub alive: bool,
 }
 
 /// Something the helper does.
@@ -422,6 +509,16 @@ pub enum Act {
     Cast { skill: u32, target: u32 },
     /// Walk toward where the leader is.
     Follow([f32; 2]),
+    /// Strike a monster until it falls.
+    Attack(u32),
+    /// Cast a skill at a monster until it falls.
+    CastAt { skill: u32, target: u32 },
+    /// Pick up what lies on the ground.
+    Pickup(u32),
+    /// Walk back to where the hunt began.
+    Home([f32; 2]),
+    /// Revive: where the body lies (`here`), or in town.
+    Revive { here: bool },
 }
 
 /// What the helper remembers between frames.
@@ -432,6 +529,14 @@ pub struct Memory {
     next_follow: f32,
     /// Until when a skill does not go on a target again.
     recent: HashMap<(u32, u32), f32>,
+    next_hunt: f32,
+    /// Where the hunt began, on which map.
+    home: Option<(u32, [f32; 2])>,
+    /// The last monster or item chosen, and when.
+    last_chosen: Option<(u32, f32)>,
+    /// Monsters and items left alone until then.
+    left_alone: HashMap<u32, f32>,
+    next_revive: f32,
 }
 
 fn distance(from: [f32; 2], to: [f32; 2]) -> f32 {
@@ -453,7 +558,18 @@ struct Picked<'a> {
 /// What to do now: at most one potion, one cast and one step a frame.
 pub fn decide(settings: &Settings, world: &World, memory: &mut Memory, now: f32) -> Vec<Act> {
     let mut acts = Vec::new();
-    if !settings.enabled || world.dead {
+    // Turned off, the spot is forgotten: turned on again, it hunts there.
+    if !settings.enabled {
+        memory.home = None;
+        return acts;
+    }
+    // Fallen while hunting: revived once the server allows it; the spot is
+    // kept, so the hunt walks back to it.
+    if world.dead {
+        if settings.hunt && settings.hunt_revive && world.dead_for >= REVIVE_AFTER && now >= memory.next_revive {
+            memory.next_revive = now + REVIVE_AGAIN;
+            acts.push(Act::Revive { here: world.blessed });
+        }
         return acts;
     }
     memory.recent.retain(|_, until| now < *until);
@@ -498,7 +614,101 @@ pub fn decide(settings: &Settings, world: &World, memory: &mut Memory, now: f32)
         memory.next_follow = now + FOLLOW_GAP;
         acts.push(Act::Follow(at));
     }
+
+    // Hunting, when not following somewhere.
+    if !settings.hunt {
+        memory.home = None;
+    } else if !acts.iter().any(|act| matches!(act, Act::Follow(_)))
+        && let Some(act) = hunt(settings, world, memory, now, mana)
+    {
+        acts.push(act);
+    }
     acts
+}
+
+/// The hunt's next step: out of mana, a strike instead of the cast; what
+/// fell nearby picked up; the nearest monster within reach of the spot
+/// attacked; else back to the spot.
+fn hunt(settings: &Settings, world: &World, memory: &mut Memory, now: f32, mana: u32) -> Option<Act> {
+    // The spot: where the hunt began on this map (beside the leader when
+    // following one).
+    let home = match (settings.follow, world.leader_at, memory.home) {
+        (true, Some(at), _) if world.leader.is_some_and(|leader| leader != world.me) => at,
+        (_, _, Some((map, at))) if map == world.map => at,
+        _ => {
+            memory.home = Some((world.map, world.position));
+            world.position
+        }
+    };
+    if let Some((target, _)) = world.casting
+        && mana < HUNT_MANA_PERCENT
+    {
+        return Some(Act::Attack(target));
+    }
+    if world.busy || now < memory.next_hunt {
+        return None;
+    }
+    memory.next_hunt = now + HUNT_GAP;
+    memory.left_alone.retain(|_, until| now < *until);
+    let radius = f32::from(settings.hunt_radius);
+    // Far away (revived in town, say): back to the spot before anything.
+    if distance(world.position, home) > radius + HOME_SLACK {
+        return Some(Act::Home(home));
+    }
+    let near_home = |at: [f32; 2]| distance(home, at) <= radius;
+    // Chosen again at once: it was not reached.
+    let choose = |memory: &mut Memory, id: u32| -> bool {
+        if let Some((last, at)) = memory.last_chosen
+            && last == id
+            && now - at < UNREACHED_WITHIN
+        {
+            memory.left_alone.insert(id, now + LEAVE_ALONE);
+            memory.last_chosen = None;
+            return false;
+        }
+        memory.last_chosen = Some((id, now));
+        true
+    };
+
+    if settings.loot && !world.bag_full {
+        let item = world
+            .loot
+            .iter()
+            .filter(|(uid, at)| near_home(*at) && !memory.left_alone.contains_key(uid))
+            .min_by(|a, b| distance(world.position, a.1).total_cmp(&distance(world.position, b.1)))
+            .map(|(uid, _)| *uid);
+        // Once tried, an item waits: one the server will not give (another
+        // player's) is not walked to again and again.
+        if let Some(uid) = item {
+            memory.left_alone.insert(uid, now + LEAVE_ALONE);
+            return Some(Act::Pickup(uid));
+        }
+    }
+    let most_level = world.level.saturating_add(u16::from(settings.hunt_levels_above));
+    let monster = world
+        .monsters
+        .iter()
+        .filter(|monster| {
+            monster.alive
+                && monster.level <= most_level
+                && !matches!(monster.name.as_str(), "Guard1" | "Guard2")
+                && near_home(monster.position)
+                && !memory.left_alone.contains_key(&monster.id)
+        })
+        .min_by(|a, b| distance(world.position, a.position).total_cmp(&distance(world.position, b.position)))
+        .map(|monster| monster.id);
+    if let Some(target) = monster {
+        if !choose(memory, target) {
+            return None;
+        }
+        return Some(match world.attack_skill {
+            Some(skill) if settings.hunt_skill && mana >= HUNT_MANA_PERCENT && !world.cooling.contains(&skill) => {
+                Act::CastAt { skill, target }
+            }
+            _ => Act::Attack(target),
+        });
+    }
+    (distance(world.position, home) > HOME_SLACK).then_some(Act::Home(home))
 }
 
 /// The cast that matters most, and how long before it may go on the same
@@ -591,16 +801,18 @@ pub enum Tab {
     Healing,
     Support,
     Follow,
+    Hunt,
 }
 
 impl Tab {
-    pub const ALL: [Self; 3] = [Self::Healing, Self::Support, Self::Follow];
+    pub const ALL: [Self; 4] = [Self::Healing, Self::Support, Self::Follow, Self::Hunt];
 
     fn label(self) -> &'static str {
         match self {
             Self::Healing => "Healing",
             Self::Support => "Support",
             Self::Follow => "Follow",
+            Self::Hunt => "Hunt",
         }
     }
 
@@ -609,6 +821,7 @@ impl Tab {
             Self::Healing => "Your potions and heals: each slot is used below its share.",
             Self::Support => "Pick up to two players; the helper looks after only them.",
             Self::Follow => "Walking after the team's leader.",
+            Self::Hunt => "Fighting by itself around where the hunt begins.",
         }
     }
 }
@@ -908,9 +1121,33 @@ pub fn action_at(view: &HelperView, local: [f32; 2]) -> Option<HelperAction> {
                 return Some(HelperAction::Toggle(Toggle::Follow));
             }
         }
+        Tab::Hunt => {
+            for (index, (toggle, stepper)) in HUNT_ROWS.into_iter().enumerate() {
+                let row = row_rect(index);
+                if let Some(stepper) = stepper
+                    && let Some(action) = stepper_at(row_stepper(row), stepper, local)
+                {
+                    return Some(action);
+                }
+                if row.contains_local(local)
+                    && let Some(toggle) = toggle
+                {
+                    return Some(HelperAction::Toggle(toggle));
+                }
+            }
+        }
     }
     None
 }
+
+/// The Hunt tab's rows: what each ticks, and what its arrows change.
+const HUNT_ROWS: [(Option<Toggle>, Option<Stepper>); 5] = [
+    (Some(Toggle::Hunt), Some(Stepper::HuntRadius)),
+    (Some(Toggle::Loot), None),
+    (Some(Toggle::HuntSkill), None),
+    (None, Some(Stepper::HuntLevels)),
+    (Some(Toggle::HuntRevive), None),
+];
 
 /// Whether `local` is over the window.
 pub fn covers(local: [f32; 2]) -> bool {
@@ -1061,6 +1298,7 @@ pub fn draw(image: &mut RgbaImage, font: &Font, view: &HelperView, assets: &mut 
         Tab::Healing => draw_healing(image, font, view, assets),
         Tab::Support => draw_support(image, font, view, assets),
         Tab::Follow => draw_follow(image, font, view),
+        Tab::Hunt => draw_hunt(image, font, view),
     }
 }
 
@@ -1083,6 +1321,40 @@ fn draw_follow(image: &mut RgbaImage, font: &Font, view: &HelperView) {
     };
     text(image, font, &line, colour, CONTENT_LEFT + 4, row.y + row.height + 12, 10.0);
     text(image, font, "Walks only while you are not doing something yourself.", MUTED, CONTENT_LEFT, SIZE[1] as i32 - 50, 9.0);
+}
+
+fn draw_hunt(image: &mut RgbaImage, font: &Font, view: &HelperView) {
+    let settings = &view.settings;
+    let rows: [(&str, &str, bool, Option<String>); 5] = [
+        ("Hunt", "Monsters around where it begins", settings.hunt, Some(format!("{} cells", settings.hunt_radius))),
+        ("Pick up items", "What falls nearby, while the bag has room", settings.loot, None),
+        ("Use the skill bar's skill", "Strikes instead when mana runs low", settings.hunt_skill, None),
+        ("Strongest monsters", "Up to this many levels above yours", true, Some(format!("+{} levels", settings.hunt_levels_above))),
+        ("Revive and come back", "Fallen, revives when it may and walks back", settings.hunt_revive, None),
+    ];
+    for (index, ((title, line, on, value), (toggle, stepper))) in rows.into_iter().zip(HUNT_ROWS).enumerate() {
+        let row = row_rect(index);
+        let hovered = toggle.is_some_and(|toggle| view.hover == Some(HelperAction::Toggle(toggle)));
+        draw_card(image, row, if hovered { WidgetState::Hovered } else { WidgetState::Normal });
+        fill(image, UiRect::new(row.x, row.y, 3, row.height), if on { GREEN } else { [70, 90, 100, 255] });
+        let left = if toggle.is_some() {
+            check(image, UiRect::new(row.x + 12, row.y + 14, 18, 18), on);
+            row.x + 40
+        } else {
+            row.x + 14
+        };
+        text(image, font, title, if on { TEXT } else { MUTED }, left, row.y + 8, 11.0);
+        text(image, font, line, MUTED, left, row.y + 25, 9.0);
+        if let (Some(stepper), Some(value)) = (stepper, value) {
+            spinner(image, font, row_stepper(row), &value, spinner_hover(view, stepper));
+        }
+    }
+    let note = if settings.follow && view.leader.is_some() {
+        "Following a leader: hunts around them."
+    } else {
+        "Hunts around where it is turned on; potions and heals keep working."
+    };
+    text(image, font, note, MUTED, CONTENT_LEFT, SIZE[1] as i32 - 50, 9.0);
 }
 
 fn draw_healing(image: &mut RgbaImage, font: &Font, view: &HelperView, assets: &mut Assets) {
@@ -1330,6 +1602,182 @@ mod tests {
         Settings { enabled: true, ..Settings::default() }
     }
 
+    fn hunting() -> Settings {
+        Settings { enabled: true, hunt: true, ..Settings::default() }
+    }
+
+    fn monster(id: u32, name: &str, level: u16, position: [f32; 2]) -> Monster {
+        Monster { id, name: name.into(), level, position, alive: true }
+    }
+
+    fn hunter() -> World {
+        World { level: 20, map: 1015, ..world() }
+    }
+
+    #[test]
+    fn the_hunt_strikes_the_nearest_monster_it_may_take() {
+        let mut world = hunter();
+        world.monsters = vec![
+            monster(400_001, "Pheasant", 1, [106.0, 100.0]),
+            monster(400_002, "Guard1", 1, [101.0, 100.0]),
+            monster(400_003, "Bandit", 30, [102.0, 100.0]),
+            monster(400_004, "Turtledove", 22, [104.0, 104.0]),
+            Monster { alive: false, ..monster(400_005, "Robin", 5, [100.0, 101.0]) },
+            monster(400_006, "Hawk", 5, [140.0, 100.0]),
+        ];
+        // The guard, the one far above, the fallen and the one out of reach
+        // are left; of the rest, the nearest.
+        assert_eq!(decide(&hunting(), &world, &mut Memory::default(), 0.0), vec![Act::Attack(400_004)]);
+    }
+
+    #[test]
+    fn what_fell_is_picked_up_first_while_the_bag_has_room() {
+        let mut world = hunter();
+        world.monsters = vec![monster(400_001, "Pheasant", 1, [101.0, 100.0])];
+        world.loot = vec![(7, [103.0, 100.0]), (8, [130.0, 100.0])];
+        assert_eq!(decide(&hunting(), &world, &mut Memory::default(), 0.0), vec![Act::Pickup(7)]);
+        world.bag_full = true;
+        assert_eq!(decide(&hunting(), &world, &mut Memory::default(), 0.0), vec![Act::Attack(400_001)]);
+        // Tried once, an item waits before it is tried again.
+        world.bag_full = false;
+        let mut memory = Memory::default();
+        decide(&hunting(), &world, &mut memory, 0.0);
+        assert_eq!(decide(&hunting(), &world, &mut memory, 1.0), vec![Act::Attack(400_001)]);
+    }
+
+    #[test]
+    fn the_skill_is_cast_while_mana_lasts() {
+        let mut world = hunter();
+        world.monsters = vec![monster(400_001, "Pheasant", 1, [103.0, 100.0])];
+        world.attack_skill = Some(1_000);
+        let settings = Settings { hunt_skill: true, ..hunting() };
+        assert_eq!(decide(&settings, &world, &mut Memory::default(), 0.0), vec![Act::CastAt { skill: 1_000, target: 400_001 }]);
+        // Out of mana in the middle of a cast: a strike on the same target.
+        world.mana = 100;
+        world.casting = Some((400_001, 1_000));
+        world.busy = true;
+        assert_eq!(decide(&settings, &world, &mut Memory::default(), 0.0), vec![Act::Attack(400_001)]);
+    }
+
+    #[test]
+    fn with_nothing_to_hunt_the_hero_goes_back_to_the_spot() {
+        let mut world = hunter();
+        let mut memory = Memory::default();
+        assert!(decide(&hunting(), &world, &mut memory, 0.0).is_empty(), "the spot is here");
+        world.position = [110.0, 100.0];
+        assert_eq!(decide(&hunting(), &world, &mut memory, 1.0), vec![Act::Home([100.0, 100.0])]);
+        // Another map: a new spot.
+        world.map = 1002;
+        assert!(decide(&hunting(), &world, &mut memory, 2.0).is_empty());
+        // Turned off and on elsewhere: a new spot there too.
+        decide(&Settings { enabled: false, ..hunting() }, &world, &mut memory, 3.0);
+        world.position = [130.0, 100.0];
+        assert!(decide(&hunting(), &world, &mut memory, 4.0).is_empty());
+    }
+
+    #[test]
+    fn a_monster_not_reached_is_left_alone() {
+        let mut world = hunter();
+        world.monsters = vec![monster(400_001, "Pheasant", 1, [103.0, 100.0]), monster(400_002, "Robin", 1, [105.0, 100.0])];
+        let mut memory = Memory::default();
+        assert_eq!(decide(&hunting(), &world, &mut memory, 0.0), vec![Act::Attack(400_001)]);
+        // Chosen again at once (the way to it is shut): the next one.
+        assert!(decide(&hunting(), &world, &mut memory, 0.5).is_empty());
+        assert_eq!(decide(&hunting(), &world, &mut memory, 1.0), vec![Act::Attack(400_002)]);
+    }
+
+    /// A whole hunt played out frame by frame against a small world: each
+    /// act done as the client would (a blow fells a monster after a while,
+    /// a pickup takes the item, steps walk home), until nothing is left.
+    #[test]
+    fn a_hunt_clears_the_spot_and_comes_home() {
+        let settings = hunting();
+        let mut world = hunter();
+        world.monsters = vec![
+            monster(400_001, "Pheasant", 1, [104.0, 100.0]),
+            monster(400_002, "Pheasant", 1, [96.0, 103.0]),
+            monster(400_003, "Robin", 2, [100.0, 108.0]),
+            monster(400_004, "Bandit", 90, [101.0, 101.0]),
+        ];
+        world.loot = vec![(7, [98.0, 98.0])];
+        let mut memory = Memory::default();
+        // What the hero is busy with: a target and how long it still takes.
+        let mut fighting: Option<(u32, u32)> = None;
+        let mut picked = Vec::new();
+        for frame in 0..400 {
+            let now = frame as f32 * 0.1;
+            if let Some((target, left)) = fighting {
+                if left == 0 {
+                    // Felled: it dies and drops something.
+                    let fallen = world.monsters.iter_mut().find(|monster| monster.id == target).unwrap();
+                    fallen.alive = false;
+                    world.loot.push((target, fallen.position));
+                    fighting = None;
+                } else {
+                    fighting = Some((target, left - 1));
+                }
+            }
+            world.busy = fighting.is_some();
+            for act in decide(&settings, &world, &mut memory, now) {
+                match act {
+                    Act::Attack(target) => {
+                        world.position = world.monsters.iter().find(|monster| monster.id == target).unwrap().position;
+                        fighting = Some((target, 5));
+                    }
+                    Act::Pickup(uid) => {
+                        let at = world.loot.iter().position(|(item, _)| *item == uid).unwrap();
+                        world.position = world.loot.remove(at).1;
+                        picked.push(uid);
+                    }
+                    Act::Home(at) => world.position = at,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        }
+        let standing: Vec<u32> = world.monsters.iter().filter(|monster| monster.alive).map(|monster| monster.id).collect();
+        assert_eq!(standing, vec![400_004], "all but the one far above are felled");
+        assert!(world.loot.is_empty(), "everything picked up: {:?}", world.loot);
+        assert_eq!(picked.len(), 4, "the item there and what the three dropped");
+        assert_eq!(world.position, [100.0, 100.0], "back at the spot");
+    }
+
+    #[test]
+    fn the_fallen_hunter_revives_and_walks_back() {
+        let settings = hunting();
+        let mut world = hunter();
+        let mut memory = Memory::default();
+        decide(&settings, &world, &mut memory, 0.0);
+        // Dead: nothing until the server allows reviving, then once.
+        world.dead = true;
+        world.dead_for = 10.0;
+        assert!(decide(&settings, &world, &mut memory, 10.0).is_empty());
+        world.dead_for = 21.0;
+        assert_eq!(decide(&settings, &world, &mut memory, 21.0), vec![Act::Revive { here: false }]);
+        assert!(decide(&settings, &world, &mut memory, 22.0).is_empty(), "not asked again at once");
+        world.blessed = true;
+        assert_eq!(decide(&settings, &world, &mut memory, 26.5), vec![Act::Revive { here: true }]);
+        // Revived in town on the same map: back to the spot.
+        world.dead = false;
+        world.position = [430.0, 380.0];
+        assert_eq!(decide(&settings, &world, &mut memory, 30.0), vec![Act::Home([100.0, 100.0])]);
+        // Without it, the fallen stay down.
+        let mut stay = Memory::default();
+        world.dead = true;
+        assert!(decide(&Settings { hunt_revive: false, ..settings }, &world, &mut stay, 40.0).is_empty());
+    }
+
+    #[test]
+    fn far_from_the_spot_it_walks_back_first() {
+        let mut world = hunter();
+        let mut memory = Memory::default();
+        decide(&hunting(), &world, &mut memory, 0.0);
+        // Revived in town: loot and monsters there wait.
+        world.position = [400.0, 400.0];
+        world.monsters = vec![monster(400_001, "Pheasant", 1, [401.0, 400.0])];
+        world.loot = vec![(7, [400.0, 401.0])];
+        assert_eq!(decide(&hunting(), &world, &mut memory, 1.0), vec![Act::Home([100.0, 100.0])]);
+    }
+
     #[test]
     fn settings_write_and_read_back() {
         let mut settings = on();
@@ -1532,6 +1980,16 @@ mod tests {
             ("support", HelperView { tab: Tab::Support, ..base.clone() }),
             ("choice", HelperView { tab: Tab::Healing, choosing: Some(Choosing::Slot(0)), ..base.clone() }),
             ("follow", HelperView { tab: Tab::Follow, ..base.clone() }),
+            (
+                "hunt",
+                HelperView {
+                    tab: Tab::Hunt,
+                    settings: Settings { hunt: true, hunt_skill: true, ..base.settings.clone() },
+                    status: "Hunting Pheasant.".into(),
+                    hover: Some(HelperAction::Toggle(Toggle::Loot)),
+                    ..base.clone()
+                },
+            ),
         ];
         for (name, view) in views {
             let mut content = RgbaImage::new(SIZE[0], SIZE[1]);

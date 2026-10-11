@@ -549,6 +549,8 @@ struct App {
     /// "Playing Gravak-Co" on the player's Discord profile, while Discord
     /// runs.
     presence: Option<discord::Presence>,
+    /// Until when the helper does not try again a way back to its spot.
+    helper_home_retry: f32,
     /// Frames drawn in the current one-second window, and the last count.
     fps_frames: u32,
     fps_window: f32,
@@ -4224,6 +4226,14 @@ impl App {
                 }
                 helper::Act::Cast { skill, target } => self.helper_cast(me, skill, target, now),
                 helper::Act::Follow(at) => self.helper_follow(at),
+                helper::Act::Attack(target) => self.helper_attack(target),
+                helper::Act::CastAt { skill, target } => self.helper_cast_at(skill, target),
+                helper::Act::Pickup(uid) => self.helper_pickup(uid),
+                helper::Act::Revive { here } => {
+                    self.request_revive(here);
+                    self.helper_status = if here { "Reviving here." } else { "Reviving in town." }.into();
+                }
+                helper::Act::Home(at) => self.helper_home(at, now),
             }
         }
     }
@@ -4291,7 +4301,108 @@ impl App {
                 || self.pending_pickup.is_some()
                 || self.player.moving()
                 || !self.pending_network_steps.is_empty(),
+            map: self.map.id,
+            level: u16::from(self.level),
+            monsters: self
+                .remote_actors
+                .values()
+                .filter(|actor| !actor.npc && (400001..=499999).contains(&actor.id))
+                .map(|actor| helper::Monster {
+                    id: actor.id,
+                    name: actor.name.clone(),
+                    level: actor.level,
+                    position: actor.position,
+                    alive: actor.health > 0 && actor.action != renderer::REMOTE_FADING,
+                })
+                .collect(),
+            loot: self.ground_loot.iter().map(|(uid, at, _, _)| (*uid, *at)).collect(),
+            bag_full: self.inventory.len() >= helper::BAG_SLOTS,
+            // The skill bar's skill, when it is cast at a monster.
+            attack_skill: self.active_skill.filter(|skill| {
+                action_bar::skill_action(*skill).is_some_and(|action| action.requires_target)
+                    && !action_bar::is_aimed_skill(*skill)
+                    && !action_bar::is_support_skill(*skill)
+                    && !helper::is_ally_buff(*skill)
+            }),
+            casting: self.pending_skill_attack,
+            dead_for: self.dead_since.map_or(0.0, |died_at| now - died_at),
+            // Heaven's Blessing (status bit 49).
+            blessed: flags & (1 << 49) != 0,
         }
+    }
+
+    /// The hunt walks back to its spot (the nearest cell one can stand on),
+    /// however far; a spot it finds no way to is not tried again for a
+    /// while.
+    fn helper_home(&mut self, at: [f32; 2], now: f32) {
+        if now < self.helper_home_retry {
+            return;
+        }
+        let spot = at.map(|value| value.round() as i32);
+        let here = self.player.cell();
+        let mut cells: Vec<[i32; 2]> =
+            (-3..=3).flat_map(|dx| (-3..=3).map(move |dy| [spot[0] + dx, spot[1] + dy])).collect();
+        cells.sort_by_key(|cell| ((cell[0] - spot[0]).abs().max((cell[1] - spot[1]).abs()), (cell[0] - here[0]).abs() + (cell[1] - here[1]).abs()));
+        let Some(cell) = cells.into_iter().find(|cell| self.map.walkable(*cell)) else {
+            self.helper_home_retry = now + 10.0;
+            self.helper_status = "No way back to the hunting spot.".into();
+            return;
+        };
+        if self.player.flying {
+            self.travel(cell);
+        } else if !self.player.go_far(&self.map, cell) {
+            self.helper_home_retry = now + 10.0;
+            self.helper_status = "No way back to the hunting spot.".into();
+            return;
+        }
+        self.helper_status = "Back to the hunting spot.".into();
+    }
+
+    /// The hunt strikes a monster, as a click on it would.
+    fn helper_attack(&mut self, target: u32) {
+        let name = self.remote_actors.get(&target).map(|actor| actor.name.clone()).unwrap_or_default();
+        self.pending_pickup = None;
+        self.pending_skill_attack = None;
+        self.selected_target = Some(target);
+        self.pending_attack = Some(target);
+        self.next_attack_at = 0.0;
+        self.process_pending_attack();
+        // Out of reach with no way there: let it go (the hunt leaves it be).
+        let reachable = self.remote_actors.get(&target).is_some_and(|actor| {
+            motion_math::cell_distance(self.player.position, actor.position) <= self.attack_reach
+        });
+        if !reachable && !self.player.moving() && self.pending_network_steps.is_empty() {
+            self.pending_attack = None;
+        }
+        self.helper_status = format!("Hunting {name}.");
+    }
+
+    /// The hunt casts the skill bar's skill at a monster, as a right click
+    /// on it would.
+    fn helper_cast_at(&mut self, skill: u32, target: u32) {
+        let name = self.remote_actors.get(&target).map(|actor| actor.name.clone()).unwrap_or_default();
+        self.pending_attack = None;
+        self.pending_pickup = None;
+        self.selected_target = Some(target);
+        self.pending_skill_attack = Some((target, skill));
+        self.process_pending_skill_attack();
+        self.helper_status = format!("{} on {name}.", action_bar::skill_action(skill).map_or("A skill", |action| action.name));
+    }
+
+    /// The hunt picks up what fell, as a click on it would.
+    fn helper_pickup(&mut self, uid: u32) {
+        let Some(&(_, at, item_id, _)) = self.ground_loot.iter().find(|(existing, _, _, _)| *existing == uid) else {
+            return;
+        };
+        self.pending_attack = None;
+        self.pending_skill_attack = None;
+        self.pending_pickup = Some((uid, item_id, at.map(|value| value.round() as i32)));
+        self.process_pending_pickup();
+        // No way there: let it go rather than wait on it.
+        if self.pending_pickup.is_some() && !self.player.moving() && self.pending_network_steps.is_empty() {
+            self.pending_pickup = None;
+        }
+        self.helper_status = "Picking up what fell.".into();
     }
 
     /// A cast the helper chose, on the hero or a teammate on screen.
@@ -10933,6 +11044,7 @@ fn run() -> Result<()> {
         ping_ms: None,
         ping_sent: f32::NEG_INFINITY,
         presence: discord::Presence::start(),
+        helper_home_retry: 0.0,
         fps_frames: 0,
         fps_window: 0.0,
         fps: 0,

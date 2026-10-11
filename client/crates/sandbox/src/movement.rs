@@ -147,6 +147,19 @@ impl Player {
             self.route = route.into();
         }
     }
+    /// As `go`, searching far longer: a walk across the map (the helper
+    /// back to its hunting spot). Whether a way was found.
+    pub fn go_far(&mut self, map: &Map, target: [i32; 2]) -> bool {
+        let start = self
+            .segment
+            .as_ref()
+            .map_or(self.cell(), |s| s.target.map(|v| v as i32));
+        let Some(route) = route_within(start, target, |p| map.walkable(p), FAR_SEARCH) else {
+            return false;
+        };
+        self.route = route.into();
+        true
+    }
     pub fn jump(
         &mut self,
         map: &Map,
@@ -296,6 +309,19 @@ fn route(
     goal: [i32; 2],
     open: impl Fn([i32; 2]) -> bool,
 ) -> Option<Vec<[i32; 2]>> {
+    route_within(start, goal, open, 100_000)
+}
+
+/// How many cells a walk across the map may look through (some 45 ms
+/// for Twin City's center to its far fields).
+const FAR_SEARCH: usize = 1_000_000;
+
+fn route_within(
+    start: [i32; 2],
+    goal: [i32; 2],
+    open: impl Fn([i32; 2]) -> bool,
+    explored: usize,
+) -> Option<Vec<[i32; 2]>> {
     if !open(goal) {
         return None;
     }
@@ -303,7 +329,7 @@ fn route(
     let mut queue = BinaryHeap::from([Reverse((heuristic(start), 0, start))]);
     let mut costs = HashMap::from([(start, 0)]);
     let mut parents = HashMap::new();
-    for _ in 0..100_000 {
+    for _ in 0..explored {
         let Reverse((_, cost, p)) = queue.pop()?;
         if cost != costs[&p] {
             continue;
