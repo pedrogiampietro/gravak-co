@@ -1639,9 +1639,12 @@ impl ApplicationHandler for App {
                     audio.update_music(&mut self.assets, self.map.id, self.player.cell());
                 }
                 let skill_hud = self.skill_hud();
-                // The shop's own windows go with it.
+                // The shop's own windows go with it (the Sell All list the
+                // helper opened stays).
                 if self.shop.is_none() {
-                    self.sell_all = None;
+                    if self.sell_all.as_ref().is_some_and(|view| view.at_shop) {
+                        self.sell_all = None;
+                    }
                     self.shop_buy_menu = None;
                 }
                 let choice_menu = self.choice_menu();
@@ -4168,6 +4171,18 @@ impl App {
             helper::Effect::Close => self.helper_window = None,
             helper::Effect::Power => self.toggle_helper(),
             helper::Effect::Save => self.helper.save(),
+            helper::Effect::KeepList => {
+                // The Sell All list away from a shop: only its BlackList is
+                // of use; the helper's window would cover it.
+                let Some(viewport) = self.viewport() else {
+                    return;
+                };
+                self.helper_window = None;
+                let mut list = sell_all::SellAllView::open(&mut self.assets, &self.inventory, self.network_character_id, viewport);
+                list.at_shop = false;
+                list.tab = sell_all::SellTab::Kept;
+                self.sell_all = Some(list);
+            }
             helper::Effect::Nothing => {}
         }
     }
@@ -4269,6 +4284,12 @@ impl App {
                         network.send_idle(gravak_protocol::IdlePacket::BUY, [item, u32::from(count), 0, 0]);
                     }
                     self.helper_status = format!("Buying {count} {}.", shop::item_name(&mut self.assets, item));
+                }
+                helper::Act::Deposit { item } => {
+                    if let Some(network) = &self.network {
+                        network.send_idle(gravak_protocol::IdlePacket::DEPOSIT, [item, 0, 0, 0]);
+                    }
+                    self.helper_status = format!("Storing the {} in the depot.", shop::item_name(&mut self.assets, item));
                 }
                 helper::Act::Revive { here } => {
                     self.request_revive(here);
@@ -4437,6 +4458,16 @@ impl App {
                 .equipment
                 .iter()
                 .any(|item| item.max_durability > 0 && u32::from(item.durability) * 3 < u32::from(item.max_durability)),
+            valuables: self.inventory.iter().filter(|item| helper::depositable(item.item_type)).fold(
+                Vec::new(),
+                |mut kinds: Vec<(u32, usize)>, item| {
+                    match kinds.iter_mut().find(|(kind, _)| *kind == item.item_type) {
+                        Some((_, count)) => *count += 1,
+                        None => kinds.push((item.item_type, 1)),
+                    }
+                    kinds
+                },
+            ),
         }
     }
 

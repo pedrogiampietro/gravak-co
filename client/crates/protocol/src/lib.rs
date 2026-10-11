@@ -516,6 +516,8 @@ impl IdlePacket {
     pub const REPAIR: u32 = 4;
     /// Buy `param1` of potion `param0`.
     pub const BUY: u32 = 5;
+    /// Store the bag's items of type `param0` in the depot.
+    pub const DEPOSIT: u32 = 6;
 
     pub fn new(action: u32, params: [u32; 4]) -> Self {
         let [param0, param1, param2, param3] = params;

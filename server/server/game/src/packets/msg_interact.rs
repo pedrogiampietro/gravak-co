@@ -361,7 +361,7 @@ impl MsgInteract {
 
         let experience = crate::training::experience(level, npc.level(), npc.life(), damage);
         self.grant_hit_experience(state, actor, character, experience).await?;
-        let practice = u32::try_from(experience).unwrap_or(u32::MAX).max(1);
+        let practice = crate::leveling::skill_practice(experience);
         match cast {
             Some(skill) => {
                 if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
@@ -1221,8 +1221,8 @@ impl MsgInteract {
         crate::gem_effects::on_attack(character).await?;
         self.degrade_used_weapons(state, actor, character).await?;
         // Attack skills learn as much as the hit earned (Redux
-        // `AddSkillExperience(expGain)`), at least one.
-        let practice = u32::try_from(hit_experience).unwrap_or(u32::MAX).max(1);
+        // `AddSkillExperience(expGain)`), at the skill rate, at least one.
+        let practice = crate::leveling::skill_practice(hit_experience);
         if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
             actor.send(super::MsgSkill::from(progress)).await?;
         }

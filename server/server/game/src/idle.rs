@@ -11,7 +11,8 @@
 //! it has room; the rest is sold. A report tells the player what happened.
 //!
 //! The helper's merchant sells, repairs and buys potions without a shop at
-//! hand, at the shops' own prices (`MsgIdle` SELL, REPAIR, BUY).
+//! hand, at the shops' own prices (`MsgIdle` SELL, REPAIR, BUY); its porter
+//! carries the valuables gathered to the depot (`MsgIdle` DEPOSIT).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
@@ -37,8 +38,9 @@ const MOST_KILL_SECONDS: f64 = 120.0;
 const MOST_KILLS: u64 = 20_000;
 /// The merchant buys this many of a potion at most at a time.
 const MOST_BOUGHT: u32 = 20;
-/// The bag's slots.
+/// The bag's slots, and the depot's.
 const BAG_SLOTS: u8 = 40;
+const DEPOT_SLOTS: u8 = 40;
 
 /// Where a character hunts, as its helper told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +475,47 @@ pub async fn buy(state: &State, character: &Character, item_type: u32, amount: u
     Ok(bought)
 }
 
+// ------------------------------------------------------------ the porter
+
+/// What the porter carries to the depot: DragonBalls, Meteors and their
+/// tears, gems and ExpBalls.
+pub fn depositable(item_type: u32) -> bool {
+    matches!(item_type, 1_088_000..=1_088_002 | crate::leveling::EXP_BALL) || (700_000..710_000).contains(&item_type)
+}
+
+/// Stores every bag item of `item_type` in the depot's free slots.
+pub async fn deposit(state: &State, character: &Character, item_type: u32) -> Result<u32, Error> {
+    if !depositable(item_type) {
+        return Ok(0);
+    }
+    let taken: Vec<i64> = sqlx::query_scalar("SELECT position FROM warehouse_items WHERE character_id = $1")
+        .bind(i64::from(character.database_id()))
+        .fetch_all(state.pool())
+        .await?;
+    let mut free = (0..DEPOT_SLOTS).filter(|slot| !taken.contains(&i64::from(*slot)));
+    let owner = character.owner();
+    let mut stored = 0u32;
+    let items: Vec<InventoryItem> =
+        character.inventory_items().into_iter().filter(|item| item.item_type == item_type).collect();
+    for item in items {
+        let Some(slot) = free.next() else {
+            break;
+        };
+        if let Some((removed, _)) = character.store_inventory_item(state.pool(), item.uid, slot).await? {
+            crate::audit::item("idle_deposit", character.id(), removed.uid, removed.item_type, format_args!("slot={slot}"));
+            owner.send(MsgItemInfo::remove_inventory_item(removed)).await?;
+            stored += 1;
+        }
+    }
+    let words = if stored > 0 {
+        format!("Helper: {stored} stored in the depot.")
+    } else {
+        "Helper: the depot is full.".to_owned()
+    };
+    owner.send(MsgTalk::from_system(character.id(), TalkChannel::TopLeft, words)).await?;
+    Ok(stored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,6 +570,13 @@ mod tests {
         assert!(kept(1_088_000), "a Meteor");
         assert!(kept(1_000_030), "a potion");
         assert!(is_potion(1_002_020) && !is_potion(1_088_000) && !is_potion(410_301));
+    }
+
+    #[test]
+    fn the_porter_carries_only_valuables() {
+        assert!(depositable(1_088_000) && depositable(1_088_001), "a DragonBall, a Meteor");
+        assert!(depositable(700_013) && depositable(723_700), "a gem, an ExpBall");
+        assert!(!depositable(410_301) && !depositable(1_000_010), "a blade, a potion");
     }
 
     #[test]

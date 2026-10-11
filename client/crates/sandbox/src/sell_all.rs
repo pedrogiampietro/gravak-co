@@ -87,6 +87,9 @@ pub struct SellAllView {
     /// Top-left corner in window pixels.
     pub position: [i32; 2],
     character_id: Option<u32>,
+    /// Opened at a shop, so it can sell; the helper opens it elsewhere for
+    /// its BlackList alone.
+    pub at_shop: bool,
 }
 
 impl SellAllView {
@@ -106,6 +109,7 @@ impl SellAllView {
                 ((viewport[1] - HEIGHT as f32) * 0.5).max(8.0) as i32,
             ],
             character_id,
+            at_shop: true,
         }
     }
 
@@ -414,6 +418,7 @@ mod tests {
             prices: prices.iter().copied().collect(),
             position: [0, 0],
             character_id: None,
+            at_shop: true,
         }
     }
 

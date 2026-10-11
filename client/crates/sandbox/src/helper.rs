@@ -82,6 +82,7 @@ const SELL_WHEN_FREE: usize = 2;
 const SELL_GAP: f32 = 30.0;
 const REPAIR_GAP: f32 = 60.0;
 const BUY_GAP: f32 = 30.0;
+const DEPOSIT_GAP: f32 = 30.0;
 
 pub fn skill_name(skill: u32) -> &'static str {
     match skill {
@@ -234,6 +235,10 @@ pub struct Settings {
     pub auto_repair: bool,
     pub auto_buy: bool,
     pub buy_amount: u8,
+    /// The porter: a valuable (`depositable`) goes to the depot once the
+    /// bag holds `deposit_at` of it.
+    pub auto_deposit: bool,
+    pub deposit_at: u8,
 }
 
 impl Default for Settings {
@@ -261,6 +266,8 @@ impl Default for Settings {
             auto_repair: true,
             auto_buy: true,
             buy_amount: 10,
+            auto_deposit: false,
+            deposit_at: 10,
         }
     }
 }
@@ -277,6 +284,7 @@ pub enum Toggle {
     AutoSell,
     AutoRepair,
     AutoBuy,
+    AutoDeposit,
 }
 
 /// A number the arrows change.
@@ -288,6 +296,7 @@ pub enum Stepper {
     HuntRadius,
     HuntLevels,
     BuyAmount,
+    DepositAt,
 }
 
 impl Stepper {
@@ -298,6 +307,7 @@ impl Stepper {
             Self::HuntRadius => (2, 4, 30),
             Self::HuntLevels => (1, 0, 20),
             Self::BuyAmount => (5, 5, 20),
+            Self::DepositAt => (1, 1, 40),
             _ => (5, 5, 95),
         }
     }
@@ -322,6 +332,7 @@ impl Settings {
             Toggle::AutoSell => &mut self.auto_sell,
             Toggle::AutoRepair => &mut self.auto_repair,
             Toggle::AutoBuy => &mut self.auto_buy,
+            Toggle::AutoDeposit => &mut self.auto_deposit,
         };
         *value = !*value;
     }
@@ -336,6 +347,7 @@ impl Settings {
             Stepper::HuntRadius => &mut self.hunt_radius,
             Stepper::HuntLevels => &mut self.hunt_levels_above,
             Stepper::BuyAmount => &mut self.buy_amount,
+            Stepper::DepositAt => &mut self.deposit_at,
         };
         *value = if up { value.saturating_add(step) } else { value.saturating_sub(step) }.clamp(least, most);
     }
@@ -359,6 +371,8 @@ impl Settings {
             format!("auto_repair={}", flag(self.auto_repair)),
             format!("auto_buy={}", flag(self.auto_buy)),
             format!("buy_amount={}", self.buy_amount),
+            format!("auto_deposit={}", flag(self.auto_deposit)),
+            format!("deposit_at={}", self.deposit_at),
         ];
         for (index, slot) in self.slots.iter().enumerate() {
             let using = match slot.using {
@@ -406,6 +420,8 @@ impl Settings {
                 "auto_repair" => settings.auto_repair = flag,
                 "auto_buy" => settings.auto_buy = flag,
                 "buy_amount" => settings.buy_amount = number(5, 20).unwrap_or(settings.buy_amount),
+                "auto_deposit" => settings.auto_deposit = flag,
+                "deposit_at" => settings.deposit_at = number(1, 40).unwrap_or(settings.deposit_at),
                 "hunt_levels_above" => settings.hunt_levels_above = number(0, 20).unwrap_or(settings.hunt_levels_above),
                 "team_heal_skill" => {
                     settings.team_heal_skill =
@@ -531,6 +547,8 @@ pub struct World {
     pub free_slots: usize,
     /// Some worn gear is low on durability.
     pub worn_low: bool,
+    /// The bag's valuables (`depositable`): item type and how many.
+    pub valuables: Vec<(u32, usize)>,
 }
 
 /// A monster as the client knows it.
@@ -566,6 +584,8 @@ pub enum Act {
     Repair,
     /// The merchant brings `count` of a potion.
     Buy { item: u32, count: u8 },
+    /// The porter carries the bag's `item`s to the depot.
+    Deposit { item: u32 },
 }
 
 /// What the helper remembers between frames.
@@ -587,6 +607,7 @@ pub struct Memory {
     next_sell: f32,
     next_repair: f32,
     next_buy: f32,
+    next_deposit: f32,
 }
 
 impl Memory {
@@ -688,9 +709,23 @@ pub fn decide(settings: &Settings, world: &World, memory: &mut Memory, now: f32)
     acts
 }
 
-/// The merchant's next errand: the junk sold when the bag is nearly full,
-/// worn gear repaired, a slot's potion brought when none is left.
+/// What the porter carries to the depot (the server's own rule): DragonBalls,
+/// Meteors and their tears, gems and ExpBalls.
+pub fn depositable(item_type: u32) -> bool {
+    matches!(item_type, 1_088_000..=1_088_002 | 723_700) || (700_000..710_000).contains(&item_type)
+}
+
+/// The merchant's next errand: the valuables gathered carried to the depot,
+/// the junk sold when the bag is nearly full, worn gear repaired, a slot's
+/// potion brought when none is left.
 fn merchant(settings: &Settings, world: &World, memory: &mut Memory, now: f32) -> Option<Act> {
+    if settings.auto_deposit
+        && now >= memory.next_deposit
+        && let Some((item, _)) = world.valuables.iter().find(|(_, count)| *count >= usize::from(settings.deposit_at))
+    {
+        memory.next_deposit = now + DEPOSIT_GAP;
+        return Some(Act::Deposit { item: *item });
+    }
     if settings.auto_sell && world.free_slots <= SELL_WHEN_FREE && now >= memory.next_sell {
         memory.next_sell = now + SELL_GAP;
         return Some(Act::SellJunk);
@@ -911,7 +946,7 @@ impl Tab {
             Self::Support => "Pick up to two players; the helper looks after only them.",
             Self::Follow => "Walking after the team's leader.",
             Self::Hunt => "Fighting by itself around where the hunt begins.",
-            Self::Supplies => "Selling, repairing and buying potions wherever you are.",
+            Self::Supplies => "Selling, repairing, buying and storing wherever you are.",
         }
     }
 }
@@ -958,6 +993,8 @@ pub enum HelperAction {
     Member(String),
     /// Gives or takes a gift from a picked player.
     Gift(usize, Gift),
+    /// Opens the Sell All list, to choose what is never sold.
+    KeepList,
     Close,
 }
 
@@ -969,6 +1006,8 @@ pub enum Effect {
     Save,
     /// Turn the helper on or off.
     Power,
+    /// Open the Sell All list (its BlackList keeps items from the merchant).
+    KeepList,
     Close,
 }
 
@@ -977,6 +1016,7 @@ pub fn apply(settings: &mut Settings, view: &mut HelperView, action: HelperActio
     view.notice.clear();
     match action {
         HelperAction::Close => return Effect::Close,
+        HelperAction::KeepList => return Effect::KeepList,
         HelperAction::Power => return Effect::Power,
         HelperAction::Tab(tab) => {
             view.tab = tab;
@@ -1212,6 +1252,9 @@ pub fn action_at(view: &HelperView, local: [f32; 2]) -> Option<HelperAction> {
             }
         }
         Tab::Hunt | Tab::Supplies => {
+            if view.tab == Tab::Supplies && keep_button().contains_local(local) {
+                return Some(HelperAction::KeepList);
+            }
             let rows: &[(Option<Toggle>, Option<Stepper>)] = if view.tab == Tab::Hunt { &HUNT_ROWS } else { &SUPPLY_ROWS };
             for (index, &(toggle, stepper)) in rows.iter().enumerate() {
                 let row = row_rect(index);
@@ -1231,12 +1274,19 @@ pub fn action_at(view: &HelperView, local: [f32; 2]) -> Option<HelperAction> {
     None
 }
 
-/// The Supplies tab's rows.
-const SUPPLY_ROWS: [(Option<Toggle>, Option<Stepper>); 3] = [
+/// The Supplies tab's rows; the second only holds the BlackList's button.
+const SUPPLY_ROWS: [(Option<Toggle>, Option<Stepper>); 5] = [
     (Some(Toggle::AutoSell), None),
+    (None, None),
     (Some(Toggle::AutoRepair), None),
     (Some(Toggle::AutoBuy), Some(Stepper::BuyAmount)),
+    (Some(Toggle::AutoDeposit), Some(Stepper::DepositAt)),
 ];
+
+/// The button that opens the Sell All list, on the Supplies tab's second row.
+fn keep_button() -> UiRect {
+    row_stepper(row_rect(1))
+}
 
 /// The Hunt tab's rows: what each ticks, and what its arrows change.
 const HUNT_ROWS: [(Option<Toggle>, Option<Stepper>); 5] = [
@@ -1424,12 +1474,25 @@ fn draw_follow(image: &mut RgbaImage, font: &Font, view: &HelperView) {
 
 fn draw_supplies(image: &mut RgbaImage, font: &Font, view: &HelperView) {
     let settings = &view.settings;
-    let rows: [(&str, &str, bool, Option<String>); 3] = [
+    let rows: [(&str, &str, bool, Option<String>); 5] = [
         ("Sell the junk when the bag fills", "Your Sell All list; valuables are always kept", settings.auto_sell, None),
+        ("Never sell: the BlackList", "What the merchant always keeps", true, None),
         ("Repair worn gear", "Before it breaks", settings.auto_repair, None),
         ("Buy potions when they run out", "The Healing slots' own potions", settings.auto_buy, Some(format!("{} each", settings.buy_amount))),
+        (
+            "Store valuables in the depot",
+            "DragonBalls, Meteors, gems, ExpBalls, of a kind",
+            settings.auto_deposit,
+            Some(format!("at {}", settings.deposit_at)),
+        ),
     ];
     draw_rows(image, font, view, &rows, &SUPPLY_ROWS);
+    // The BlackList's button.
+    let button = keep_button();
+    let lit = view.hover == Some(HelperAction::KeepList);
+    fill(image, button, if lit { [40, 70, 80, 255] } else { [28, 48, 56, 255] });
+    outline(image, button, TEAL);
+    centred(image, font, "Edit list", if lit { GOLD } else { TEXT }, button, 10.0);
     text(image, font, "At the shops' own prices, wherever you are.", MUTED, CONTENT_LEFT, SIZE[1] as i32 - 50, 9.0);
 }
 
@@ -1919,9 +1982,16 @@ mod tests {
         // The slot's potion run out: brought, as many as the bag takes.
         world.potions.clear();
         assert_eq!(decide(&settings, &world, &mut memory, 4.0), vec![Act::Buy { item: LIFE_POTION, count: 2 }]);
+        // Ten Meteors gathered: carried to the depot; nine wait.
+        settings.auto_deposit = true;
+        world.valuables = vec![(1_088_000, 9)];
+        assert!(decide(&settings, &world, &mut memory, 5.0).is_empty());
+        world.valuables = vec![(1_088_000, 9), (1_088_001, 10)];
+        assert_eq!(decide(&settings, &world, &mut memory, 6.0), vec![Act::Deposit { item: 1_088_001 }]);
+        assert!(depositable(1_088_001) && depositable(700_003) && !depositable(410_301) && !depositable(LIFE_POTION));
         // Turned off, none of it.
-        let off = Settings { auto_sell: false, auto_repair: false, auto_buy: false, ..settings };
-        assert!(decide(&off, &world, &mut Memory::default(), 5.0).is_empty());
+        let off = Settings { auto_sell: false, auto_repair: false, auto_buy: false, auto_deposit: false, ..settings };
+        assert!(decide(&off, &world, &mut Memory::default(), 7.0).is_empty());
     }
 
     #[test]
@@ -1932,6 +2002,8 @@ mod tests {
         settings.picks = vec![Pick::new("Robert".into()), Pick { accuracy: true, ..Pick::new("Pedro".into()) }];
         settings.step(Stepper::FollowDistance, false);
         settings.team_heal_skill = NECTAR;
+        settings.auto_deposit = true;
+        settings.step(Stepper::DepositAt, true);
         assert_eq!(Settings::parse(&settings.format()), settings);
         // Nonsense keeps the defaults.
         let read = Settings::parse("slot1=item:42:50\nslot9=skill:1005:50\nteam_heal_skill=1000\npick1=:1111\nwhat=1");
@@ -2092,6 +2164,15 @@ mod tests {
         view.known = vec![ADVANCED_CURE];
         assert_eq!(action_at(&view, centre(choice_rect(0))), None, "Cure not learned");
         assert_eq!(action_at(&view, centre(choice_rect(2))), Some(HelperAction::Chosen(Use::Skill(ADVANCED_CURE))));
+        // Supplies: the BlackList's button, the depot's tick and arrows.
+        view.choosing = None;
+        view.tab = Tab::Supplies;
+        assert_eq!(action_at(&view, centre(keep_button())), Some(HelperAction::KeepList));
+        assert_eq!(action_at(&view, centre(row_rect(1))), None, "the row itself is no tick");
+        assert_eq!(action_at(&view, [row_rect(4).x as f32 + 20.0, centre(row_rect(4))[1]]), Some(HelperAction::Toggle(Toggle::AutoDeposit)));
+        let (_, more) = arrows(row_stepper(row_rect(4)));
+        assert_eq!(action_at(&view, centre(more)), Some(HelperAction::Step(Stepper::DepositAt, true)));
+        assert!(row_rect(4).y + row_rect(4).height < SIZE[1] as i32 - 52, "the last row clears the note");
         // Everything fits in the window.
         assert!(slot_card(2).x + slot_card(2).width <= SIZE[0] as i32 - 8);
         assert!(pick_card(1).y + pick_card(1).height < team_heal_icon().y);
@@ -2126,7 +2207,15 @@ mod tests {
             ("support", HelperView { tab: Tab::Support, ..base.clone() }),
             ("choice", HelperView { tab: Tab::Healing, choosing: Some(Choosing::Slot(0)), ..base.clone() }),
             ("follow", HelperView { tab: Tab::Follow, ..base.clone() }),
-            ("supplies", HelperView { tab: Tab::Supplies, ..base.clone() }),
+            (
+                "supplies",
+                HelperView {
+                    tab: Tab::Supplies,
+                    settings: Settings { auto_sell: true, auto_deposit: true, ..base.settings.clone() },
+                    hover: Some(HelperAction::KeepList),
+                    ..base.clone()
+                },
+            ),
             (
                 "hunt",
                 HelperView {

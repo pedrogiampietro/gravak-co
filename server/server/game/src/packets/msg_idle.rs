@@ -31,6 +31,8 @@ impl MsgIdle {
     pub const REPAIR: u32 = 4;
     /// Buy `param1` of potion `param0`.
     pub const BUY: u32 = 5;
+    /// Store the bag's items of type `param0` in the depot.
+    pub const DEPOSIT: u32 = 6;
 }
 
 /// What the time away brought: how long, the kills, the experience and
@@ -97,6 +99,9 @@ impl PacketProcess for MsgIdle {
             },
             Self::BUY => {
                 crate::idle::buy(state, character, self.param0, self.param1).await?;
+            },
+            Self::DEPOSIT => {
+                crate::idle::deposit(state, character, self.param0).await?;
             },
             _ => {},
         }

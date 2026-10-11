@@ -9,7 +9,17 @@ use crate::{ActorState, Error, State};
 
 /// Redux `EXP_RATE`.
 pub const EXP_RATE: u64 = 5;
+/// Skills and weapon proficiency learn this many times the experience a
+/// hit earns (the original's pace felt far too slow: a weapon skill such
+/// as Snow only learns on the blows it goes off).
+pub const SKILL_EXP_RATE: u64 = 10;
 pub const MAX_LEVEL: u8 = 130;
+
+/// What a skill (or the weapon's proficiency) learns from a hit that earned
+/// `hit_experience`: the skill rate on top, at least one.
+pub fn skill_practice(hit_experience: u64) -> u32 {
+    u32::try_from(hit_experience.saturating_mul(SKILL_EXP_RATE)).unwrap_or(u32::MAX).max(1)
+}
 /// An ExpBall is worth this many seconds of the level's `up_lev_time`.
 pub const EXP_BALL_SECONDS: f64 = 600.0;
 pub const EXP_BALL: u32 = 723_700;
@@ -312,6 +322,13 @@ mod tests {
         assert_eq!(required(1), 120);
         assert_eq!(required(2), 180);
         assert_eq!(required(140), 0);
+    }
+
+    #[test]
+    fn skills_learn_at_their_own_rate() {
+        assert_eq!(skill_practice(0), 1, "a blow that earned nothing still teaches");
+        assert_eq!(skill_practice(30), 30 * SKILL_EXP_RATE as u32);
+        assert_eq!(skill_practice(u64::MAX), u32::MAX);
     }
 
     #[test]

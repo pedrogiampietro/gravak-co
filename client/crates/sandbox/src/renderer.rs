@@ -6072,9 +6072,9 @@ impl Renderer {
             }
         }
         if let Some((view, inventory, hovered)) = sell_all {
-            let key = format!("@sell-all-{}", view.signature(inventory, hovered, true));
+            let key = format!("@sell-all-{}", view.signature(inventory, hovered, view.at_shop));
             if !self.textures.contains_key(&key) {
-                self.upload(&key, view.image(assets, inventory, hovered, true)?);
+                self.upload(&key, view.image(assets, inventory, hovered, view.at_shop)?);
             }
             if let Some(texture) = self.textures.get(&key) {
                 draws.push(Draw {
