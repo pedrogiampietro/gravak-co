@@ -60,6 +60,7 @@ impl PacketProcess for MsgConnect {
                 me.load_spouse(state.pool()).await?;
                 crate::offline_tg::logged_in(me.id());
                 me.load_inventory(state.pool()).await?;
+                me.restack(state.pool()).await?;
                 me.load_equipment(state.pool()).await?;
                 me.load_refineries(state.pool()).await?;
                 me.load_artifacts(state.pool()).await?;

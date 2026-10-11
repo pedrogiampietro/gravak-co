@@ -342,15 +342,26 @@ mod tests {
             let character = Character::new(actor.handle(), tq_db::character::Character::by_id(&pool, id).await?);
             let given = give_starter_items(&pool, &catalog, &character, class.into()).await?;
 
-            let mut bag: Vec<i64> = sqlx::query_scalar("SELECT item_type FROM inventory_items WHERE character_id = $1")
-                .bind(i64::from(id))
-                .fetch_all(&pool)
-                .await?;
+            // Potions and arrows come stacked: one slot of each, its amount.
+            let mut bag: Vec<(i64, i64)> = sqlx::query_as(
+                "SELECT item_type, durability FROM inventory_items WHERE character_id = $1",
+            )
+            .bind(i64::from(id))
+            .fetch_all(&pool)
+            .await?;
             bag.sort_unstable();
-            let mut expected: Vec<i64> = weapons.into_iter().chain([1_000_010; 5]).chain([1_001_010; 5]).collect();
+            let amount = |item_type: u32| {
+                bag.iter().filter(|(kind, _)| *kind == i64::from(item_type)).map(|(_, amount)| *amount).sum::<i64>()
+            };
+            assert_eq!(given, weapons.len() + 10);
+            assert_eq!((amount(1_000_010), amount(1_001_010)), (5, 5), "{class:?}");
+            let mut kinds: Vec<i64> = bag.iter().map(|(kind, _)| *kind).collect();
+            kinds.dedup();
+            let mut expected: Vec<i64> = weapons.iter().map(|kind| i64::from(*kind)).chain([1_000_010, 1_001_010]).collect();
             expected.sort_unstable();
-            assert_eq!(given, expected.len());
-            assert_eq!(bag, expected, "{class:?}");
+            expected.dedup();
+            assert_eq!(kinds, expected, "{class:?}");
+            assert_eq!(bag.len(), expected.len(), "{class:?}: one slot a kind");
         }
         Ok(())
     }

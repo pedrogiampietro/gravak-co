@@ -4855,6 +4855,26 @@ impl Renderer {
                 });
             }
         }
+        // The experience bar under the cursor: how far into the level.
+        if crate::original_ui_layout::exp_bar_at(viewport, cursor) {
+            let line = crate::leveling::progress_line(level, experience);
+            let tip_key = format!("@exp-tip-{line}");
+            self.prune_textures("@exp-tip-", &[Some(tip_key.as_str())]);
+            if !self.textures.contains_key(&tip_key) {
+                self.upload(&tip_key, crate::labels::tooltip_image(&line)?);
+            }
+            if let Some(texture) = self.textures.get(&tip_key) {
+                let left = (cursor[0] - texture.size[0] * 0.5).clamp(0.0, (viewport[0] - texture.size[0]).max(0.0));
+                let bar = crate::original_ui_layout::main_hud_position(viewport);
+                let top = bar[1] + crate::original_ui_layout::EXP_RECT.y - texture.size[1] - 8.0;
+                draws.push(Draw {
+                    texture: tip_key,
+                    vertices: quad([left, top], texture.size, viewport),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
         if let Some(view) = &skill_hud.viewed_equipment {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -5945,6 +5965,56 @@ impl Renderer {
                         texture.size,
                         viewport,
                     ),
+                    depth_test: false,
+                    sort_depth: f32::INFINITY,
+                });
+            }
+        }
+        // The depot's item under the cursor: its tooltip, as in the bag.
+        if let Some(item) = warehouse
+            .filter(|_| dragging_inventory_item.is_none())
+            .and_then(|items| crate::shop::warehouse_item_at(items, viewport, cursor, warehouse_page))
+        {
+            let tooltip_key = format!(
+                "@inventory-tooltip-{}-{}-{}-{}-{}-{}-{}-{:?}",
+                crate::shop::hero_key(),
+                item.uid,
+                item.plus,
+                item.gem_one,
+                item.gem_two,
+                item.item_type,
+                item.rarity,
+                item.affixes
+            );
+            if !self.textures.contains_key(&tooltip_key) {
+                let info = crate::shop::item_info(assets, item.item_type);
+                self.upload(
+                    &tooltip_key,
+                    crate::shop::item_tooltip_image(
+                        item.uid,
+                        item.item_type,
+                        info.as_ref(),
+                        item.plus,
+                        item.gem_one,
+                        item.gem_two,
+                        item.rarity,
+                        item.affixes,
+                        item.bless,
+                        item.enchant_hp,
+                    )?,
+                );
+            }
+            if let Some(texture) = self.textures.get(&tooltip_key) {
+                let mut position = [cursor[0] + 14.0, cursor[1] + 14.0];
+                if position[0] + texture.size[0] > viewport[0] {
+                    position[0] = cursor[0] - texture.size[0] - 14.0;
+                }
+                if position[1] + texture.size[1] > viewport[1] {
+                    position[1] = cursor[1] - texture.size[1] - 14.0;
+                }
+                draws.push(Draw {
+                    texture: tooltip_key,
+                    vertices: quad(position, texture.size, viewport),
                     depth_test: false,
                     sort_depth: f32::INFINITY,
                 });

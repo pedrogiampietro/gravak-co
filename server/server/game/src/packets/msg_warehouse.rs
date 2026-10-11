@@ -48,6 +48,18 @@ impl PacketProcess for MsgWarehouse {
             return Ok(());
         }
 
+        // Sort: the depot laid out again, and sent anew.
+        if self.action == 5 {
+            let items = character.sort_warehouse(state.pool()).await?;
+            actor.send(MsgItemInfo::clear_warehouse(self.npc_id)).await?;
+            actor
+                .send(MsgItemInfo::warehouse_balance(self.npc_id, character.warehouse_silver()))
+                .await?;
+            for item in items {
+                actor.send(MsgItemInfo::warehouse_item(item)).await?;
+            }
+            return Ok(());
+        }
         if self.action == 3 || self.action == 4 {
             match character
                 .transfer_warehouse_silver(state.pool(), self.amount, self.action == 3)

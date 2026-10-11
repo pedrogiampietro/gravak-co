@@ -371,14 +371,14 @@ fn experience_total(character: &Character) -> u64 {
 
 // ------------------------------------------------------------ the merchant
 
-/// Whether an item may go to the merchant: nothing bound, raised, rare or
-/// set with gems; never what the hunt lives on (potions, arrows).
+/// Whether an item may go to the merchant: nothing bound, raised or set
+/// with gems; never what the hunt lives on (potions, arrows). Rare gear goes
+/// only when the player's Sell All list lets its kind go (the client asks).
 fn sellable(item: &InventoryItem) -> bool {
     !crate::special_items::is_bound(item.item_type)
         && !is_potion(item.item_type)
         && item.item_type / 1_000 != 1_050
         && item.plus == 0
-        && item.rarity == 0
         && item.gem_one == 0
         && item.gem_two == 0
 }
@@ -448,9 +448,11 @@ pub async fn buy(state: &State, character: &Character, item_type: u32, amount: u
         return Ok(0);
     };
     let owner = character.owner();
-    let taken: Vec<u8> = character.inventory_items().iter().map(|item| item.position).collect();
     let mut bought = 0;
-    for slot in (0..BAG_SLOTS).filter(|slot| !taken.contains(slot)).take(amount.min(MOST_BOUGHT) as usize) {
+    for _ in 0..amount.min(MOST_BOUGHT) {
+        // Onto a stack with room, or into the first free slot.
+        let taken: Vec<u8> = character.inventory_items().iter().map(|item| item.position).collect();
+        let slot = (0..BAG_SLOTS).find(|slot| !taken.contains(slot)).unwrap_or(0);
         match character
             .purchase_item(state.pool(), item_type, slot, template.price, template.durability, template.max_durability)
             .await?

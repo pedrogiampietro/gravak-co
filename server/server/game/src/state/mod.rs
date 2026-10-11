@@ -39,6 +39,9 @@ pub struct GroundItem {
     pub silver: u32,
     /// The rarity the item is picked up with (equipment that fell rare).
     pub rarity: u8,
+    /// A stack dropped from the bag: its durability and most (its amount,
+    /// `crate::stacks`); `None`, as the catalog makes it.
+    pub stack: Option<(u16, u16)>,
 }
 
 #[derive(Debug)]

@@ -831,7 +831,8 @@ impl PacketProcess for MsgItem {
                         .await?;
                     return Ok(());
                 }
-                let Some(consumed) = character.drop_inventory_item(state.pool(), item.uid).await? else {
+                // One potion of the stack.
+                let Some((consumed, left)) = character.use_one(state.pool(), item.uid).await? else {
                     actor
                         .send(reject("Use rejected: item disappeared from inventory."))
                         .await?;
@@ -854,7 +855,12 @@ impl PacketProcess for MsgItem {
                     ),
                 );
                 character.save(state).await?;
-                actor.send(MsgItemInfo::remove_inventory_item(consumed)).await?;
+                actor
+                    .send(match left {
+                        Some(left) => MsgItemInfo::inventory_item(left),
+                        None => MsgItemInfo::remove_inventory_item(consumed),
+                    })
+                    .await?;
                 actor.send(MsgUserInfo::from(character)).await?;
                 // The potion's glow on the hero (5065's `gethp`/`getmp`) and
                 // what it filled, for them and whoever sees them.
@@ -928,8 +934,10 @@ impl PacketProcess for MsgItem {
                     y: location.y,
                     owner_id: character.id(),
                     silver: 0,
-                    // It keeps its rarity when picked up again.
+                    // It keeps its rarity when picked up again, a stack its
+                    // amount.
                     rarity: item.rarity,
+                    stack: crate::stacks::stackable(item.item_type).then_some((item.durability, item.max_durability)),
                 };
                 state.insert_ground_item(ground);
                 dragdrop_log(format_args!(
@@ -954,6 +962,42 @@ impl PacketProcess for MsgItem {
                 let dropped = MsgGroundItem::new(ground.uid, ground.item_id, ground.x, ground.y);
                 actor.send(dropped.clone()).await?;
                 actor.screen().send_message(dropped).await?;
+            },
+            ItemActionType::SplitItem | ItemActionType::CombineItem => {
+                let entity = actor.entity();
+                let character = entity.as_character().ok_or(crate::Error::CharacterNotFound)?;
+                let reject = |message: &str| MsgTalk::from_system(character.id(), TalkChannel::TopLeft, message);
+                if self.character_id != character.id() {
+                    return Ok(());
+                }
+                if matches!(action, ItemActionType::SplitItem) {
+                    // `amount` units (potions, arrow packs) off stack `param0`.
+                    let units = u16::try_from(self.amount).unwrap_or(u16::MAX);
+                    match character.split_stack(state.pool(), self.param0, units).await? {
+                        Some((left, split)) => {
+                            item_audit_log("split", character.id(), split.uid, split.item_type, format_args!("from={} units={units}", left.uid));
+                            actor.send(MsgItemInfo::inventory_item(left)).await?;
+                            actor.send(MsgItemInfo::inventory_item(split)).await?;
+                        },
+                        None => actor.send(reject("Cannot split: a free slot and less than the whole stack.")).await?,
+                    }
+                } else {
+                    // Stack `param0` poured onto stack `param1`.
+                    match character.combine_stacks(state.pool(), self.param0, self.param1).await? {
+                        Some((into, from)) => {
+                            item_audit_log("combine", character.id(), into.uid, into.item_type, format_args!("from={}", self.param0));
+                            actor.send(MsgItemInfo::inventory_item(into)).await?;
+                            match from {
+                                Some(from) => actor.send(MsgItemInfo::inventory_item(from)).await?,
+                                None => {
+                                    let gone = crate::entities::InventoryItem { uid: self.param0, item_type: into.item_type, ..Default::default() };
+                                    actor.send(MsgItemInfo::remove_inventory_item(gone)).await?;
+                                },
+                            }
+                        },
+                        None => actor.send(reject("Cannot combine: that stack is full.")).await?,
+                    }
+                }
             },
             ItemActionType::MoveInventory => {
                 dragdrop_log(format_args!(

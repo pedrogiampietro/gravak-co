@@ -129,6 +129,34 @@ fn team_reward_recipients(
         .collect()
 }
 
+/// The weapon in hand (right, else left) learns `practice`; the client is
+/// told its kind's level.
+async fn practice_held_weapon(
+    state: &State,
+    actor: &Actor<ActorState>,
+    character: &crate::entities::Character,
+    practice: u32,
+) -> Result<(), Error> {
+    let Some(weapon_type) = character
+        .equipment_item(4)
+        .or_else(|| character.equipment_item(5))
+        .map(|item| item.item_type)
+    else {
+        return Ok(());
+    };
+    if character.practice_weapon_proficiency(state.pool(), weapon_type, practice).await?.is_some() {
+        // The type's aggregate, which may come from another family.
+        let weapon_type = weapon_type / 1_000;
+        if let Some(packet) = super::MsgWeaponSkill::for_all(character.weapon_proficiencies())
+            .into_iter()
+            .find(|packet| packet.weapon_type == weapon_type)
+        {
+            actor.send(packet).await?;
+        }
+    }
+    Ok(())
+}
+
 impl MsgInteract {
     pub fn action_kind(&self) -> InteractAction {
         InteractAction::from(self.action)
@@ -362,34 +390,12 @@ impl MsgInteract {
         let experience = crate::training::experience(level, npc.level(), npc.life(), damage);
         self.grant_hit_experience(state, actor, character, experience).await?;
         let practice = crate::leveling::skill_practice(experience);
-        match cast {
-            Some(skill) => {
-                if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
-                    actor.send(super::MsgSkill::from(progress)).await?;
-                }
-            },
-            None => {
-                if let Some(weapon_type) = character
-                    .equipment_item(4)
-                    .or_else(|| character.equipment_item(5))
-                    .map(|item| item.item_type)
-                {
-                    let practiced = character
-                        .practice_weapon_proficiency(state.pool(), weapon_type, practice)
-                        .await?;
-                    if practiced.is_some() {
-                        let weapon_type = weapon_type / 1_000;
-                        if let Some(packet) = super::MsgWeaponSkill::for_all(character.weapon_proficiencies())
-                            .into_iter()
-                            .find(|packet| packet.weapon_type == weapon_type)
-                        {
-                            actor.send(packet).await?;
-                        }
-                    }
-                }
-            },
+        if let Some(skill) = cast {
+            if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
+                actor.send(super::MsgSkill::from(progress)).await?;
+            }
         }
-        Ok(())
+        practice_held_weapon(state, actor, character, practice).await
     }
 
     async fn process_magic_attack(
@@ -1226,6 +1232,11 @@ impl MsgInteract {
         if let Some(progress) = character.practice_skill(state.pool(), skill.id, practice).await? {
             actor.send(super::MsgSkill::from(progress)).await?;
         }
+        // The weapon in hand learns from the spell's hits too (a Taoist's
+        // wand or backsword would otherwise only learn from plain blows).
+        if hit_experience > 0 {
+            practice_held_weapon(state, actor, character, practice).await?;
+        }
         for target_id in defeated {
             if let Some(entity) = map.monster_entity(target_id) {
                 if let Some(monster) = entity.as_monster() {
@@ -1592,6 +1603,7 @@ pub(crate) async fn reward_monster_defeat(
             owner_id: character.id(),
             silver: item_id.1,
             rarity: if item_id.1 == 0 { rarity_of(item_id.0) } else { 0 },
+            stack: None,
         });
         let item_drop = MsgGroundItem::new(item_uid, item_id.0, x, y);
         character.owner().send(item_drop.clone()).await?;
@@ -1928,35 +1940,17 @@ impl PacketProcess for MsgInteract {
             }
         }
         self.degrade_used_weapons(state, actor, character).await?;
-        if let Some(weapon_type) = character
-            .equipment_item(4)
-            .or_else(|| character.equipment_item(5))
-            .map(|item| item.item_type)
-        {
-            // Redux `AddProficiencyExperience(WeaponType, expGain)`: the
-            // weapon learns as much as the hit's experience.
-            let practice = target.as_monster().map_or(1, |monster| {
-                crate::training::experience(
-                    character.entity().level(),
-                    u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
-                    life_before,
-                    outcome.damage,
-                )
-            });
-            let practiced = character
-                .practice_weapon_proficiency(state.pool(), weapon_type, u32::try_from(practice).unwrap_or(u32::MAX).max(1))
-                .await?;
-            if practiced.is_some() {
-                // Send the type's aggregate, which may come from another family.
-                let weapon_type = weapon_type / 1_000;
-                if let Some(packet) = super::MsgWeaponSkill::for_all(character.weapon_proficiencies())
-                    .into_iter()
-                    .find(|packet| packet.weapon_type == weapon_type)
-                {
-                    actor.send(packet).await?;
-                }
-            }
-        }
+        // Redux `AddProficiencyExperience(WeaponType, expGain)`: the weapon
+        // learns as much as the hit's experience, at the skill rate.
+        let hit = target.as_monster().map_or(0, |monster| {
+            crate::training::experience(
+                character.entity().level(),
+                u16::try_from(monster.monster_type().level.max(1)).unwrap_or(u16::MAX),
+                life_before,
+                outcome.damage,
+            )
+        });
+        practice_held_weapon(state, actor, character, crate::leveling::skill_practice(hit)).await?;
         if let Some(monster) = target.as_monster() {
             let experience = crate::leveling::combat_experience(
                 character.entity().level(),

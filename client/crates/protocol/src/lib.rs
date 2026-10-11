@@ -1509,6 +1509,18 @@ impl ItemActionPacket {
         }
     }
 
+    /// Takes `units` (potions, arrow packs) off a stack into a slot of their
+    /// own (the original's `SplitItem`).
+    pub fn split_stack(character_id: u32, item_uid: u32, units: u32) -> Self {
+        Self { character_id, item_id: item_uid, action_type: 7, client_timestamp: unix_timestamp(), amount: units, data2: 0 }
+    }
+
+    /// Pours stack `from` onto stack `into` of the same kind (the original's
+    /// `CombineItem`).
+    pub fn combine_stacks(character_id: u32, from: u32, into: u32) -> Self {
+        Self { character_id, item_id: from, action_type: 8, client_timestamp: unix_timestamp(), amount: 1, data2: into }
+    }
+
     pub fn move_inventory(character_id: u32, item_uid: u32, inventory_slot: u8) -> Self {
         Self {
             character_id,
@@ -1912,6 +1924,11 @@ impl WarehouseActionPacket {
             position,
             amount: 0,
         }
+    }
+
+    /// Lays the depot out in order (Gravak's own action).
+    pub fn sort(character_id: u32, npc_id: u32) -> Self {
+        Self { character_id, npc_id, action: 5, item_uid: 0, position: 0, amount: 0 }
     }
 
     pub fn silver(character_id: u32, npc_id: u32, amount: u32, deposit: bool) -> Self {

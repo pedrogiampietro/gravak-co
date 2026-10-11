@@ -32,6 +32,14 @@ pub const REVIVE: u32 = 1_050;
 pub const STIGMA: u32 = 1_095;
 pub const MAGIC_SHIELD: u32 = 1_090;
 pub const STAR_OF_ACCURACY: u32 = 1_085;
+pub const CYCLONE: u32 = 1_110;
+pub const SUPERMAN: u32 = 1_025;
+
+/// The XP skills the helper may use when the circle lights, in the order
+/// the Hunt tab's arrows choose them.
+pub const XP_SKILLS: [u32; 2] = [CYCLONE, SUPERMAN];
+/// An XP skill refused goes again after this long.
+const XP_AGAIN: f32 = 3.0;
 
 /// The heals the helper may cast, weakest first.
 pub const HEALS: [u32; 4] = [CURE, HEALING_RAIN, ADVANCED_CURE, NECTAR];
@@ -95,6 +103,8 @@ pub fn skill_name(skill: u32) -> &'static str {
         STIGMA => "Stigma",
         MAGIC_SHIELD => "Magic Shield",
         STAR_OF_ACCURACY => "Star of Accuracy",
+        CYCLONE => "Cyclone",
+        SUPERMAN => "Superman",
         _ => "?",
     }
 }
@@ -228,6 +238,10 @@ pub struct Settings {
     pub hunt_levels_above: u8,
     /// Fallen while hunting, revive and walk back to the spot.
     pub hunt_revive: bool,
+    /// The XP skill (`XP_SKILLS[xp_skill]`, or the other when it is not
+    /// learned) used as soon as the XP circle lights.
+    pub use_xp: bool,
+    pub xp_skill: u8,
     /// The merchant: sell the junk when the bag fills (the Sell All list),
     /// repair worn gear, buy `buy_amount` of a slot's potion when none is
     /// left.
@@ -262,6 +276,8 @@ impl Default for Settings {
             hunt_skill: false,
             hunt_levels_above: 3,
             hunt_revive: true,
+            use_xp: false,
+            xp_skill: 0,
             auto_sell: false,
             auto_repair: true,
             auto_buy: true,
@@ -281,6 +297,7 @@ pub enum Toggle {
     Loot,
     HuntSkill,
     HuntRevive,
+    UseXp,
     AutoSell,
     AutoRepair,
     AutoBuy,
@@ -295,6 +312,7 @@ pub enum Stepper {
     FollowDistance,
     HuntRadius,
     HuntLevels,
+    XpSkill,
     BuyAmount,
     DepositAt,
 }
@@ -306,6 +324,7 @@ impl Stepper {
             Self::FollowDistance => (1, 1, 10),
             Self::HuntRadius => (2, 4, 30),
             Self::HuntLevels => (1, 0, 20),
+            Self::XpSkill => (1, 0, XP_SKILLS.len() as u8 - 1),
             Self::BuyAmount => (5, 5, 20),
             Self::DepositAt => (1, 1, 40),
             _ => (5, 5, 95),
@@ -329,6 +348,7 @@ impl Settings {
             Toggle::Loot => &mut self.loot,
             Toggle::HuntSkill => &mut self.hunt_skill,
             Toggle::HuntRevive => &mut self.hunt_revive,
+            Toggle::UseXp => &mut self.use_xp,
             Toggle::AutoSell => &mut self.auto_sell,
             Toggle::AutoRepair => &mut self.auto_repair,
             Toggle::AutoBuy => &mut self.auto_buy,
@@ -346,6 +366,7 @@ impl Settings {
             Stepper::FollowDistance => &mut self.follow_distance,
             Stepper::HuntRadius => &mut self.hunt_radius,
             Stepper::HuntLevels => &mut self.hunt_levels_above,
+            Stepper::XpSkill => &mut self.xp_skill,
             Stepper::BuyAmount => &mut self.buy_amount,
             Stepper::DepositAt => &mut self.deposit_at,
         };
@@ -367,6 +388,8 @@ impl Settings {
             format!("hunt_skill={}", flag(self.hunt_skill)),
             format!("hunt_levels_above={}", self.hunt_levels_above),
             format!("hunt_revive={}", flag(self.hunt_revive)),
+            format!("use_xp={}", flag(self.use_xp)),
+            format!("xp_skill={}", self.xp_skill),
             format!("auto_sell={}", flag(self.auto_sell)),
             format!("auto_repair={}", flag(self.auto_repair)),
             format!("auto_buy={}", flag(self.auto_buy)),
@@ -416,6 +439,8 @@ impl Settings {
                 "loot" => settings.loot = flag,
                 "hunt_skill" => settings.hunt_skill = flag,
                 "hunt_revive" => settings.hunt_revive = flag,
+                "use_xp" => settings.use_xp = flag,
+                "xp_skill" => settings.xp_skill = number(0, XP_SKILLS.len() as u32 - 1).unwrap_or(settings.xp_skill),
                 "auto_sell" => settings.auto_sell = flag,
                 "auto_repair" => settings.auto_repair = flag,
                 "auto_buy" => settings.auto_buy = flag,
@@ -741,8 +766,8 @@ fn merchant(settings: &Settings, world: &World, memory: &mut Memory, now: f32) -
         });
         if let Some(item) = wanted {
             memory.next_buy = now + BUY_GAP;
-            let count = settings.buy_amount.min(u8::try_from(world.free_slots).unwrap_or(u8::MAX));
-            return Some(Act::Buy { item, count });
+            // Potions stack: one free slot takes them all.
+            return Some(Act::Buy { item, count: settings.buy_amount });
         }
     }
     None
@@ -858,6 +883,16 @@ fn next_cast(settings: &Settings, world: &World, memory: &Memory, life: u32) -> 
             return Some((skill, mate.id, BUFF_AGAIN));
         }
     }
+    // The XP circle lit: the chosen XP skill, or the other one learned.
+    if settings.use_xp && world.xp_ready {
+        let chosen = XP_SKILLS[usize::from(settings.xp_skill).min(XP_SKILLS.len() - 1)];
+        let skill = std::iter::once(chosen)
+            .chain(XP_SKILLS)
+            .find(|skill| world.known.contains(skill) && !world.cooling.contains(skill) && fresh(*skill, world.me));
+        if let Some(skill) = skill {
+            return Some((skill, world.me, XP_AGAIN));
+        }
+    }
     for slot in &settings.slots {
         if let Use::Skill(skill) = slot.using
             && life < u32::from(slot.percent)
@@ -914,7 +949,7 @@ pub const SIZE: [u32; 2] = [720, 440];
 const CONTENT_LEFT: i32 = 192;
 const CONTENT_TOP: i32 = 56;
 const CONTENT_WIDTH: i32 = 512;
-const ROW: i32 = 52;
+const ROW: i32 = 48;
 
 /// The window's tabs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -1289,12 +1324,13 @@ fn keep_button() -> UiRect {
 }
 
 /// The Hunt tab's rows: what each ticks, and what its arrows change.
-const HUNT_ROWS: [(Option<Toggle>, Option<Stepper>); 5] = [
+const HUNT_ROWS: [(Option<Toggle>, Option<Stepper>); 6] = [
     (Some(Toggle::Hunt), Some(Stepper::HuntRadius)),
     (Some(Toggle::Loot), None),
     (Some(Toggle::HuntSkill), None),
     (None, Some(Stepper::HuntLevels)),
     (Some(Toggle::HuntRevive), None),
+    (Some(Toggle::UseXp), Some(Stepper::XpSkill)),
 ];
 
 /// Whether `local` is over the window.
@@ -1525,12 +1561,14 @@ fn draw_rows(
 
 fn draw_hunt(image: &mut RgbaImage, font: &Font, view: &HelperView) {
     let settings = &view.settings;
-    let rows: [(&str, &str, bool, Option<String>); 5] = [
+    let xp = XP_SKILLS[usize::from(settings.xp_skill).min(XP_SKILLS.len() - 1)];
+    let rows: [(&str, &str, bool, Option<String>); 6] = [
         ("Hunt", "Monsters around where it begins", settings.hunt, Some(format!("{} cells", settings.hunt_radius))),
         ("Pick up items", "What falls nearby, while the bag has room", settings.loot, None),
         ("Use the skill bar's skill", "Strikes instead when mana runs low", settings.hunt_skill, None),
         ("Strongest monsters", "Up to this many levels above yours", true, Some(format!("+{} levels", settings.hunt_levels_above))),
         ("Revive and come back", "Fallen, revives when it may and walks back", settings.hunt_revive, None),
+        ("Use the XP skill", "As soon as the XP circle lights", settings.use_xp, Some(skill_name(xp).to_owned())),
     ];
     draw_rows(image, font, view, &rows, &HUNT_ROWS);
     let note = if settings.follow && view.leader.is_some() {
@@ -1963,6 +2001,27 @@ mod tests {
     }
 
     #[test]
+    fn the_xp_skill_goes_off_when_the_circle_lights() {
+        let mut settings = Settings { use_xp: true, ..on() };
+        let mut world = world();
+        world.known.push(SUPERMAN);
+        let mut memory = Memory::default();
+        // No circle, nothing.
+        assert!(decide(&settings, &world, &mut memory, 0.0).is_empty());
+        // Lit: Cyclone is chosen but not learned, so Superman.
+        world.xp_ready = true;
+        assert_eq!(decide(&settings, &world, &mut memory, 1.0), vec![Act::Cast { skill: SUPERMAN, target: 1 }]);
+        // Both learned: the chosen one.
+        world.known.push(CYCLONE);
+        assert_eq!(decide(&settings, &world, &mut Memory::default(), 2.0), vec![Act::Cast { skill: CYCLONE, target: 1 }]);
+        settings.step(Stepper::XpSkill, true);
+        assert_eq!(decide(&settings, &world, &mut Memory::default(), 2.0), vec![Act::Cast { skill: SUPERMAN, target: 1 }]);
+        // Turned off, the circle waits for the player.
+        settings.use_xp = false;
+        assert!(decide(&settings, &world, &mut Memory::default(), 3.0).is_empty());
+    }
+
+    #[test]
     fn the_merchant_sells_repairs_and_brings_potions() {
         let mut settings = Settings { enabled: true, auto_sell: true, ..Settings::default() };
         settings.slots[0] = Slot { using: Use::Item(LIFE_POTION), percent: 50 };
@@ -1981,7 +2040,7 @@ mod tests {
         assert_eq!(decide(&settings, &world, &mut memory, 3.0), vec![Act::Repair]);
         // The slot's potion run out: brought, as many as the bag takes.
         world.potions.clear();
-        assert_eq!(decide(&settings, &world, &mut memory, 4.0), vec![Act::Buy { item: LIFE_POTION, count: 2 }]);
+        assert_eq!(decide(&settings, &world, &mut memory, 4.0), vec![Act::Buy { item: LIFE_POTION, count: 10 }]);
         // Ten Meteors gathered: carried to the depot; nine wait.
         settings.auto_deposit = true;
         world.valuables = vec![(1_088_000, 9)];
@@ -2004,6 +2063,8 @@ mod tests {
         settings.team_heal_skill = NECTAR;
         settings.auto_deposit = true;
         settings.step(Stepper::DepositAt, true);
+        settings.use_xp = true;
+        settings.step(Stepper::XpSkill, true);
         assert_eq!(Settings::parse(&settings.format()), settings);
         // Nonsense keeps the defaults.
         let read = Settings::parse("slot1=item:42:50\nslot9=skill:1005:50\nteam_heal_skill=1000\npick1=:1111\nwhat=1");
@@ -2172,7 +2233,7 @@ mod tests {
         assert_eq!(action_at(&view, [row_rect(4).x as f32 + 20.0, centre(row_rect(4))[1]]), Some(HelperAction::Toggle(Toggle::AutoDeposit)));
         let (_, more) = arrows(row_stepper(row_rect(4)));
         assert_eq!(action_at(&view, centre(more)), Some(HelperAction::Step(Stepper::DepositAt, true)));
-        assert!(row_rect(4).y + row_rect(4).height < SIZE[1] as i32 - 52, "the last row clears the note");
+        assert!(row_rect(5).y + row_rect(5).height < SIZE[1] as i32 - 52, "the Hunt tab's last row clears the note");
         // Everything fits in the window.
         assert!(slot_card(2).x + slot_card(2).width <= SIZE[0] as i32 - 8);
         assert!(pick_card(1).y + pick_card(1).height < team_heal_icon().y);
@@ -2220,7 +2281,7 @@ mod tests {
                 "hunt",
                 HelperView {
                     tab: Tab::Hunt,
-                    settings: Settings { hunt: true, hunt_skill: true, ..base.settings.clone() },
+                    settings: Settings { hunt: true, hunt_skill: true, use_xp: true, ..base.settings.clone() },
                     status: "Hunting Pheasant.".into(),
                     hover: Some(HelperAction::Toggle(Toggle::Loot)),
                     ..base.clone()

@@ -4,8 +4,9 @@
 //! are, and a click moves the whole type to the other tab: one arrow pack
 //! on the blacklist keeps them all. The blacklist is saved per character
 //! (`settings/sell_<id>.ini`). Valuable items are always kept: anything with
-//! a plus, gems or sockets, blessing, enchantment or custom rarity, Elite or
-//! Super equipment, DragonBalls, Meteors, gems and ExpBalls.
+//! a plus, gems, blessing or enchantment, DragonBalls, Meteors, gems and
+//! ExpBalls. Rare, Elite and Super gear starts kept, but a click lets its
+//! kind be sold (`settings/sell_ok_<id>.ini`).
 //!
 //! Drawn like the Highscores and the Reward Wall: the quick panels' frame,
 //! gold chips for the tabs, a teal card around the slots and the ornate
@@ -54,18 +55,20 @@ pub enum SellAllAction {
     Close,
 }
 
-/// Items never sold by Sell All, whatever the blacklist says.
+/// Items never sold by Sell All, whatever the lists say.
 pub fn protected(item: &OwnedItem) -> bool {
-    let equipment = item.item_type < 1_000_000;
     item.plus > 0
         || item.gem_one != 0
         || item.gem_two != 0
         || item.bless > 0
         || item.enchant_hp > 0
-        || item.rarity > 0
-        || equipment && item.item_type % 10 >= 8
         || matches!(item.item_type, 1_088_000..=1_088_002 | 723_700)
         || (700_000..710_000).contains(&item.item_type)
+}
+
+/// Gear kept until its kind is let go: rare, Elite or Super.
+pub fn precious(item: &OwnedItem) -> bool {
+    item.rarity > 0 || item.item_type < 1_000_000 && item.item_type % 10 >= 8
 }
 
 /// What the shop pays for `item` (the server's rule): a third of the price,
@@ -74,7 +77,10 @@ pub fn sale_price(base: u32, item: &OwnedItem) -> u32 {
     let price = if item.max_durability == 0 {
         u64::from(base) / 3
     } else {
-        u64::from(base) * u64::from(item.durability.min(item.max_durability)) / u64::from(item.max_durability) / 3
+        // A stack is worth its units (its durability over one unit's).
+        let durability =
+            if crate::shop::stackable(item.item_type) { item.durability } else { item.durability.min(item.max_durability) };
+        u64::from(base) * u64::from(durability) / u64::from(item.max_durability) / 3
     };
     u32::try_from(price).unwrap_or(u32::MAX)
 }
@@ -82,6 +88,8 @@ pub fn sale_price(base: u32, item: &OwnedItem) -> u32 {
 pub struct SellAllView {
     pub tab: SellTab,
     pub blacklist: BTreeSet<u32>,
+    /// Kinds whose rare, Elite and Super pieces are sold too.
+    pub released: BTreeSet<u32>,
     icons: HashMap<u32, RgbaImage>,
     prices: HashMap<u32, u32>,
     /// Top-left corner in window pixels.
@@ -102,6 +110,7 @@ impl SellAllView {
         Self {
             tab: SellTab::Sell,
             blacklist: character_id.map(load_blacklist).unwrap_or_default(),
+            released: character_id.map(|id| load_list(released_path(id))).unwrap_or_default(),
             icons: crate::shop::item_icons(assets, &types),
             prices: crate::shop::base_prices(assets, &types),
             position: [
@@ -119,7 +128,10 @@ impl SellAllView {
 
     /// Whether Sell All sells `item`.
     pub fn sells(&self, item: &OwnedItem) -> bool {
-        !protected(item) && !self.blacklist.contains(&item.item_type) && sale_price(self.base_price(item), item) > 0
+        !protected(item)
+            && (!precious(item) || self.released.contains(&item.item_type))
+            && !self.blacklist.contains(&item.item_type)
+            && sale_price(self.base_price(item), item) > 0
     }
 
     /// The open tab's items, one per type with how many of it there are,
@@ -156,21 +168,31 @@ impl SellAllView {
             .sum()
     }
 
-    /// Moves `item_type` to the other tab; `false` when it is protected and
-    /// stays kept.
-    pub fn toggle(&mut self, item_type: u32) -> bool {
+    /// Moves `item_type` to the other tab; `false` when all of it that is
+    /// kept is valuable and stays kept.
+    pub fn toggle(&mut self, inventory: &[OwnedItem], item_type: u32) -> bool {
         match self.tab {
             SellTab::Sell => {
                 self.blacklist.insert(item_type);
+                self.released.remove(&item_type);
             }
             SellTab::Kept => {
-                if !self.blacklist.remove(&item_type) {
+                let kept: Vec<&OwnedItem> =
+                    inventory.iter().filter(|item| item.item_type == item_type && !self.sells(item)).collect();
+                if !kept.is_empty() && kept.iter().all(|item| protected(item)) {
                     return false;
+                }
+                self.blacklist.remove(&item_type);
+                if kept.iter().any(|item| precious(item)) {
+                    self.released.insert(item_type);
                 }
             }
         }
         if let Some(character_id) = self.character_id {
             save_blacklist(character_id, &self.blacklist);
+            if let Some(path) = released_path(character_id) {
+                save_list(path, &self.released);
+            }
         }
         true
     }
@@ -220,6 +242,7 @@ impl SellAllView {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.tab.hash(&mut hasher);
         self.blacklist.hash(&mut hasher);
+        self.released.hash(&mut hasher);
         for item in inventory {
             (item.uid, item.item_type, item.position, item.durability).hash(&mut hasher);
         }
@@ -247,7 +270,7 @@ impl SellAllView {
         }
         let hint = match self.tab {
             SellTab::Sell => "Click an item to keep its kind (BlackList).",
-            SellTab::Kept => "Click an item to sell its kind again. Valuable items always stay.",
+            SellTab::Kept => "Click to sell its kind (rare and Super too). Grey: always kept.",
         };
         say(&mut image, &font, hint, ui_theme::TEXT_MUTED, 20, HINT_Y, 11.0);
 
@@ -280,7 +303,7 @@ impl SellAllView {
             if self.tab == SellTab::Sell {
                 check(&mut image, mark);
             } else {
-                cross(&mut image, mark, !self.blacklist.contains(&item.item_type));
+                cross(&mut image, mark, protected(item));
             }
             if count > 1 {
                 let text = count.to_string();
@@ -362,10 +385,17 @@ fn blacklist_path(character_id: u32) -> Option<std::path::PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("settings").join(format!("sell_{character_id}.ini")))
 }
 
+fn released_path(character_id: u32) -> Option<std::path::PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("settings").join(format!("sell_ok_{character_id}.ini")))
+}
+
 /// The item types the character keeps from Sell All.
 pub fn load_blacklist(character_id: u32) -> BTreeSet<u32> {
-    blacklist_path(character_id)
-        .and_then(|path| std::fs::read_to_string(path).ok())
+    load_list(blacklist_path(character_id))
+}
+
+fn load_list(path: Option<std::path::PathBuf>) -> BTreeSet<u32> {
+    path.and_then(|path| std::fs::read_to_string(path).ok())
         .map(|text| {
             text.split(|c: char| c == ',' || c.is_whitespace())
                 .filter_map(|value| value.trim().parse().ok())
@@ -375,15 +405,18 @@ pub fn load_blacklist(character_id: u32) -> BTreeSet<u32> {
 }
 
 fn save_blacklist(character_id: u32, blacklist: &BTreeSet<u32>) {
-    let Some(path) = blacklist_path(character_id) else {
-        return;
-    };
+    if let Some(path) = blacklist_path(character_id) {
+        save_list(path, blacklist);
+    }
+}
+
+fn save_list(path: std::path::PathBuf, list: &BTreeSet<u32>) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let text = blacklist.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let text = list.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     if let Err(error) = std::fs::write(&path, text) {
-        eprintln!("Could not save the Sell All blacklist: {error}");
+        eprintln!("Could not save the Sell All list: {error}");
     }
 }
 
@@ -414,6 +447,7 @@ mod tests {
         SellAllView {
             tab: SellTab::Sell,
             blacklist: BTreeSet::new(),
+            released: BTreeSet::new(),
             icons: HashMap::new(),
             prices: prices.iter().copied().collect(),
             position: [0, 0],
@@ -437,13 +471,25 @@ mod tests {
         let sold: Vec<u32> = view.to_sell(&inventory).iter().map(|item| item.uid).collect();
         assert_eq!(sold, vec![1, 2]);
         assert_eq!(view.value(&inventory), 10 + 300);
-        assert!(view.toggle(410_105));
+        assert!(view.toggle(&inventory, 410_105));
         assert_eq!(view.to_sell(&inventory).len(), 1);
         // A protected item cannot be moved to the sale.
         view.tab = SellTab::Kept;
-        assert!(!view.toggle(1_088_000));
-        assert!(view.toggle(410_105));
+        assert!(!view.toggle(&inventory, 1_088_000));
+        assert!(view.toggle(&inventory, 410_105));
         assert_eq!(view.to_sell(&inventory).len(), 2);
+        // Super (…9) and rare gear starts kept; a click lets its kind go.
+        assert!(!view.sells(&inventory[2]));
+        assert!(view.toggle(&inventory, 410_109));
+        assert!(view.sells(&inventory[2]));
+        let rare = OwnedItem { rarity: 2, ..item(6, 410_105, 6) };
+        assert!(!view.sells(&rare), "410105 was let go plain, not rare");
+        assert!(view.toggle(&[rare], 410_105));
+        assert!(view.sells(&rare));
+        // Back to the BlackList: kept again, rare and all.
+        view.tab = SellTab::Sell;
+        assert!(view.toggle(&inventory, 410_109));
+        assert!(!view.sells(&inventory[2]));
     }
 
     #[test]
@@ -455,7 +501,7 @@ mod tests {
         let first = SellAllView::slot(0);
         let cursor = [(first.x + 5) as f32, (first.y + 5) as f32];
         assert_eq!(view.action_at(&inventory, cursor), Some(SellAllAction::Toggle(1_050_002)));
-        assert!(view.toggle(1_050_002));
+        assert!(view.toggle(&inventory, 1_050_002));
         assert_eq!(view.to_sell(&inventory).len(), 1);
     }
 

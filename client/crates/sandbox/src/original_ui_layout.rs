@@ -255,6 +255,16 @@ pub fn chat_strip_rect(viewport: [f32; 2], control: ChatStripControl) -> Rect {
     main_hud_local(viewport, control.local_rect())
 }
 
+/// Whether `cursor` is over the experience bar (a few pixels around its
+/// four-pixel trough, so it is easy to point at).
+pub fn exp_bar_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    let bar = main_hud_local(viewport, EXP_RECT);
+    cursor[0] >= bar.x
+        && cursor[0] < bar.x + bar.width
+        && cursor[1] >= bar.y - 4.0
+        && cursor[1] < bar.y + bar.height + 4.0
+}
+
 pub fn orb_rect(viewport: [f32; 2]) -> Rect {
     main_hud_local(viewport, ORB_RECT)
 }

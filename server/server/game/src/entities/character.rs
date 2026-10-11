@@ -4131,6 +4131,40 @@ impl Character {
         self.warehouse.lock().clone()
     }
 
+    /// Lays the depot out in order, from the first slot: by kind (gear by its
+    /// family, then the rest), the rarest and most raised first.
+    pub async fn sort_warehouse(&self, pool: &sqlx::PgPool) -> Result<Vec<InventoryItem>, Error> {
+        let mut items = self.warehouse_items();
+        items.sort_by_key(|item| {
+            (
+                item.item_type >= 1_000_000,
+                item.item_type / 1_000,
+                std::cmp::Reverse(item.rarity),
+                std::cmp::Reverse(item.plus),
+                item.item_type,
+                item.uid,
+            )
+        });
+        let mut transaction = pool.begin().await?;
+        // Out of the way first: one item a slot at every step.
+        sqlx::query("UPDATE warehouse_items SET position = position + 1000 WHERE character_id = $1")
+            .bind(self.inner.character_id)
+            .execute(&mut *transaction)
+            .await?;
+        for (position, item) in items.iter_mut().enumerate() {
+            item.position = position as u8;
+            sqlx::query("UPDATE warehouse_items SET position = $1 WHERE item_uid = $2 AND character_id = $3")
+                .bind(position as i64)
+                .bind(i64::from(item.uid))
+                .bind(self.inner.character_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
+        *self.warehouse.lock() = items.clone();
+        Ok(items)
+    }
+
     /// Set the custom rarity of an item owned by the character.
     ///
     /// This deliberately does not touch `item_type` (classic quality) or
@@ -4484,45 +4518,21 @@ impl Character {
         let Some((uid, item_type, old_position, durability, max_durability)) = row else {
             return Ok(None);
         };
+        // The item keeps its uid (one sequence numbers bag, depot and gear),
+        // so its upgrades, rarity affixes, blessing, colour and the rest stay
+        // with it.
         let warehouse_uid: i64 = sqlx::query_scalar(
-            "INSERT INTO warehouse_items (character_id, item_type, position, durability, max_durability) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
+            "INSERT INTO warehouse_items (item_uid, character_id, item_type, position, durability, max_durability) \
+             VALUES ($6, $1, $2, $3, $4, $5) RETURNING item_uid",
         )
         .bind(self.inner.character_id)
         .bind(item_type)
         .bind(i64::from(position))
         .bind(durability)
         .bind(max_durability)
+        .bind(uid)
         .fetch_one(&mut *transaction)
         .await?;
-        if source_upgrade.plus > 0
-            || source_upgrade.gem_one > 0
-            || source_upgrade.gem_two > 0
-            || source_upgrade.socket_one > 0
-            || source_upgrade.socket_two > 0
-            || source_upgrade.rarity > 0
-        {
-            sqlx::query(
-                "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus, gem_one = excluded.gem_one,
-                   gem_two = excluded.gem_two, socket_one = excluded.socket_one, socket_two = excluded.socket_two,
-                   rarity = excluded.rarity",
-            )
-            .bind(warehouse_uid)
-            .bind(i64::from(source_upgrade.plus))
-            .bind(i64::from(source_upgrade.gem_one))
-            .bind(i64::from(source_upgrade.gem_two))
-            .bind(i64::from(source_upgrade.socket_one))
-            .bind(i64::from(source_upgrade.socket_two))
-            .bind(i64::from(source_upgrade.rarity))
-            .execute(&mut *transaction)
-            .await?;
-        }
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
-            .bind(i64::from(item_uid))
-            .execute(&mut *transaction)
-            .await?;
         transaction.commit().await?;
         let removed = InventoryItem {
             uid: u32::try_from(uid).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
@@ -4582,45 +4592,19 @@ impl Character {
         let Some((uid, item_type, old_position, durability, max_durability)) = row else {
             return Ok(None);
         };
+        // Back with the uid it always had (see `store_inventory_item`).
         let inventory_uid: i64 = sqlx::query_scalar(
-            "INSERT INTO inventory_items (character_id, item_type, position, durability, max_durability) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
+            "INSERT INTO inventory_items (item_uid, character_id, item_type, position, durability, max_durability) \
+             VALUES ($6, $1, $2, $3, $4, $5) RETURNING item_uid",
         )
         .bind(self.inner.character_id)
         .bind(item_type)
         .bind(i64::from(position))
         .bind(durability)
         .bind(max_durability)
+        .bind(uid)
         .fetch_one(&mut *transaction)
         .await?;
-        if source_upgrade.plus > 0
-            || source_upgrade.gem_one > 0
-            || source_upgrade.gem_two > 0
-            || source_upgrade.socket_one > 0
-            || source_upgrade.socket_two > 0
-            || source_upgrade.rarity > 0
-        {
-            sqlx::query(
-                "INSERT INTO item_upgrades (item_uid, plus, gem_one, gem_two, socket_one, socket_two, rarity)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT(item_uid) DO UPDATE SET plus = excluded.plus, gem_one = excluded.gem_one,
-                   gem_two = excluded.gem_two, socket_one = excluded.socket_one, socket_two = excluded.socket_two,
-                   rarity = excluded.rarity",
-            )
-            .bind(inventory_uid)
-            .bind(i64::from(source_upgrade.plus))
-            .bind(i64::from(source_upgrade.gem_one))
-            .bind(i64::from(source_upgrade.gem_two))
-            .bind(i64::from(source_upgrade.socket_one))
-            .bind(i64::from(source_upgrade.socket_two))
-            .bind(i64::from(source_upgrade.rarity))
-            .execute(&mut *transaction)
-            .await?;
-        }
-        sqlx::query("DELETE FROM item_upgrades WHERE item_uid = $1")
-            .bind(i64::from(item_uid))
-            .execute(&mut *transaction)
-            .await?;
         transaction.commit().await?;
         let stored = InventoryItem {
             uid: u32::try_from(uid).map_err(|_| Error::Other("warehouse item ID exceeds protocol range".into()))?,
@@ -5078,12 +5062,38 @@ impl Character {
         if position >= 40 {
             return Ok(PurchaseOutcome::InventoryFull);
         }
-        {
-            let inventory = self.inventory.lock();
-            if inventory.len() >= 40 || inventory.iter().any(|item| item.position == position) {
-                return Ok(PurchaseOutcome::InventoryFull);
-            }
-        }
+        let (durability, max_durability) = crate::stacks::born(item_type, durability, max_durability);
+        // A potion or arrows bought go on a stack of theirs with room.
+        let stack = crate::stacks::stackable(item_type)
+            .then(|| {
+                self.inventory.lock().iter().copied().find(|item| {
+                    item.item_type == item_type
+                        && item.max_durability == max_durability
+                        && crate::stacks::room(item_type, item.durability, item.max_durability) >= durability
+                })
+            })
+            .flatten();
+        let position = match stack {
+            Some(stack) => stack.position,
+            None => {
+                let inventory = self.inventory.lock();
+                if inventory.len() >= 40 {
+                    return Ok(PurchaseOutcome::InventoryFull);
+                }
+                // The slot asked for, or (a stack's slot being full) the first
+                // free one.
+                if !inventory.iter().any(|item| item.position == position) {
+                    position
+                } else if crate::stacks::stackable(item_type) {
+                    let Some(free) = (0_u8..40).find(|slot| inventory.iter().all(|item| item.position != *slot)) else {
+                        return Ok(PurchaseOutcome::InventoryFull);
+                    };
+                    free
+                } else {
+                    return Ok(PurchaseOutcome::InventoryFull);
+                }
+            },
+        };
         let mut transaction = pool.begin().await?;
         let updated = sqlx::query(
             "UPDATE characters SET silver = silver - $1 \
@@ -5097,6 +5107,29 @@ impl Character {
         if updated.rows_affected() == 0 {
             transaction.rollback().await?;
             return Ok(PurchaseOutcome::InsufficientSilver);
+        }
+        if let Some(stack) = stack {
+            let filled = sqlx::query(
+                "UPDATE inventory_items SET durability = durability + $1 \
+                 WHERE item_uid = $2 AND character_id = $3 AND durability = $4",
+            )
+            .bind(i64::from(durability))
+            .bind(i64::from(stack.uid))
+            .bind(self.inner.character_id)
+            .bind(i64::from(stack.durability))
+            .execute(&mut *transaction)
+            .await?;
+            if filled.rows_affected() != 1 {
+                transaction.rollback().await?;
+                return Ok(PurchaseOutcome::InventoryFull);
+            }
+            transaction.commit().await?;
+            self.silver.fetch_sub(u64::from(price), Ordering::Relaxed);
+            let item = InventoryItem { durability: stack.durability + durability, ..stack };
+            if let Some(owned) = self.inventory.lock().iter_mut().find(|owned| owned.uid == stack.uid) {
+                *owned = item;
+            }
+            return Ok(PurchaseOutcome::Bought(item));
         }
         let uid: i64 = sqlx::query_scalar(
             "INSERT INTO inventory_items \
@@ -5133,6 +5166,19 @@ impl Character {
         durability: u16,
         max_durability: u16,
     ) -> Result<Option<InventoryItem>, Error> {
+        if crate::stacks::stackable(item_type) {
+            let (durability, max_durability) = crate::stacks::born(item_type, durability, max_durability);
+            let Some(mut changed) = self.stack_into_bag(pool, item_type, durability, max_durability).await? else {
+                return Ok(None);
+            };
+            // The caller tells the last; the stacks filled before it are told
+            // here.
+            let last = changed.pop();
+            for item in changed {
+                let _ = self.owner().send(crate::packets::MsgItemInfo::inventory_item(item)).await;
+            }
+            return Ok(last);
+        }
         let position = {
             let inventory = self.inventory.lock();
             (0_u8..40).find(|position| inventory.iter().all(|item| item.position != *position))
@@ -5171,6 +5217,325 @@ impl Character {
         };
         self.inventory.lock().push(item);
         Ok(Some(item))
+    }
+
+    /// Pours `amount` (durability) of a stackable `item_type` into the bag:
+    /// its stacks with room first, then new stacks in the free slots. All of
+    /// it or (`None`) nothing: the items filled or made, in that order.
+    async fn stack_into_bag(
+        &self,
+        pool: &sqlx::PgPool,
+        item_type: u32,
+        amount: u16,
+        unit: u16,
+    ) -> Result<Option<Vec<InventoryItem>>, Error> {
+        let capacity = crate::stacks::capacity(item_type, unit);
+        let (filled, made) = {
+            let inventory = self.inventory.lock();
+            let mut left = amount.max(1);
+            let mut filled = Vec::new();
+            for stack in inventory.iter().filter(|item| item.item_type == item_type && item.max_durability == unit) {
+                let take = crate::stacks::room(item_type, stack.durability, stack.max_durability).min(left);
+                if take > 0 {
+                    filled.push((*stack, take));
+                    left -= take;
+                }
+                if left == 0 {
+                    break;
+                }
+            }
+            let mut free = (0_u8..40).filter(|slot| inventory.iter().all(|item| item.position != *slot));
+            let mut made = Vec::new();
+            while left > 0 {
+                let Some(slot) = free.next() else {
+                    return Ok(None);
+                };
+                let take = left.min(capacity);
+                made.push((slot, take));
+                left -= take;
+            }
+            (filled, made)
+        };
+        let mut changed = Vec::new();
+        let mut transaction = pool.begin().await?;
+        for (stack, take) in &filled {
+            let done = sqlx::query(
+                "UPDATE inventory_items SET durability = durability + $1 \
+                 WHERE item_uid = $2 AND character_id = $3 AND durability = $4",
+            )
+            .bind(i64::from(*take))
+            .bind(i64::from(stack.uid))
+            .bind(self.inner.character_id)
+            .bind(i64::from(stack.durability))
+            .execute(&mut *transaction)
+            .await?;
+            if done.rows_affected() != 1 {
+                transaction.rollback().await?;
+                return Ok(None);
+            }
+            changed.push(InventoryItem { durability: stack.durability + take, ..*stack });
+        }
+        for (slot, take) in &made {
+            let uid: i64 = sqlx::query_scalar(
+                "INSERT INTO inventory_items \
+                 (character_id, item_type, position, durability, max_durability) \
+                 VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
+            )
+            .bind(self.inner.character_id)
+            .bind(i64::from(item_type))
+            .bind(i64::from(*slot))
+            .bind(i64::from(*take))
+            .bind(i64::from(unit))
+            .fetch_one(&mut *transaction)
+            .await?;
+            changed.push(InventoryItem {
+                uid: u32::try_from(uid).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
+                item_type,
+                position: *slot,
+                durability: *take,
+                max_durability: unit,
+                ..Default::default()
+            });
+        }
+        transaction.commit().await?;
+        let mut inventory = self.inventory.lock();
+        for item in &changed {
+            inventory.retain(|owned| owned.uid != item.uid);
+            inventory.push(*item);
+        }
+        inventory.sort_by_key(|owned| owned.position);
+        Ok(Some(changed))
+    }
+
+    /// Gathers the bag's potions and arrows into as few stacks as they fill,
+    /// in their lowest slots: what was bagged one a slot before stacks, or a
+    /// potion the catalog made 100/100 (one potion).
+    pub async fn restack(&self, pool: &sqlx::PgPool) -> Result<(), Error> {
+        let mut groups: std::collections::BTreeMap<(u32, u16), Vec<InventoryItem>> = Default::default();
+        for item in self.inventory_items().into_iter().filter(|item| crate::stacks::stackable(item.item_type)) {
+            let (durability, max_durability) =
+                crate::stacks::born(item.item_type, item.durability, item.max_durability);
+            groups
+                .entry((item.item_type, max_durability))
+                .or_default()
+                .push(InventoryItem { durability, max_durability, ..item });
+        }
+        let mut changed: Vec<InventoryItem> = Vec::new();
+        let mut gone: Vec<u32> = Vec::new();
+        let before = self.inventory_items();
+        let mut transaction = pool.begin().await?;
+        for ((item_type, unit), mut items) in groups {
+            items.sort_by_key(|item| item.position);
+            let capacity = u32::from(crate::stacks::capacity(item_type, unit));
+            let mut left: u32 = items.iter().map(|item| u32::from(item.durability)).sum();
+            for item in items {
+                let take = left.min(capacity) as u16;
+                left -= u32::from(take);
+                let was = before.iter().find(|owned| owned.uid == item.uid).copied().unwrap_or(item);
+                if take == 0 {
+                    sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2")
+                        .bind(i64::from(item.uid))
+                        .bind(self.inner.character_id)
+                        .execute(&mut *transaction)
+                        .await?;
+                    gone.push(item.uid);
+                } else if take != was.durability || unit != was.max_durability {
+                    sqlx::query(
+                        "UPDATE inventory_items SET durability = $1, max_durability = $2 \
+                         WHERE item_uid = $3 AND character_id = $4",
+                    )
+                    .bind(i64::from(take))
+                    .bind(i64::from(unit))
+                    .bind(i64::from(item.uid))
+                    .bind(self.inner.character_id)
+                    .execute(&mut *transaction)
+                    .await?;
+                    changed.push(InventoryItem { durability: take, max_durability: unit, ..was });
+                }
+            }
+        }
+        transaction.commit().await?;
+        let mut inventory = self.inventory.lock();
+        inventory.retain(|owned| !gone.contains(&owned.uid));
+        for item in changed {
+            if let Some(owned) = inventory.iter_mut().find(|owned| owned.uid == item.uid) {
+                *owned = item;
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes `units` (potions, arrow packs) off stack `uid` into a stack of
+    /// their own in the first free slot: the stack left and the new one.
+    pub async fn split_stack(
+        &self,
+        pool: &sqlx::PgPool,
+        uid: u32,
+        units: u16,
+    ) -> Result<Option<(InventoryItem, InventoryItem)>, Error> {
+        let (item, slot) = {
+            let inventory = self.inventory.lock();
+            let Some(item) = inventory.iter().copied().find(|item| item.uid == uid) else {
+                return Ok(None);
+            };
+            let slot = (0_u8..40).find(|slot| inventory.iter().all(|owned| owned.position != *slot));
+            (item, slot)
+        };
+        let unit = item.max_durability.max(1);
+        let take = units.saturating_mul(unit);
+        let Some(slot) = slot else {
+            return Ok(None);
+        };
+        if !crate::stacks::stackable(item.item_type) || units == 0 || take >= item.durability {
+            return Ok(None);
+        }
+        let mut transaction = pool.begin().await?;
+        let done = sqlx::query(
+            "UPDATE inventory_items SET durability = durability - $1 \
+             WHERE item_uid = $2 AND character_id = $3 AND durability = $4",
+        )
+        .bind(i64::from(take))
+        .bind(i64::from(uid))
+        .bind(self.inner.character_id)
+        .bind(i64::from(item.durability))
+        .execute(&mut *transaction)
+        .await?;
+        if done.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        let new_uid: i64 = sqlx::query_scalar(
+            "INSERT INTO inventory_items \
+             (character_id, item_type, position, durability, max_durability) \
+             VALUES ($1, $2, $3, $4, $5) RETURNING item_uid",
+        )
+        .bind(self.inner.character_id)
+        .bind(i64::from(item.item_type))
+        .bind(i64::from(slot))
+        .bind(i64::from(take))
+        .bind(i64::from(item.max_durability))
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        let left = InventoryItem { durability: item.durability - take, ..item };
+        let split = InventoryItem {
+            uid: u32::try_from(new_uid).map_err(|_| Error::Other("item ID exceeds protocol range".into()))?,
+            item_type: item.item_type,
+            position: slot,
+            durability: take,
+            max_durability: item.max_durability,
+            ..Default::default()
+        };
+        let mut inventory = self.inventory.lock();
+        if let Some(owned) = inventory.iter_mut().find(|owned| owned.uid == uid) {
+            *owned = left;
+        }
+        inventory.push(split);
+        inventory.sort_by_key(|owned| owned.position);
+        Ok(Some((left, split)))
+    }
+
+    /// Pours stack `from` onto stack `into` of the same kind, as much as it
+    /// has room for: `into` as it is now and `from` (`None`, emptied).
+    pub async fn combine_stacks(
+        &self,
+        pool: &sqlx::PgPool,
+        from: u32,
+        into: u32,
+    ) -> Result<Option<(InventoryItem, Option<InventoryItem>)>, Error> {
+        let (source, target) = {
+            let inventory = self.inventory.lock();
+            let find = |uid: u32| inventory.iter().copied().find(|item| item.uid == uid);
+            let (Some(source), Some(target)) = (find(from), find(into)) else {
+                return Ok(None);
+            };
+            (source, target)
+        };
+        if from == into
+            || source.item_type != target.item_type
+            || source.max_durability != target.max_durability
+            || !crate::stacks::stackable(source.item_type)
+        {
+            return Ok(None);
+        }
+        let moved = crate::stacks::room(target.item_type, target.durability, target.max_durability).min(source.durability);
+        if moved == 0 {
+            return Ok(None);
+        }
+        let mut transaction = pool.begin().await?;
+        let filled = sqlx::query(
+            "UPDATE inventory_items SET durability = durability + $1 \
+             WHERE item_uid = $2 AND character_id = $3 AND durability = $4",
+        )
+        .bind(i64::from(moved))
+        .bind(i64::from(into))
+        .bind(self.inner.character_id)
+        .bind(i64::from(target.durability))
+        .execute(&mut *transaction)
+        .await?;
+        let emptied = if moved == source.durability {
+            sqlx::query("DELETE FROM inventory_items WHERE item_uid = $1 AND character_id = $2 AND durability = $3")
+        } else {
+            sqlx::query(
+                "UPDATE inventory_items SET durability = durability - $4 \
+                 WHERE item_uid = $1 AND character_id = $2 AND durability = $3",
+            )
+        }
+        .bind(i64::from(from))
+        .bind(self.inner.character_id)
+        .bind(i64::from(source.durability))
+        .bind(i64::from(moved))
+        .execute(&mut *transaction)
+        .await?;
+        if filled.rows_affected() != 1 || emptied.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        transaction.commit().await?;
+        let target = InventoryItem { durability: target.durability + moved, ..target };
+        let source = (moved < source.durability).then_some(InventoryItem { durability: source.durability - moved, ..source });
+        let mut inventory = self.inventory.lock();
+        inventory.retain(|owned| owned.uid != from || source.is_some());
+        for item in std::iter::once(target).chain(source) {
+            if let Some(owned) = inventory.iter_mut().find(|owned| owned.uid == item.uid) {
+                *owned = item;
+            }
+        }
+        Ok(Some((target, source)))
+    }
+
+    /// Uses one of a stack (`uid`): a potion of many is one fewer, the last
+    /// one goes. The item as it was and, while some is left, as it is now.
+    pub async fn use_one(
+        &self,
+        pool: &sqlx::PgPool,
+        uid: u32,
+    ) -> Result<Option<(InventoryItem, Option<InventoryItem>)>, Error> {
+        let Some(item) = self.inventory_items().into_iter().find(|item| item.uid == uid) else {
+            return Ok(None);
+        };
+        let unit = item.max_durability.max(1);
+        if !crate::stacks::stackable(item.item_type) || item.durability <= unit {
+            return Ok(self.drop_inventory_item(pool, uid).await?.map(|item| (item, None)));
+        }
+        let done = sqlx::query(
+            "UPDATE inventory_items SET durability = durability - $1 \
+             WHERE item_uid = $2 AND character_id = $3 AND durability = $4",
+        )
+        .bind(i64::from(unit))
+        .bind(i64::from(uid))
+        .bind(self.inner.character_id)
+        .bind(i64::from(item.durability))
+        .execute(pool)
+        .await?;
+        if done.rows_affected() != 1 {
+            return Ok(None);
+        }
+        let left = InventoryItem { durability: item.durability - unit, ..item };
+        if let Some(owned) = self.inventory.lock().iter_mut().find(|owned| owned.uid == uid) {
+            *owned = left;
+        }
+        Ok(Some((item, Some(left))))
     }
 
     pub fn cps(&self) -> u64 {
@@ -7417,6 +7782,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn potions_stack_fill_and_empty_one_by_one() -> Result<(), Error> {
+        const POTION: u32 = 1_002_020;
+        let (pool, character, database_character_id) = test_character().await?;
+        character.load_inventory(&pool).await?;
+        let stacks = |character: &Character| {
+            let mut stacks: Vec<(u32, u16, u16)> = character
+                .inventory_items()
+                .into_iter()
+                .filter(|item| item.item_type == POTION)
+                .map(|item| (item.uid, item.durability, item.max_durability))
+                .collect();
+            stacks.sort_unstable();
+            stacks
+        };
+
+        // Three that fall (100/100 in the catalog) make one stack of three.
+        let first = character.add_ground_item(&pool, POTION, 100, 100).await?.expect("room");
+        for _ in 0..2 {
+            let again = character.add_ground_item(&pool, POTION, 100, 100).await?.expect("room");
+            assert_eq!(again.uid, first.uid, "onto the same stack");
+        }
+        // One bought, whatever slot was asked for.
+        let bought = character.purchase_item(&pool, POTION, first.position, 0, 100, 100).await?;
+        assert!(matches!(bought, PurchaseOutcome::Bought(item) if item.uid == first.uid && item.durability == 4));
+        // A dropped stack of 28 fills it to 30 and starts another of 2.
+        let second = character.add_ground_item(&pool, POTION, 28, 1).await?.expect("room");
+        assert_ne!(second.uid, first.uid);
+        assert_eq!(stacks(&character), vec![(first.uid, 30, 1), (second.uid, 2, 1)]);
+
+        // Drinking takes one at a time; the last one goes.
+        let (_, left) = character.use_one(&pool, first.uid).await?.expect("there");
+        assert_eq!(left.map(|item| item.durability), Some(29));
+        character.use_one(&pool, second.uid).await?.expect("there");
+        let (_, left) = character.use_one(&pool, second.uid).await?.expect("there");
+        assert_eq!(left, None);
+        assert_eq!(stacks(&character), vec![(first.uid, 29, 1)]);
+
+        // What was bagged one a slot before stacks gathers at login.
+        sqlx::query(
+            "INSERT INTO inventory_items (character_id, item_type, position, durability, max_durability) \
+             VALUES ($1, $2, 30, 1, 1), ($1, $2, 31, 100, 100)",
+        )
+        .bind(i64::from(database_character_id))
+        .bind(i64::from(POTION))
+        .execute(&pool)
+        .await?;
+        character.load_inventory(&pool).await?;
+        character.restack(&pool).await?;
+        assert_eq!(stacks(&character), vec![(first.uid, 30, 1), (stacks(&character)[1].0, 1, 1)]);
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT durability, max_durability FROM inventory_items \
+             WHERE character_id = $1 AND item_type = $2 ORDER BY position",
+        )
+        .bind(i64::from(database_character_id))
+        .bind(i64::from(POTION))
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(rows, vec![(30, 1), (1, 1)]);
+
+        // Ten taken off the full stack, then poured back as far as it goes.
+        let (left, split) = character.split_stack(&pool, first.uid, 10).await?.expect("a free slot");
+        assert_eq!((left.durability, split.durability, split.max_durability), (20, 10, 1));
+        assert!(character.split_stack(&pool, first.uid, 20).await?.is_none(), "not the whole stack");
+        let last = stacks(&character)[1].0;
+        let (into, from) = character.combine_stacks(&pool, split.uid, last).await?.expect("room");
+        assert_eq!((into.durability, from.map(|item| item.durability)), (11, None), "all of it");
+        let (into, from) = character.combine_stacks(&pool, first.uid, last).await?.expect("room");
+        assert_eq!((into.durability, from.map(|item| item.durability)), (30, Some(1)), "as far as it goes");
+        assert!(character.combine_stacks(&pool, first.uid, last).await?.is_none(), "full");
+        assert_eq!(stacks(&character), vec![(first.uid, 1, 1), (last, 30, 1)]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn practicing_a_skill_persists_experience_and_proficiency() -> Result<(), Error> {
         let (pool, character, database_character_id) = test_character().await?;
         let catalog = crate::skills::SkillCatalog::default();
@@ -7597,6 +8036,8 @@ mod tests {
             .expect("owned item should receive custom rarity");
         assert_eq!(item.rarity, 3);
         assert_eq!(item.plus, 0, "rarity must not change classic plus");
+        let affixes = character.item_in_memory(501).expect("owned").affixes;
+        assert_ne!(affixes[0], 0, "its rarity rolled affixes");
         let persisted: (i64, i64) = sqlx::query_as("SELECT plus, rarity FROM item_upgrades WHERE item_uid = 501")
             .fetch_one(&pool)
             .await?;
@@ -7613,6 +8054,10 @@ mod tests {
             panic!("item should return from warehouse");
         };
         assert_eq!(withdrawn.rarity, 3);
+        // The same item all along: its uid, and so its affixes, unrolled.
+        assert_eq!((stored.uid, withdrawn.uid), (501, 501));
+        character.load_inventory(&pool).await?;
+        assert_eq!(character.item_in_memory(501).expect("back in the bag").affixes, affixes);
         Ok(())
     }
 

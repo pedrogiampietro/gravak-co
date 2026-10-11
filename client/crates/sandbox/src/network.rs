@@ -686,6 +686,16 @@ pub(crate) enum NetworkCommand {
         item_uid: u32,
         inventory_slot: u8,
     },
+    SplitStack {
+        character_id: u32,
+        item_uid: u32,
+        units: u32,
+    },
+    CombineStacks {
+        character_id: u32,
+        from: u32,
+        into: u32,
+    },
     RequestItems {
         character_id: u32,
     },
@@ -1173,6 +1183,16 @@ impl NetworkHandle {
         });
     }
 
+    /// Takes `units` off stack `item_uid` into a free slot.
+    pub fn split_stack(&self, character_id: u32, item_uid: u32, units: u32) {
+        let _ = self.commands.send(NetworkCommand::SplitStack { character_id, item_uid, units });
+    }
+
+    /// Pours stack `from` onto stack `into`.
+    pub fn combine_stacks(&self, character_id: u32, from: u32, into: u32) {
+        let _ = self.commands.send(NetworkCommand::CombineStacks { character_id, from, into });
+    }
+
     pub fn request_items(&self, character_id: u32) {
         let _ = self
             .commands
@@ -1277,6 +1297,10 @@ impl NetworkHandle {
         let _ = self.commands.send(NetworkCommand::WarehouseAction {
             packet: WarehouseActionPacket::withdraw(character_id, npc_id, item_uid, position),
         });
+    }
+
+    pub fn warehouse_sort(&self, character_id: u32, npc_id: u32) {
+        let _ = self.commands.send(NetworkCommand::WarehouseAction { packet: WarehouseActionPacket::sort(character_id, npc_id) });
     }
 
     pub fn warehouse_silver(&self, character_id: u32, npc_id: u32, amount: u32, deposit: bool) {
@@ -2429,6 +2453,18 @@ pub(crate) async fn play(
                         .await
                         .map_err(|error| error.to_string())?;
                     crate::debug_log::write("network send drop completed");
+                }
+                Some(NetworkCommand::SplitStack { character_id, item_uid, units }) => {
+                    session
+                        .send(&ItemActionPacket::split_stack(character_id, item_uid, units))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(NetworkCommand::CombineStacks { character_id, from, into }) => {
+                    session
+                        .send(&ItemActionPacket::combine_stacks(character_id, from, into))
+                        .await
+                        .map_err(|error| error.to_string())?;
                 }
                 Some(NetworkCommand::MoveInventory { character_id, item_uid, inventory_slot }) => {
                     crate::debug_log::write(format_args!(

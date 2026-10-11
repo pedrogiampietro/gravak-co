@@ -73,6 +73,7 @@ pub mod quests;
 pub mod refinery;
 pub mod shop;
 pub mod skills;
+pub mod stacks;
 pub mod special_drops;
 pub mod guild_panel;
 pub mod gem_effects;

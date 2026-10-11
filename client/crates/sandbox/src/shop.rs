@@ -74,6 +74,8 @@ const WAREHOUSE_PAGE_UP: [i32; 2] = [232, 287];
 const WAREHOUSE_PAGE_DOWN: [i32; 2] = [232, 321];
 const WAREHOUSE_HELP: [i32; 2] = [45, 348];
 const WAREHOUSE_CLOSE: [i32; 4] = [170, 348, 62, 20];
+/// Sort, between Help and Close (ours: the original's depot has none).
+const WAREHOUSE_SORT: [i32; 4] = [108, 348, 56, 20];
 // Native Character window dimensions from GUI.ini [0-131]. The original DDS
 // components occupy this logical space; the renderer scales the whole client
 // from the same 1024x768 reference instead of resizing each panel ad hoc.
@@ -2648,6 +2650,16 @@ pub enum ItemContextAction {
     ApplyRefinery,
     ApplyArtifact,
     GemSocket,
+    /// Takes some off a stack of potions or arrows.
+    Split,
+}
+
+/// How many a split takes off a stack: units, or (0) half of them.
+pub const SPLIT_AMOUNTS: [(&str, u16); 4] = [("Take 1", 1), ("Take 5", 5), ("Take 10", 10), ("Take half", 0)];
+
+/// The units (potions, arrow packs) a stack holds.
+pub fn stack_units(item: &crate::network::OwnedItem) -> u16 {
+    item.durability / item.max_durability.max(1)
 }
 
 impl ItemContextAction {
@@ -2663,6 +2675,7 @@ impl ItemContextAction {
             Self::ApplyRefinery => "REFINERY",
             Self::ApplyArtifact => "ARTIFACT",
             Self::GemSocket => "GEM SOCKET",
+            Self::Split => "SPLIT",
         }
     }
 }
@@ -4344,6 +4357,28 @@ pub fn artifact_material_slot(item_type: u32) -> Option<u8> {
     }
 }
 
+/// Potions and arrows stack in the bag (the server's `stacks`): a stack's
+/// amount is its durability, its most durability one unit (a potion, a
+/// pack's arrows), and a slot holds this many units.
+pub const POTION_STACK: u16 = 30;
+pub const ARROW_PACKS: u16 = 5;
+
+/// A life or mana potion the shops sell, which stacks.
+pub fn is_stacked_potion(item_type: u32) -> bool {
+    (1_000_000..1_003_000).contains(&item_type)
+}
+
+pub fn stackable(item_type: u32) -> bool {
+    is_stacked_potion(item_type) || item_type / 1_000 == 1_050
+}
+
+/// How many more units (potions, packs) a stack takes.
+pub fn stack_room(item: &crate::network::OwnedItem) -> usize {
+    let unit = item.max_durability.max(1);
+    let units = if is_stacked_potion(item.item_type) { POTION_STACK } else { ARROW_PACKS };
+    usize::from(unit.saturating_mul(units).saturating_sub(item.durability) / unit)
+}
+
 pub fn health_recovery_for_item(item_type: u32) -> Option<u16> {
     match item_type {
         1_000_000 => Some(70),
@@ -4513,6 +4548,21 @@ fn warehouse_local(viewport: [f32; 2], cursor: [f32; 2]) -> [f32; 2] {
 fn warehouse_hit(viewport: [f32; 2], cursor: [f32; 2], rect: [i32; 4]) -> bool {
     let [x, y, width, height] = rect.map(|value| value as f32);
     within(warehouse_local(viewport, cursor), x, y, width, height)
+}
+
+pub fn warehouse_sort_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
+    warehouse_hit(viewport, cursor, WAREHOUSE_SORT)
+}
+
+/// The depot's item under the cursor, on the page shown.
+pub fn warehouse_item_at<'a>(
+    items: &'a [crate::network::OwnedItem],
+    viewport: [f32; 2],
+    cursor: [f32; 2],
+    page: usize,
+) -> Option<&'a crate::network::OwnedItem> {
+    let slot = warehouse_slot_at(viewport, cursor, page)?;
+    items.iter().find(|item| item.position == slot)
 }
 
 pub fn warehouse_close_at(viewport: [f32; 2], cursor: [f32; 2]) -> bool {
@@ -4983,9 +5033,11 @@ pub fn inventory_overlay_image(
         );
         plus_badge(&mut image, slot, item.plus);
         // Like the original, durability is only called out once it is low;
-        // a pack of arrows always counts its arrows.
+        // a pack of arrows always counts its arrows, a stack of potions its
+        // potions.
         let arrows = item.item_type / 1_000 == 1_050;
         if arrows
+            || is_stacked_potion(item.item_type) && item.durability > 1
             || item.item_type < 1_000_000
                 && item.max_durability > 0
                 && u32::from(item.durability) * 4 <= u32::from(item.max_durability)
@@ -5036,8 +5088,11 @@ fn draw_durability_indicator(
         return;
     }
     // A pack of arrows counts its arrows instead (its durability is how
-    // many are left), as the original shows them.
-    if item.item_type / 1_000 == 1_050 {
+    // many are left), as the original shows them; a stack its potions.
+    if stackable(item.item_type) {
+        if is_stacked_potion(item.item_type) && item.durability <= 1 {
+            return;
+        }
         if let Ok(font) = labels::font() {
             let count = item.durability.to_string();
             let text_x = x + width - crate::daily_rewards_panel::width_of(&font, &count, 11.0).round() as i32;
@@ -5160,6 +5215,18 @@ pub fn warehouse_overlay_image(
     }
     const WHITE: [u8; 4] = [255, 255, 255, 255];
     if !guild_warehouse {
+        // Sort, in the letters of the window's own Help and Close.
+        let label_font = crate::main_hud::label_font()?;
+        let [x, y, width, height] = WAREHOUSE_SORT;
+        let label_width = crate::main_hud::text_width(label_font, "Sort", 16.0);
+        crate::main_hud::crisp_text(
+            &mut image,
+            label_font,
+            "Sort",
+            16.0,
+            [x + (width - label_width) / 2, y + (height - 18) / 2],
+            [232, 206, 148, 255],
+        );
         let [x, y, width, height] = WAREHOUSE_AMOUNT_BOX;
         if amount_focused {
             rect_outline(
@@ -5531,7 +5598,10 @@ fn classic_item_tooltip(
         }
     }
     // Durability in hundredths, as `Conquer.exe` shows it (7000 reads 70).
-    if let Some((current, maximum)) = durability.filter(|(_, maximum)| *maximum > 0) {
+    if let Some((current, _)) = durability.filter(|_| stackable(item_id)) {
+        let what = if is_stacked_potion(item_id) { "Amount" } else { "Arrows" };
+        lines.push((format!("{what}: {current}"), if current == 0 { RED } else { WHITE }));
+    } else if let Some((current, maximum)) = durability.filter(|(_, maximum)| *maximum > 0) {
         let (current, maximum) = if is_gear(item_id) { (current / 100, maximum / 100) } else { (current, maximum) };
         lines.push((
             format!("Dura.: {current}/{maximum}"),
@@ -6852,3 +6922,34 @@ mod requirement_preview {
 }
 
 
+
+#[cfg(test)]
+mod warehouse_preview_tests {
+    /// `WAREHOUSE_PREVIEW=dir cargo test -p conquer-sandbox warehouse_preview`
+    #[test]
+    fn warehouse_preview() {
+        let Ok(dir) = std::env::var("WAREHOUSE_PREVIEW") else { return };
+        let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
+        let item = |uid: u32, item_type: u32, position: u8, rarity: u8| crate::network::OwnedItem {
+            uid,
+            item_type,
+            position,
+            durability: 1,
+            max_durability: 1,
+            plus: 0,
+            rarity,
+            gem_one: 0,
+            gem_two: 0,
+            affixes: [0; 4],
+            bless: 0,
+            enchant_hp: 0,
+            color: 0,
+            skin: 0,
+        };
+        let items = [item(1, 700_003, 0, 0), item(2, 130_015, 1, 2), item(3, 1_088_001, 2, 0)];
+        let mut image = super::warehouse_base_image(&mut assets, false).expect("base");
+        let overlay = super::warehouse_overlay_image(&mut assets, &items, 0, None, 0, "1", false, false).expect("overlay");
+        image::imageops::overlay(&mut image, &overlay, 0, 0);
+        image.save(format!("{dir}/warehouse.png")).expect("png");
+    }
+}

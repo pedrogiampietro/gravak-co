@@ -123,13 +123,14 @@ impl PacketProcess for MsgGroundItem {
                 .await?;
             true
         } else {
-            let added = match character
-                .add_ground_item(
-                    state.pool(),
-                    ground_item.item_id,
+            let (durability, max_durability) = ground_item.stack.unwrap_or_else(|| {
+                (
                     item_template.map_or(0, |template| template.durability),
                     item_template.map_or(0, |template| template.max_durability),
                 )
+            });
+            let added = match character
+                .add_ground_item(state.pool(), ground_item.item_id, durability, max_durability)
                 .await
             {
                 Ok(added) => added,

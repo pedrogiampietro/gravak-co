@@ -152,6 +152,27 @@ pub const LEVEL_EXP: [(u64, u32); 140] = [
 ];
 
 /// Experience `level` needs to go up.
+/// How far into `level` the hero is: "Level 45: 24.37% (12,345 / 50,660)".
+pub fn progress_line(level: u8, experience: u64) -> String {
+    let need = required(level);
+    if need == 0 {
+        return format!("Level {level}: the top level");
+    }
+    let percent = experience as f64 * 100.0 / need as f64;
+    let group = |value: u64| {
+        let digits = value.to_string();
+        let mut out = String::new();
+        for (index, digit) in digits.chars().enumerate() {
+            if index > 0 && (digits.len() - index) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(digit);
+        }
+        out
+    };
+    format!("Level {level}: {percent:.2}% ({} / {})", group(experience), group(need))
+}
+
 pub fn required(level: u8) -> u64 {
     LEVEL_EXP.get(usize::from(level.max(1)) - 1).map_or(0, |(experience, _)| *experience)
 }
@@ -181,6 +202,26 @@ pub fn exp_ball(mut level: u8, mut experience: u64, mut seconds: f64) -> (u8, u6
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_bar_tells_how_far_into_the_level() {
+        let need = super::required(45);
+        assert_eq!(super::progress_line(45, need / 4), format!("Level 45: 25.00% ({} / {})", group(need / 4), group(need)));
+        assert_eq!(super::progress_line(1, 0), "Level 1: 0.00% (0 / 120)");
+        assert_eq!(super::progress_line(2, 45), "Level 2: 25.00% (45 / 180)");
+    }
+
+    fn group(value: u64) -> String {
+        let digits = value.to_string();
+        let mut out = String::new();
+        for (index, digit) in digits.chars().enumerate() {
+            if index > 0 && (digits.len() - index) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(digit);
+        }
+        out
+    }
+
     #[test]
     fn an_exp_ball_fills_ten_minutes_of_the_level() {
         let (level, _) = super::exp_ball(1, 0, super::EXP_BALL_SECONDS);

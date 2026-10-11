@@ -353,6 +353,8 @@ struct App {
     sell_all: Option<sell_all::SellAllView>,
     /// Shift + right click on a shop item: (item, how-many menu).
     shop_buy_menu: Option<(u32, shop::ChoiceMenu)>,
+    /// How many to take off a stack (its uid and units).
+    split_menu: Option<(u32, u16, shop::ChoiceMenu)>,
     /// A skill asked for in the air (skill, aimed cell): as in the
     /// original nothing is shot while jumping; it goes once the hero lands.
     queued_cast: Option<(u32, Option<[i32; 2]>)>,
@@ -1906,7 +1908,14 @@ impl ApplicationHandler for App {
             // An object's count, greyed when the bag has none.
             slot.count = match slot.binding() {
                 Some(action_bar::Binding::Item(item_type)) => {
-                    Some(self.inventory.iter().filter(|item| item.item_type == item_type).count() as u32)
+                    // A potion stack counts its potions.
+                    Some(
+                        self.inventory
+                            .iter()
+                            .filter(|item| item.item_type == item_type)
+                            .map(|item| if shop::is_stacked_potion(item_type) { u32::from(item.durability.max(1)) } else { 1 })
+                            .sum(),
+                    )
                 }
                 _ => None,
             };
@@ -2118,6 +2127,14 @@ impl App {
     }
 
     fn handle_hud_click(&mut self) -> bool {
+        // The experience bar: how far into the level, in the chat.
+        if let Some(viewport) = self.viewport()
+            && original_ui_layout::exp_bar_at(viewport, self.cursor)
+        {
+            let line = leveling::progress_line(self.level, self.experience);
+            self.system_line(&format!("Experience - {line}"));
+            return true;
+        }
         let Some(window) = &self.window else {
             return false;
         };
@@ -3159,6 +3176,8 @@ impl App {
             self.network_status = "seleção de alvo cancelada".into();
         } else if self.item_context.is_some() {
             self.item_context = None;
+        } else if self.split_menu.is_some() {
+            self.split_menu = None;
         } else if self.sell_all.is_some() || self.shop_buy_menu.is_some() {
             self.sell_all = None;
             self.shop_buy_menu = None;
@@ -3311,12 +3330,34 @@ impl App {
         if let Some((_, menu)) = &self.shop_buy_menu {
             return Some(menu.clone());
         }
+        if let Some((_, _, menu)) = &self.split_menu {
+            return Some(menu.clone());
+        }
         self.player_menu.as_ref().map(|player_menu| player_menu.menu.clone())
     }
 
     /// Clicks on the shop's own windows (Sell All, the how-many menu),
     /// handled before anything under them.
     fn handle_shop_windows_click(&mut self) -> bool {
+        // How many to take off a stack.
+        if let Some((uid, units, menu)) = self.split_menu.take() {
+            self.held = false;
+            if let Some(row) = menu.row_at(self.cursor) {
+                let take = menu
+                    .labels
+                    .get(row)
+                    .and_then(|label| shop::SPLIT_AMOUNTS.iter().find(|(name, _)| name == label))
+                    .map_or(1, |(_, take)| if *take == 0 { units / 2 } else { *take });
+                if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                    network.split_stack(character_id, uid, u32::from(take.max(1)));
+                }
+                return true;
+            }
+            if menu.contains(self.cursor) {
+                self.split_menu = Some((uid, units, menu));
+                return true;
+            }
+        }
         if let Some((item_id, menu)) = self.shop_buy_menu.take() {
             if let Some(row) = menu.row_at(self.cursor) {
                 self.buy_shop_items(item_id, shop::BUY_AMOUNTS[row].1);
@@ -3349,7 +3390,7 @@ impl App {
             }
             sell_all::SellAllAction::Toggle(item_type) => {
                 if let Some(view) = &mut self.sell_all
-                    && !view.toggle(item_type)
+                    && !view.toggle(&self.inventory, item_type)
                 {
                     self.network_status = "Valuable items are always kept.".into();
                 }
@@ -3382,7 +3423,16 @@ impl App {
         let occupied: std::collections::HashSet<u8> = self.inventory.iter().map(|item| item.position).collect();
         let free: Vec<u8> = (0u8..40).filter(|slot| !occupied.contains(slot)).collect();
         let affordable = if price == 0 { amount } else { (u64::from(self.silver) / u64::from(price)) as usize };
-        let count = amount.min(free.len()).min(affordable);
+        // Potions and arrows go onto their stacks (the server finds the
+        // room, or the first free slot): one slot takes many.
+        let room = if shop::stackable(item_id) {
+            let per_slot = usize::from(if shop::is_stacked_potion(item_id) { shop::POTION_STACK } else { shop::ARROW_PACKS });
+            self.inventory.iter().filter(|item| item.item_type == item_id).map(shop::stack_room).sum::<usize>()
+                + free.len() * per_slot
+        } else {
+            free.len()
+        };
+        let count = amount.min(room).min(affordable);
         if count == 0 {
             self.network_status = if free.is_empty() {
                 "Inventory is full.".into()
@@ -3391,8 +3441,15 @@ impl App {
             };
             return;
         }
-        for slot in free.into_iter().take(count) {
-            self.request_shop_purchase(item_id, slot);
+        if shop::stackable(item_id) {
+            let slot = free.first().copied().unwrap_or(0);
+            for _ in 0..count {
+                self.request_shop_purchase(item_id, slot);
+            }
+        } else {
+            for slot in free.into_iter().take(count) {
+                self.request_shop_purchase(item_id, slot);
+            }
         }
         self.network_status = format!("Buying {count} x item {item_id}.");
     }
@@ -4219,9 +4276,10 @@ impl App {
             if shop::health_recovery_for_item(item.item_type).is_none() && shop::mana_recovery_for_item(item.item_type).is_none() {
                 continue;
             }
+            let amount = if shop::stackable(item.item_type) { u32::from(item.durability.max(1)) } else { 1 };
             match potions.iter_mut().find(|(kind, _)| *kind == item.item_type) {
-                Some((_, count)) => *count += 1,
-                None => potions.push((item.item_type, 1)),
+                Some((_, count)) => *count += amount,
+                None => potions.push((item.item_type, amount)),
             }
         }
         potions.sort_unstable();
@@ -9432,13 +9490,17 @@ impl App {
             }
             // What is not worn is used; the server decides what using it
             // does (scrolls, dyes, books, potions...) and says when nothing.
-            let actions = if shop::is_consumable(item.item_type) {
+            let mut actions = if shop::is_consumable(item.item_type) {
                 vec![shop::ItemContextAction::Use]
             } else if shop::equipment_slot_for_item(&mut self.assets, item.item_type).is_some() {
                 self.available_item_actions(item, false)
             } else {
                 vec![shop::ItemContextAction::Use]
             };
+            // A stack of more than one splits.
+            if shop::stackable(item.item_type) && shop::stack_units(&item) > 1 {
+                actions.push(shop::ItemContextAction::Split);
+            }
             if !actions.is_empty() {
                 self.item_context = Some(shop::ItemContext {
                     item,
@@ -9737,6 +9799,17 @@ impl App {
         ) {
             match context.actions[index] {
                 shop::ItemContextAction::Use => self.queue_use_item(context.item),
+                shop::ItemContextAction::Split => {
+                    let units = shop::stack_units(&context.item);
+                    let labels = shop::SPLIT_AMOUNTS
+                        .iter()
+                        .filter(|(_, take)| *take < units)
+                        .map(|(label, _)| *label)
+                        .collect();
+                    let name = shop::item_name(&mut self.assets, context.item.item_type);
+                    self.split_menu = Some((context.item.uid, units, shop::ChoiceMenu::at(viewport, self.cursor, name, labels)));
+                    true
+                }
                 shop::ItemContextAction::Equip => self.queue_equip_item(context.item),
                 shop::ItemContextAction::Unequip => self.queue_unequip_item(context.item),
                 shop::ItemContextAction::Upgrade
@@ -9979,6 +10052,22 @@ impl App {
                     self.selected_inventory_uid = Some(item.uid);
                     return true;
                 }
+                // Dropped on a stack of its kind with room: poured onto it.
+                if shop::stackable(item.item_type)
+                    && let Some(target) = self.inventory.iter().find(|owned| {
+                        owned.position == slot
+                            && owned.uid != item.uid
+                            && owned.item_type == item.item_type
+                            && owned.max_durability == item.max_durability
+                    })
+                    && shop::stack_room(target) > 0
+                {
+                    if let (Some(network), Some(character_id)) = (&self.network, self.network_character_id) {
+                        network.combine_stacks(character_id, item.uid, target.uid);
+                    }
+                    self.selected_inventory_uid = Some(target.uid);
+                    return true;
+                }
                 let swapped = self.apply_inventory_move_locally(item, slot);
                 debug_log::write(format_args!(
                     "inventory move selected: uid={} from={} to={} swapped={:?}",
@@ -10177,6 +10266,14 @@ impl App {
             return true;
         }
         self.warehouse_amount_focused = false;
+        if !self.guild_warehouse_open && shop::warehouse_sort_at(viewport, self.cursor) {
+            if let (Some(network), Some(character_id), Some(npc_id)) =
+                (&self.network, self.network_character_id, self.warehouse_npc_id)
+            {
+                network.warehouse_sort(character_id, npc_id);
+            }
+            return true;
+        }
         if let Some(deposit) = shop::warehouse_action_at(viewport, self.cursor) {
             if deposit {
                 if let Some(uid) = self.selected_inventory_uid {
@@ -11067,6 +11164,7 @@ fn run() -> Result<()> {
         queued_jump: None,
         sell_all: None,
         shop_buy_menu: None,
+        split_menu: None,
         queued_cast: None,
         local_action: None,
         stamina: 100,
