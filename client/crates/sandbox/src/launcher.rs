@@ -1048,7 +1048,9 @@ impl LoginUi {
                 }
                 for (index, (field, rect)) in self.fields.iter().zip(&layout.fields).enumerate() {
                     let shown = if field.secret {
-                        "•".repeat(field.value.len())
+                        // The browser's font (fonts.rs) has no bullet.
+                        let mask = if cfg!(target_arch = "wasm32") { "*" } else { "•" };
+                        mask.repeat(field.value.len())
                     } else if index == 0 {
                         self.shown_account(&field.value)
                     } else {
