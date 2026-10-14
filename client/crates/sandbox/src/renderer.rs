@@ -908,7 +908,14 @@ pub struct Renderer {
 }
 impl Renderer {
     pub async fn new(window: Arc<Window>) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // In the browser, WebGL2 where WebGPU is not offered or has no
+        // adapter (docs/web-spike.md).
+        #[cfg(target_arch = "wasm32")]
+        let instance =
+            wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle())
+                .await;
         let surface = instance.create_surface(window.clone())?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -916,9 +923,18 @@ impl Renderer {
                 ..Default::default()
             })
             .await?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await?;
+        let descriptor = wgpu::DeviceDescriptor::default();
+        // WebGL2 has none of WebGPU's compute limits: ask for what it has.
+        #[cfg(target_arch = "wasm32")]
+        let descriptor = if adapter.get_info().backend == wgpu::Backend::Gl {
+            wgpu::DeviceDescriptor {
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+                ..descriptor
+            }
+        } else {
+            descriptor
+        };
+        let (device, queue) = adapter.request_device(&descriptor).await?;
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))

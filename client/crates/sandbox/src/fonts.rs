@@ -12,5 +12,8 @@ pub fn load_system_fonts(database: &mut fontdb::Database) {
         database.load_font_data(SANS.to_vec());
         database.set_sans_serif_family("KaTeX_SansSerif");
         database.set_serif_family("KaTeX_SansSerif");
+        database.set_monospace_family("KaTeX_SansSerif");
+        database.set_cursive_family("KaTeX_SansSerif");
+        database.set_fantasy_family("KaTeX_SansSerif");
     }
 }

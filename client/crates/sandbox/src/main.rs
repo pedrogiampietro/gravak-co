@@ -1800,6 +1800,8 @@ impl App {
                         None => "Helper".to_owned(),
                     };
                 }
+                #[cfg(target_arch = "wasm32")]
+                let misses = web_files::misses();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -1900,6 +1902,12 @@ impl App {
                         self.started.elapsed().as_secs_f32(),
                     )
                 {
+                    // In the browser a file still on its way costs only
+                    // this frame (web_files): the next one has it.
+                    #[cfg(target_arch = "wasm32")]
+                    if web_files::misses() != misses {
+                        return;
+                    }
                     self.error = Some(error.to_string());
                     event_loop.exit();
                 }
@@ -2982,6 +2990,10 @@ impl App {
             return;
         }
         window.set_fullscreen(None);
+        // In the browser the page sizes the canvas.
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
         window.set_maximized(false);
         let [width, height] = hud::RESOLUTIONS[usize::from(self.hud_config.resolution).min(hud::RESOLUTIONS.len() - 1)];
         let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(width, height));
@@ -2993,6 +3005,10 @@ impl App {
         let Some(window) = &self.window else {
             return;
         };
+        // In the browser the page sizes the canvas (web/index.html).
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
         if self.hud_config.fullscreen {
             window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         } else if self.hud_config.maximized || window.is_maximized() {
