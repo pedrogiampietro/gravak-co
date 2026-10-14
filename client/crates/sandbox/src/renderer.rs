@@ -905,6 +905,11 @@ pub struct Renderer {
     /// 999 what a Super weapon always shows.
     swing_effects: Option<HashMap<String, String>>,
     last_hud_key: Option<String>,
+    /// In the browser, `web_files::misses` when the last texture was made:
+    /// a picture made while a file was still on its way holds a stand-in
+    /// (a square with the item's number) and is not kept.
+    #[cfg(target_arch = "wasm32")]
+    upload_misses: u64,
 }
 impl Renderer {
     pub async fn new(window: Arc<Window>) -> Result<Self> {
@@ -1172,6 +1177,8 @@ impl Renderer {
             last_remote_swing: HashMap::new(),
             swing_effects: None,
             last_hud_key: None,
+            #[cfg(target_arch = "wasm32")]
+            upload_misses: 0,
             chat_log: None,
             chat_log_rect: [0; 4],
             chat_menu: None,
@@ -2375,7 +2382,7 @@ impl Renderer {
         for loaded in interface {
             self.loading.remove(&loaded.path);
             match loaded.data {
-                LoadedData::Image(Ok(image)) => self.upload(&loaded.path, image),
+                LoadedData::Image(Ok(image)) => self.upload_loaded(&loaded.path, image),
                 LoadedData::Image(Err(error)) => {
                     eprintln!("Skipped texture {}: {error}", loaded.path);
                     self.missing.insert(loaded.path);
@@ -2393,7 +2400,7 @@ impl Renderer {
             self.loading.remove(&loaded.path);
             self.texture_loads_this_frame += 1;
             match loaded.data {
-                LoadedData::Image(Ok(image)) => self.upload(&loaded.path, image),
+                LoadedData::Image(Ok(image)) => self.upload_loaded(&loaded.path, image),
                 LoadedData::Image(Err(error)) => {
                     eprintln!("Skipped texture {}: {error}", loaded.path);
                     self.missing.insert(loaded.path);
@@ -2445,7 +2452,24 @@ impl Renderer {
             self.texture_loads_this_frame += 1;
         }
     }
+    /// Keeps a picture made here, during the drawing. In the browser one made
+    /// while a file it read was still on its way is dropped: it holds a
+    /// stand-in, and the next frame makes it again with the file in.
     fn upload(&mut self, path: &str, image: image::RgbaImage) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let misses = crate::web_files::misses();
+            let made_without_a_file = misses != self.upload_misses;
+            self.upload_misses = misses;
+            if made_without_a_file {
+                return;
+            }
+        }
+        self.upload_loaded(path, image);
+    }
+
+    /// Keeps a picture from a loader, which waits for its files itself.
+    fn upload_loaded(&mut self, path: &str, image: image::RgbaImage) {
         let upload_started = self.perf_enabled.then(Instant::now);
         let image_size = [image.width(), image.height()];
         if image.width() > self.device.limits().max_texture_dimension_2d
@@ -3034,6 +3058,10 @@ impl Renderer {
         let measure_perf = self.perf_enabled || performance_overlay;
         let minimap_visible = shop.is_none() && warehouse.is_none() && quick_panel.is_none();
         self.texture_loads_this_frame = 0;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.upload_misses = crate::web_files::misses();
+        }
         self.poll_texture_loader();
         let texture_phase_finished = Instant::now();
         self.poll_geometry_loader();
