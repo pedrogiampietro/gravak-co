@@ -202,8 +202,8 @@ pub fn ago(then: u64, now: u64) -> String {
 }
 
 pub fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 

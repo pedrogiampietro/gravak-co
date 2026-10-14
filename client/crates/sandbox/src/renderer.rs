@@ -13,8 +13,8 @@ use std::{
     sync::Arc,
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, Instant},
 };
+use web_time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 #[repr(C)]
@@ -5425,8 +5425,8 @@ impl Renderer {
             if matches!(panel, crate::shop::QuickPanel::Store | crate::shop::QuickPanel::Vip) {
                 store.hash(&mut hasher);
                 // VIP time left reads in minutes.
-                (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                (web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
                     .map_or(0, |elapsed| elapsed.as_secs())
                     / 60)
                     .hash(&mut hasher);

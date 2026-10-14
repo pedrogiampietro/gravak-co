@@ -17,8 +17,8 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
     sync::mpsc::{self, Receiver},
     thread,
-    time::{Duration, Instant},
 };
+use web_time::{Duration, Instant};
 
 pub const FILE_NAME: &str = "servers.ini";
 

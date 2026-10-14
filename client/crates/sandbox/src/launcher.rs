@@ -13,15 +13,14 @@ use image::RgbaImage;
 use std::{
     num::NonZeroU32,
     sync::Arc,
-    time::{Duration, Instant},
 };
+use web_time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
-    platform::run_on_demand::EventLoopExtRunOnDemand,
     window::{Window, WindowId},
 };
 
@@ -1917,7 +1916,11 @@ impl Launcher {
         else {
             return Ok(());
         };
+        #[cfg(target_arch = "wasm32")]
+        let painting = Instant::now();
         let image = self.ui.image(size, self.started.elapsed().as_secs_f32());
+        #[cfg(target_arch = "wasm32")]
+        crate::web::frame_painted(painting.elapsed().as_secs_f64() * 1_000.0);
         let surface = self.surface.as_mut().ok_or("no surface")?;
         surface
             .resize(width, height)
@@ -1938,8 +1941,13 @@ impl ApplicationHandler for Launcher {
         }
         let attributes = Window::default_attributes()
             .with_title("Gravak")
-            .with_window_icon(crate::window_icon())
-            .with_inner_size(LogicalSize::new(1024.0, 768.0));
+            .with_window_icon(crate::window_icon());
+        #[cfg(not(target_arch = "wasm32"))]
+        let attributes = attributes.with_inner_size(LogicalSize::new(1024.0, 768.0));
+        // In the browser the window is a canvas put on the page, as large as
+        // the page's style makes it (web/index.html).
+        #[cfg(target_arch = "wasm32")]
+        let attributes = winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);
         let result = event_loop
             .create_window(attributes)
             .map_err(|error| error.to_string())
@@ -2034,7 +2042,7 @@ impl ApplicationHandler for Launcher {
                 let paste = self.control
                     && matches!(&event.physical_key, winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyV));
                 let request = if paste {
-                    let text = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()).unwrap_or_default();
+                    let text = crate::clipboard_text().unwrap_or_default();
                     self.ui.paste(&text);
                     self.redraw();
                     None
@@ -2096,14 +2104,12 @@ impl ApplicationHandler for Launcher {
     }
 }
 
-/// Shows the screens until a character enters the world. `Ok(None)` when
-/// the window is closed or Exit is chosen.
-pub fn run(
-    event_loop: &mut EventLoop<()>,
+/// The screens, ready to be shown.
+fn prepare(
     assets: &mut crate::assets::Assets,
     worlds: Vec<World>,
     update_url: Option<String>,
-) -> Result<Option<(NetworkHandle, Arc<Window>)>, String> {
+) -> Launcher {
     // The panels and columns use the game's window art when it is there.
     match crate::original_panels::general_bg(assets) {
         Ok(source) => crate::launcher_art::set_frame_source(source),
@@ -2113,7 +2119,7 @@ pub fn run(
     let world_status = crate::worlds::watch(&worlds);
     let mut ui = LoginUi::new(worlds, crate::settings::load_login_prefs());
     ui.set_look_requests(look_requests);
-    let mut launcher = Launcher {
+    Launcher {
         ui,
         world_status,
         updates: update_url.and_then(|url| {
@@ -2135,7 +2141,20 @@ pub fn run(
             let options = crate::settings::load_options();
             crate::audio::LoginAudio::start(assets, options.music_volume, options.sound_volume)
         },
-    };
+    }
+}
+
+/// Shows the screens until a character enters the world. `Ok(None)` when
+/// the window is closed or Exit is chosen.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run(
+    event_loop: &mut EventLoop<()>,
+    assets: &mut crate::assets::Assets,
+    worlds: Vec<World>,
+    update_url: Option<String>,
+) -> Result<Option<(NetworkHandle, Arc<Window>)>, String> {
+    use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+    let mut launcher = prepare(assets, worlds, update_url);
     event_loop
         .run_app_on_demand(&mut launcher)
         .map_err(|error| error.to_string())?;
@@ -2146,6 +2165,17 @@ pub fn run(
     // of it first.
     drop(launcher.surface.take());
     Ok(launcher.entered.zip(launcher.window.take()))
+}
+
+/// The browser's screens: the page's event loop runs them from here on,
+/// this returns at once. Entering the world waits for the WebSocket bridge
+/// (docs/web-spike.md).
+#[cfg(target_arch = "wasm32")]
+pub fn spawn(assets: &mut crate::assets::Assets, worlds: Vec<World>) -> Result<(), String> {
+    use winit::platform::web::EventLoopExtWebSys;
+    let launcher = prepare(assets, worlds, None);
+    EventLoop::new().map_err(|error| error.to_string())?.spawn_app(launcher);
+    Ok(())
 }
 
 #[cfg(test)]

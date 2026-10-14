@@ -1,15 +1,21 @@
+// The browser build has no TCP until the WebSocket bridge (docs/web-spike.md):
+// a session there ends at once with an error.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+
+#[cfg(not(target_arch = "wasm32"))]
+use gravak_protocol::{GameSession, authenticate};
 use gravak_protocol::{
-    ActionPacket, AssignAttributesPacket, AuthResponse, FriendPacket, GameEvent, GameSession,
+    ActionPacket, AssignAttributesPacket, AuthResponse, FriendPacket, GameEvent,
     GroundItemPacket, GuildPacket, GuildWarehouseActionPacket, InteractionPacket, ItemActionPacket,
     ItemRarityPacket, ItemRarityRerollPacket, NpcDialogPacket, NpcPacket, RefineryPacket,
     RegisterCharacter, ServerNpcInfo, ServerPlayer, SocketGemPacket, TalkPacket, TaskDialog,
-    TeamActionPacket, TeamMemberPacket, TradePacket, UserInfo, WarehouseActionPacket, authenticate,
+    TeamActionPacket, TeamMemberPacket, TradePacket, UserInfo, WarehouseActionPacket,
 };
 use std::{
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use web_time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 fn max_mana_for(spirit: u16, profession: u8) -> u32 {
@@ -763,6 +769,14 @@ pub struct NetworkHandle {
 }
 
 impl NetworkHandle {
+#[cfg(target_arch = "wasm32")]
+    pub fn start(_config: NetworkConfig) -> Self {
+        let (handle, events, _commands) = Self::channels();
+        let _ = events.send(NetworkEvent::Error("The browser cannot reach the game servers yet (WebSocket bridge pending)".to_owned()));
+        handle
+    }
+
+#[cfg(not(target_arch = "wasm32"))]
     pub fn start(config: NetworkConfig) -> Self {
         let (events_tx, events) = mpsc::channel();
         let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1385,6 +1399,7 @@ impl NetworkHandle {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn run(
     config: NetworkConfig,
     events: Sender<NetworkEvent>,
@@ -1479,6 +1494,7 @@ async fn run(
 /// The in-game half of a session: `session` has reached `user`'s
 /// MsgUserInfo; this loads the map and then serves events and commands
 /// until the connection ends.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn play(
     mut session: GameSession,
     user: UserInfo,
@@ -2733,6 +2749,7 @@ fn unpack_position(value: u32) -> [i32; 2] {
 /// Reads packets until the map arrives. Skill and weapon proficiency
 /// packets sent during login are kept and returned, so they are delivered
 /// after `Ready` instead of being lost.
+#[cfg(not(target_arch = "wasm32"))]
 async fn load_location(
     session: &mut GameSession,
     _character_id: u32,

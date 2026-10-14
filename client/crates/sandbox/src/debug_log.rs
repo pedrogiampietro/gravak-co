@@ -3,8 +3,8 @@ use std::{
     fs::OpenOptions,
     io::Write,
     sync::OnceLock,
-    time::{SystemTime, UNIX_EPOCH},
 };
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// Diagnostic logging is opt-in because this function is called from input
 /// and network paths. Opening and appending a file on those paths makes the

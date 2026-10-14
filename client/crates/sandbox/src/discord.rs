@@ -12,7 +12,7 @@
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// The Discord application's id (Developer Portal, General Information).
 /// `GRAVAK_DISCORD_APP_ID` overrides it; empty, the presence stays off.
@@ -163,6 +163,9 @@ struct Pipe {
     stream: std::fs::File,
     #[cfg(unix)]
     stream: std::os::unix::net::UnixStream,
+    // The browser has no Discord pipe.
+    #[cfg(not(any(windows, unix)))]
+    stream: std::fs::File,
     nonce: u64,
 }
 
@@ -228,6 +231,11 @@ fn open(index: u32) -> Option<std::os::unix::net::UnixStream> {
         .find_map(|name| std::env::var(name).ok())
         .unwrap_or_else(|| "/tmp".into());
     std::os::unix::net::UnixStream::connect(format!("{folder}/discord-ipc-{index}")).ok()
+}
+
+#[cfg(not(any(windows, unix)))]
+fn open(_index: u32) -> Option<std::fs::File> {
+    None
 }
 
 #[cfg(test)]

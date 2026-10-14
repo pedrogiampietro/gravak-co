@@ -4,12 +4,18 @@
 //! Everything runs on one network thread so the game connection opened at
 //! login is the same one [`crate::network::play`] keeps using in game.
 
+// The browser build answers every command at once: it has no TCP until the
+// WebSocket bridge (docs/web-spike.md).
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+
 use crate::network::{NetworkEvent, NetworkHandle};
 use crate::worlds::World;
 use gravak_protocol::{
-    AuthResponse, ForwardedGameServer, GameEvent, GameSession, LoginRejection, RegisterAccountResult,
-    RegisterCharacter, UserInfo, authenticate, register_account,
+    AuthResponse, ForwardedGameServer, GameEvent, LoginRejection, RegisterAccountResult,
+    RegisterCharacter, UserInfo,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use gravak_protocol::{GameSession, authenticate, register_account};
 use std::{
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -82,11 +88,40 @@ pub enum LoginEvent {
     Disconnected(String),
 }
 
+#[cfg(target_arch = "wasm32")]
+pub struct LoginClient {
+    answers: Sender<LoginEvent>,
+    events: Receiver<LoginEvent>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl LoginClient {
+    pub fn start() -> Self {
+        let (answers, events) = mpsc::channel();
+        Self { answers, events }
+    }
+
+    pub fn send(&self, command: LoginCommand) {
+        let message = "The browser cannot reach the game servers yet (WebSocket bridge pending)".to_owned();
+        let _ = self.answers.send(match command {
+            LoginCommand::Register { .. } => LoginEvent::RegisterFailed(message),
+            LoginCommand::Login { .. } => LoginEvent::LoginFailed(message),
+            _ => LoginEvent::Disconnected(message),
+        });
+    }
+
+    pub fn drain(&self) -> Vec<LoginEvent> {
+        self.events.try_iter().collect()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub struct LoginClient {
     commands: UnboundedSender<LoginCommand>,
     events: Receiver<LoginEvent>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl LoginClient {
     pub fn start() -> Self {
         let (events_tx, events) = mpsc::channel();
@@ -119,6 +154,7 @@ impl LoginClient {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum Phase {
     Idle,
     /// Logged in, waiting for a character to be created.
@@ -135,11 +171,13 @@ enum Phase {
     },
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum Login {
     NeedsCharacter(GameSession, u32),
     Character(GameSession, UserInfo),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn serve(
     events: Sender<LoginEvent>,
     mut commands: UnboundedReceiver<LoginCommand>,
@@ -274,6 +312,7 @@ fn rejection_message(rejection: &LoginRejection) -> String {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn login(
     auth: &str,
     username: &str,
@@ -311,6 +350,7 @@ async fn login(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn connect(
     server: &ForwardedGameServer,
 ) -> Result<GameSession, gravak_protocol::ProtocolError> {
@@ -333,6 +373,7 @@ struct Look {
     hair: u16,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn create_character(
     session: &mut GameSession,
     username: &str,
@@ -382,7 +423,7 @@ mod tests {
 #[cfg(test)]
 mod smoke {
     use super::*;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn next(client: &LoginClient) -> LoginEvent {
         let deadline = Instant::now() + Duration::from_secs(20);

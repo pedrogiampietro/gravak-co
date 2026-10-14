@@ -18,6 +18,9 @@
 //! (`.old`, removed on the next run), which Windows allows even for the
 //! running executable and the open pack.
 
+// The browser build is always the site's latest: nothing to update.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+
 use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Write},
@@ -91,6 +94,14 @@ pub enum UpdateEvent {
 
 /// Starts checking `base` (the folder URL of the manifest) for the client
 /// installed in `root`.
+#[cfg(target_arch = "wasm32")]
+pub fn start(_base: String, _root: PathBuf) -> Receiver<UpdateEvent> {
+    let (sender, receiver) = mpsc::channel();
+    let _ = sender.send(UpdateEvent::UpToDate);
+    receiver
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn start(base: String, root: PathBuf) -> Receiver<UpdateEvent> {
     let (sender, receiver) = mpsc::channel();
     let _ = std::thread::Builder::new().name("gravak-updater".into()).spawn(move || {
@@ -111,6 +122,7 @@ pub fn restart() -> std::io::Result<()> {
     std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().map(drop)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(10)))
@@ -124,6 +136,7 @@ fn url(base: &str, path: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), path)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn update(base: &str, root: &Path, events: &Sender<UpdateEvent>) -> Result<Option<String>, String> {
     let agent = agent();
     let text = agent
@@ -192,6 +205,7 @@ fn update(base: &str, root: &Path, events: &Sender<UpdateEvent>) -> Result<Optio
     Ok(Some(manifest.version))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn download(
     agent: &ureq::Agent,
     base: &str,

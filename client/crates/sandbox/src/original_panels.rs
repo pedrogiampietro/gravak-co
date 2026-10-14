@@ -109,8 +109,8 @@ fn draw_vip(image: &mut RgbaImage, assets: &mut Assets, vip_until: u64) -> Resul
     // The title in the portrait box.
     let mut tag = crate::ornate::vip_tag(1.2)?;
     let active = vip_until
-        > std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        > web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
     if !active {
         // Without VIP the title is shown in faded grey.
@@ -126,8 +126,8 @@ fn draw_vip(image: &mut RgbaImage, assets: &mut Assets, vip_until: u64) -> Resul
         box_centre[0] - i64::from(tag.width()) / 2,
         box_centre[1] - i64::from(tag.height()) / 2,
     );
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
     let left = crate::store_panel::vip_left(vip_until, now);
     label_centered(image, "VIP Rights", 16.0, 227, 20, LABEL_GOLD);
@@ -1576,8 +1576,8 @@ mod vip_preview {
     fn vip_window_preview() {
         let Ok(dir) = std::env::var("BOUNTY_PREVIEW") else { return };
         let mut assets = crate::assets::Assets::open(std::path::Path::new("R:/5065")).expect("assets");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
         for (name, until) in [("active", now + 6 * 86_400 + 3 * 3_600), ("inactive", 0)] {
             let mut image = image::RgbaImage::new(330, 200);

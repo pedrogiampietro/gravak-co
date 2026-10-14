@@ -4,6 +4,10 @@
 //! until the game server credits the CPs (which it says in the chat too).
 //! Each request runs on its own thread; the answer comes back as a [`Reply`].
 
+// The browser build has no ureq: the requests answer at once that the
+// shop is closed there (docs/web-spike.md).
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+
 use serde::Deserialize;
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver};
@@ -57,6 +61,7 @@ pub enum Reply {
     Status(Result<String, String>),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
@@ -66,6 +71,7 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn(work: impl FnOnce() -> Reply + Send + 'static) -> Receiver<Reply> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -85,6 +91,7 @@ fn refusal(code: &str) -> String {
 }
 
 /// The body as JSON, or the website's refusal as a message.
+#[cfg(not(target_arch = "wasm32"))]
 fn read<T: for<'de> Deserialize<'de>>(response: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<T, String> {
     #[derive(Deserialize)]
     struct Refusal {
@@ -99,6 +106,29 @@ fn read<T: for<'de> Deserialize<'de>>(response: Result<ureq::http::Response<ureq
     serde_json::from_str(&text).map_err(|_| refusal("offline"))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn closed(reply: fn(String) -> Reply) -> Receiver<Reply> {
+    let (sender, receiver) = mpsc::channel();
+    let _ = sender.send(reply("Buy CPs on the website for now.".to_owned()));
+    receiver
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn request_packages() -> Receiver<Reply> {
+    closed(|message| Reply::Packages(Err(message)))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn request_charge(_character: String, _package: u32) -> Receiver<Reply> {
+    closed(|message| Reply::Charge(Err(message)))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn request_status(_order: String) -> Receiver<Reply> {
+    closed(|message| Reply::Status(Err(message)))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn request_packages() -> Receiver<Reply> {
     spawn(|| {
         #[derive(Deserialize)]
@@ -110,6 +140,7 @@ pub fn request_packages() -> Receiver<Reply> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn request_charge(character: String, package: u32) -> Receiver<Reply> {
     spawn(move || {
         #[derive(Deserialize)]
@@ -140,6 +171,7 @@ pub fn request_charge(character: String, package: u32) -> Receiver<Reply> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn request_status(order: String) -> Receiver<Reply> {
     spawn(move || {
         #[derive(Deserialize)]

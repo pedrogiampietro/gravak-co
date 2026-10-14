@@ -1,4 +1,5 @@
-KaTeX_Main-Bold.ttf, the face of Gravak's emblem on the HUD (logo.rs).
+KaTeX_Main-Bold.ttf, the face of Gravak's emblem on the HUD (logo.rs), and
+KaTeX_SansSerif-Regular.ttf, the browser build's text (fonts.rs).
 
 Copyright (c) 2009-2010, Design Science, Inc. (<www.mathjax.org>)
 Copyright (c) 2014-2018 Khan Academy (<www.khanacademy.org>),

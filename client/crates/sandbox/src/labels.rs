@@ -13,7 +13,7 @@ static DECORATIVE_FONT: OnceLock<std::result::Result<Arc<fontdue::Font>, String>
 
 fn load_ui_font() -> Result<fontdue::Font> {
     let mut database = fontdb::Database::new();
-    database.load_system_fonts();
+    crate::fonts::load_system_fonts(&mut database);
     let id = database
         .query(&fontdb::Query {
             families: &[fontdb::Family::Name("Arial"), fontdb::Family::SansSerif],
@@ -147,8 +147,8 @@ pub fn vendor_or_name_colour(status_flags: u64, selling: bool) -> [u8; 3] {
 }
 
 pub fn name_colour(status_flags: u64) -> [u8; 3] {
-    let blink_on = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let blink_on = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() / 500 % 2 == 0)
         .unwrap_or(true);
     let pk_colour = if status_flags & BLACK_NAME != 0 {

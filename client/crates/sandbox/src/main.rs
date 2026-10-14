@@ -2,6 +2,9 @@
 // The players' build (packed-only) opens no console window; development keeps
 // it for the log.
 #![cfg_attr(all(windows, feature = "packed-only"), windows_subsystem = "windows")]
+// The browser build (docs/web-spike.md) starts at the login screens only:
+// the game window and the TCP sessions are there but not reached yet.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused))]
 mod action;
 mod armory;
 mod action_bar;
@@ -13,6 +16,8 @@ mod exit_confirm;
 mod forge_window;
 mod cursors;
 mod assets;
+// The browser build is silent for now.
+#[cfg_attr(target_arch = "wasm32", path = "audio_web.rs")]
 mod audio;
 mod booth;
 mod bounty_board;
@@ -59,6 +64,9 @@ mod nobility_panel;
 mod top_title;
 mod view_equipment;
 mod emblems;
+mod fonts;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod action_panel;
 mod hotkey_menu;
 mod whisper;
@@ -80,14 +88,13 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{Arc, mpsc},
-    time::Instant,
 };
+use web_time::Instant;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    platform::run_on_demand::EventLoopExtRunOnDemand,
     window::{CursorIcon, CustomCursor, Window, WindowId},
 };
 const LEVEL_UP_DURATION: f32 = 61.0 / 30.0;
@@ -633,6 +640,11 @@ struct App {
     remote_models_loading: HashSet<u32>,
     remote_npcs_loading: HashSet<u32>,
     remote_monsters_loading: HashSet<u32>,
+    /// The browser's window and, once the GPU answers, its renderer.
+    #[cfg(target_arch = "wasm32")]
+    pending_renderer: std::rc::Rc<
+        std::cell::RefCell<Option<(Arc<Window>, Option<std::result::Result<renderer::Renderer, String>>)>>,
+    >,
 }
 
 /// The client offers Revive this long after dying (server `REVIVE_DELAY`).
@@ -678,24 +690,86 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let result = (|| -> Result<_> {
-            let window = match self.login_window.take() {
-                // Entering from the login screens: the same window, at the
-                // size the player last gave it (`restore_window`).
-                Some(window) => window,
-                None => Arc::new(
-                    event_loop.create_window(
-                        Window::default_attributes()
-                            .with_title("Gravak")
-                            .with_window_icon(window_icon())
-                            .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768)),
-                    )?,
-                ),
-            };
-            let mut renderer = pollster::block_on(renderer::Renderer::new(window.clone()))?;
+        let window = match self.login_window.take() {
+            // Entering from the login screens: the same window, at the
+            // size the player last gave it (`restore_window`).
+            Some(window) => Ok(window),
+            None => {
+                let attributes = Window::default_attributes()
+                    .with_title("Gravak")
+                    .with_window_icon(window_icon())
+                    .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768));
+                #[cfg(target_arch = "wasm32")]
+                let attributes =
+                    winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);
+                event_loop.create_window(attributes).map(Arc::new)
+            }
+        };
+        let window = match window {
+            Ok(window) => window,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                event_loop.exit();
+                return;
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let renderer = pollster::block_on(renderer::Renderer::new(window.clone()))
+                .map_err(|error| error.to_string());
+            self.renderer_ready(event_loop, window, renderer);
+        }
+        // The browser cannot block on the GPU: the renderer is made on the
+        // page's own loop and picked up in `about_to_wait`.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let slot = self.pending_renderer.clone();
+            *slot.borrow_mut() = Some((window.clone(), None));
+            wasm_bindgen_futures::spawn_local(async move {
+                let renderer = renderer::Renderer::new(window)
+                    .await
+                    .map_err(|error| error.to_string());
+                if let Some((_, result)) = slot.borrow_mut().as_mut() {
+                    *result = Some(renderer);
+                }
+            });
+        }
+    }
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.window_event_inner(event_loop, event);
+    }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let ready = self
+                .pending_renderer
+                .borrow()
+                .as_ref()
+                .is_some_and(|(_, result)| result.is_some());
+            let taken = if ready { self.pending_renderer.borrow_mut().take() } else { None };
+            if let Some((window, Some(renderer))) = taken {
+                self.renderer_ready(event_loop, window, renderer);
+            }
+            if self.renderer.is_none() {
+                return;
+            }
+        }
+        self.about_to_wait_inner(event_loop);
+    }
+}
+
+impl App {
+    /// The window has its renderer (or could not get one).
+    fn renderer_ready(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: Arc<Window>,
+        renderer: std::result::Result<renderer::Renderer, String>,
+    ) {
+        let result = renderer.map(|mut renderer| {
             renderer.prime_static_map_cache(&self.map);
-            Ok((window, renderer))
-        })();
+            (window, renderer)
+        });
         match result {
             Ok((window, renderer)) => {
                 for cursor in cursors::GameCursor::ALL {
@@ -726,7 +800,7 @@ impl ApplicationHandler for App {
             }
         }
     }
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event_inner(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         match event {
             // Closing the window is the original's IDCANCEL, as Escape:
             // a window closes first, and the game asks before it ends.
@@ -986,8 +1060,7 @@ impl ApplicationHandler for App {
                     match event.physical_key {
                         _ if copy => copy_to_clipboard(&self.whispers.input),
                         _ if paste => {
-                            if let Ok(mut clipboard) = arboard::Clipboard::new()
-                                && let Ok(text) = clipboard.get_text()
+                            if let Some(text) = clipboard_text()
                             {
                                 for character in text.chars().filter(|character| !character.is_control()) {
                                     if self.whispers.input.chars().count() < 120 {
@@ -1047,8 +1120,7 @@ impl ApplicationHandler for App {
                     match event.physical_key {
                         PhysicalKey::Code(KeyCode::KeyC) if control => copy_to_clipboard(&self.chat_recipient),
                         PhysicalKey::Code(KeyCode::KeyV) if control => {
-                            if let Ok(mut clipboard) = arboard::Clipboard::new()
-                                && let Ok(text) = clipboard.get_text()
+                            if let Some(text) = clipboard_text()
                             {
                                 self.chat_recipient = text.trim().chars().filter(|c| !c.is_whitespace()).take(16).collect();
                             }
@@ -1089,8 +1161,7 @@ impl ApplicationHandler for App {
                     if self.modifiers.control_key()
                         && matches!(event.physical_key, PhysicalKey::Code(KeyCode::KeyV))
                     {
-                        if let Ok(mut clipboard) = arboard::Clipboard::new()
-                            && let Ok(text) = clipboard.get_text()
+                        if let Some(text) = clipboard_text()
                         {
                             for character in
                                 text.chars().filter(|character| !character.is_control())
@@ -1835,7 +1906,7 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait_inner(&mut self, event_loop: &ActiveEventLoop) {
         // The window's size is written once the player stops dragging it.
         if self.options_save_at.is_some_and(|at| Instant::now() >= at) {
             self.options_save_at = None;
@@ -10577,10 +10648,26 @@ fn wire_action(action: u32) -> Option<Action> {
 }
 
 /// Puts `text` on the system clipboard.
+#[cfg(not(target_arch = "wasm32"))]
 fn copy_to_clipboard(text: &str) {
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         let _ = clipboard.set_text(text.to_owned());
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn clipboard_text() -> Option<String> {
+    arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()).ok()
+}
+
+// The browser's clipboard is asynchronous and asks the player first (a
+// paste event would carry it); the spike goes without.
+#[cfg(target_arch = "wasm32")]
+fn copy_to_clipboard(_text: &str) {}
+
+#[cfg(target_arch = "wasm32")]
+pub fn clipboard_text() -> Option<String> {
+    None
 }
 
 /// How far a blow of `blow` flings a monster of `life` that it slays, as
@@ -10696,11 +10783,31 @@ fn scaled_life(life: u32, maximum: u32) -> u16 {
     ((u64::from(life) * 1_000 / u64::from(maximum.max(1))).clamp(1, 1_000)) as u16
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     // The website's Armory: draws a hero and leaves, no window.
     if std::env::args_os().nth(1).is_some_and(|arg| arg == "--armory") {
         return armory::run(args.skip(1));
+    }
+    // The browser build's files: `--export-assets <game> <out> <name>...`
+    // copies game data out of the installation or the pack
+    // (tools/build-web.ps1).
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--export-assets") {
+        let mut args = args.skip(1);
+        let game = PathBuf::from(args.next().ok_or("--export-assets requires <game> <out> <name>...")?);
+        let out = PathBuf::from(args.next().ok_or("--export-assets requires <game> <out> <name>...")?);
+        let mut assets = Assets::open(&game)?;
+        for name in args {
+            let name = name.to_str().ok_or("Invalid asset name")?;
+            let bytes = assets.read(name)?;
+            let path = out.join(name.to_ascii_lowercase());
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&path, bytes)?;
+        }
+        return Ok(());
     }
     let mut root = None;
     let mut map_id = None;
@@ -11369,6 +11476,8 @@ fn run() -> Result<()> {
         remote_models_loading: HashSet::new(),
         remote_npcs_loading: HashSet::new(),
         remote_monsters_loading: HashSet::new(),
+        #[cfg(target_arch = "wasm32")]
+        pending_renderer: Default::default(),
     };
     app.hud_config = settings::load_options();
     if let Some(audio) = &mut app.audio {
@@ -11384,7 +11493,10 @@ fn run() -> Result<()> {
     }
     sync_slot_keys(&app.keybinds, &mut app.action_bar);
     match event_loop {
-        Some(mut event_loop) => event_loop.run_app_on_demand(&mut app)?,
+        Some(mut event_loop) => {
+            use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+            event_loop.run_app_on_demand(&mut app)?
+        }
         None => EventLoop::new()?.run_app(&mut app)?,
     }
     if let Some(error) = app.error {
@@ -11392,6 +11504,12 @@ fn run() -> Result<()> {
     }
     Ok(())
 }
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    web::start();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     if let Err(error) = run() {
         eprintln!("Sandbox: {error}");

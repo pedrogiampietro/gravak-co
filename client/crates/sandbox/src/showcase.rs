@@ -360,7 +360,9 @@ fn send_look(assets: &mut Assets, bodies: &[u32; 4], sender: &std::sync::mpsc::S
 pub fn start(root: std::path::PathBuf) -> (std::sync::mpsc::Receiver<Loaded>, std::sync::mpsc::Sender<LookKey>) {
     let (sender, receiver) = std::sync::mpsc::channel();
     let (look_sender, looks) = std::sync::mpsc::channel::<LookKey>();
-    std::thread::spawn(move || {
+    // Without threads (the browser) nothing arrives and the screens go on
+    // without it.
+    let _ = std::thread::Builder::new().spawn(move || {
         let Ok(mut assets) = Assets::open(&root) else {
             return;
         };

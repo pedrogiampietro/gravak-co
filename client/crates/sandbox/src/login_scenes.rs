@@ -26,7 +26,9 @@ const SPOTS: [(u32, [f32; 2]); 6] = [
 /// Starts composing the views; they arrive one by one on the receiver.
 pub fn start(root: PathBuf) -> mpsc::Receiver<RgbaImage> {
     let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
+    // Without threads (the browser) nothing arrives and the screens go on
+    // without it.
+    let _ = std::thread::Builder::new().spawn(move || {
         let Ok(mut assets) = crate::assets::Assets::open(&root) else {
             return;
         };

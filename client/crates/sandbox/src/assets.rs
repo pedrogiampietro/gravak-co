@@ -24,6 +24,9 @@ pub struct Assets {
     /// game folder has one, every file comes from it and loose files are
     /// never read, so a file dropped beside it changes nothing.
     pack: Option<PackReader>,
+    /// Files handed over whole, by lower-case virtual path: the browser
+    /// build fetches the few its screens need (docs/web-spike.md).
+    memory: Option<HashMap<String, Vec<u8>>>,
 }
 
 #[cfg(test)]
@@ -200,6 +203,7 @@ impl Assets {
                 archives: Vec::new(),
                 resolved: HashMap::new(),
                 pack: Some(pack),
+                memory: None,
             });
         }
         // The players' build reads nothing but the pack.
@@ -221,6 +225,7 @@ impl Assets {
             archives: Vec::new(),
             resolved: HashMap::new(),
             pack: None,
+            memory: None,
         };
         for name in ["data.wdf", "c3.wdf"] {
             if let Some(path) = assets.loose(name)? {
@@ -242,6 +247,24 @@ impl Assets {
             }
         }
         Ok(assets)
+    }
+    /// Game data that is only `files` (virtual path, bytes), with no
+    /// installation behind it.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn from_memory(files: impl IntoIterator<Item = (String, Vec<u8>)>) -> Self {
+        Self {
+            root: PathBuf::new(),
+            overlay: None,
+            archives: Vec::new(),
+            resolved: HashMap::new(),
+            pack: None,
+            memory: Some(
+                files
+                    .into_iter()
+                    .map(|(name, bytes)| (name.replace('\\', "/").to_ascii_lowercase(), bytes))
+                    .collect(),
+            ),
+        }
     }
     pub fn root_path(&self) -> &Path {
         &self.root
@@ -274,6 +297,22 @@ impl Assets {
     }
     pub fn read(&mut self, name: &str) -> Result<Vec<u8>> {
         let virtual_path = VirtualPath::try_from(name)?;
+        // GRAVAK_TRACE_ASSETS=1 lists every file read, e.g. to know what a
+        // screen needs for the browser build.
+        if trace_enabled() {
+            eprintln!("ASSET {}", virtual_path.as_str());
+        }
+        if let Some(memory) = &self.memory {
+            return memory
+                .get(&virtual_path.as_str().to_ascii_lowercase())
+                .cloned()
+                .ok_or_else(|| {
+                    // What the browser build lacks, for the page's manifest.
+                    #[cfg(target_arch = "wasm32")]
+                    crate::web::log(&format!("ASSET missing {}", virtual_path.as_str()));
+                    format!("Missing installed asset: {name}").into()
+                });
+        }
         if let Some(pack) = &mut self.pack {
             // A name first, then the id of the original archives, the
             // same order as loose files before data.wdf/c3.wdf below.
@@ -319,6 +358,11 @@ impl Assets {
         }
         Ok(reader.decode()?.into_rgba8())
     }
+}
+
+fn trace_enabled() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("GRAVAK_TRACE_ASSETS").is_some_and(|value| value != "0"))
 }
 
 /// `name` (a virtual `a/b/c` path) under `root`, each component matched

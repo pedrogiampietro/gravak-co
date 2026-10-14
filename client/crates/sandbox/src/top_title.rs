@@ -229,7 +229,7 @@ fn title_font() -> Option<&'static fontdue::Font> {
     static FONT: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
     FONT.get_or_init(|| {
         let mut db = fontdb::Database::new();
-        db.load_system_fonts();
+        crate::fonts::load_system_fonts(&mut db);
         let id = db.query(&fontdb::Query {
             families: &[fontdb::Family::Name("Times New Roman"), fontdb::Family::Serif],
             weight: fontdb::Weight::BOLD,

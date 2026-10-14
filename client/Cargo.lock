@@ -455,11 +455,13 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "bytemuck",
+ "console_error_panic_hook",
  "ed25519-dalek",
  "fontdb",
  "fontdue",
  "gravak-protocol",
  "image",
+ "js-sys",
  "pollster 0.4.0",
  "rodio",
  "sandbox-data",
@@ -469,10 +471,24 @@ dependencies = [
  "softbuffer",
  "tokio",
  "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "wgpu",
  "windows-sys 0.61.2",
  "winit",
  "winresource",
+]
+
+[[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1277,8 +1293,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1461,6 +1479,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "chacha20poly1305",
+ "getrandom 0.2.17",
  "rand_core",
  "serde",
  "sha2",

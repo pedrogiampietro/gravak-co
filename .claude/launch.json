@@ -8,6 +8,12 @@
       "port": 3000
     },
     {
+      "name": "web-spike",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8099", "--directory", "client/dist/web"],
+      "port": 8099
+    },
+    {
       "name": "web-prod",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "web", "run", "start", "--", "-p", "3001"],

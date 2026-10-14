@@ -617,7 +617,7 @@ pub fn font() -> Result<&'static fontdue::Font> {
         return Ok(font);
     }
     let mut db = fontdb::Database::new();
-    db.load_system_fonts();
+    crate::fonts::load_system_fonts(&mut db);
     let id = db
         .query(&fontdb::Query {
             families: &[
@@ -652,7 +652,7 @@ pub fn client_font() -> Result<&'static fontdue::Font> {
         return Ok(font);
     }
     let mut db = fontdb::Database::new();
-    db.load_system_fonts();
+    crate::fonts::load_system_fonts(&mut db);
     let id = db
         .query(&fontdb::Query {
             families: &[
@@ -685,7 +685,7 @@ pub fn label_font() -> Result<&'static fontdue::Font> {
         return Ok(font);
     }
     let mut db = fontdb::Database::new();
-    db.load_system_fonts();
+    crate::fonts::load_system_fonts(&mut db);
     let id = db
         .query(&fontdb::Query {
             families: &[
@@ -716,7 +716,7 @@ pub fn italic_font() -> Result<&'static fontdue::Font> {
         return Ok(font);
     }
     let mut db = fontdb::Database::new();
-    db.load_system_fonts();
+    crate::fonts::load_system_fonts(&mut db);
     let id = db
         .query(&fontdb::Query {
             families: &[

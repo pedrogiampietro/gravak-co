@@ -4,10 +4,16 @@
 //! transport and the first authentication messages in a small crate gives us
 //! a stable place to measure and close that compatibility gap.
 
+// The browser build has no TCP yet: the codec and its helpers wait for the
+// WebSocket bridge.
+#![cfg_attr(target_arch = "wasm32", allow(unused))]
+
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::StreamExt;
 use tq_codec::{TQDecoder, TQEncoder};
 use tq_network::{CQCipher, Cipher, PacketDecode, PacketEncode, PacketID, TQCodec};
@@ -2286,11 +2292,13 @@ pub enum GameEvent {
     Other(u16, Bytes),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct GameSession {
     encoder: TQEncoder<TcpStream, CQCipher>,
     decoder: TQDecoder<TcpStream, CQCipher>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GameSession {
     pub async fn connect(
         address: &str,
@@ -2638,6 +2646,7 @@ impl From<std::io::Error> for ProtocolError {
 }
 
 /// Performs the first leg of the login flow against an auth server.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn authenticate(
     address: &str,
     username: &str,
@@ -2664,6 +2673,7 @@ pub async fn authenticate(
 }
 
 /// Creates an account on the account server (`9001`/`9002`).
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn register_account(
     address: &str,
     username: &str,
@@ -2691,6 +2701,7 @@ pub async fn register_account(
 }
 
 /// Performs the second leg of the login flow against a game server.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn connect_game(
     address: &str,
     token: u64,
