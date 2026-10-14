@@ -324,6 +324,9 @@ const pt = {
     download: "Baixar o cliente",
     signInLead: "Entre com a sua conta do jogo para jogar no navegador.",
     signIn: "Entrar",
+    back: "Voltar ao site",
+    fullscreen: "Tela cheia",
+    testBuild: "Versão de teste",
   },
   login: {
     title: "Entrar",
@@ -713,6 +716,9 @@ const en: Dictionary = {
     download: "Download the client",
     signInLead: "Sign in with your game account to play in the browser.",
     signIn: "Sign in",
+    back: "Back to the site",
+    fullscreen: "Full screen",
+    testBuild: "Test build",
   },
   login: {
     title: "Sign in",

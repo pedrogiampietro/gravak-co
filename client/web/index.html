@@ -14,6 +14,14 @@
   <script type="module">
     import init from "./gravak.js";
     init();
+    // A click on the game gives it the keys (and with them Ctrl, Alt and
+    // Shift): the world's canvas replaces the login's, and the page in the
+    // site's frame starts without focus.
+    document.addEventListener("pointerdown", (event) => {
+      if (event.target instanceof HTMLCanvasElement && document.activeElement !== event.target) {
+        event.target.focus({ preventScroll: true });
+      }
+    }, true);
   </script>
 </body>
 </html>

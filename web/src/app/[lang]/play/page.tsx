@@ -6,6 +6,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { type Dictionary, getDictionary, hasLocale, type Locale } from "@/i18n/dictionaries";
 import { currentAccount } from "@/lib/session";
 import { cn } from "@/lib/utils";
+import { GameFrame } from "./game-frame";
 
 // The client compiled to wasm (docs/web-spike.md), copied into public/play at
 // deploy by client/tools/build-web.ps1. A frame of its own: the client takes
@@ -53,12 +54,10 @@ async function Client({ lang, dict }: { lang: Locale; dict: Dictionary }) {
     );
   }
   return (
-    <iframe
+    <GameFrame
       src={CLIENT}
-      title="Gravak"
-      className="mt-6 aspect-[4/3] w-full rounded-md border border-border bg-black"
-      allow="fullscreen; autoplay; clipboard-read; clipboard-write"
-      allowFullScreen
+      home={`/${lang}`}
+      copy={{ ...dict.play, downloadHref: `/${lang}/download` }}
     />
   );
 }

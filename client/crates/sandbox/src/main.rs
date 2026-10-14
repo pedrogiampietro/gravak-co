@@ -692,8 +692,11 @@ impl ApplicationHandler for App {
             None => {
                 let attributes = Window::default_attributes()
                     .with_title("Gravak")
-                    .with_window_icon(window_icon())
-                    .with_inner_size(winit::dpi::PhysicalSize::new(1366, 768));
+                    .with_window_icon(window_icon());
+                #[cfg(not(target_arch = "wasm32"))]
+                let attributes = attributes.with_inner_size(winit::dpi::PhysicalSize::new(1366, 768));
+                // In the browser the window is a canvas as large as the
+                // page's style makes it (web/index.html), as the login's.
                 #[cfg(target_arch = "wasm32")]
                 let attributes =
                     winit::platform::web::WindowAttributesExtWebSys::with_append(attributes, true);

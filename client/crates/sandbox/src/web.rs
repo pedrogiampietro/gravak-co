@@ -159,6 +159,13 @@ impl Game {
                 let (files, kib) = crate::web_files::fetched();
                 log(&format!("Gravak: the world opens ({files} game files, {kib} KiB)"));
                 app.resumed(event_loop);
+                // The keys go to the world's canvas, new on the page.
+                if let Some(canvas) = app.window.as_ref().and_then(|window| {
+                    use winit::platform::web::WindowExtWebSys;
+                    window.canvas()
+                }) {
+                    let _ = canvas.focus();
+                }
                 *self = Game::World(Box::new(app));
             }
         }
