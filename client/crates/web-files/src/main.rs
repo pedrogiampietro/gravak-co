@@ -11,7 +11,9 @@
 //! the client wants, one per line. The answer, in the same order, is for each
 //! path a little-endian u32 and that many bytes; `MISSING` means the pack has
 //! no such file, `LATER` that the answer was full and the path must be asked
-//! again.
+//! again. Every answer carries `X-Gravak-Pack`, the pack's version (its
+//! size and time), so the browser can keep the files until the pack changes;
+//! a request without paths only asks for it.
 //!
 //! The session is checked by its signature and expiry only: a ban reaches the
 //! game through the auth server, which the browser logs in to as well.
@@ -51,6 +53,8 @@ struct Options {
 struct Server {
     pack: Mutex<PackReader>,
     secret: Vec<u8>,
+    /// `X-Gravak-Pack`: the pack's size and modification time.
+    version: String,
 }
 
 fn options() -> Result<Options> {
@@ -107,7 +111,10 @@ async fn start() -> Result<()> {
     let pack = PackReader::open(&options.pack, &key)
         .map_err(|error| format!("{}: {error}", options.pack.display()))?;
     let entries = pack.len();
-    let server = Arc::new(Server { pack: Mutex::new(pack), secret: secret.into_bytes() });
+    let metadata = std::fs::metadata(&options.pack)?;
+    let modified = metadata.modified()?.duration_since(UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0);
+    let version = format!("{}-{modified}", metadata.len());
+    let server = Arc::new(Server { pack: Mutex::new(pack), secret: secret.into_bytes(), version });
     let listener = TcpListener::bind(options.listen)
         .await
         .map_err(|error| format!("cannot listen on {}: {error}", options.listen))?;
@@ -211,8 +218,12 @@ fn base64url(bytes: &[u8]) -> String {
 }
 
 async fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) -> Result<()> {
+    respond_with(stream, status, kind, "", body).await
+}
+
+async fn respond_with(stream: &mut TcpStream, status: &str, kind: &str, extra: &str, body: &[u8]) -> Result<()> {
     let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes()).await?;
@@ -241,10 +252,21 @@ async fn serve(mut stream: TcpStream, server: &Arc<Server>) -> Result<()> {
         return respond(&mut stream, "413 Payload Too Large", "text/plain", b"too many paths").await;
     }
     let count = paths.len();
+    let asked = paths.clone();
+    let version = format!("X-Gravak-Pack: {}\r\n", server.version);
     let server = server.clone();
     let (body, missing) = tokio::task::spawn_blocking(move || answer(&server, &paths)).await?;
-    println!("account {account}: {count} files, {missing} missing, {} KiB", body.len() / 1024);
-    respond(&mut stream, "200 OK", "application/octet-stream", &body).await
+    if count > 0 {
+        println!("account {account}: {count} files, {missing} missing, {} KiB", body.len() / 1024);
+    }
+    // GRAVAK_LOG_PATHS=1: every path asked, to make the browser's preload
+    // list (client/web/world.txt) from a session.
+    if std::env::var_os("GRAVAK_LOG_PATHS").is_some() {
+        for path in &asked {
+            println!("PATH {path}");
+        }
+    }
+    respond_with(&mut stream, "200 OK", "application/octet-stream", &version, &body).await
 }
 
 /// The answer to `paths`, and how many of them the pack lacks.

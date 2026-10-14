@@ -7,6 +7,10 @@
 //! fails as `Pending`; whoever read it tries again once `misses` stops
 //! growing and the store is not `busy`. A file the pack lacks is remembered
 //! as absent and fails for good, as it would natively.
+//!
+//! What comes is kept in the browser's Cache Storage, in a cache named after
+//! the pack's version (`X-Gravak-Pack`): the next visit takes its files from
+//! there, and a new pack starts a new cache and drops the old.
 
 use std::{
     cell::RefCell,
@@ -75,6 +79,19 @@ pub fn read(name: &str) -> Lookup {
     })
 }
 
+/// Asks for `names` before anything reads them: the preload list.
+pub fn want(names: impl IntoIterator<Item = String>) {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        for name in names {
+            let name = key(&name);
+            if !store.files.contains_key(&name) && store.asked.insert(name.clone()) {
+                store.wanted.push(name);
+            }
+        }
+    });
+}
+
 /// How many reads have come up empty so far.
 pub fn misses() -> u64 {
     STORE.with(|store| store.borrow().misses)
@@ -122,7 +139,7 @@ pub fn pump() {
     });
     let Some(batch) = batch else { return };
     wasm_bindgen_futures::spawn_local(async move {
-        let result = request(&batch).await;
+        let result = fetch_batch(&batch).await;
         STORE.with(|store| {
             let mut store = store.borrow_mut();
             store.in_flight = false;
@@ -158,13 +175,116 @@ pub fn pump() {
     });
 }
 
+/// The browser's cache of the files, once known.
+enum Kept {
+    Unknown,
+    Cache(web_sys::Cache),
+    /// No Cache Storage (an insecure page, a private window that refuses).
+    Nothing,
+}
+
+thread_local! {
+    static KEPT: RefCell<Kept> = const { RefCell::new(Kept::Unknown) };
+}
+
+const CACHE_PREFIX: &str = "gravak-files-";
+
+fn cache_key(name: &str) -> String {
+    format!("/game-files/kept/{}", String::from(js_sys::encode_uri(name)))
+}
+
+/// The cache of this pack's version, the older ones dropped.
+async fn open_cache(version: &str) -> Option<web_sys::Cache> {
+    let caches = web_sys::window()?.caches().ok()?;
+    let name = format!("{CACHE_PREFIX}{version}");
+    if let Ok(keys) = JsFuture::from(caches.keys()).await {
+        for key in js_sys::Array::from(&keys).iter().filter_map(|key| key.as_string()) {
+            if key.starts_with(CACHE_PREFIX) && key != name {
+                let _ = JsFuture::from(caches.delete(&key)).await;
+            }
+        }
+    }
+    JsFuture::from(caches.open(&name)).await.ok()?.dyn_into().ok()
+}
+
+/// The files of `batch`: those kept from before, the rest from the site
+/// (and kept for next time).
+async fn fetch_batch(batch: &[String]) -> Result<Answer, String> {
+    if KEPT.with(|kept| matches!(*kept.borrow(), Kept::Unknown)) {
+        let (answer, version) = request(&[]).await?;
+        if let Answer::Unauthorized = answer {
+            return Ok(answer);
+        }
+        let cache = match version {
+            Some(version) => open_cache(&version).await,
+            None => None,
+        };
+        KEPT.with(|kept| *kept.borrow_mut() = cache.map_or(Kept::Nothing, Kept::Cache));
+    }
+    let cache = KEPT.with(|kept| match &*kept.borrow() {
+        Kept::Cache(cache) => Some(cache.clone()),
+        _ => None,
+    });
+    let mut answers: Vec<Option<Option<Vec<u8>>>> = vec![None; batch.len()];
+    if let Some(cache) = &cache {
+        let lookups = js_sys::Array::new();
+        for name in batch {
+            lookups.push(&cache.match_with_str(&cache_key(name)));
+        }
+        if let Ok(found) = JsFuture::from(js_sys::Promise::all(&lookups)).await {
+            let reads = js_sys::Array::new();
+            for found in js_sys::Array::from(&found).iter() {
+                match found.dyn_into::<web_sys::Response>() {
+                    Ok(response) => match response.array_buffer() {
+                        Ok(promise) => reads.push(&promise),
+                        Err(_) => reads.push(&JsValue::UNDEFINED),
+                    },
+                    Err(_) => reads.push(&JsValue::UNDEFINED),
+                };
+            }
+            if let Ok(buffers) = JsFuture::from(js_sys::Promise::all(&reads)).await {
+                for (index, buffer) in js_sys::Array::from(&buffers).iter().enumerate() {
+                    if buffer.is_instance_of::<js_sys::ArrayBuffer>() {
+                        answers[index] = Some(Some(js_sys::Uint8Array::new(&buffer).to_vec()));
+                    }
+                }
+            }
+        }
+    }
+    let wanted: Vec<usize> = (0..batch.len()).filter(|&index| answers[index].is_none()).collect();
+    if cache.is_some() && wanted.len() < batch.len() {
+        crate::web::log(&format!("Gravak: {} game files from the browser's cache", batch.len() - wanted.len()));
+    }
+    if wanted.is_empty() {
+        return Ok(Answer::Files(answers));
+    }
+    let names: Vec<String> = wanted.iter().map(|&index| batch[index].clone()).collect();
+    match request(&names).await?.0 {
+        Answer::Unauthorized => Ok(Answer::Unauthorized),
+        Answer::Files(fetched) => {
+            for (index, answer) in wanted.into_iter().zip(fetched) {
+                if let (Some(cache), Some(Some(bytes))) = (&cache, &answer) {
+                    let mut copy = bytes.clone();
+                    if let Ok(response) = web_sys::Response::new_with_opt_u8_array(Some(&mut copy)) {
+                        // Kept in the background; a full disk only costs the keeping.
+                        let _ = cache.put_with_str(&cache_key(&batch[index]), &response);
+                    }
+                }
+                answers[index] = answer;
+            }
+            Ok(Answer::Files(answers))
+        }
+    }
+}
+
 enum Answer {
     /// Per path: the bytes, `Some(None)` absent, `None` ask again.
     Files(Vec<Option<Option<Vec<u8>>>>),
     Unauthorized,
 }
 
-async fn request(batch: &[String]) -> Result<Answer, String> {
+/// The site's answer to `batch`, and the pack's version it names.
+async fn request(batch: &[String]) -> Result<(Answer, Option<String>), String> {
     let failed = |error: JsValue| format!("{error:?}");
     let window = web_sys::window().ok_or("no window")?;
     let init = web_sys::RequestInit::new();
@@ -177,8 +297,9 @@ async fn request(batch: &[String]) -> Result<Answer, String> {
         .dyn_into()
         .map_err(failed)?;
     if response.status() == 401 {
-        return Ok(Answer::Unauthorized);
+        return Ok((Answer::Unauthorized, None));
     }
+    let version = response.headers().get("X-Gravak-Pack").ok().flatten();
     if !response.ok() {
         return Err(format!("HTTP {}", response.status()));
     }
@@ -186,7 +307,7 @@ async fn request(batch: &[String]) -> Result<Answer, String> {
         .await
         .map_err(failed)?;
     let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
-    parse(&bytes, batch.len()).map(Answer::Files)
+    parse(&bytes, batch.len()).map(|files| (Answer::Files(files), version))
 }
 
 fn parse(mut bytes: &[u8], count: usize) -> Result<Vec<Option<Option<Vec<u8>>>>, String> {

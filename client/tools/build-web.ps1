@@ -61,6 +61,8 @@ try {
     & (Join-Path $targets "release\conquer-sandbox.exe") --export-assets $Game $assets @names
     if ($LASTEXITCODE -ne 0) { throw "the game files could not be copied out of $Game" }
     $names | Set-Content -Encoding ascii (Join-Path $assets "manifest.txt")
+    # The preload list: what entering any world reads (web/world.txt).
+    Copy-Item (Join-Path $client "web\world.txt") (Join-Path $assets "world.txt") -Force
 
     $wasm = Get-Item (Join-Path $out "gravak_bg.wasm")
     Write-Host ("Done: {0} ({1:N1} MiB of wasm)" -f $out, ($wasm.Length / 1MB)) -ForegroundColor Green

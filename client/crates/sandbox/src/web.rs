@@ -55,6 +55,17 @@ async fn run() -> Result<(), String> {
         Err(_) => Vec::new(),
     };
     let worlds = if worlds.is_empty() { vec![fallback] } else { worlds };
+    // What entering any world reads, fetched while the login screens show
+    // (web/world.txt): one request instead of one a file.
+    if let Ok(list) = fetch("assets/world.txt").await {
+        crate::web_files::want(
+            String::from_utf8_lossy(&list)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_owned),
+        );
+    }
     let screens = crate::launcher::prepare_web(&mut assets, worlds);
     winit::event_loop::EventLoop::new()
         .map_err(|error| error.to_string())?
@@ -193,6 +204,7 @@ impl ApplicationHandler for Game {
         match self {
             Game::Screens(screens, _) => {
                 screens.about_to_wait(event_loop);
+                crate::web_files::pump();
                 self.step_entering(event_loop);
             }
             Game::World(app) => {
