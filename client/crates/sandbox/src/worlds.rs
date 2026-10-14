@@ -13,11 +13,12 @@
 //! `Realm` defaults to the section's name. Without the file the client
 //! offers the one server named by `gravak.ini` or `--auth`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     net::{TcpStream, ToSocketAddrs},
-    sync::mpsc::{self, Receiver},
     thread,
 };
+use std::sync::mpsc::{self, Receiver};
 use web_time::{Duration, Instant};
 
 pub const FILE_NAME: &str = "servers.ini";
@@ -91,7 +92,33 @@ pub enum Status {
 }
 
 /// Knocks on every world's account server now and then, sending
-/// `(world index, status)` as each answers.
+/// `(world index, status)` as each answers. In the browser the knock is a
+/// WebSocket opened through the bridge, which only opens once the bridge
+/// reached the server.
+#[cfg(target_arch = "wasm32")]
+pub fn watch(worlds: &[World]) -> Receiver<(usize, Status)> {
+    let (sender, receiver) = mpsc::channel();
+    for (index, world) in worlds.iter().enumerate() {
+        let sender = sender.clone();
+        let auth = world.auth.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                let started = Instant::now();
+                let status = match gravak_protocol::transport::connect(&auth).await {
+                    Ok(_) => Status::Online(started.elapsed().as_millis().min(9_999) as u32),
+                    Err(_) => Status::Offline,
+                };
+                if sender.send((index, status)).is_err() {
+                    return;
+                }
+                crate::web::sleep(Duration::from_secs(15)).await;
+            }
+        });
+    }
+    receiver
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn watch(worlds: &[World]) -> Receiver<(usize, Status)> {
     let (sender, receiver) = mpsc::channel();
     for (index, world) in worlds.iter().enumerate() {
@@ -109,6 +136,7 @@ pub fn watch(worlds: &[World]) -> Receiver<(usize, Status)> {
     receiver
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn knock(auth: &str) -> Status {
     let Some(address) = auth.to_socket_addrs().ok().and_then(|mut addresses| addresses.next()) else {
         return Status::Offline;

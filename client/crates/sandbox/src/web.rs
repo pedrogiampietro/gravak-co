@@ -1,8 +1,9 @@
 //! The browser build's start (docs/web-spike.md): the page loads the wasm,
 //! this fetches the game files the login screens need (listed in
 //! `assets/manifest.txt` beside the page, made by tools/build-web.ps1) and
-//! shows the screens on a canvas. Entering the world needs the WebSocket
-//! bridge and streamed game data, which are later phases.
+//! shows the screens on a canvas. The sessions reach the servers through
+//! the WebSocket bridge (`crates/ws-bridge`); entering the world needs
+//! streamed game data, a later phase.
 
 use crate::assets::Assets;
 use std::cell::Cell;
@@ -37,10 +38,47 @@ async fn run() -> Result<(), String> {
         started.elapsed().as_millis()
     ));
     let mut assets = Assets::from_memory(files);
-    // The world the page would log in to; the screens only show it until the
-    // bridge exists.
-    let world = crate::worlds::World::new("Gravak", "127.0.0.1:9958", "Gravak");
-    crate::launcher::spawn(&mut assets, vec![world])
+    gravak_protocol::transport::set_bridge(&bridge_url()?);
+    // The worlds of `servers.ini` beside the page (with the login keys the
+    // passwords are sealed to); without it, the server on this machine.
+    let fallback = crate::worlds::World::new("Gravak", "127.0.0.1:9958", "Gravak");
+    let worlds = match fetch("servers.ini").await {
+        Ok(text) => crate::worlds::parse(&String::from_utf8_lossy(&text)),
+        Err(_) => Vec::new(),
+    };
+    let worlds = if worlds.is_empty() { vec![fallback] } else { worlds };
+    crate::launcher::spawn(&mut assets, worlds)
+}
+
+/// The bridge: `?bridge=ws://host:port` on the page's address, or `/ws` on
+/// the page's own host (`wss://` behind https).
+fn bridge_url() -> Result<String, String> {
+    let location = web_sys::window().ok_or("no window")?.location();
+    let search = location.search().unwrap_or_default();
+    if let Some(url) = search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("bridge="))
+    {
+        return js_sys::decode_uri_component(url)
+            .map(String::from)
+            .map_err(|_| "the bridge address is not valid".into());
+    }
+    let scheme = if location.protocol().unwrap_or_default() == "https:" { "wss" } else { "ws" };
+    Ok(format!("{scheme}://{}/ws", location.host().unwrap_or_default()))
+}
+
+/// Resolves after `duration`, without blocking the page.
+pub async fn sleep(duration: web_time::Duration) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                &resolve,
+                duration.as_millis().min(i32::MAX as u128) as i32,
+            );
+        }
+    });
+    let _ = JsFuture::from(promise).await;
 }
 
 async fn fetch(url: &str) -> Result<Vec<u8>, String> {

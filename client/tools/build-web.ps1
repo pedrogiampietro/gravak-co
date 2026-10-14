@@ -8,13 +8,21 @@
 #   tools\build-web.ps1 -Game R:\5065        or an installation
 #   tools\build-web.ps1 -KeyFile <pack.key>  the release pack key, when it is
 #                                            not installer\pack.key
+#   tools\build-web.ps1 -Servers <servers.ini>  the worlds offered, with their
+#                                            login keys; without it, the
+#                                            server on the bridge's machine
+#
+# The page reaches the servers through gravak-ws-bridge: at /ws on its own
+# host, or where ?bridge=ws://host:port says (local tests:
+# http://localhost:8099/?bridge=ws://127.0.0.1:9960).
 #
 # Needs: rustup target add wasm32-unknown-unknown, and wasm-bindgen-cli at
 # the version of the wasm-bindgen crate in Cargo.lock:
 #   cargo install wasm-bindgen-cli --version 0.2.128 --locked
 param(
     [string]$Game = "",
-    [string]$KeyFile = ""
+    [string]$KeyFile = "",
+    [string]$Servers = ""
 )
 $ErrorActionPreference = "Stop"
 $client = Split-Path -Parent $PSScriptRoot
@@ -36,6 +44,9 @@ try {
         (Join-Path $targets "wasm32-unknown-unknown\release\conquer-sandbox.wasm")
     if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen failed" }
     Copy-Item (Join-Path $client "web\index.html") $out -Force
+    $serversCopy = Join-Path $out "servers.ini"
+    if ($Servers) { Copy-Item $Servers $serversCopy -Force }
+    elseif (Test-Path $serversCopy) { Remove-Item $serversCopy }
 
     # The game files, copied out by the native client. A pack made with the
     # release key (installer\pack.key) only opens in a client built with it.

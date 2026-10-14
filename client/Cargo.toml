@@ -1,7 +1,7 @@
 # Source: @digitalm1nd on x.com / _dek on Discord — Preservation Conquer project — https://discord.gg/CvKPXEHYRY
 [workspace]
 resolver = "3"
-members = ["crates/sandbox-data", "crates/sandbox", "crates/protocol", "crates/probe", "crates/content", "crates/editor"]
+members = ["crates/sandbox-data", "crates/sandbox", "crates/protocol", "crates/probe", "crates/content", "crates/editor", "crates/ws-bridge"]
 default-members = ["crates/sandbox"]
 
 [workspace.package]

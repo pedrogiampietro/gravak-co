@@ -1,8 +1,3 @@
-// The browser build has no TCP until the WebSocket bridge (docs/web-spike.md):
-// a session there ends at once with an error.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
-
-#[cfg(not(target_arch = "wasm32"))]
 use gravak_protocol::{GameSession, authenticate};
 use gravak_protocol::{
     ActionPacket, AssignAttributesPacket, AuthResponse, FriendPacket, GameEvent,
@@ -769,17 +764,17 @@ pub struct NetworkHandle {
 }
 
 impl NetworkHandle {
-#[cfg(target_arch = "wasm32")]
-    pub fn start(_config: NetworkConfig) -> Self {
-        let (handle, events, _commands) = Self::channels();
-        let _ = events.send(NetworkEvent::Error("The browser cannot reach the game servers yet (WebSocket bridge pending)".to_owned()));
-        handle
-    }
-
-#[cfg(not(target_arch = "wasm32"))]
     pub fn start(config: NetworkConfig) -> Self {
         let (events_tx, events) = mpsc::channel();
         let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The browser has no threads: the session is a task on its loop.
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(error) = run(config, events_tx.clone(), commands_rx).await {
+                let _ = events_tx.send(NetworkEvent::Error(error));
+            }
+        });
+        #[cfg(not(target_arch = "wasm32"))]
         thread::Builder::new()
             .name("gravak-network".into())
             .spawn(move || {
@@ -1399,7 +1394,6 @@ impl NetworkHandle {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 async fn run(
     config: NetworkConfig,
     events: Sender<NetworkEvent>,
@@ -1494,7 +1488,6 @@ async fn run(
 /// The in-game half of a session: `session` has reached `user`'s
 /// MsgUserInfo; this loads the map and then serves events and commands
 /// until the connection ends.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn play(
     mut session: GameSession,
     user: UserInfo,
@@ -2749,7 +2742,6 @@ fn unpack_position(value: u32) -> [i32; 2] {
 /// Reads packets until the map arrives. Skill and weapon proficiency
 /// packets sent during login are kept and returned, so they are delivered
 /// after `Ready` instead of being lost.
-#[cfg(not(target_arch = "wasm32"))]
 async fn load_location(
     session: &mut GameSession,
     _character_id: u32,

@@ -2090,8 +2090,20 @@ impl ApplicationHandler for Launcher {
             self.sound_screen_change(before);
             if let LoginEvent::Entered(handle) = event {
                 self.entered = Some(handle);
-                event_loop.exit();
-                return;
+                // The world's files are not streamed to the browser yet
+                // (docs/web-spike.md): the session stays open, the screen
+                // says so.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.ui.info("Logged in. The world does not open in the browser yet.");
+                    self.redraw();
+                    continue;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    event_loop.exit();
+                    return;
+                }
             }
             self.redraw();
         }

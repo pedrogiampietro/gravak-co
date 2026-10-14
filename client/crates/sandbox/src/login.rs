@@ -1,12 +1,9 @@
 //! The pre-game session: account registration, login, character creation
 //! and entering the world, driven by the login screens.
 //!
-//! Everything runs on one network thread so the game connection opened at
-//! login is the same one [`crate::network::play`] keeps using in game.
-
-// The browser build answers every command at once: it has no TCP until the
-// WebSocket bridge (docs/web-spike.md).
-#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+//! Everything runs on one network thread (in the browser, on the page's own
+//! loop) so the game connection opened at login is the same one
+//! [`crate::network::play`] keeps using in game.
 
 use crate::network::{NetworkEvent, NetworkHandle};
 use crate::worlds::World;
@@ -14,12 +11,8 @@ use gravak_protocol::{
     AuthResponse, ForwardedGameServer, GameEvent, LoginRejection, RegisterAccountResult,
     RegisterCharacter, UserInfo,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use gravak_protocol::{GameSession, authenticate, register_account};
-use std::{
-    sync::mpsc::{self, Receiver, Sender},
-    thread,
-};
+use std::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 const REGISTER_CHANNEL: u16 = 2100;
@@ -88,45 +81,20 @@ pub enum LoginEvent {
     Disconnected(String),
 }
 
-#[cfg(target_arch = "wasm32")]
-pub struct LoginClient {
-    answers: Sender<LoginEvent>,
-    events: Receiver<LoginEvent>,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl LoginClient {
-    pub fn start() -> Self {
-        let (answers, events) = mpsc::channel();
-        Self { answers, events }
-    }
-
-    pub fn send(&self, command: LoginCommand) {
-        let message = "The browser cannot reach the game servers yet (WebSocket bridge pending)".to_owned();
-        let _ = self.answers.send(match command {
-            LoginCommand::Register { .. } => LoginEvent::RegisterFailed(message),
-            LoginCommand::Login { .. } => LoginEvent::LoginFailed(message),
-            _ => LoginEvent::Disconnected(message),
-        });
-    }
-
-    pub fn drain(&self) -> Vec<LoginEvent> {
-        self.events.try_iter().collect()
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub struct LoginClient {
     commands: UnboundedSender<LoginCommand>,
     events: Receiver<LoginEvent>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl LoginClient {
     pub fn start() -> Self {
         let (events_tx, events) = mpsc::channel();
         let (commands, commands_rx) = tokio::sync::mpsc::unbounded_channel();
-        thread::Builder::new()
+        // The browser has no threads: the session is a task on its loop.
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(serve(events_tx, commands_rx));
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::Builder::new()
             .name("gravak-login".into())
             .spawn(move || {
                 let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -154,7 +122,6 @@ impl LoginClient {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 enum Phase {
     Idle,
     /// Logged in, waiting for a character to be created.
@@ -171,13 +138,11 @@ enum Phase {
     },
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 enum Login {
     NeedsCharacter(GameSession, u32),
     Character(GameSession, UserInfo),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 async fn serve(
     events: Sender<LoginEvent>,
     mut commands: UnboundedReceiver<LoginCommand>,
@@ -312,7 +277,6 @@ fn rejection_message(rejection: &LoginRejection) -> String {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 async fn login(
     auth: &str,
     username: &str,
@@ -350,7 +314,6 @@ async fn login(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 async fn connect(
     server: &ForwardedGameServer,
 ) -> Result<GameSession, gravak_protocol::ProtocolError> {
@@ -373,7 +336,6 @@ struct Look {
     hair: u16,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 async fn create_character(
     session: &mut GameSession,
     username: &str,
