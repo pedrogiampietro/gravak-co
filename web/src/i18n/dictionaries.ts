@@ -15,6 +15,7 @@ const pt = {
   nav: {
     ranking: "Ranking",
     download: "Download",
+    play: "Jogar no navegador",
     register: "Criar conta",
     language: "English",
     home: "Início",
@@ -315,6 +316,13 @@ const pt = {
     ],
     noAccount: "Ainda sem conta?",
   },
+  play: {
+    title: "Jogar no navegador",
+    lead: "O Gravak rodando direto no navegador, sem instalar nada.",
+    notice:
+      "Versão de teste: por enquanto só a tela de login abre, ainda sem conectar ao servidor. Para jogar agora, baixe o cliente.",
+    download: "Baixar o cliente",
+  },
   login: {
     title: "Entrar",
     lead: "Use a mesma conta do jogo.",
@@ -394,6 +402,7 @@ const en: Dictionary = {
   nav: {
     ranking: "Ranking",
     download: "Download",
+    play: "Play in browser",
     register: "Create account",
     language: "Português",
     home: "Home",
@@ -693,6 +702,13 @@ const en: Dictionary = {
       "Open Gravak, pick the server and sign in with the account.",
     ],
     noAccount: "No account yet?",
+  },
+  play: {
+    title: "Play in the browser",
+    lead: "Gravak running right in your browser, nothing to install.",
+    notice:
+      "Test build: for now only the login screen opens, not yet connected to the server. To play today, download the client.",
+    download: "Download the client",
   },
   login: {
     title: "Sign in",

@@ -15,6 +15,7 @@ export function SiteHeader({ lang, dict }: { lang: Locale; dict: Dictionary }) {
     { href: `/${lang}/guilds`, label: dict.community.guilds },
     { href: `/${lang}/shop`, label: dict.nav.shop },
     { href: `/${lang}/download`, label: dict.nav.download },
+    { href: `/${lang}/play`, label: dict.nav.play },
   ];
   return (
     <header className="sticky top-0 z-30 bg-night/85 backdrop-blur-md">
