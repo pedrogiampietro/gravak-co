@@ -15,6 +15,7 @@ set -euo pipefail
 LIVE=${GRAVAK_UPDATE_DIR:-/var/www/gravak-update}
 DOWNLOADS=${GRAVAK_DOWNLOADS_DIR:-/srv/gravak/web/public/downloads}
 DOWNLOADS_OWNER=${GRAVAK_DOWNLOADS_OWNER:-gravak}
+WEB_FILES_SERVICE=${GRAVAK_WEB_FILES_SERVICE:-gravak-web-files}
 
 tarball=${1:?usage: gravak-publish-update <update.tar> [GravakSetup.exe]}
 installer=${2:-}
@@ -77,6 +78,13 @@ for name in manifest.sig manifest.txt; do
 done
 version=$(sed -n 's/^version=//p' "$LIVE/manifest.txt" | tr -d '\r')
 echo "update v$version published: $copied files uploaded, $listed in the manifest"
+
+# The browser client's file server (client/crates/web-files) holds the pack
+# open: a new pack reaches it only when it starts again.
+if [[ -f "$stage/game/gravak.gpk" ]] && systemctl is-active --quiet "$WEB_FILES_SERVICE"; then
+    systemctl restart "$WEB_FILES_SERVICE"
+    echo "$WEB_FILES_SERVICE restarted on the new pack"
+fi
 
 if [[ -n "$installer" ]]; then
     install -o "$DOWNLOADS_OWNER" -g "$DOWNLOADS_OWNER" -m 644 "$installer" "$DOWNLOADS/GravakSetup.exe.new"
