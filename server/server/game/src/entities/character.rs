@@ -4146,9 +4146,10 @@ impl Character {
             )
         });
         let mut transaction = pool.begin().await?;
-        // Out of the way first: one item a slot at every step.
-        sqlx::query("UPDATE warehouse_items SET position = position + 1000 WHERE character_id = $1")
-            .bind(self.inner.character_id)
+        // Every item moves at once: one item a slot is checked at the commit
+        // (migrations/105_warehouse_sort_deferrable.sql); the positions stay
+        // in the depot's 0..39.
+        sqlx::query("SET CONSTRAINTS warehouse_items_slot DEFERRED")
             .execute(&mut *transaction)
             .await?;
         for (position, item) in items.iter_mut().enumerate() {
@@ -6860,6 +6861,38 @@ mod tests {
             .await?;
         assert_eq!(inventory_rows, 2);
         assert_eq!(equipment_rows, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_full_depot_sorts_in_place() -> Result<(), Error> {
+        let (pool, character, database_character_id) = test_character().await?;
+        // Forty items, the depot full, laid out against the sort's order.
+        for position in 0..40_u8 {
+            sqlx::query(
+                "INSERT INTO warehouse_items (item_uid, character_id, item_type, position, durability, max_durability) \
+                 VALUES ($1, $2, $3, $4, 1, 1)",
+            )
+            .bind(800_i64 + i64::from(position))
+            .bind(i64::from(database_character_id))
+            .bind(1_000_100_i64 - i64::from(position))
+            .bind(i64::from(position))
+            .execute(&pool)
+            .await?;
+        }
+        character.load_warehouse(&pool).await?;
+
+        let sorted = character.sort_warehouse(&pool).await?;
+        let types: Vec<u32> = sorted.iter().map(|item| item.item_type).collect();
+        let mut expected = types.clone();
+        expected.sort_unstable();
+        assert_eq!(types, expected, "by kind");
+        assert!(sorted.iter().enumerate().all(|(slot, item)| usize::from(item.position) == slot));
+
+        character.load_warehouse(&pool).await?;
+        let mut saved = character.warehouse_items();
+        saved.sort_by_key(|item| item.position);
+        assert_eq!(saved.iter().map(|item| item.uid).collect::<Vec<_>>(), sorted.iter().map(|item| item.uid).collect::<Vec<_>>());
         Ok(())
     }
 
