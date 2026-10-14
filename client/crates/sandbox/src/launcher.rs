@@ -1853,7 +1853,7 @@ fn inside(rect: [i32; 4], point: [i32; 2]) -> bool {
 
 /// The screens as a winit application, until the world is entered or the
 /// window closed.
-struct Launcher {
+pub(crate) struct Launcher {
     ui: LoginUi,
     client: LoginClient,
     window: Option<Arc<Window>>,
@@ -2090,12 +2090,11 @@ impl ApplicationHandler for Launcher {
             self.sound_screen_change(before);
             if let LoginEvent::Entered(handle) = event {
                 self.entered = Some(handle);
-                // The world's files are not streamed to the browser yet
-                // (docs/web-spike.md): the session stays open, the screen
-                // says so.
+                // In the browser the page's loop goes on: `web` takes the
+                // session and opens the world once its files are in.
                 #[cfg(target_arch = "wasm32")]
                 {
-                    self.ui.info("Logged in. The world does not open in the browser yet.");
+                    self.ui.info("Entering the world...");
                     self.redraw();
                     continue;
                 }
@@ -2181,15 +2180,40 @@ pub fn run(
     Ok(launcher.entered.zip(launcher.window.take()))
 }
 
-/// The browser's screens: the page's event loop runs them from here on,
-/// this returns at once. Entering the world waits for the WebSocket bridge
+/// The browser's screens, for `web` to run on the page's event loop
 /// (docs/web-spike.md).
 #[cfg(target_arch = "wasm32")]
-pub fn spawn(assets: &mut crate::assets::Assets, worlds: Vec<World>) -> Result<(), String> {
-    use winit::platform::web::EventLoopExtWebSys;
-    let launcher = prepare(assets, worlds, None);
-    EventLoop::new().map_err(|error| error.to_string())?.spawn_app(launcher);
-    Ok(())
+pub(crate) fn prepare_web(assets: &mut crate::assets::Assets, worlds: Vec<World>) -> Launcher {
+    prepare(assets, worlds, None)
+}
+
+/// What `web` needs of the screens while the world is made ready.
+#[cfg(target_arch = "wasm32")]
+impl Launcher {
+    /// The session of the character that entered the world, once.
+    pub(crate) fn take_entered(&mut self) -> Option<NetworkHandle> {
+        self.entered.take()
+    }
+
+    pub(crate) fn tell(&mut self, text: impl Into<String>) {
+        self.ui.info(text);
+        self.redraw();
+    }
+
+    pub(crate) fn fail(&mut self, text: impl Into<String>) {
+        self.ui.error(text);
+        self.redraw();
+    }
+
+    /// The screens go, and their canvas leaves the page: a canvas painted
+    /// in 2D cannot be given to the GPU, so the world makes its own.
+    pub(crate) fn close(mut self) {
+        use winit::platform::web::WindowExtWebSys;
+        drop(self.surface.take());
+        if let Some(canvas) = self.window.take().and_then(|window| window.canvas()) {
+            canvas.remove();
+        }
+    }
 }
 
 #[cfg(test)]

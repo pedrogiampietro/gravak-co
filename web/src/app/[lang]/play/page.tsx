@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getDictionary, hasLocale } from "@/i18n/dictionaries";
+import { Suspense } from "react";
+import { buttonVariants } from "@/components/ui/button";
+import { type Dictionary, getDictionary, hasLocale, type Locale } from "@/i18n/dictionaries";
+import { currentAccount } from "@/lib/session";
+import { cn } from "@/lib/utils";
 
 // The client compiled to wasm (docs/web-spike.md), copied into public/play at
 // deploy by client/tools/build-web.ps1. A frame of its own: the client takes
-// the whole page it runs in.
+// the whole page it runs in. Its game files come from /game-files
+// (client/crates/web-files), only with this site's session: so the page asks
+// for it first.
 const CLIENT = "/play/index.html";
 
 export async function generateMetadata({ params }: PageProps<"/[lang]/play">): Promise<Metadata> {
@@ -27,13 +33,32 @@ export default async function PlayPage({ params }: PageProps<"/[lang]/play">) {
           {dict.play.download}
         </Link>
       </p>
-      <iframe
-        src={CLIENT}
-        title="Gravak"
-        className="mt-6 aspect-[4/3] w-full rounded-md border border-border bg-black"
-        allow="fullscreen; autoplay; clipboard-read; clipboard-write"
-        allowFullScreen
-      />
+      <Suspense>
+        <Client lang={lang} dict={dict} />
+      </Suspense>
     </div>
+  );
+}
+
+async function Client({ lang, dict }: { lang: Locale; dict: Dictionary }) {
+  const account = await currentAccount();
+  if (!account) {
+    return (
+      <div className="mt-8">
+        <p className="text-parchment/85">{dict.play.signInLead}</p>
+        <Link href={`/${lang}/login?next=/${lang}/play`} className={cn(buttonVariants(), "mt-5 h-11 px-6 text-base font-bold")}>
+          {dict.play.signIn}
+        </Link>
+      </div>
+    );
+  }
+  return (
+    <iframe
+      src={CLIENT}
+      title="Gravak"
+      className="mt-6 aspect-[4/3] w-full rounded-md border border-border bg-black"
+      allow="fullscreen; autoplay; clipboard-read; clipboard-write"
+      allowFullScreen
+    />
   );
 }

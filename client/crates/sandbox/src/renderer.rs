@@ -212,6 +212,7 @@ enum GeometryKey {
     Character((u64, i8, usize)),
 }
 
+#[derive(Clone)]
 enum GeometryJob {
     Npc {
         key: GeometryKey,
@@ -232,8 +233,8 @@ struct GeometryResult {
 }
 
 struct GeometryLoader {
-    requests: Sender<GeometryJob>,
-    results: Receiver<GeometryResult>,
+    requests: crate::background::Requests<GeometryJob>,
+    results: crate::background::Results<GeometryResult>,
 }
 
 fn appearance_signature(character: &Character) -> u64 {
@@ -265,15 +266,23 @@ enum LoadedData {
 }
 
 struct TextureLoader {
-    requests: Sender<String>,
-    results: Receiver<LoadedTexture>,
+    requests: crate::background::Requests<String>,
+    results: crate::background::Results<LoadedTexture>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct UiTextureLoader {
     requests: Sender<UiTextureJob>,
     results: Receiver<LoadedTexture>,
 }
 
+#[cfg(target_arch = "wasm32")]
+struct UiTextureLoader {
+    requests: crate::background::Requests<UiTextureJob>,
+    results: crate::background::Results<LoadedTexture>,
+}
+
+#[derive(Clone)]
 enum UiTextureJob {
     Minimap {
         path: String,
@@ -461,6 +470,17 @@ impl UiTextureJob {
             | Self::ShopOverlay { path, .. }
             | Self::WarehouseBase { path, .. }
             | Self::WarehouseOverlay { path, .. } => path,
+        }
+    }
+
+    /// What the job makes: a minimap, or a picture.
+    fn load(self, assets: &mut Assets) -> LoadedData {
+        match self {
+            UiTextureJob::Minimap { map_id, .. } => LoadedData::Minimap {
+                map_id,
+                result: crate::minimap::Minimap::load(assets, map_id).map_err(|error| error.to_string()),
+            },
+            job => LoadedData::Image(job.render(assets)),
         }
     }
 
@@ -2103,166 +2123,143 @@ impl Renderer {
         if self.texture_loader.is_some() {
             return;
         }
-        let (request_tx, request_rx) = mpsc::channel::<String>();
-        let (result_tx, result_rx) = mpsc::channel::<LoadedTexture>();
-        let root = assets.root_path().to_owned();
-        thread::Builder::new()
-            .name("gravak-asset-loader".to_owned())
-            .spawn(move || {
-                let mut assets = match Assets::open(&root) {
-                    Ok(assets) => assets,
-                    Err(error) => {
-                        let message = error.to_string();
-                        while let Ok(path) = request_rx.recv() {
-                            let _ = result_tx.send(LoadedTexture {
-                                path,
-                                data: LoadedData::Image(Err(message.clone())),
-                            });
-                        }
-                        return;
-                    }
-                };
-                while let Ok(path) = request_rx.recv() {
-                    let (texture, additive) = match path.strip_suffix(crate::magic::ADDITIVE_SUFFIX) {
-                        Some(texture) => (texture, true),
-                        None => (path.as_str(), false),
+        let mut open = Some(assets.opener());
+        let mut assets: Option<std::result::Result<Assets, String>> = None;
+        let (requests, results) = crate::background::spawn("gravak-asset-loader", move |path: String| {
+            let assets = match assets.get_or_insert_with(|| {
+                open.take().expect("opened once")().map_err(|error| error.to_string())
+            }) {
+                Ok(assets) => assets,
+                Err(message) => {
+                    return LoadedTexture {
+                        path,
+                        data: LoadedData::Image(Err(message.clone())),
                     };
-                    // A rarity's glow: the texture recoloured first.
-                    let (texture, tint) = match texture.split_once(crate::magic::TINT_MARK) {
-                        Some((texture, name)) => (texture, Some(name)),
-                        None => (texture, None),
-                    };
-                    let image = assets
-                        .image(texture)
-                        .map(|image| match tint {
-                            Some(tint) => crate::magic::recoloured(image, tint),
-                            None => image,
-                        })
-                        .map(|image| if additive { crate::magic::additive_image(image) } else { image })
-                        .map_err(|error| error.to_string());
-                    if result_tx
-                        .send(LoadedTexture {
-                            path,
-                            data: LoadedData::Image(image),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
                 }
-            })
-            .expect("failed to start asset loader thread");
-        self.texture_loader = Some(TextureLoader {
-            requests: request_tx,
-            results: result_rx,
-        });
+            };
+            let (texture, additive) = match path.strip_suffix(crate::magic::ADDITIVE_SUFFIX) {
+                Some(texture) => (texture, true),
+                None => (path.as_str(), false),
+            };
+            // A rarity's glow: the texture recoloured first.
+            let (texture, tint) = match texture.split_once(crate::magic::TINT_MARK) {
+                Some((texture, name)) => (texture, Some(name)),
+                None => (texture, None),
+            };
+            let image = assets
+                .image(texture)
+                .map(|image| match tint {
+                    Some(tint) => crate::magic::recoloured(image, tint),
+                    None => image,
+                })
+                .map(|image| if additive { crate::magic::additive_image(image) } else { image })
+                .map_err(|error| error.to_string());
+            LoadedTexture {
+                path,
+                data: LoadedData::Image(image),
+            }
+        })
+        .expect("failed to start asset loader thread");
+        self.texture_loader = Some(TextureLoader { requests, results });
     }
 
     fn ensure_ui_texture_loader(&mut self, assets: &Assets) {
         if self.ui_texture_loader.is_some() {
             return;
         }
-        let (request_tx, request_rx) = mpsc::channel::<UiTextureJob>();
-        let (result_tx, result_rx) = mpsc::channel::<LoadedTexture>();
-        let root = assets.root_path().to_owned();
-        thread::Builder::new()
-            .name("gravak-ui-texture-loader".to_owned())
-            .spawn(move || {
-                let mut assets = match Assets::open(&root) {
-                    Ok(assets) => assets,
-                    Err(error) => {
-                        let message = error.to_string();
-                        while let Ok(job) = request_rx.recv() {
-                            let _ = result_tx.send(LoadedTexture {
-                                path: job.path().to_owned(),
-                                data: LoadedData::Image(Err(message.clone())),
-                            });
+        let open = assets.opener();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (request_tx, request_rx) = mpsc::channel::<UiTextureJob>();
+            let (result_tx, result_rx) = mpsc::channel::<LoadedTexture>();
+            thread::Builder::new()
+                .name("gravak-ui-texture-loader".to_owned())
+                .spawn(move || {
+                    let mut assets = match open() {
+                        Ok(assets) => assets,
+                        Err(error) => {
+                            let message = error.to_string();
+                            while let Ok(job) = request_rx.recv() {
+                                let _ = result_tx.send(LoadedTexture {
+                                    path: job.path().to_owned(),
+                                    data: LoadedData::Image(Err(message.clone())),
+                                });
+                            }
+                            return;
                         }
-                        return;
+                    };
+                    let mut queue = std::collections::VecDeque::new();
+                    loop {
+                        // Everything asked so far, so a stale redraw can be seen.
+                        if queue.is_empty() {
+                            match request_rx.recv() {
+                                Ok(job) => queue.push_back(job),
+                                Err(_) => break,
+                            }
+                        }
+                        while let Ok(job) = request_rx.try_recv() {
+                            queue.push_back(job);
+                        }
+                        let Some(job) = queue.pop_front() else {
+                            continue;
+                        };
+                        let path = job.path().to_owned();
+                        let stale = job
+                            .panel()
+                            .is_some_and(|panel| queue.iter().any(|later| later.panel() == Some(panel)));
+                        let data = if stale { LoadedData::Superseded } else { job.load(&mut assets) };
+                        if result_tx.send(LoadedTexture { path, data }).is_err() {
+                            break;
+                        }
                     }
+                })
+                .expect("failed to start UI texture loader thread");
+            self.ui_texture_loader = Some(UiTextureLoader {
+                requests: request_tx,
+                results: result_rx,
+            });
+        }
+        // The browser runs the jobs on its loop (`background`), in order.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut open = Some(open);
+            let mut assets: Option<std::result::Result<Assets, String>> = None;
+            let (requests, results) = crate::background::spawn("gravak-ui-texture-loader", move |job: UiTextureJob| {
+                let path = job.path().to_owned();
+                let data = match assets.get_or_insert_with(|| {
+                    open.take().expect("opened once")().map_err(|error| error.to_string())
+                }) {
+                    Ok(assets) => job.load(assets),
+                    Err(message) => LoadedData::Image(Err(message.clone())),
                 };
-                let mut queue = std::collections::VecDeque::new();
-                loop {
-                    // Everything asked so far, so a stale redraw can be seen.
-                    if queue.is_empty() {
-                        match request_rx.recv() {
-                            Ok(job) => queue.push_back(job),
-                            Err(_) => break,
-                        }
-                    }
-                    while let Ok(job) = request_rx.try_recv() {
-                        queue.push_back(job);
-                    }
-                    let Some(job) = queue.pop_front() else {
-                        continue;
-                    };
-                    let path = job.path().to_owned();
-                    let stale = job
-                        .panel()
-                        .is_some_and(|panel| queue.iter().any(|later| later.panel() == Some(panel)));
-                    let data = match job {
-                        _ if stale => LoadedData::Superseded,
-                        UiTextureJob::Minimap { map_id, .. } => LoadedData::Minimap {
-                            map_id,
-                            result: crate::minimap::Minimap::load(&mut assets, map_id)
-                                .map_err(|error| error.to_string()),
-                        },
-                        job => LoadedData::Image(job.render(&mut assets)),
-                    };
-                    if result_tx.send(LoadedTexture { path, data }).is_err() {
-                        break;
-                    }
-                }
+                LoadedTexture { path, data }
             })
-            .expect("failed to start UI texture loader thread");
-        self.ui_texture_loader = Some(UiTextureLoader {
-            requests: request_tx,
-            results: result_rx,
-        });
+            .expect("failed to start UI texture loader");
+            self.ui_texture_loader = Some(UiTextureLoader { requests, results });
+        }
     }
 
     fn ensure_geometry_loader(&mut self) {
         if self.geometry_loader.is_some() {
             return;
         }
-        let (request_tx, request_rx) = mpsc::channel::<GeometryJob>();
-        let (result_tx, result_rx) = mpsc::channel::<GeometryResult>();
-        thread::Builder::new()
-            .name("gravak-geometry-loader".to_owned())
-            .spawn(move || {
-                while let Ok(job) = request_rx.recv() {
-                    let (key, vertices) = match job {
-                        GeometryJob::Npc { key, model, facing } => {
-                            (key, model.vertices_static(facing))
-                        }
-                        GeometryJob::Character {
-                            key,
-                            character,
-                            part_index,
-                            facing,
-                        } => (
-                            key,
-                            character
-                                .vertices_idle(part_index, facing)
-                                .unwrap_or_default(),
-                        ),
-                    };
-                    if result_tx
-                        .send(GeometryResult {
-                            key,
-                            vertices: Arc::new(vertices),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .expect("failed to start geometry loader thread");
-        self.geometry_loader = Some(GeometryLoader {
-            requests: request_tx,
-            results: result_rx,
-        });
+        let (requests, results) = crate::background::spawn("gravak-geometry-loader", |job: GeometryJob| {
+            let (key, vertices) = match job {
+                GeometryJob::Npc { key, model, facing } => (key, model.vertices_static(facing)),
+                GeometryJob::Character {
+                    key,
+                    character,
+                    part_index,
+                    facing,
+                } => (key, character.vertices_idle(part_index, facing).unwrap_or_default()),
+            };
+            GeometryResult {
+                key,
+                vertices: Arc::new(vertices),
+            }
+        })
+        .expect("failed to start geometry loader thread");
+        self.geometry_loader = Some(GeometryLoader { requests, results });
     }
 
     fn poll_geometry_loader(&mut self) {

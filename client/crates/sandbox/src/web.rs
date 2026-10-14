@@ -2,11 +2,19 @@
 //! this fetches the game files the login screens need (listed in
 //! `assets/manifest.txt` beside the page, made by tools/build-web.ps1) and
 //! shows the screens on a canvas. The sessions reach the servers through
-//! the WebSocket bridge (`crates/ws-bridge`); entering the world needs
-//! streamed game data, a later phase.
+//! the WebSocket bridge (`crates/ws-bridge`). Entering the world, the game
+//! files come from the site (`web_files`): the world is made over and over
+//! until no file it reads is still on its way, then it takes the page.
 
 use crate::assets::Assets;
 use std::cell::Cell;
+use winit::{
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::ActiveEventLoop,
+    platform::web::EventLoopExtWebSys,
+    window::WindowId,
+};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
@@ -47,7 +55,150 @@ async fn run() -> Result<(), String> {
         Err(_) => Vec::new(),
     };
     let worlds = if worlds.is_empty() { vec![fallback] } else { worlds };
-    crate::launcher::spawn(&mut assets, worlds)
+    let screens = crate::launcher::prepare_web(&mut assets, worlds);
+    winit::event_loop::EventLoop::new()
+        .map_err(|error| error.to_string())?
+        .spawn_app(Game::Screens(screens, None));
+    Ok(())
+}
+
+/// The page's one event loop: the login screens, then the world.
+enum Game {
+    Screens(crate::launcher::Launcher, Option<Entering>),
+    World(Box<crate::App>),
+    /// Between the two, for the moment of the swap.
+    Gone,
+}
+
+/// A character in, the world not made yet.
+struct Entering {
+    session: crate::network::NetworkHandle,
+    ready: Option<crate::network::ReadyState>,
+    started: web_time::Instant,
+}
+
+/// How long the game server may take to say where the hero is.
+const READY_WITHIN: web_time::Duration = web_time::Duration::from_secs(20);
+
+impl Game {
+    /// The world, if every file it reads is here; `Err` when it cannot be
+    /// made for another reason than a file on its way.
+    fn try_world(ready: &crate::network::ReadyState) -> Result<Option<crate::App>, String> {
+        let misses = crate::web_files::misses();
+        let built = crate::build_world(
+            crate::assets::Assets::from_memory(std::iter::empty()),
+            crate::WorldStart {
+                map_id: Some(ready.map_id),
+                body: ready.body.clamp(1, 4),
+                spawn: None,
+                check: false,
+                online: true,
+                network: None,
+                server_ready: Some(ready.clone()),
+                login_window: None,
+            },
+        );
+        if crate::web_files::misses() != misses {
+            return Ok(None);
+        }
+        built.map_err(|error| error.to_string())
+    }
+
+    fn step_entering(&mut self, event_loop: &ActiveEventLoop) {
+        let Game::Screens(screens, entering) = self else { return };
+        if entering.is_none()
+            && let Some(session) = screens.take_entered()
+        {
+            *entering = Some(Entering { session, ready: None, started: web_time::Instant::now() });
+        }
+        let Some(state) = entering else { return };
+        crate::web_files::pump();
+        if state.ready.is_none() {
+            match state.session.try_ready() {
+                Some(Ok(ready)) => {
+                    // As natively: the nobility is asked for again.
+                    state.session.request_nobility_status();
+                    state.ready = Some(ready);
+                }
+                Some(Err(error)) => {
+                    screens.fail(error);
+                    *entering = None;
+                    return;
+                }
+                None if state.started.elapsed() > READY_WITHIN => {
+                    screens.fail("Timed out waiting for the game server.");
+                    *entering = None;
+                    return;
+                }
+                None => return,
+            }
+        }
+        if let Some(problem) = crate::web_files::problem() {
+            screens.tell(problem);
+            return;
+        }
+        if crate::web_files::busy() {
+            let (files, kib) = crate::web_files::fetched();
+            screens.tell(format!("Downloading the world... {files} files, {:.1} MB", kib as f64 / 1024.0));
+            return;
+        }
+        let ready = state.ready.as_ref().expect("ready above");
+        match Self::try_world(ready) {
+            Ok(None) => {}
+            Err(error) => {
+                log(&format!("Gravak: the world could not open: {error}"));
+                screens.fail(format!("The world could not open: {error}"));
+                *entering = None;
+            }
+            Ok(Some(mut app)) => {
+                let Game::Screens(screens, Some(state)) = std::mem::replace(self, Game::Gone) else {
+                    unreachable!("entering above");
+                };
+                screens.close();
+                app.network = Some(state.session);
+                let (files, kib) = crate::web_files::fetched();
+                log(&format!("Gravak: the world opens ({files} game files, {kib} KiB)"));
+                app.resumed(event_loop);
+                *self = Game::World(Box::new(app));
+            }
+        }
+    }
+}
+
+impl ApplicationHandler for Game {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        match self {
+            Game::Screens(screens, _) => screens.resumed(event_loop),
+            Game::World(app) => app.resumed(event_loop),
+            Game::Gone => {}
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        match self {
+            Game::Screens(screens, _) => screens.window_event(event_loop, id, event),
+            Game::World(app) => app.window_event(event_loop, id, event),
+            Game::Gone => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        match self {
+            Game::Screens(screens, _) => {
+                screens.about_to_wait(event_loop);
+                self.step_entering(event_loop);
+            }
+            Game::World(app) => {
+                app.about_to_wait(event_loop);
+                if let Some(error) = &app.error {
+                    log(&format!("Gravak: {error}"));
+                    show_error(error);
+                    event_loop.exit();
+                }
+            }
+            Game::Gone => {}
+        }
+    }
 }
 
 /// The bridge: `?bridge=ws://host:port` on the page's address, or `/ws` on

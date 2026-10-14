@@ -805,6 +805,23 @@ impl NetworkHandle {
         self.events.try_iter().collect()
     }
 
+    /// The world's start if it has come: the browser cannot block on
+    /// `wait_ready`. What comes before it is dropped, as there.
+    #[cfg(target_arch = "wasm32")]
+    pub fn try_ready(&self) -> Option<Result<ReadyState, String>> {
+        loop {
+            match self.events.try_recv() {
+                Ok(NetworkEvent::Ready(ready)) => return Some(Ok(ready)),
+                Ok(NetworkEvent::Error(error)) => return Some(Err(error)),
+                Ok(_) => {}
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Some(Err("the game server closed the session".into()));
+                }
+            }
+        }
+    }
+
     pub fn wait_ready(&self) -> Result<ReadyState, String> {
         loop {
             match self

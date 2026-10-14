@@ -2760,8 +2760,8 @@ fn fixed_string(bytes: &[u8]) -> Result<String, ProtocolError> {
 }
 
 fn unix_timestamp() -> u32 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as u32)
         .unwrap_or_default()
 }

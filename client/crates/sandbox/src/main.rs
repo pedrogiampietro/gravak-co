@@ -67,6 +67,9 @@ mod emblems;
 mod fonts;
 #[cfg(target_arch = "wasm32")]
 mod web;
+#[cfg(target_arch = "wasm32")]
+mod web_files;
+mod background;
 mod action_panel;
 mod hotkey_menu;
 mod whisper;
@@ -87,7 +90,7 @@ use network::{ChatMessage, NetworkConfig, NetworkEvent, NetworkHandle, RemoteAct
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::Arc,
 };
 use web_time::Instant;
 use winit::{
@@ -182,6 +185,7 @@ struct PlayerMenu {
     menu: shop::ChoiceMenu,
 }
 
+#[derive(Clone)]
 enum RemoteModelJob {
     Player {
         id: u32,
@@ -221,87 +225,78 @@ enum RemoteModelResult {
 }
 
 struct RemoteModelLoader {
-    requests: mpsc::Sender<RemoteModelJob>,
-    results: mpsc::Receiver<RemoteModelResult>,
+    requests: background::Requests<RemoteModelJob>,
+    results: background::Results<RemoteModelResult>,
 }
 
 impl RemoteModelLoader {
-    fn new(root: PathBuf, catalog: character::NpcCatalog) -> Result<Self> {
-        let (requests, request_rx) = mpsc::channel::<RemoteModelJob>();
-        let (result_tx, results) = mpsc::channel::<RemoteModelResult>();
-        std::thread::Builder::new()
-            .name("gravak-remote-model-loader".to_owned())
-            .spawn(move || {
-                let mut assets = match Assets::open(&root) {
-                    Ok(assets) => assets,
-                    Err(error) => {
-                        let message = error.to_string();
-                        while let Ok(job) = request_rx.recv() {
-                            let result = match job {
-                                RemoteModelJob::Player { id, .. } => RemoteModelResult::Player {
-                                    id,
-                                    model: Err(message.clone()),
-                                },
-                                RemoteModelJob::Npc { id, .. } => RemoteModelResult::Npc {
-                                    id,
-                                    model: Err(message.clone()),
-                                },
-                                RemoteModelJob::Monster { id, .. } => RemoteModelResult::Monster {
-                                    id,
-                                    model: Err(message.clone()),
-                                },
-                            };
-                            if result_tx.send(result).is_err() {
-                                return;
-                            }
-                        }
-                        return;
-                    }
-                };
-                while let Ok(job) = request_rx.recv() {
-                    let result = match job {
-                        RemoteModelJob::Player {
+    fn new(
+        open: impl FnOnce() -> Result<Assets> + Send + 'static,
+        catalog: character::NpcCatalog,
+    ) -> Result<Self> {
+        let mut open = Some(open);
+        let mut assets: Option<std::result::Result<Assets, String>> = None;
+        let (requests, results) = background::spawn("gravak-remote-model-loader", move |job: RemoteModelJob| {
+            let assets = match assets.get_or_insert_with(|| {
+                open.take().expect("opened once")().map_err(|error| error.to_string())
+            }) {
+                Ok(assets) => assets,
+                Err(message) => {
+                    return match job {
+                        RemoteModelJob::Player { id, .. } => RemoteModelResult::Player {
                             id,
-                            body,
-                            armor,
-                            helmet,
-                            hair,
-                            right_weapon,
-                            left_weapon,
-                            name,
-                            health,
-                        } => RemoteModelResult::Player {
-                            id,
-                            model: character::Character::load_remote(
-                                &mut assets,
-                                body,
-                                armor,
-                                helmet,
-                                hair,
-                                right_weapon,
-                                left_weapon,
-                                name,
-                                health,
-                            )
-                            .map_err(|error| error.to_string()),
+                            model: Err(message.clone()),
                         },
-                        RemoteModelJob::Npc { id, kind, mesh } => RemoteModelResult::Npc {
+                        RemoteModelJob::Npc { id, .. } => RemoteModelResult::Npc {
                             id,
-                            model: character::NpcModel::load(&mut assets, &catalog, kind, mesh)
-                                .map_err(|error| error.to_string()),
+                            model: Err(message.clone()),
                         },
-                        RemoteModelJob::Monster { id, mesh } => RemoteModelResult::Monster {
+                        RemoteModelJob::Monster { id, .. } => RemoteModelResult::Monster {
                             id,
-                            model: character::NpcModel::load_monster(&mut assets, &catalog, mesh)
-                                .map_err(|error| error.to_string()),
+                            model: Err(message.clone()),
                         },
                     };
-                    if result_tx.send(result).is_err() {
-                        return;
-                    }
                 }
-            })
-            .map_err(|error| format!("failed to start remote model loader: {error}"))?;
+            };
+            match job {
+                RemoteModelJob::Player {
+                    id,
+                    body,
+                    armor,
+                    helmet,
+                    hair,
+                    right_weapon,
+                    left_weapon,
+                    name,
+                    health,
+                } => RemoteModelResult::Player {
+                    id,
+                    model: character::Character::load_remote(
+                        assets,
+                        body,
+                        armor,
+                        helmet,
+                        hair,
+                        right_weapon,
+                        left_weapon,
+                        name,
+                        health,
+                    )
+                    .map_err(|error| error.to_string()),
+                },
+                RemoteModelJob::Npc { id, kind, mesh } => RemoteModelResult::Npc {
+                    id,
+                    model: character::NpcModel::load(assets, &catalog, kind, mesh)
+                        .map_err(|error| error.to_string()),
+                },
+                RemoteModelJob::Monster { id, mesh } => RemoteModelResult::Monster {
+                    id,
+                    model: character::NpcModel::load_monster(assets, &catalog, mesh)
+                        .map_err(|error| error.to_string()),
+                },
+            }
+        })
+        .map_err(|error| format!("failed to start remote model loader: {error}"))?;
         Ok(Self { requests, results })
     }
 }
@@ -741,6 +736,9 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(target_arch = "wasm32")]
         {
+            // The loaders' few milliseconds, and the files they wait for.
+            background::new_frame();
+            web_files::pump();
             let ready = self
                 .pending_renderer
                 .borrow()
@@ -10987,6 +10985,62 @@ fn run() -> Result<()> {
         server_ready = Some(ready);
         network = Some(handle);
     }
+    let Some(mut app) = build_world(
+        assets,
+        WorldStart {
+            map_id,
+            body,
+            spawn,
+            check,
+            online,
+            network,
+            server_ready,
+            login_window,
+        },
+    )?
+    else {
+        return Ok(());
+    };
+    match event_loop {
+        Some(mut event_loop) => {
+            use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+            event_loop.run_app_on_demand(&mut app)?
+        }
+        None => EventLoop::new()?.run_app(&mut app)?,
+    }
+    if let Some(error) = app.error {
+        return Err(error.into());
+    }
+    Ok(())
+}
+/// Where the world opens: the command line's, or the server's after the
+/// login.
+struct WorldStart {
+    map_id: Option<u32>,
+    body: u32,
+    spawn: Option<[i32; 2]>,
+    /// `--check-assets`: the files are checked and no world opens.
+    check: bool,
+    online: bool,
+    network: Option<NetworkHandle>,
+    server_ready: Option<network::ReadyState>,
+    /// The login screens' window, which the game takes over.
+    login_window: Option<Arc<Window>>,
+}
+
+/// The world, ready for its event loop: map, hero and everything the game
+/// shows. `None` when only the files were checked.
+fn build_world(mut assets: Assets, start: WorldStart) -> Result<Option<App>> {
+    let WorldStart {
+        map_id,
+        body,
+        spawn,
+        check,
+        online,
+        network,
+        server_ready,
+        login_window,
+    } = start;
     let map_id = map_id.unwrap_or(1002);
     let npc_catalog = character::NpcCatalog::load(&mut assets)?;
     let map = map::Map::load(&mut assets, map_id)?;
@@ -11205,7 +11259,7 @@ fn run() -> Result<()> {
             map.sprites.len(),
             player.cell()
         );
-        return Ok(());
+        return Ok(None);
     }
     if let Some(audio) = &mut audio {
         audio.open_device();
@@ -11225,7 +11279,7 @@ fn run() -> Result<()> {
     let benchmark_guild = benchmark_screen == "guild";
     let frame_interval = configured_frame_interval();
     let remote_model_loader =
-        match RemoteModelLoader::new(assets.root_path().to_owned(), npc_catalog.clone()) {
+        match RemoteModelLoader::new(assets.opener(), npc_catalog.clone()) {
             Ok(loader) => Some(loader),
             Err(error) => {
                 eprintln!("Remote model loader unavailable: {error}");
@@ -11492,18 +11546,9 @@ fn run() -> Result<()> {
         app.saved_hud = Some(saved);
     }
     sync_slot_keys(&app.keybinds, &mut app.action_bar);
-    match event_loop {
-        Some(mut event_loop) => {
-            use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
-            event_loop.run_app_on_demand(&mut app)?
-        }
-        None => EventLoop::new()?.run_app(&mut app)?,
-    }
-    if let Some(error) = app.error {
-        return Err(error.into());
-    }
-    Ok(())
+    Ok(Some(app))
 }
+
 #[cfg(target_arch = "wasm32")]
 fn main() {
     web::start();

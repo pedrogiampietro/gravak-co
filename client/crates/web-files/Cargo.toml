@@ -1,0 +1,14 @@
+[package]
+name = "gravak-web-files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The browser client's game files (docs/web-spike.md): entries of the
+# encrypted pack, handed out decrypted to the site's signed-in accounts.
+[dependencies]
+sandbox-data.workspace = true
+tokio = { version = "1.53.3", features = ["net", "rt-multi-thread", "macros", "io-util", "sync", "time"] }
+hmac = "0.12.1"
+sha2 = "0.10.9"

@@ -24,8 +24,9 @@ pub struct Assets {
     /// game folder has one, every file comes from it and loose files are
     /// never read, so a file dropped beside it changes nothing.
     pack: Option<PackReader>,
-    /// Files handed over whole, by lower-case virtual path: the browser
-    /// build fetches the few its screens need (docs/web-spike.md).
+    /// Files handed over whole, by lower-case virtual path. In the browser
+    /// the files live in `web_files`, shared by every `Assets` of the page,
+    /// and this stays empty (docs/web-spike.md).
     memory: Option<HashMap<String, Vec<u8>>>,
 }
 
@@ -250,8 +251,14 @@ impl Assets {
     }
     /// Game data that is only `files` (virtual path, bytes), with no
     /// installation behind it.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn from_memory(files: impl IntoIterator<Item = (String, Vec<u8>)>) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        let files = {
+            for (name, bytes) in files {
+                crate::web_files::insert(&name, bytes);
+            }
+            std::iter::empty::<(String, Vec<u8>)>()
+        };
         Self {
             root: PathBuf::new(),
             overlay: None,
@@ -264,6 +271,20 @@ impl Assets {
                     .map(|(name, bytes)| (name.replace('\\', "/").to_ascii_lowercase(), bytes))
                     .collect(),
             ),
+        }
+    }
+    /// Opens another `Assets` on the same game data, for a loader of its
+    /// own, wherever it runs: the installation again, or in the browser the
+    /// page's files (`web_files`).
+    pub fn opener(&self) -> impl FnOnce() -> Result<Self> + Send + 'static {
+        let root = self.root.clone();
+        let memory = self.memory.is_some();
+        move || {
+            if memory {
+                Ok(Self::from_memory(std::iter::empty()))
+            } else {
+                Self::open(&root)
+            }
         }
     }
     pub fn root_path(&self) -> &Path {
@@ -302,16 +323,19 @@ impl Assets {
         if trace_enabled() {
             eprintln!("ASSET {}", virtual_path.as_str());
         }
+        #[cfg(target_arch = "wasm32")]
+        if self.memory.is_some() {
+            return match crate::web_files::read(virtual_path.as_str()) {
+                crate::web_files::Lookup::Found(bytes) => Ok(bytes),
+                crate::web_files::Lookup::Absent => Err(format!("Missing installed asset: {name}").into()),
+                crate::web_files::Lookup::Pending => Err(format!("Downloading game file: {name}").into()),
+            };
+        }
         if let Some(memory) = &self.memory {
             return memory
                 .get(&virtual_path.as_str().to_ascii_lowercase())
                 .cloned()
-                .ok_or_else(|| {
-                    // What the browser build lacks, for the page's manifest.
-                    #[cfg(target_arch = "wasm32")]
-                    crate::web::log(&format!("ASSET missing {}", virtual_path.as_str()));
-                    format!("Missing installed asset: {name}").into()
-                });
+                .ok_or_else(|| format!("Missing installed asset: {name}").into());
         }
         if let Some(pack) = &mut self.pack {
             // A name first, then the id of the original archives, the

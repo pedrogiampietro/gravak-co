@@ -320,8 +320,10 @@ const pt = {
     title: "Jogar no navegador",
     lead: "O Gravak rodando direto no navegador, sem instalar nada.",
     notice:
-      "Versão de teste: por enquanto só a tela de login abre, ainda sem conectar ao servidor. Para jogar agora, baixe o cliente.",
+      "Versão de teste: o primeiro carregamento baixa o mundo e pode demorar, e nem tudo funciona ainda. Para a experiência completa, baixe o cliente.",
     download: "Baixar o cliente",
+    signInLead: "Entre com a sua conta do jogo para jogar no navegador.",
+    signIn: "Entrar",
   },
   login: {
     title: "Entrar",
@@ -707,8 +709,10 @@ const en: Dictionary = {
     title: "Play in the browser",
     lead: "Gravak running right in your browser, nothing to install.",
     notice:
-      "Test build: for now only the login screen opens, not yet connected to the server. To play today, download the client.",
+      "Test build: the first load downloads the world and can take a while, and not everything works yet. For the full game, download the client.",
     download: "Download the client",
+    signInLead: "Sign in with your game account to play in the browser.",
+    signIn: "Sign in",
   },
   login: {
     title: "Sign in",
