@@ -65,6 +65,17 @@ mod top_title;
 mod view_equipment;
 mod emblems;
 mod fonts;
+/// A problem worth seeing: on stderr, or in the browser on its console,
+/// where stderr goes nowhere.
+macro_rules! report {
+    ($($arg:tt)*) => {{
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!($($arg)*);
+        #[cfg(target_arch = "wasm32")]
+        crate::web::log(&format!($($arg)*));
+    }};
+}
+
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]
@@ -1802,6 +1813,10 @@ impl App {
                 }
                 #[cfg(target_arch = "wasm32")]
                 let misses = web_files::misses();
+                // The drawing polls the texture and geometry loaders: their
+                // own few milliseconds (background).
+                #[cfg(target_arch = "wasm32")]
+                background::new_frame();
                 if let Some(renderer) = &mut self.renderer
                     && let Err(error) = renderer.draw(
                         &mut self.assets,
@@ -2082,7 +2097,7 @@ impl App {
                                 self.remote_models.insert(id, model);
                             }
                         }
-                        Err(error) => eprintln!("Player {id} model unavailable: {error}"),
+                        Err(error) => report!("Player {id} model unavailable: {error}"),
                     }
                 }
                 RemoteModelResult::Npc { id, model } => {
@@ -2091,14 +2106,14 @@ impl App {
                         Ok(model) => {
                             self.remote_npcs.insert(id, model);
                         }
-                        Err(error) => eprintln!("NPC {id} model unavailable: {error}"),
+                        Err(error) => report!("NPC {id} model unavailable: {error}"),
                     }
                 }
                 RemoteModelResult::Monster { id, model } if id >= GHOST_ID_BASE => match model {
                     Ok(model) => {
                         self.ghosts.insert(id - GHOST_ID_BASE, model);
                     }
-                    Err(error) => eprintln!("Ghost {} model unavailable: {error}", id - GHOST_ID_BASE),
+                    Err(error) => report!("Ghost {} model unavailable: {error}", id - GHOST_ID_BASE),
                 },
                 RemoteModelResult::Monster { id, model } => {
                     self.remote_monsters_loading.remove(&id);
@@ -2106,7 +2121,7 @@ impl App {
                         Ok(model) => {
                             self.remote_monsters.insert(id, model);
                         }
-                        Err(error) => eprintln!("Monster {id} model unavailable: {error}"),
+                        Err(error) => report!("Monster {id} model unavailable: {error}"),
                     }
                 }
             }

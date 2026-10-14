@@ -197,6 +197,7 @@ impl ApplicationHandler for Game {
             }
             Game::World(app) => {
                 app.about_to_wait(event_loop);
+                world_report(app);
                 if let Some(error) = &app.error {
                     log(&format!("Gravak: {error}"));
                     show_error(error);
@@ -264,6 +265,35 @@ fn show_error(error: &str) {
     if let Some(body) = web_sys::window().and_then(|window| window.document()).and_then(|document| document.body()) {
         let _ = body.insert_adjacent_text("beforeend", &format!("Gravak could not start: {error}"));
     }
+}
+
+thread_local! {
+    static REPORTED: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// Every five seconds, what of the world is on the page: the actors the
+/// server sent, the models made of them and those still loading, and the
+/// game files fetched.
+fn world_report(app: &crate::App) {
+    let now = js_sys::Date::now();
+    if now - REPORTED.with(Cell::get) < 5_000.0 {
+        return;
+    }
+    REPORTED.with(|reported| reported.set(now));
+    let (files, kib) = crate::web_files::fetched();
+    log(&format!(
+        "Gravak world: {} actors; models: {} players, {} NPCs, {} monsters; loading: {} players, {} NPCs, {} monsters; {} files ({} KiB){}",
+        app.remote_actors.len(),
+        app.remote_models.len(),
+        app.remote_npcs.len(),
+        app.remote_monsters.len(),
+        app.remote_models_loading.len(),
+        app.remote_npcs_loading.len(),
+        app.remote_monsters_loading.len(),
+        files,
+        kib,
+        if crate::web_files::busy() { ", downloading" } else { "" },
+    ));
 }
 
 thread_local! {

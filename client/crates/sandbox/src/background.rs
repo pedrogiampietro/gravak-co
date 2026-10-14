@@ -39,24 +39,36 @@ mod web {
         sync::mpsc::{SendError, TryRecvError},
     };
 
-    /// Milliseconds of each frame the jobs may take.
-    const BUDGET_MS: f64 = 8.0;
+    /// Milliseconds the jobs may take in each of a frame's callbacks.
+    const BUDGET_MS: f64 = 6.0;
 
     thread_local! {
-        static DEADLINE: Cell<f64> = const { Cell::new(0.0) };
+        /// When the jobs stop for this callback; `None` until the first
+        /// job of it runs.
+        static DEADLINE: Cell<Option<f64>> = const { Cell::new(None) };
     }
 
     fn now() -> f64 {
         js_sys::Date::now()
     }
 
-    /// A frame begins: the jobs get their few milliseconds again.
+    /// A callback of the frame begins (the loop's turn, the drawing): the
+    /// jobs get their few milliseconds again, counted from the first that
+    /// runs. A window opened at the loop's turn would be long gone when the
+    /// drawing polls the texture loaders, a frame later.
     pub fn new_frame() {
-        DEADLINE.with(|deadline| deadline.set(now() + BUDGET_MS));
+        DEADLINE.with(|deadline| deadline.set(None));
     }
 
     fn in_budget() -> bool {
-        DEADLINE.with(|deadline| now() < deadline.get())
+        DEADLINE.with(|deadline| {
+            let end = deadline.get().unwrap_or_else(|| {
+                let end = now() + BUDGET_MS;
+                deadline.set(Some(end));
+                end
+            });
+            now() < end
+        })
     }
 
     pub struct Requests<J> {
