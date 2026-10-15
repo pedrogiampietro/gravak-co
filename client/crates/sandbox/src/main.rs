@@ -765,6 +765,12 @@ impl ApplicationHandler for App {
                 }
                 self.shop_icons_waiting = self.shop.is_some() && web_files::misses() != misses;
             }
+            if let Some(list) = &mut self.sell_all
+                && list.waiting
+                && !web_files::busy()
+            {
+                list.reload(&mut self.assets);
+            }
             let ready = self
                 .pending_renderer
                 .borrow()

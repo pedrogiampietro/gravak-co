@@ -92,6 +92,14 @@ pub struct SellAllView {
     pub released: BTreeSet<u32>,
     icons: HashMap<u32, RgbaImage>,
     prices: HashMap<u32, u32>,
+    /// In the browser: the icons and prices were made while their files
+    /// were still downloading (stand-ins, no price); `reload` makes them
+    /// again, raising `generation` so the list is drawn again.
+    pub waiting: bool,
+    generation: u32,
+    /// The kinds the bag held when the list opened.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    types: Vec<u32>,
     /// Top-left corner in window pixels.
     pub position: [i32; 2],
     character_id: Option<u32>,
@@ -107,12 +115,23 @@ impl SellAllView {
         let mut types: Vec<u32> = inventory.iter().map(|item| item.item_type).collect();
         types.sort_unstable();
         types.dedup();
+        #[cfg(target_arch = "wasm32")]
+        let misses = crate::web_files::misses();
+        let icons = crate::shop::item_icons(assets, &types);
+        let prices = crate::shop::base_prices(assets, &types);
+        #[cfg(target_arch = "wasm32")]
+        let waiting = crate::web_files::misses() != misses;
+        #[cfg(not(target_arch = "wasm32"))]
+        let waiting = false;
         Self {
             tab: SellTab::Sell,
             blacklist: character_id.map(load_blacklist).unwrap_or_default(),
             released: character_id.map(|id| load_list(released_path(id))).unwrap_or_default(),
-            icons: crate::shop::item_icons(assets, &types),
-            prices: crate::shop::base_prices(assets, &types),
+            icons,
+            prices,
+            waiting,
+            generation: 0,
+            types,
             position: [
                 ((viewport[0] - WIDTH as f32) * 0.5).max(8.0) as i32,
                 ((viewport[1] - HEIGHT as f32) * 0.5).max(8.0) as i32,
@@ -120,6 +139,16 @@ impl SellAllView {
             character_id,
             at_shop: true,
         }
+    }
+
+    /// Makes the icons and prices again, of the same kinds (see `waiting`).
+    #[cfg(target_arch = "wasm32")]
+    pub fn reload(&mut self, assets: &mut Assets) {
+        let misses = crate::web_files::misses();
+        self.icons = crate::shop::item_icons(assets, &self.types);
+        self.prices = crate::shop::base_prices(assets, &self.types);
+        self.waiting = crate::web_files::misses() != misses;
+        self.generation += 1;
     }
 
     fn base_price(&self, item: &OwnedItem) -> u32 {
@@ -243,6 +272,7 @@ impl SellAllView {
         self.tab.hash(&mut hasher);
         self.blacklist.hash(&mut hasher);
         self.released.hash(&mut hasher);
+        self.generation.hash(&mut hasher);
         for item in inventory {
             (item.uid, item.item_type, item.position, item.durability).hash(&mut hasher);
         }
@@ -447,6 +477,9 @@ mod tests {
             released: BTreeSet::new(),
             icons: HashMap::new(),
             prices: prices.iter().copied().collect(),
+            waiting: false,
+            generation: 0,
+            types: prices.iter().map(|(item_type, _)| *item_type).collect(),
             position: [0, 0],
             character_id: None,
             at_shop: true,
