@@ -58,6 +58,9 @@ async fn run() -> Result<(), String> {
     // What entering any world reads, fetched while the login screens show
     // (web/world.txt): one request instead of one a file.
     want_listed("assets/world.txt").await;
+    // The account's settings, before the screens read the login's.
+    crate::saved::pull().await;
+    watch_page_close();
     let screens = crate::launcher::prepare_web(&mut assets, worlds);
     winit::event_loop::EventLoop::new()
         .map_err(|error| error.to_string())?
@@ -77,6 +80,14 @@ async fn want_listed(url: &str) {
                 .map(str::to_owned),
         );
     }
+}
+
+/// Settings still settling go up as the page closes.
+fn watch_page_close() {
+    let Some(window) = web_sys::window() else { return };
+    let send = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(|| crate::saved::flush(true));
+    let _ = window.add_event_listener_with_callback("pagehide", send.as_ref().unchecked_ref());
+    send.forget();
 }
 
 /// The page's one event loop: the login screens, then the world.
@@ -212,6 +223,7 @@ impl ApplicationHandler for Game {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        crate::saved::flush(false);
         match self {
             Game::Screens(screens, _) => {
                 screens.about_to_wait(event_loop);
