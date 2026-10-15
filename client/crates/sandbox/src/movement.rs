@@ -201,6 +201,13 @@ impl Player {
     pub fn jumping(&self) -> bool {
         self.segment.as_ref().is_some_and(|segment| segment.jump)
     }
+    /// Where the jump under way lands: what the screen will show next.
+    pub fn landing(&self) -> Option<[f32; 2]> {
+        self.segment
+            .as_ref()
+            .filter(|segment| segment.jump)
+            .map(|segment| segment.target)
+    }
     pub fn face(&mut self, target: [i32; 2]) {
         if !self.moving() {
             self.facing =

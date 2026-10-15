@@ -193,6 +193,12 @@ struct StaticVisibilityCache {
 const STATIC_GRID_SIZE: f32 = 256.0;
 const STATIC_GROUND_MARGIN: f32 = 256.0;
 const STATIC_OBJECT_MARGIN: f32 = 1024.0;
+/// Textures asked of the loader in a frame: enough for a screen of ground
+/// in a few frames, so a jump's landing is not drawn black meanwhile.
+const TEXTURE_REQUESTS_PER_FRAME: usize = 24;
+/// How long a frame keeps putting loaded textures on the GPU, past the first
+/// `max_texture_loads_per_frame`.
+const TEXTURE_UPLOAD_TIME: Duration = Duration::from_millis(2);
 
 fn static_grid_cell(position: [f32; 2]) -> (i32, i32) {
     (
@@ -786,6 +792,8 @@ pub struct Renderer {
     perf_last_vertices: usize,
     perf_overlay_updated: Instant,
     max_texture_loads_per_frame: usize,
+    /// Textures asked of the loader this frame (`TEXTURE_REQUESTS_PER_FRAME`).
+    texture_requests_this_frame: usize,
     texture_loads_this_frame: usize,
     textures: HashMap<String, Texture>,
     missing: HashSet<String>,
@@ -1106,6 +1114,7 @@ impl Renderer {
                 .unwrap_or(1)
                 .clamp(1, 64),
             texture_loads_this_frame: 0,
+            texture_requests_this_frame: 0,
             textures: HashMap::new(),
             missing: HashSet::new(),
             loading: HashSet::new(),
@@ -1934,40 +1943,7 @@ impl Renderer {
             return Arc::clone(&cache.indices);
         }
 
-        // Query only spatial buckets around the camera. The exact culling
-        // test still runs below when quads are built, so the bucket padding
-        // cannot change what is rendered.
-        let max_margin = STATIC_OBJECT_MARGIN;
-        let min_cell = static_grid_cell([camera[0] - max_margin, camera[1] - max_margin]);
-        let max_cell = static_grid_cell([
-            camera[0] + viewport[0] + max_margin,
-            camera[1] + viewport[1] + max_margin,
-        ]);
-        let mut candidates = Vec::new();
-        for y in min_cell.1..=max_cell.1 {
-            for x in min_cell.0..=max_cell.0 {
-                if let Some(indices) = static_map.grid.get(&(x, y)) {
-                    candidates.extend(indices.iter().copied());
-                }
-            }
-        }
-        candidates.sort_unstable();
-        let indices = candidates
-            .into_iter()
-            .filter(|index| {
-                let sprite = &static_map.static_sprites[*index];
-                let p = [sprite.origin[0] - camera[0], sprite.origin[1] - camera[1]];
-                let margin = if sprite.depth == f32::NEG_INFINITY {
-                    STATIC_GROUND_MARGIN
-                } else {
-                    STATIC_OBJECT_MARGIN
-                };
-                p[0] <= viewport[0] + margin
-                    && p[1] <= viewport[1] + margin
-                    && p[0] >= -margin
-                    && p[1] >= -margin
-            })
-            .collect::<Vec<_>>();
+        let indices = static_indices_in_view(static_map, camera, viewport, 0.0);
         let indices = Arc::new(indices);
         self.static_visibility_cache = Some(StaticVisibilityCache {
             map_id: map.id,
@@ -2393,7 +2369,10 @@ impl Renderer {
                 }
             }
         }
-        while self.texture_loads_this_frame < self.max_texture_loads_per_frame {
+        let uploads_started = Instant::now();
+        while self.texture_loads_this_frame < self.max_texture_loads_per_frame
+            || uploads_started.elapsed() < TEXTURE_UPLOAD_TIME
+        {
             let Some(loaded) = self.ready_textures.pop_front() else {
                 break;
             };
@@ -2436,7 +2415,7 @@ impl Renderer {
         if self.textures.contains_key(path)
             || self.missing.contains(path)
             || self.loading.contains(path)
-            || self.texture_loads_this_frame >= self.max_texture_loads_per_frame
+            || self.texture_requests_this_frame >= TEXTURE_REQUESTS_PER_FRAME
         {
             return;
         }
@@ -2449,7 +2428,7 @@ impl Renderer {
             self.loading.remove(path);
             self.missing.insert(path.to_owned());
         } else {
-            self.texture_loads_this_frame += 1;
+            self.texture_requests_this_frame += 1;
         }
     }
     /// Keeps a picture made here, during the drawing. In the browser one made
@@ -2546,7 +2525,11 @@ impl Renderer {
     /// never past the map's edges (as the original), where there is no
     /// picture, only black; the hero then walks off the middle.
     pub fn camera(&self, map: &Map, player: &Player) -> [f32; 2] {
-        let p = map.project(player.position);
+        self.camera_at(map, player.position)
+    }
+    /// The camera with the hero on `position`.
+    fn camera_at(&self, map: &Map, position: [f32; 2]) -> [f32; 2] {
+        let p = map.project(position);
         let view = self.world_viewport();
         let wanted = [p[0] - view[0] * 0.5 + self.camera_shift[0], p[1] - view[1] * 0.5 + self.camera_shift[1]];
         clamp_camera(wanted, map.extent, view)
@@ -3058,6 +3041,7 @@ impl Renderer {
         let measure_perf = self.perf_enabled || performance_overlay;
         let minimap_visible = shop.is_none() && warehouse.is_none() && quick_panel.is_none();
         self.texture_loads_this_frame = 0;
+        self.texture_requests_this_frame = 0;
         #[cfg(target_arch = "wasm32")]
         {
             self.upload_misses = crate::web_files::misses();
@@ -3235,6 +3219,22 @@ impl Renderer {
                 depth_test: false,
                 sort_depth: depth,
             });
+        }
+        // A jump shows its landing in a moment: its textures are asked now,
+        // so the ground there is in when the camera gets there.
+        if let Some(landing) = player.landing() {
+            let landing_camera = self.camera_at(map, landing);
+            let indices = self
+                .static_map_cache
+                .as_ref()
+                .map(|static_map| static_indices_in_view(static_map, landing_camera, viewport, 0.0))
+                .unwrap_or_default();
+            for index in indices {
+                let path = self.static_map_cache.as_ref().expect("static map cache exists").static_sprites[index]
+                    .texture
+                    .clone();
+                self.texture(assets, &path);
+            }
         }
         // A crypt's dark: over every cell not out yet, fading as it comes out.
         if self.reveal.is_some() && !self.textures.contains_key(DARK_CELL) {
@@ -7003,6 +7003,39 @@ fn coalesce_adjacent_draws(draws: Vec<Draw>) -> Vec<Draw> {
         }
     }
     merged
+}
+
+/// The static sprites of `static_map` drawn with the camera at `camera`,
+/// in their order, `extra` pixels more on every side. Queries only the
+/// spatial buckets around the camera; the exact culling test still runs when
+/// quads are built, so the bucket padding cannot change what is rendered.
+fn static_indices_in_view(static_map: &StaticMapCache, camera: [f32; 2], viewport: [f32; 2], extra: f32) -> Vec<usize> {
+    let max_margin = STATIC_OBJECT_MARGIN + extra;
+    let min_cell = static_grid_cell([camera[0] - max_margin, camera[1] - max_margin]);
+    let max_cell = static_grid_cell([camera[0] + viewport[0] + max_margin, camera[1] + viewport[1] + max_margin]);
+    let mut candidates = Vec::new();
+    for y in min_cell.1..=max_cell.1 {
+        for x in min_cell.0..=max_cell.0 {
+            if let Some(indices) = static_map.grid.get(&(x, y)) {
+                candidates.extend(indices.iter().copied());
+            }
+        }
+    }
+    candidates.sort_unstable();
+    candidates
+        .into_iter()
+        .filter(|index| {
+            let sprite = &static_map.static_sprites[*index];
+            let p = [sprite.origin[0] - camera[0], sprite.origin[1] - camera[1]];
+            let margin = extra
+                + if sprite.depth == f32::NEG_INFINITY {
+                    STATIC_GROUND_MARGIN
+                } else {
+                    STATIC_OBJECT_MARGIN
+                };
+            p[0] <= viewport[0] + margin && p[1] <= viewport[1] + margin && p[0] >= -margin && p[1] >= -margin
+        })
+        .collect()
 }
 
 fn world_point_visible(origin: [f32; 2], viewport: [f32; 2], margin: f32) -> bool {
