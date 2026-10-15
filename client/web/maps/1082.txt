@@ -1,4 +1,4 @@
-# Map 1082's files (client --map-files), asked as a hero enters it.
+# Map 1082's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/island.ani
 data/map/mapobj/island/island01.dds
 data/map/mapobj/island/island02.dds

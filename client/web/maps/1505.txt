@@ -1,4 +1,4 @@
-# Map 1505's files (client --map-files), asked as a hero enters it.
+# Map 1505's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/mapscene-saya.ani
 ani/newplain.ani
 data/map/mapobj/newplain/city/ct002.dds

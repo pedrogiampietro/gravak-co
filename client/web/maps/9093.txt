@@ -1,4 +1,4 @@
-# Map 9093's files (client --map-files), asked as a hero enters it.
+# Map 9093's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/gravak-fungos.ani
 data/map/puzzle/gravak-fungos/0.png
 data/map/puzzle/gravak-fungos/1.png

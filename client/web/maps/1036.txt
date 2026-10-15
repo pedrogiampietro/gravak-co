@@ -1,4 +1,4 @@
-# Map 1036's files (client --map-files), asked as a hero enters it.
+# Map 1036's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/street.ani
 data/map/mapobj/newbie/newbie14.dds
 data/map/mapobj/newplain/plain/np01.dds

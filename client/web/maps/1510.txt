@@ -1,4 +1,4 @@
-# Map 1510's files (client --map-files), asked as a hero enters it.
+# Map 1510's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/room.ani
 data/map/mapobj/plain/room/room13.dds
 data/map/puzzle/room/grocery/grocery000.dds

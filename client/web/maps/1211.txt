@@ -1,4 +1,4 @@
-# Map 1211's files (client --map-files), asked as a hero enters it.
+# Map 1211's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/newplain.ani
 data/map/mapobj/newplain/plain/np09.dds
 data/map/mapobj/newplain/plain/np11.dds

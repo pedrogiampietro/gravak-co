@@ -1,4 +1,4 @@
-# Map 1354's files (client --map-files), asked as a hero enters it.
+# Map 1354's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/mine.ani
 data/map/mapobj/mine/mine00.dds
 data/map/mapobj/mine/mine01.dds
@@ -69,3 +69,39 @@ gravak/rifts/1354.txt
 map/map/s-task04.dmap
 map/puzzle/s-task04.pul
 sound/music05.mp3
+c3/monster/117/100.c3
+c3/monster/117/110.c3
+c3/monster/117/310.c3
+c3/monster/117/320.c3
+c3/monster/117/330.c3
+c3/monster/117/331.c3
+c3/monster/117/340.c3
+c3/monster/117/401.c3
+c3/monster/117n/100.c3
+c3/monster/117n/110.c3
+c3/monster/117n/310.c3
+c3/monster/117n/320.c3
+c3/monster/117n/330.c3
+c3/monster/117n/331.c3
+c3/monster/117n/340.c3
+c3/monster/117n/370.c3
+c3/monster/117n/401.c3
+c3/texture/117000000.dds
+c3/monster/130/100.c3
+c3/monster/130/110.c3
+c3/monster/130/310.c3
+c3/monster/130/320.c3
+c3/monster/130/330.c3
+c3/monster/130/331.c3
+c3/monster/130/340.c3
+c3/monster/130/401.c3
+c3/monster/130n/100.c3
+c3/monster/130n/110.c3
+c3/monster/130n/310.c3
+c3/monster/130n/320.c3
+c3/monster/130n/330.c3
+c3/monster/130n/331.c3
+c3/monster/130n/340.c3
+c3/monster/130n/370.c3
+c3/monster/130n/401.c3
+c3/texture/130000000.dds

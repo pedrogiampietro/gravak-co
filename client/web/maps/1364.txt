@@ -1,4 +1,4 @@
-# Map 1364's files (client --map-files), asked as a hero enters it.
+# Map 1364's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/woods.ani
 data/map/mapobj/woods/forest02.dds
 data/map/mapobj/woods/forest03.dds

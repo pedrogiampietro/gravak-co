@@ -1,4 +1,4 @@
-# Map 1550's files (client --map-files), asked as a hero enters it.
+# Map 1550's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/faction.ani
 ani/mapscene-snail.ani
 data/map/mapobj/faction/faction01.dds

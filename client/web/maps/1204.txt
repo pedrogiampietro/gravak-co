@@ -1,4 +1,4 @@
-# Map 1204's files (client --map-files), asked as a hero enters it.
+# Map 1204's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/sand.ani
 data/map/mapobj/desert/sand01.dds
 data/map/mapobj/desert/sand02.dds

@@ -1,4 +1,4 @@
-# Map 9123's files (client --map-files), asked as a hero enters it.
+# Map 9123's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/gravak-cripta.ani
 data/map/puzzle/gravak-cripta/0.png
 data/map/puzzle/gravak-cripta/1.png

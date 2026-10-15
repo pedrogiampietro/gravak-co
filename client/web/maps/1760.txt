@@ -1,4 +1,4 @@
-# Map 1760's files (client --map-files), asked as a hero enters it.
+# Map 1760's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 data/map/mapobj/newplain/plain/np13.dds
 data/map/mapobj/plain/plain/cockpit17.dds
 data/map/mapobj/plain/plain/flower18.dds

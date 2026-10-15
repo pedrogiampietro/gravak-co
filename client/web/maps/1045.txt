@@ -1,4 +1,4 @@
-# Map 1045's files (client --map-files), asked as a hero enters it.
+# Map 1045's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/newplain.ani
 data/map/mapobj/plain/plain/cockpit03.dds
 data/map/mapobj/plain/plain/cockpit04.dds
@@ -91,3 +91,21 @@ gravak/rifts/1045.txt
 map/map/lineup.dmap
 map/puzzle/lineup.pul
 sound/music02.mp3
+c3/monster/200/100.c3
+c3/monster/200/110.c3
+c3/monster/200/310.c3
+c3/monster/200/320.c3
+c3/monster/200/330.c3
+c3/monster/200/331.c3
+c3/monster/200/340.c3
+c3/monster/200/401.c3
+c3/monster/200n/100.c3
+c3/monster/200n/110.c3
+c3/monster/200n/310.c3
+c3/monster/200n/320.c3
+c3/monster/200n/330.c3
+c3/monster/200n/331.c3
+c3/monster/200n/340.c3
+c3/monster/200n/370.c3
+c3/monster/200n/401.c3
+c3/texture/200000000.dds

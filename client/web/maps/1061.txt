@@ -1,4 +1,4 @@
-# Map 1061's files (client --map-files), asked as a hero enters it.
+# Map 1061's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/sky.ani
 data/map/cartoon/fire/fire0100.dds
 data/map/cartoon/fire/fire0101.dds

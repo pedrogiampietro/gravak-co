@@ -1,4 +1,4 @@
-# Map 1014's files (client --map-files), asked as a hero enters it.
+# Map 1014's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/woods.ani
 data/map/mapobj/desert/garden/fountain00.dds
 data/map/mapobj/desert/garden/fountain01.dds
@@ -274,3 +274,21 @@ gravak/rifts/1014.txt
 map/map/dragon.dmap
 map/puzzle/dragon.pul
 sound/music04.mp3
+c3/monster/201/100.c3
+c3/monster/201/110.c3
+c3/monster/201/310.c3
+c3/monster/201/320.c3
+c3/monster/201/330.c3
+c3/monster/201/331.c3
+c3/monster/201/340.c3
+c3/monster/201/401.c3
+c3/monster/201n/100.c3
+c3/monster/201n/110.c3
+c3/monster/201n/310.c3
+c3/monster/201n/320.c3
+c3/monster/201n/330.c3
+c3/monster/201n/331.c3
+c3/monster/201n/340.c3
+c3/monster/201n/370.c3
+c3/monster/201n/401.c3
+c3/texture/201000000.dds

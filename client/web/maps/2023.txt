@@ -1,4 +1,4 @@
-# Map 2023's files (client --map-files), asked as a hero enters it.
+# Map 2023's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/dcity.ani
 data/map/puzzle/dcity/element/brick/pic000.dds
 data/map/puzzle/dcity/element/brick/pic001.dds
@@ -368,3 +368,39 @@ gravak/rifts/2023.txt
 map/map/dcloister.dmap
 map/puzzle/dcloister.pul
 sound/music04.mp3
+c3/monster/127/100.c3
+c3/monster/127/110.c3
+c3/monster/127/310.c3
+c3/monster/127/320.c3
+c3/monster/127/330.c3
+c3/monster/127/331.c3
+c3/monster/127/340.c3
+c3/monster/127/401.c3
+c3/monster/327n/100.c3
+c3/monster/327n/110.c3
+c3/monster/327n/310.c3
+c3/monster/327n/320.c3
+c3/monster/327n/330.c3
+c3/monster/327n/331.c3
+c3/monster/327n/340.c3
+c3/monster/327n/370.c3
+c3/monster/327n/401.c3
+c3/texture/327000000.dds
+c3/monster/153/100.c3
+c3/monster/153/110.c3
+c3/monster/153/310.c3
+c3/monster/153/320.c3
+c3/monster/153/330.c3
+c3/monster/153/331.c3
+c3/monster/153/340.c3
+c3/monster/153/401.c3
+c3/monster/353n/100.c3
+c3/monster/353n/110.c3
+c3/monster/353n/310.c3
+c3/monster/353n/320.c3
+c3/monster/353n/330.c3
+c3/monster/353n/331.c3
+c3/monster/353n/340.c3
+c3/monster/353n/370.c3
+c3/monster/353n/401.c3
+c3/texture/353000000.dds

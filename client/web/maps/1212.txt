@@ -1,4 +1,4 @@
-# Map 1212's files (client --map-files), asked as a hero enters it.
+# Map 1212's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/island.ani
 data/map/puzzle/island/bulrush/bulrush000.dds
 data/map/puzzle/island/bulrush/bulrush001.dds

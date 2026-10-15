@@ -1,4 +1,4 @@
-# Map 1064's files (client --map-files), asked as a hero enters it.
+# Map 1064's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/sky.ani
 data/map/mapobj/sky/stand01.dds
 data/map/mapobj/sky/stand04.dds

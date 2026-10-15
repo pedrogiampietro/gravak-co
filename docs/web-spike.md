@@ -85,12 +85,25 @@ de lista que o jogo lê passa para a frente. As listas:
   diz o corpo do herói que entra.
 
 - `client/web/maps/<id>.txt`: tudo o que cada mapa mostra (layout, os frames
-  do chão e do cenário, minimapa, música da região), sem o que já está em
-  `world.txt`. Pedida ao entrar no mundo e a cada troca de mapa. Gerada dos
-  dados do jogo, não de sessões: `conquer-sandbox --map-files <game> [<id>...]`
-  (compilado com a chave de release) imprime `MAP <id>` e os arquivos de cada
-  mapa do `ini/GameMap.dat`. Twin City inteira são ~24 MB com gzip, o Birth
-  Village ~2 MB.
+  do chão e do cenário, minimapa, música da região) e os modelos dos monstros
+  que nascem nele, sem o que já está em `world.txt`. Pedida ao entrar no mundo
+  e a cada troca de mapa. Twin City inteira são ~24 MB com gzip, Ape Mountain
+  ~13 MB, o Birth Village ~2 MB. Gerada dos dados do jogo, não de sessões, com
+  o cliente compilado com a chave de release (`CARGO_TARGET_DIR=target/armory
+  GRAVAK_PACK_KEY=...`):
+
+  ```bash
+  conquer-sandbox --map-files <game> > map-files.txt          # MAP <id>, arquivos
+  # os visuais por mapa, de um banco com as migrations (o template dos testes
+  # do servidor serve: TEST_DATABASE_URL num Postgres de teste):
+  psql "$DB" -tA -F' ' -c "SELECT DISTINCT s.map_id, t.look FROM monster_spawns s
+    JOIN monster_types t ON t.id = s.monster_type_id" > spawns.txt
+  conquer-sandbox --monster-files <game> $(awk '{print $2}' spawns.txt | sort -un) > monster-files.txt
+  tools/browser-map-lists.py map-files.txt monster-files.txt spawns.txt web/world.txt web/maps
+  ```
+
+  As fendas (Rifts) fazem seus monstros em tempo de jogo e não estão nas
+  listas.
 
 Numa troca de mapa (`Reposition`) cujo mapa ainda não chegou, os atores do mapa
 antigo saem na hora e o mapa novo é montado de novo a cada frame até os
@@ -206,11 +219,9 @@ O Playwright fecha o navegador num SIGTERM mas o processo continua vivo: use
 
 ## O que falta
 
-1. **Monstros na primeira visita de um mapa.** As listas por mapa cobrem o
-   cenário, não os modelos dos monstros (`c3/monster/`), que chegam quando
-   aparecem. Sairiam das tabelas de spawn do servidor. A troca de mapa no
-   navegador não foi testada de ponta a ponta (os heróis de teste estão no
-   Birth Village).
+1. **A troca de mapa no navegador** não foi testada de ponta a ponta (os heróis
+   de teste estão no Birth Village). Os monstros das fendas e os jogadores
+   (outros corpos, armas e armaduras) chegam quando aparecem.
 2. **Threads.** Os loaders rodam no loop da página; decodificar DDS e C3 custa
    frames enquanto um mapa carrega. Web Workers (`wasm-bindgen-rayon`) pedem
    `+atomics`, nightly e os cabeçalhos COOP/COEP no site.

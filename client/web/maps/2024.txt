@@ -1,4 +1,4 @@
-# Map 2024's files (client --map-files), asked as a hero enters it.
+# Map 2024's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/dcity.ani
 ani/mapscene02.ani
 data/map/mapobj/dcity/dcity09.dds
@@ -327,3 +327,39 @@ gravak/rifts/2024.txt
 map/map/dsigil.dmap
 map/puzzle/dsigil.pul
 sound/music04.mp3
+c3/monster/152/100.c3
+c3/monster/152/110.c3
+c3/monster/152/310.c3
+c3/monster/152/320.c3
+c3/monster/152/330.c3
+c3/monster/152/331.c3
+c3/monster/152/340.c3
+c3/monster/152/401.c3
+c3/monster/152n/100.c3
+c3/monster/152n/110.c3
+c3/monster/152n/310.c3
+c3/monster/152n/320.c3
+c3/monster/152n/330.c3
+c3/monster/152n/331.c3
+c3/monster/152n/340.c3
+c3/monster/152n/370.c3
+c3/monster/152n/401.c3
+c3/texture/152000000.dds
+c3/monster/127/100.c3
+c3/monster/127/110.c3
+c3/monster/127/310.c3
+c3/monster/127/320.c3
+c3/monster/127/330.c3
+c3/monster/127/331.c3
+c3/monster/127/340.c3
+c3/monster/127/401.c3
+c3/monster/327n/100.c3
+c3/monster/327n/110.c3
+c3/monster/327n/310.c3
+c3/monster/327n/320.c3
+c3/monster/327n/330.c3
+c3/monster/327n/331.c3
+c3/monster/327n/340.c3
+c3/monster/327n/370.c3
+c3/monster/327n/401.c3
+c3/texture/327000000.dds

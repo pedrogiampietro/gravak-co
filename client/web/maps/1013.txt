@@ -1,4 +1,4 @@
-# Map 1013's files (client --map-files), asked as a hero enters it.
+# Map 1013's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/woods.ani
 data/map/mapobj/woods/tiger01.dds
 data/map/mapobj/woods/tiger02.dds

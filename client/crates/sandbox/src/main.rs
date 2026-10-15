@@ -10902,6 +10902,33 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
+    // The monsters' part of the browser's per-map lists:
+    // `--monster-files <game> <look>...` prints, for each monster look (the
+    // server's monster_types.look), `LOOK <look>` and the files its model
+    // reads: mesh, motions and texture.
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--monster-files") {
+        let mut args = args.skip(1);
+        let game = PathBuf::from(args.next().ok_or("--monster-files requires <game> <look>...")?);
+        let mut assets = Assets::open(&game)?;
+        let catalog = character::NpcCatalog::load(&mut assets)?;
+        for look in args {
+            let look = look.to_str().and_then(|look| look.parse::<u32>().ok()).ok_or("Invalid look")?;
+            assets.record();
+            let model = character::NpcModel::load_monster(&mut assets, &catalog, look);
+            let mut files: std::collections::BTreeSet<String> = assets.take_recorded().into_iter().collect();
+            match model {
+                Ok(model) => {
+                    files.insert(model.texture.replace('\\', "/").to_ascii_lowercase());
+                }
+                Err(error) => eprintln!("look {look}: {error}"),
+            }
+            println!("LOOK {look}");
+            for file in files {
+                println!("{file}");
+            }
+        }
+        return Ok(());
+    }
     // The browser's per-map preload lists (client/web/maps/<id>.txt):
     // `--map-files <game> [<map id>...]` prints, for every map of
     // ini/GameMap.dat or those named, `MAP <id>` and then each game file it

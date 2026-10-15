@@ -1,4 +1,4 @@
-# Map 1027's files (client --map-files), asked as a hero enters it.
+# Map 1027's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/mapscene-snail.ani
 ani/mine.ani
 data/map/mapobj/mine/ladder2.dds

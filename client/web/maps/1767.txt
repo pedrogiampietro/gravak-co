@@ -1,4 +1,4 @@
-# Map 1767's files (client --map-files), asked as a hero enters it.
+# Map 1767's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/d02.ani
 ani/mapscene02.ani
 data/map/mapobj/dcity/dcity02.dds

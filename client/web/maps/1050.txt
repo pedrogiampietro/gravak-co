@@ -1,4 +1,4 @@
-# Map 1050's files (client --map-files), asked as a hero enters it.
+# Map 1050's files and its monsters' models (tools/browser-map-lists.py), asked as a hero enters it.
 ani/newplain.ani
 data/map/mapobj/plain/plain/cockpit03.dds
 data/map/mapobj/plain/plain/cockpit04.dds
