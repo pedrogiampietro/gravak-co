@@ -5651,6 +5651,7 @@ impl Renderer {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             shop.npc_id.hash(&mut hasher);
             shop.items.hash(&mut hasher);
+            shop.icons_generation.hash(&mut hasher);
             shop.page.hash(&mut hasher);
             shop.selected.hash(&mut hasher);
             shop.repair_hover.hash(&mut hasher);

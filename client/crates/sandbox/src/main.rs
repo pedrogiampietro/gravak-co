@@ -647,6 +647,10 @@ struct App {
     remote_models_loading: HashSet<u32>,
     remote_npcs_loading: HashSet<u32>,
     remote_monsters_loading: HashSet<u32>,
+    /// In the browser: the open shop's icons were made while their files
+    /// were still downloading.
+    #[cfg(target_arch = "wasm32")]
+    shop_icons_waiting: bool,
     /// The browser's window and, once the GPU answers, its renderer.
     #[cfg(target_arch = "wasm32")]
     pending_renderer: std::rc::Rc<
@@ -754,6 +758,13 @@ impl ApplicationHandler for App {
             // The loaders' few milliseconds, and the files they wait for.
             background::new_frame();
             web_files::pump();
+            if self.shop_icons_waiting && !web_files::busy() {
+                let misses = web_files::misses();
+                if let Some(shop) = &mut self.shop {
+                    let _ = shop.reload_icons(&mut self.assets);
+                }
+                self.shop_icons_waiting = self.shop.is_some() && web_files::misses() != misses;
+            }
             let ready = self
                 .pending_renderer
                 .borrow()
@@ -6642,8 +6653,16 @@ impl App {
                 }
                 if opens_shop {
                     let shop_npc_id = state.task_id;
+                    #[cfg(target_arch = "wasm32")]
+                    let misses = web_files::misses();
                     match shop::ShopState::load(&mut self.assets, shop_npc_id) {
                         Ok(Some(shop)) => {
+                            // Icons whose files were on their way are stand-ins:
+                            // made again once the files are in.
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                self.shop_icons_waiting = web_files::misses() != misses;
+                            }
                             self.warehouse = None;
                             self.warehouse_npc_id = None;
                             self.guild_warehouse_open = false;
@@ -11567,6 +11586,8 @@ fn build_world(mut assets: Assets, start: WorldStart) -> Result<Option<App>> {
         remote_monsters_loading: HashSet::new(),
         #[cfg(target_arch = "wasm32")]
         pending_renderer: Default::default(),
+        #[cfg(target_arch = "wasm32")]
+        shop_icons_waiting: false,
     };
     app.hud_config = settings::load_options();
     if let Some(audio) = &mut app.audio {

@@ -322,6 +322,9 @@ pub struct ShopState {
     pub npc_id: u32,
     pub items: Vec<u32>,
     icons: Vec<RgbaImage>,
+    /// Raised each time the icons are made again (`reload_icons`): the
+    /// shop's picture is drawn again with them.
+    pub icons_generation: u32,
     infos: HashMap<u32, ItemInfo>,
     pub page: usize,
     pub hover: Option<usize>,
@@ -369,7 +372,41 @@ impl InventoryFilter {
     }
 }
 
+/// The shop's item icons, at the bag's size.
+fn shop_icons(assets: &mut Assets, items: &[u32]) -> Result<Vec<RgbaImage>> {
+    let animation = assets
+        .read("ani/ItemMinIcon.Ani")
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let map_animation = assets
+        .read("ani/MapItemIcon.Ani")
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let size = original_ui_layout::INVENTORY_ICON_SIZE as u32;
+    items
+        .iter()
+        .map(|item_id| {
+            load_icon_native(assets, *item_id, animation.as_deref(), map_animation.as_deref()).map(|icon| {
+                if icon.dimensions() == (size, size) {
+                    icon
+                } else {
+                    imageops::resize(&icon, size, size, imageops::FilterType::Triangle)
+                }
+            })
+        })
+        .collect()
+}
+
 impl ShopState {
+    /// Makes the icons again: in the browser a shop opened while its icons'
+    /// files were still downloading showed stand-ins (the item's number).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn reload_icons(&mut self, assets: &mut Assets) -> Result<()> {
+        self.icons = shop_icons(assets, &self.items)?;
+        self.icons_generation += 1;
+        Ok(())
+    }
+
     pub fn load(assets: &mut Assets, npc_id: u32) -> Result<Option<Self>> {
         let contents = String::from_utf8_lossy(&assets.read("ini/Shop.dat")?).into_owned();
         let mut current: Option<(u32, String, Vec<u32>)> = None;
@@ -416,38 +453,13 @@ impl ShopState {
         let Some((npc_id, _name, items)) = found else {
             return Ok(None);
         };
-        let animation = assets
-            .read("ani/ItemMinIcon.Ani")
-            .ok()
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-        let map_animation = assets
-            .read("ani/MapItemIcon.Ani")
-            .ok()
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-        let size = original_ui_layout::INVENTORY_ICON_SIZE as u32;
-        let icons = items
-            .iter()
-            .map(|item_id| {
-                load_icon_native(
-                    assets,
-                    *item_id,
-                    animation.as_deref(),
-                    map_animation.as_deref(),
-                )
-                .map(|icon| {
-                    if icon.dimensions() == (size, size) {
-                        icon
-                    } else {
-                        imageops::resize(&icon, size, size, imageops::FilterType::Triangle)
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let icons = shop_icons(assets, &items)?;
         let infos = load_item_infos(assets, &items);
         Ok(Some(Self {
             npc_id,
             items,
             icons,
+            icons_generation: 0,
             infos,
             page: 0,
             hover: None,
