@@ -28,6 +28,8 @@ pub struct Assets {
     /// the files live in `web_files`, shared by every `Assets` of the page,
     /// and this stays empty (docs/web-spike.md).
     memory: Option<HashMap<String, Vec<u8>>>,
+    /// Every file read while `record` is on (`--map-files`).
+    recorded: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -205,6 +207,7 @@ impl Assets {
                 resolved: HashMap::new(),
                 pack: Some(pack),
                 memory: None,
+                recorded: None,
             });
         }
         // The players' build reads nothing but the pack.
@@ -227,6 +230,7 @@ impl Assets {
             resolved: HashMap::new(),
             pack: None,
             memory: None,
+            recorded: None,
         };
         for name in ["data.wdf", "c3.wdf"] {
             if let Some(path) = assets.loose(name)? {
@@ -271,6 +275,7 @@ impl Assets {
                     .map(|(name, bytes)| (name.replace('\\', "/").to_ascii_lowercase(), bytes))
                     .collect(),
             ),
+            recorded: None,
         }
     }
     /// Opens another `Assets` on the same game data, for a loader of its
@@ -287,6 +292,18 @@ impl Assets {
             }
         }
     }
+    /// Starts keeping the name of every file read, for `take_recorded`.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn record(&mut self) {
+        self.recorded = Some(Vec::new());
+    }
+
+    /// The files read since `record`, and recording stops.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn take_recorded(&mut self) -> Vec<String> {
+        self.recorded.take().unwrap_or_default()
+    }
+
     pub fn root_path(&self) -> &Path {
         &self.root
     }
@@ -322,6 +339,9 @@ impl Assets {
         // screen needs for the browser build.
         if trace_enabled() {
             eprintln!("ASSET {}", virtual_path.as_str());
+        }
+        if let Some(recorded) = &mut self.recorded {
+            recorded.push(virtual_path.as_str().to_ascii_lowercase());
         }
         #[cfg(target_arch = "wasm32")]
         if self.memory.is_some() {

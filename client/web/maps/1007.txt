@@ -1,0 +1,20 @@
+# Map 1007's files (client --map-files), asked as a hero enters it.
+ani/room.ani
+data/map/puzzle/room/smith/smith000.dds
+data/map/puzzle/room/smith/smith001.dds
+data/map/puzzle/room/smith/smith002.dds
+data/map/puzzle/room/smith/smith003.dds
+data/map/puzzle/room/smith/smith004.dds
+data/map/puzzle/room/smith/smith005.dds
+data/map/puzzle/room/smith/smith006.dds
+data/map/puzzle/room/smith/smith007.dds
+data/map/puzzle/room/smith/smith008.dds
+data/map/puzzle/room/smith/smith009.dds
+data/map/puzzle/room/smith/smith010.dds
+data/map/puzzle/room/smith/smith011.dds
+data/minimap/smith.bmp
+gravak/maps/1007.txt
+gravak/rifts/1007.txt
+map/map/smith.dmap
+map/puzzle/smith.pul
+sound/music07.mp3

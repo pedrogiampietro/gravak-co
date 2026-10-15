@@ -651,6 +651,9 @@ struct App {
     /// were still downloading.
     #[cfg(target_arch = "wasm32")]
     shop_icons_waiting: bool,
+    /// In the browser: the map the hero was moved to, its files on their way.
+    #[cfg(target_arch = "wasm32")]
+    pending_map: Option<u32>,
     /// The browser's window and, once the GPU answers, its renderer.
     #[cfg(target_arch = "wasm32")]
     pending_renderer: std::rc::Rc<
@@ -770,6 +773,22 @@ impl ApplicationHandler for App {
                 && !web_files::busy()
             {
                 list.reload(&mut self.assets);
+            }
+            if let Some(map_id) = self.pending_map
+                && !web_files::busy()
+            {
+                let misses = web_files::misses();
+                match map::Map::load(&mut self.assets, map_id) {
+                    Ok(map) => {
+                        self.map = map;
+                        self.pending_map = None;
+                    }
+                    Err(_) if web_files::misses() != misses => {}
+                    Err(error) => {
+                        self.pending_map = None;
+                        self.network_status = format!("online: map {map_id} unavailable after teleport: {error}");
+                    }
+                }
             }
             let ready = self
                 .pending_renderer
@@ -6270,9 +6289,25 @@ impl App {
                 self.confirmed_network_cell = Some(position);
                 self.portal_armed = false;
                 if self.map.id != map_id {
+                    // In the browser the new map's files are asked for at
+                    // once (web/maps/<id>.txt).
+                    #[cfg(target_arch = "wasm32")]
+                    web::want_map(map_id);
+                    #[cfg(target_arch = "wasm32")]
+                    let misses = web_files::misses();
                     match map::Map::load(&mut self.assets, map_id) {
                         Ok(map) => {
                             self.map = map;
+                            self.remote_actors.clear();
+                            self.remote_models.clear();
+                            self.remote_npcs.clear();
+                        }
+                        // Still downloading: the map comes in `about_to_wait`
+                        // once its files are in; the old map's actors go now,
+                        // before the new map's arrive.
+                        #[cfg(target_arch = "wasm32")]
+                        Err(_) if web_files::misses() != misses => {
+                            self.pending_map = Some(map_id);
                             self.remote_actors.clear();
                             self.remote_models.clear();
                             self.remote_npcs.clear();
@@ -10867,6 +10902,53 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
+    // The browser's per-map preload lists (client/web/maps/<id>.txt):
+    // `--map-files <game> [<map id>...]` prints, for every map of
+    // ini/GameMap.dat or those named, `MAP <id>` and then each game file it
+    // shows: its layout, its scenery's and background's frames, its minimap
+    // and its region music.
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--map-files") {
+        let mut args = args.skip(1);
+        let game = PathBuf::from(args.next().ok_or("--map-files requires <game> [<map id>...]")?);
+        let mut assets = Assets::open(&game)?;
+        let mut ids = args
+            .map(|id| id.to_str().and_then(|id| id.parse::<u32>().ok()).ok_or("Invalid map id"))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if ids.is_empty() {
+            ids = sandbox_data::map::GameMapCatalog::parse(&assets.read("ini/GameMap.dat")?)?.ids().collect();
+        }
+        ids.sort_unstable();
+        let music = sandbox_data::ini::SectionCatalog::parse(&assets.read("ini/MusicRegion.ini").unwrap_or_default());
+        for id in ids {
+            assets.record();
+            let map = match map::Map::load(&mut assets, id) {
+                Ok(map) => map,
+                Err(error) => {
+                    eprintln!("map {id}: {error}");
+                    assets.take_recorded();
+                    continue;
+                }
+            };
+            let _ = minimap::Minimap::load(&mut assets, id);
+            let mut files: std::collections::BTreeSet<String> = assets.take_recorded().into_iter().collect();
+            for sprite in &map.sprites {
+                files.extend(sprite.frames.iter().map(|frame| frame.replace('\\', "/").to_ascii_lowercase()));
+            }
+            for section in music.sections() {
+                if section.first("Mapid").and_then(|value| value.trim().parse::<u32>().ok()) == Some(id)
+                    && let Some(track) = section.first("Music0").map(|track| track.trim().replace('\\', "/"))
+                    && !track.eq_ignore_ascii_case("NULL")
+                {
+                    files.insert(track.to_ascii_lowercase());
+                }
+            }
+            println!("MAP {id}");
+            for file in files {
+                println!("{file}");
+            }
+        }
+        return Ok(());
+    }
     let mut root = None;
     let mut map_id = None;
     let mut body =
@@ -11594,6 +11676,8 @@ fn build_world(mut assets: Assets, start: WorldStart) -> Result<Option<App>> {
         pending_renderer: Default::default(),
         #[cfg(target_arch = "wasm32")]
         shop_icons_waiting: false,
+        #[cfg(target_arch = "wasm32")]
+        pending_map: None,
     };
     app.hud_config = settings::load_options();
     if let Some(audio) = &mut app.audio {

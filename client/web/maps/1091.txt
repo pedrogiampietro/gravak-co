@@ -1,0 +1,26 @@
+# Map 1091's files (client --map-files), asked as a hero enters it.
+ani/newplain.ani
+data/map/mapobj/newplain/plain/np11.dds
+data/map/mapobj/newplain/plain/np12.dds
+data/map/puzzle/newplain/city/city260.dds
+data/map/puzzle/newplain/element/ele008.dds
+data/map/puzzle/newplain/element/ele020.dds
+data/map/puzzle/newplain/element/ele064.dds
+data/map/puzzle/newplain/element/ele065.dds
+data/map/puzzle/newplain/element/ele066.dds
+data/map/puzzle/newplain/element/ele067.dds
+data/map/puzzle/newplain/element/ele144.dds
+data/map/puzzle/newplain/element/ele147.dds
+data/map/puzzle/newplain/element/ele150.dds
+data/map/puzzle/newplain/element/ele151.dds
+data/map/puzzle/newplain/lake/lake032.dds
+data/map/puzzle/newplain/lake/lake042.dds
+data/map/puzzle/newplain/lake/lake043.dds
+data/map/puzzle/newplain/lake/lake044.dds
+data/map/puzzle/newplain/lake/lake045.dds
+data/minimap/parena-s.bmp
+gravak/maps/1091.txt
+gravak/rifts/1091.txt
+map/map/parena-s.dmap
+map/puzzle/parena-s.pul
+sound/music04.mp3

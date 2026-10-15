@@ -16,6 +16,11 @@ pub struct GameMapCatalog {
 }
 
 impl GameMapCatalog {
+    /// Every map's id, in no order.
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.records.keys().copied()
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, ContentError> {
         let mut reader = SliceReader::new("GameMap.dat", bytes);
         let count = reader.read_u32_le()?;

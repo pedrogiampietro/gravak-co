@@ -1,0 +1,19 @@
+# Map 1510's files (client --map-files), asked as a hero enters it.
+ani/room.ani
+data/map/mapobj/plain/room/room13.dds
+data/map/puzzle/room/grocery/grocery000.dds
+data/map/puzzle/room/grocery/grocery001.dds
+data/map/puzzle/room/grocery/grocery002.dds
+data/map/puzzle/room/grocery/grocery003.dds
+data/map/puzzle/room/grocery/grocery004.dds
+data/map/puzzle/room/grocery/grocery005.dds
+data/map/puzzle/room/grocery/grocery006.dds
+data/map/puzzle/room/grocery/grocery007.dds
+data/map/puzzle/room/grocery/grocery008.dds
+data/map/puzzle/room/grocery/grocery009.dds
+data/map/puzzle/room/grocery/grocery010.dds
+data/map/puzzle/room/grocery/grocery011.dds
+gravak/maps/1510.txt
+gravak/rifts/1510.txt
+map/map/grocery.dmap
+map/puzzle/grocery.pul

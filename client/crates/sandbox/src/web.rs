@@ -90,6 +90,11 @@ fn watch_page_close() {
     send.forget();
 }
 
+/// Asks for a map's files (web/maps/<id>.txt), the hero entering it.
+pub fn want_map(map_id: u32) {
+    wasm_bindgen_futures::spawn_local(async move { want_listed(&format!("assets/maps/{map_id}.txt")).await });
+}
+
 /// The page's one event loop: the login screens, then the world.
 enum Game {
     Screens(crate::launcher::Launcher, Option<Entering>),
@@ -146,7 +151,9 @@ impl Game {
                 Some(Ok(ready)) => {
                     // As natively: the nobility is asked for again.
                     state.session.request_nobility_status();
-                    // The hero's body's files, in one request (web/bodyN.txt).
+                    // The hero's map's files (web/maps/<id>.txt), and its
+                    // body's (web/bodyN.txt).
+                    want_map(ready.map_id);
                     if (1..=4).contains(&ready.body) {
                         let url = format!("assets/body{}.txt", ready.body);
                         wasm_bindgen_futures::spawn_local(async move { want_listed(&url).await });

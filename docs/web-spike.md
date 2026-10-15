@@ -71,7 +71,10 @@ do pack no nome: a segunda visita quase não pede nada, e um pack novo começa u
 cache novo e apaga o antigo.
 
 **Pré-carregamento.** Descobrir um arquivo por vez custava ~115 idas e voltas
-na primeira visita. Duas listas, gravadas de sessões reais, vão num pedido cada:
+na primeira visita. Listas de arquivos são pedidas antes de alguém lê-los, numa
+fila própria: o que o jogo leu e não tinha vai primeiro (lotes de até 1500, e
+só isso conta para `busy`), as listas vão ao lado em lotes de 150, e um arquivo
+de lista que o jogo lê passa para a frente. As listas:
 
 - `client/web/world.txt`: o que entrar em qualquer mundo lê (interface, HUD,
   ícones, efeitos, `ini/`, `ani/`, das quatro profissões) e o Birth Village,
@@ -81,8 +84,22 @@ na primeira visita. Duas listas, gravadas de sessões reais, vão num pedido cad
   (`c3/000N`, `network::body_from_mesh`), ~3,4 MB, pedidos quando o servidor
   diz o corpo do herói que entra.
 
-Primeira visita de um personagem novo: 3 pedidos, o mundo aberto ~2 s depois de
-"Enter the World". Para gravar as listas de novo: subir um `gravak-web-files`
+- `client/web/maps/<id>.txt`: tudo o que cada mapa mostra (layout, os frames
+  do chão e do cenário, minimapa, música da região), sem o que já está em
+  `world.txt`. Pedida ao entrar no mundo e a cada troca de mapa. Gerada dos
+  dados do jogo, não de sessões: `conquer-sandbox --map-files <game> [<id>...]`
+  (compilado com a chave de release) imprime `MAP <id>` e os arquivos de cada
+  mapa do `ini/GameMap.dat`. Twin City inteira são ~24 MB com gzip, o Birth
+  Village ~2 MB.
+
+Numa troca de mapa (`Reposition`) cujo mapa ainda não chegou, os atores do mapa
+antigo saem na hora e o mapa novo é montado de novo a cada frame até os
+arquivos estarem lá (`pending_map`); antes, o herói ficava no mapa antigo com
+as coordenadas do novo.
+
+Primeira visita de um personagem novo: ~8 pedidos, o mundo aberto ~3 s depois
+de "Enter the World". Para gravar `world.txt` e `bodyN.txt` de novo: subir um
+`gravak-web-files`
 com `GRAVAK_LOG_PATHS=1` (ele imprime `PATH <caminho>` de cada pedido), jogar
 uma sessão de cada profissão, e tirar dos caminhos o que é de um mapa
 (`map/`, `data/map/`, `gravak/maps/`, `data/minimap/`, `c3/monster/`), menos o
@@ -140,7 +157,8 @@ wasm-bindgen --target web --no-typescript --out-name gravak --out-dir dist/web \
   target/web/wasm32-unknown-unknown/release/conquer-sandbox.wasm
 cp web/index.html dist/web/
 cp /var/www/gravak-update/servers.ini dist/web/          # os mundos e suas chaves de login
-mkdir -p dist/web/assets && cp web/world.txt web/body?.txt dist/web/assets/
+mkdir -p dist/web/assets/maps && cp web/world.txt web/body?.txt dist/web/assets/
+cp web/maps/*.txt dist/web/assets/maps/
 # Os arquivos da tela de login (web/assets.txt), tirados do pack pelo cliente
 # nativo compilado com a chave de release (o da Armory serve):
 /opt/gravak/armory/conquer-sandbox --export-assets /var/www/gravak-update/game \
@@ -188,9 +206,11 @@ O Playwright fecha o navegador num SIGTERM mas o processo continua vivo: use
 
 ## O que falta
 
-1. **Outros mapas na primeira visita.** Fora do Birth Village os arquivos de
-   um mapa chegam aos poucos, e modelos e texturas aparecem com atraso na
-   primeira vez. Listas por mapa (como `bodyN.txt`) resolveriam.
+1. **Monstros na primeira visita de um mapa.** As listas por mapa cobrem o
+   cenário, não os modelos dos monstros (`c3/monster/`), que chegam quando
+   aparecem. Sairiam das tabelas de spawn do servidor. A troca de mapa no
+   navegador não foi testada de ponta a ponta (os heróis de teste estão no
+   Birth Village).
 2. **Threads.** Os loaders rodam no loop da página; decodificar DDS e C3 custa
    frames enquanto um mapa carrega. Web Workers (`wasm-bindgen-rayon`) pedem
    `+atomics`, nightly e os cabeçalhos COOP/COEP no site.

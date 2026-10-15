@@ -66,6 +66,10 @@ try {
     foreach ($list in @("world") + (1..4 | ForEach-Object { "body$_" })) {
         Copy-Item (Join-Path $client "web\$list.txt") (Join-Path $assets "$list.txt") -Force
     }
+    # Each map's files (web/maps/<id>.txt), asked as a hero enters it.
+    $maps = Join-Path $assets "maps"
+    New-Item -ItemType Directory -Force $maps | Out-Null
+    Copy-Item (Join-Path $client "web\maps\*.txt") $maps -Force
 
     $wasm = Get-Item (Join-Path $out "gravak_bg.wasm")
     Write-Host ("Done: {0} ({1:N1} MiB of wasm)" -f $out, ($wasm.Length / 1MB)) -ForegroundColor Green

@@ -1,0 +1,21 @@
+# Map 1615's files (client --map-files), asked as a hero enters it.
+ani/color3map.ani
+data/map/puzzle/jokul/jokul01/pic000.dds
+data/map/puzzle/jokul/jokul01/pic001.dds
+data/map/puzzle/jokul/jokul01/pic002.dds
+data/map/puzzle/jokul/jokul01/pic004.dds
+data/map/puzzle/jokul/jokul01/pic005.dds
+data/map/puzzle/jokul/jokul01/pic006.dds
+data/map/puzzle/jokul/jokul01/pic007.dds
+data/map/puzzle/jokul/jokul01/pic008.dds
+data/map/puzzle/jokul/jokul01/pic009.dds
+data/map/puzzle/jokul/jokul01/pic010.dds
+data/map/puzzle/jokul/jokul01/pic011.dds
+data/map/puzzle/jokul/jokul01/pic012.dds
+data/map/puzzle/jokul/jokul01/pic013.dds
+data/map/puzzle/jokul/jokul01/pic014.dds
+data/map/puzzle/jokul/jokul01/pic015.dds
+gravak/maps/1615.txt
+gravak/rifts/1615.txt
+map/map/jokul01.dmap
+map/puzzle/jokul01.pul

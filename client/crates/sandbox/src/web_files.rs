@@ -14,7 +14,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
 };
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -22,6 +22,9 @@ use wasm_bindgen_futures::JsFuture;
 const URL: &str = "/game-files";
 /// Paths asked in one request (the service takes up to 4096).
 const BATCH: usize = 1500;
+/// Preloaded paths asked in one request: small, so a preload list of a
+/// whole map (tens of MB) never holds the other requests long.
+const PRELOAD_BATCH: usize = 150;
 const MISSING: u32 = u32::MAX;
 const LATER: u32 = u32::MAX - 1;
 
@@ -29,9 +32,18 @@ const LATER: u32 = u32::MAX - 1;
 struct Store {
     files: HashMap<String, Vec<u8>>,
     absent: HashSet<String>,
-    wanted: Vec<String>,
+    /// Read and missed: asked first, `busy` until they are in.
+    urgent: Vec<String>,
+    /// From the preload lists (`want`): asked a little at a time beside the
+    /// urgent ones; a read of one of them makes it urgent.
+    preload: VecDeque<String>,
     asked: HashSet<String>,
-    in_flight: bool,
+    urgent_in_flight: bool,
+    preload_in_flight: bool,
+    /// The preload request in flight, and those of its files something has
+    /// read since: `busy` waits for them as for urgent ones.
+    preload_batch: HashSet<String>,
+    awaited: HashSet<String>,
     /// Reads that found nothing yet, ever: a job that raised it must wait.
     misses: u64,
     fetched_files: usize,
@@ -73,7 +85,13 @@ pub fn read(name: &str) -> Lookup {
         }
         store.misses += 1;
         if store.asked.insert(name.clone()) {
-            store.wanted.push(name);
+            store.urgent.push(name);
+        } else if let Some(index) = store.preload.iter().position(|queued| *queued == name) {
+            // Wanted now, not some day: ahead of the preload.
+            store.preload.remove(index);
+            store.urgent.push(name);
+        } else if store.preload_batch.contains(&name) {
+            store.awaited.insert(name);
         }
         Lookup::Pending
     })
@@ -86,7 +104,7 @@ pub fn want(names: impl IntoIterator<Item = String>) {
         for name in names {
             let name = key(&name);
             if !store.files.contains_key(&name) && store.asked.insert(name.clone()) {
-                store.wanted.push(name);
+                store.preload.push_back(name);
             }
         }
     });
@@ -97,11 +115,12 @@ pub fn misses() -> u64 {
     STORE.with(|store| store.borrow().misses)
 }
 
-/// Whether files are still wanted or on their way.
+/// Whether files something read are still wanted or on their way (the
+/// preload lists do not count).
 pub fn busy() -> bool {
     STORE.with(|store| {
         let store = store.borrow();
-        store.in_flight || !store.wanted.is_empty()
+        store.urgent_in_flight || !store.urgent.is_empty() || !store.awaited.is_empty()
     })
 }
 
@@ -125,53 +144,89 @@ pub fn fetched() -> (usize, usize) {
     })
 }
 
-/// Sends the wanted paths, a batch at a time; called every frame.
+/// Sends the wanted paths, a batch at a time: the urgent ones and the
+/// preloaded ones side by side, one request of each in flight. Called every
+/// frame.
 pub fn pump() {
-    let batch = STORE.with(|store| {
-        let mut store = store.borrow_mut();
-        if store.in_flight || store.wanted.is_empty() || store.unauthorized {
-            return None;
-        }
-        let count = store.wanted.len().min(BATCH);
-        let batch: Vec<String> = store.wanted.drain(..count).collect();
-        store.in_flight = true;
-        Some(batch)
-    });
-    let Some(batch) = batch else { return };
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = fetch_batch(&batch).await;
-        STORE.with(|store| {
+    for urgent in [true, false] {
+        let batch = STORE.with(|store| {
             let mut store = store.borrow_mut();
-            store.in_flight = false;
-            match result {
-                Ok(Answer::Files(answers)) => {
-                    store.failure = None;
-                    for (name, answer) in batch.into_iter().zip(answers) {
-                        match answer {
-                            Some(Some(bytes)) => {
-                                store.fetched_files += 1;
-                                store.fetched_bytes += bytes.len();
-                                store.files.insert(name, bytes);
-                            }
-                            Some(None) => {
-                                store.absent.insert(name);
-                            }
-                            // Over the answer's size: asked again.
-                            None => store.wanted.push(name),
-                        }
-                    }
+            if store.unauthorized {
+                return None;
+            }
+            if urgent {
+                if store.urgent_in_flight || store.urgent.is_empty() {
+                    return None;
                 }
-                Ok(Answer::Unauthorized) => {
-                    store.unauthorized = true;
-                    store.wanted.extend(batch);
+                let count = store.urgent.len().min(BATCH);
+                store.urgent_in_flight = true;
+                Some(store.urgent.drain(..count).collect::<Vec<_>>())
+            } else {
+                if store.preload_in_flight || store.preload.is_empty() {
+                    return None;
                 }
-                Err(error) => {
-                    crate::web::log(&format!("Gravak: game files: {error}"));
-                    store.failure = Some(format!("The game files could not be downloaded ({error})."));
-                    store.wanted.extend(batch);
-                }
+                let count = store.preload.len().min(PRELOAD_BATCH);
+                store.preload_in_flight = true;
+                let batch: Vec<String> = store.preload.drain(..count).collect();
+                store.preload_batch = batch.iter().cloned().collect();
+                Some(batch)
             }
         });
+        if let Some(batch) = batch {
+            wasm_bindgen_futures::spawn_local(fetch_and_keep(batch, urgent));
+        }
+    }
+}
+
+async fn fetch_and_keep(batch: Vec<String>, urgent: bool) {
+    let result = fetch_batch(&batch).await;
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        if urgent {
+            store.urgent_in_flight = false;
+        } else {
+            store.preload_in_flight = false;
+            store.preload_batch.clear();
+        }
+        let mut again = Vec::new();
+        match result {
+            Ok(Answer::Files(answers)) => {
+                store.failure = None;
+                for (name, answer) in batch.into_iter().zip(answers) {
+                    match answer {
+                        Some(Some(bytes)) => {
+                            store.fetched_files += 1;
+                            store.fetched_bytes += bytes.len();
+                            store.files.insert(name, bytes);
+                        }
+                        Some(None) => {
+                            store.absent.insert(name);
+                        }
+                        // Over the answer's size: asked again.
+                        None => again.push(name),
+                    }
+                }
+            }
+            Ok(Answer::Unauthorized) => {
+                store.unauthorized = true;
+                again = batch;
+            }
+            Err(error) => {
+                crate::web::log(&format!("Gravak: game files: {error}"));
+                store.failure = Some(format!("The game files could not be downloaded ({error})."));
+                again = batch;
+            }
+        }
+        if urgent {
+            store.urgent.extend(again);
+        } else {
+            // What was read meanwhile and did not come goes ahead.
+            let (read, later): (Vec<String>, Vec<String>) =
+                again.into_iter().partition(|name| store.awaited.contains(name));
+            store.urgent.extend(read);
+            store.preload.extend(later);
+            store.awaited.clear();
+        }
     });
 }
 
