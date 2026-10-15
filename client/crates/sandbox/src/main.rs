@@ -16,7 +16,7 @@ mod exit_confirm;
 mod forge_window;
 mod cursors;
 mod assets;
-// The browser build is silent for now.
+// The browser plays through Web Audio (audio_web.rs).
 #[cfg_attr(target_arch = "wasm32", path = "audio_web.rs")]
 mod audio;
 mod booth;
@@ -11157,7 +11157,7 @@ fn build_world(mut assets: Assets, start: WorldStart) -> Result<Option<App>> {
         Ok(audio) => Some(audio),
         Err(error) if check => return Err(error),
         Err(error) => {
-            eprintln!("Audio unavailable: {error}");
+            report!("Audio unavailable: {error}");
             None
         }
     };
