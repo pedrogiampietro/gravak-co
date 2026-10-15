@@ -57,7 +57,18 @@ async fn run() -> Result<(), String> {
     let worlds = if worlds.is_empty() { vec![fallback] } else { worlds };
     // What entering any world reads, fetched while the login screens show
     // (web/world.txt): one request instead of one a file.
-    if let Ok(list) = fetch("assets/world.txt").await {
+    want_listed("assets/world.txt").await;
+    let screens = crate::launcher::prepare_web(&mut assets, worlds);
+    winit::event_loop::EventLoop::new()
+        .map_err(|error| error.to_string())?
+        .spawn_app(Game::Screens(screens, None));
+    Ok(())
+}
+
+/// Asks for the game files a preload list names (web/world.txt,
+/// web/bodyN.txt), all in one go.
+async fn want_listed(url: &str) {
+    if let Ok(list) = fetch(url).await {
         crate::web_files::want(
             String::from_utf8_lossy(&list)
                 .lines()
@@ -66,11 +77,6 @@ async fn run() -> Result<(), String> {
                 .map(str::to_owned),
         );
     }
-    let screens = crate::launcher::prepare_web(&mut assets, worlds);
-    winit::event_loop::EventLoop::new()
-        .map_err(|error| error.to_string())?
-        .spawn_app(Game::Screens(screens, None));
-    Ok(())
 }
 
 /// The page's one event loop: the login screens, then the world.
@@ -129,6 +135,11 @@ impl Game {
                 Some(Ok(ready)) => {
                     // As natively: the nobility is asked for again.
                     state.session.request_nobility_status();
+                    // The hero's body's files, in one request (web/bodyN.txt).
+                    if (1..=4).contains(&ready.body) {
+                        let url = format!("assets/body{}.txt", ready.body);
+                        wasm_bindgen_futures::spawn_local(async move { want_listed(&url).await });
+                    }
                     state.ready = Some(ready);
                 }
                 Some(Err(error)) => {
