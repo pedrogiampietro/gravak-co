@@ -382,11 +382,11 @@ fn format_silver(value: u64) -> String {
 }
 
 fn blacklist_path(character_id: u32) -> Option<std::path::PathBuf> {
-    Some(std::env::current_exe().ok()?.parent()?.join("settings").join(format!("sell_{character_id}.ini")))
+    crate::saved::path(&format!("sell_{character_id}.ini"))
 }
 
 fn released_path(character_id: u32) -> Option<std::path::PathBuf> {
-    Some(std::env::current_exe().ok()?.parent()?.join("settings").join(format!("sell_ok_{character_id}.ini")))
+    crate::saved::path(&format!("sell_ok_{character_id}.ini"))
 }
 
 /// The item types the character keeps from Sell All.
@@ -395,7 +395,7 @@ pub fn load_blacklist(character_id: u32) -> BTreeSet<u32> {
 }
 
 fn load_list(path: Option<std::path::PathBuf>) -> BTreeSet<u32> {
-    path.and_then(|path| std::fs::read_to_string(path).ok())
+    path.and_then(|path| crate::saved::read(&path))
         .map(|text| {
             text.split(|c: char| c == ',' || c.is_whitespace())
                 .filter_map(|value| value.trim().parse().ok())
@@ -411,11 +411,8 @@ fn save_blacklist(character_id: u32, blacklist: &BTreeSet<u32>) {
 }
 
 fn save_list(path: std::path::PathBuf, list: &BTreeSet<u32>) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     let text = list.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-    if let Err(error) = std::fs::write(&path, text) {
+    if let Err(error) = crate::saved::write(&path, &text) {
         eprintln!("Could not save the Sell All list: {error}");
     }
 }

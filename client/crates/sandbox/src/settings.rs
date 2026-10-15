@@ -102,7 +102,7 @@ impl HudSettings {
 /// The Options window's choices, shared by every character.
 pub fn load_options() -> crate::hud::HudConfig {
     let mut options = crate::hud::HudConfig::default();
-    let Some(text) = options_path().and_then(|path| std::fs::read_to_string(path).ok()) else {
+    let Some(text) = options_path().and_then(|path| crate::saved::read(&path)) else {
         return options;
     };
     for line in text.lines() {
@@ -161,38 +161,29 @@ pub fn save_options(options: &crate::hud::HudConfig) {
         u8::from(options.maximized),
         options.window_size.map_or_else(String::new, |[width, height]| format!("{width}x{height}")),
     );
-    let result = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, text));
+    let result = crate::saved::write(&path, &text);
     if let Err(error) = result {
         eprintln!("Could not save the options: {error}");
     }
 }
 
 fn options_path() -> Option<PathBuf> {
-    Some(std::env::current_exe().ok()?.parent()?.join("settings").join("options.ini"))
+    crate::saved::path("options.ini")
 }
 
 fn path(character_id: u32) -> Option<PathBuf> {
-    let dir = std::env::current_exe().ok()?.parent()?.join("settings");
-    Some(dir.join(format!("hud_{character_id}.ini")))
+    crate::saved::path(&format!("hud_{character_id}.ini"))
 }
 
 pub fn load(character_id: u32) -> Option<HudSettings> {
-    std::fs::read_to_string(path(character_id)?)
-        .ok()
-        .map(|text| HudSettings::parse(&text))
+    crate::saved::read(&path(character_id)?).map(|text| HudSettings::parse(&text))
 }
 
 pub fn save(character_id: u32, settings: &HudSettings) {
     let Some(path) = path(character_id) else {
         return;
     };
-    let result = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, settings.format()));
+    let result = crate::saved::write(&path, &settings.format());
     if let Err(error) = result {
         eprintln!("Could not save the HUD settings: {error}");
     }
@@ -342,7 +333,7 @@ impl LoginPrefs {
 
 pub fn load_login_prefs() -> LoginPrefs {
     login_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|path| crate::saved::read(&path))
         .map(|text| LoginPrefs::parse(&text, crate::vault::open))
         .unwrap_or_default()
 }
@@ -351,17 +342,14 @@ pub fn save_login_prefs(prefs: &LoginPrefs) {
     let Some(path) = login_path() else {
         return;
     };
-    let result = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, prefs.format(crate::vault::seal)));
+    let result = crate::saved::write(&path, &prefs.format(crate::vault::seal));
     if let Err(error) = result {
         eprintln!("Could not save the login settings: {error}");
     }
 }
 
 fn login_path() -> Option<PathBuf> {
-    Some(std::env::current_exe().ok()?.parent()?.join("settings").join("login.ini"))
+    crate::saved::path("login.ini")
 }
 
 /// `gravak.ini` beside the executable, shipped by the installer: where the

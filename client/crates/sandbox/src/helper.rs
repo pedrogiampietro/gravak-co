@@ -492,14 +492,14 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        path().and_then(|path| std::fs::read_to_string(path).ok()).map_or_else(Self::default, |text| Self::parse(&text))
+        path().and_then(|path| crate::saved::read(&path)).map_or_else(Self::default, |text| Self::parse(&text))
     }
 
     pub fn save(&self) {
         let Some(path) = path() else {
             return;
         };
-        let result = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, self.format()));
+        let result = crate::saved::write(&path, &self.format());
         if let Err(error) = result {
             eprintln!("Could not save the helper's settings: {error}");
         }
@@ -507,7 +507,7 @@ impl Settings {
 }
 
 fn path() -> Option<PathBuf> {
-    Some(std::env::current_exe().ok()?.parent()?.join("settings").join("helper.ini"))
+    crate::saved::path("helper.ini")
 }
 
 // ---------------------------------------------------------------- deciding
