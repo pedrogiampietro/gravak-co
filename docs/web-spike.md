@@ -1,157 +1,208 @@
-# Gravak no navegador — fase 1 (spike de viabilidade)
+# Gravak no navegador
 
-**Resultado:** o cliente Rust (`client/crates/sandbox`) compila para
-`wasm32-unknown-unknown` e a tela de login roda no navegador: arte do jogo,
-fontes, digitação, foco, cliques, senha mascarada e o botão Login (que responde
-"The browser cannot reach the game servers yet (WebSocket bridge pending)").
-O build nativo continua igual (`cargo build -p conquer-sandbox`, 212 + 23 testes
-passando).
+**Estado (15/10/2026):** o cliente Rust (`client/crates/sandbox`) roda no
+navegador em https://gravak.fun/pt/play, para contas logadas no site. Ele faz
+login nos servidores reais, entra no mundo e se joga: andar, pular
+(Ctrl+clique), atacar, reviver, inventário, lojas, Sell All e Helper, com som e
+com as configurações salvas na conta. O build nativo (`cargo build -p
+conquer-sandbox`) continua o mesmo: tudo o que é do navegador fica atrás de
+`cfg(target_arch = "wasm32")`.
 
 ![Tela de login no navegador](web-spike-login.jpg)
 
-Branch do spike: `claude/modest-payne-64597b` — **não** foi mesclada na `main`.
+Começou como um spike de viabilidade (só a tela de login, sem rede). Este
+documento diz como ficou e o que ainda falta.
 
-## Como rodar
+## Como funciona
+
+```
+navegador (gravak.fun/pt/play, iframe de /play/index.html)
+  ├─ gravak.js + gravak_bg.wasm ........... public/play do site (Next.js)
+  ├─ wss://gravak.fun/ws/9958, /ws/5816 ... nginx → gravak-ws-bridge :9960 → auth / jogo (TCP)
+  ├─ POST /game-files ..................... nginx → gravak-web-files :9961 → gravak.gpk decifrado
+  └─ /api/settings ........................ site (Next.js) → tabela account_settings
+```
+
+### Rede: `crates/ws-bridge`
+
+O navegador não abre TCP. `gravak-ws-bridge` aceita um WebSocket em `/<porta>`
+e repassa os bytes, sem ler nada, para a porta TCP do servidor (só 9958 e 5816).
+Ele conecta no servidor antes de aceitar o WebSocket, então um socket aberto
+quer dizer servidor no ar (o status do mundo na tela de login usa isso). A
+cifra TQ continua no cliente: `gravak-protocol` roda sobre `transport::Stream`,
+TCP no nativo e WebSocket no navegador. Os servidores veem todo jogador do
+navegador como `127.0.0.1`; a ponte registra o IP real (`X-Forwarded-For`).
+
+### Arquivos do jogo: `crates/web-files` e `web_files.rs`
+
+`gravak-web-files` abre o `gravak.gpk` com a chave de release (lida de um
+arquivo, nunca no wasm) e entrega as entradas decifradas, em lotes, só para quem
+tem o cookie de sessão do site (`gravak_session`, assinado com o
+`SESSION_SECRET`). Um `POST /game-files` leva os caminhos, um por linha. A
+resposta traz, para cada caminho na mesma ordem, um u32 e os bytes, ou
+`MISSING` (o pack não tem) ou `LATER` (resposta cheia, pedir de novo). O
+cabeçalho `X-Gravak-Pack` (tamanho e data do pack) é a versão do pack. O
+`gravak-publish-update` reinicia o serviço quando uma release traz pack novo.
+
+No cliente, todo `Assets` do navegador lê um só armazém (`web_files.rs`). A
+leitura continua síncrona: um arquivo que ainda não chegou é pedido e a leitura
+falha como pendente (`Downloading game file: ...`). Quem leu tenta de novo
+depois:
+
+- **Entrar no mundo:** `web.rs` monta o mundo (`build_world`, a metade de
+  `run()` depois do login) de novo e de novo até nada do que ele lê estar a
+  caminho, e então troca o canvas da tela de login pelo do mundo. Um canvas
+  pintado em 2D (softbuffer) não pode ir para a GPU.
+- **Loaders** (texturas, interface, geometria, modelos): `background.rs`. No
+  nativo é a mesma thread de antes. No navegador os trabalhos rodam no loop da
+  página, até 6 ms por callback, e um trabalho que esbarrou num arquivo a
+  caminho roda de novo quando os arquivos chegam. A janela de tempo começa no
+  primeiro trabalho de cada callback (o desenho, onde as texturas são lidas,
+  vem um frame depois do `about_to_wait`).
+- **O desenho:** um frame que esbarrou num arquivo a caminho é pulado, não é
+  erro. `Renderer::upload` não guarda uma textura feita enquanto faltava um
+  arquivo (seria o quadrado com o número do item, o texto no lugar do botão
+  Revive); o frame seguinte a faz de novo. Loja (`ShopState::reload_icons`) e
+  Sell All (`SellAllView::reload`) refazem ícones e preços montados na
+  abertura.
+
+Tudo o que chega fica no **Cache Storage** do navegador, num cache com a versão
+do pack no nome: a segunda visita quase não pede nada, e um pack novo começa um
+cache novo e apaga o antigo.
+
+**Pré-carregamento.** Descobrir um arquivo por vez custava ~115 idas e voltas
+na primeira visita. Duas listas, gravadas de sessões reais, vão num pedido cada:
+
+- `client/web/world.txt`: o que entrar em qualquer mundo lê (interface, HUD,
+  ícones, efeitos, `ini/`, `ani/`, das quatro profissões) e o Birth Village,
+  onde todo personagem novo nasce. ~2 MB com gzip, pedidos enquanto a tela de
+  login está aberta.
+- `client/web/body1.txt` .. `body4.txt`: os modelos de cada corpo
+  (`c3/000N`, `network::body_from_mesh`), ~3,4 MB, pedidos quando o servidor
+  diz o corpo do herói que entra.
+
+Primeira visita de um personagem novo: 3 pedidos, o mundo aberto ~2 s depois de
+"Enter the World". Para gravar as listas de novo: subir um `gravak-web-files`
+com `GRAVAK_LOG_PATHS=1` (ele imprime `PATH <caminho>` de cada pedido), jogar
+uma sessão de cada profissão, e tirar dos caminhos o que é de um mapa
+(`map/`, `data/map/`, `gravak/maps/`, `data/minimap/`, `c3/monster/`), menos o
+Birth Village (`newbie`, `sky`).
+
+### Desenho
+
+- wgpu com WebGPU onde há adaptador, senão WebGL2
+  (`new_instance_with_webgpu_detection`), pedindo ao WebGL2 os limites dele
+  (`downlevel_webgl2_defaults`).
+- O canvas tem o tamanho que a página dá (`client/web/index.html`); o jogo não
+  restaura nem impõe tamanho de janela no navegador.
+- A fonte embutida (KaTeX SansSerif, SIL OFL) responde por toda família
+  genérica, inclusive monospace (a fonte do HUD).
+- Um clique no canvas dá a ele o foco do teclado (e com ele Ctrl, Alt e Shift);
+  o canvas do mundo recebe o foco ao abrir.
+
+### Som: `audio_web.rs`
+
+A mesma API do `audio.rs`, pela Web Audio da página: o navegador decodifica os
+MP3 e WAV (`decodeAudioData`), sem decodificador no wasm e sem thread. Tema da
+tela de login, cliques, música da região em loop com fade de 0,8 s, passos e
+golpes, nos volumes da janela Options. O `AudioContext` só toca depois do
+primeiro clique ou tecla, como os navegadores exigem.
+
+### Configurações: `saved.rs` e `/api/settings`
+
+Opções, HUD, atalhos, Helper, listas do Sell All e escolhas da tela de login
+passam por `saved.rs`. No nativo são os mesmos `settings/*.ini` ao lado do
+executável. No navegador cada arquivo é uma chave do `localStorage`
+(`gravak/settings/<nome>`) e vai para a conta no site: a página baixa os
+arquivos da conta ao abrir (os do site ganham), envia os que só ela tinha, e
+manda um arquivo 2 s depois da última mudança ou quando a página fecha
+(`keepalive`). O site guarda em `account_settings` (migration 106), até 200
+arquivos de 64 KB por conta. Senha nunca: o `vault` só sela no Windows.
+
+### Site
+
+`/pt/play` (`web/src/app/[lang]/play`) pede o login do site, porque os
+arquivos do jogo só vão para uma sessão, e mostra o jogo sobre a janela inteira,
+com uma barra fina para voltar ao site e pôr em tela cheia. O link "Jogar no
+navegador" está no menu.
+
+## Publicar na VPS
+
+Pré-requisitos, uma vez: `rustup target add wasm32-unknown-unknown` e
+`cargo install wasm-bindgen-cli --version 0.2.128 --locked` (a versão do
+`wasm-bindgen` do `Cargo.lock`). No Windows, `client\tools\build-web.ps1` faz o
+mesmo que os passos abaixo.
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.128 --locked
+cd client
+CARGO_TARGET_DIR=target/web cargo build --release -p conquer-sandbox --target wasm32-unknown-unknown
+wasm-bindgen --target web --no-typescript --out-name gravak --out-dir dist/web \
+  target/web/wasm32-unknown-unknown/release/conquer-sandbox.wasm
+cp web/index.html dist/web/
+cp /var/www/gravak-update/servers.ini dist/web/          # os mundos e suas chaves de login
+mkdir -p dist/web/assets && cp web/world.txt web/body?.txt dist/web/assets/
+# Os arquivos da tela de login (web/assets.txt), tirados do pack pelo cliente
+# nativo compilado com a chave de release (o da Armory serve):
+/opt/gravak/armory/conquer-sandbox --export-assets /var/www/gravak-update/game \
+  dist/web/assets data/main/GeneralBG.dds
+printf 'data/main/GeneralBG.dds\n' > dist/web/assets/manifest.txt
+rsync -a --delete dist/web/ /srv/gravak/web/public/play/
+chown -R gravak:gravak /srv/gravak/web/public/play
+systemctl restart gravak-web     # o Next só serve de public/ o que existia ao subir
 ```
 
-```powershell
-client\tools\build-web.ps1                          # dados de client\dist\Gravak\game
-client\tools\build-web.ps1 -Game R:\5065            # ou de uma instalação
-```
+Serviços: `gravak-ws-bridge` (127.0.0.1:9960) e `gravak-web-files`
+(127.0.0.1:9961, `EnvironmentFile` = o `.env.production.local` do site, para o
+`SESSION_SECRET`; chave em `/srv/gravak/keys/pack.key`). No nginx de
+`gravak.fun`: `location /ws/` (WebSocket para a ponte) e
+`location = /game-files` (com gzip). Para testar sem o site:
+`http://localhost:8099/?bridge=ws://127.0.0.1:9960`.
 
-A saída vai para `client\dist\web` (página, `gravak.js`, `gravak_bg.wasm` e
-`assets\`). Para servir: entrada `web-spike` do `.claude\launch.json`
-(`python -m http.server 8099 --directory client/dist/web`) e abrir
-`http://localhost:8099`.
+## Testar sem um navegador de verdade
 
-O script compila o cliente nativo uma vez para copiar os arquivos do pack
-(`conquer-sandbox --export-assets <game> <saída> <arquivo>...`). O pack de
-distribuição usa a chave de release, então o exportador é compilado com
-`installer\pack.key` (ou `-KeyFile`). A chave nunca vai para o wasm nem para o
-repositório.
+O login do site tem Turnstile, então um navegador automatizado não passa por
+ele. Na VPS:
 
-## O que foi feito
+- um `gravak-web-files` local com um `SESSION_SECRET` de teste, um servidor
+  estático para `client/dist/web` que repassa `/game-files` para ele, e um
+  cookie assinado com esse segredo;
+- Chromium do Playwright em `index.html?bridge=ws://127.0.0.1:9960`, com
+  WebGL2 por software (SwiftShader, 7–15 fps). O headless shell não tem
+  WebGPU; o Chromium completo tem (SwiftShader), mas a captura de tela sai
+  branca;
+- a cada 5 s o console diz o que do mundo está na página
+  (`Gravak world: N actors; models: ...`), e os erros de carregamento de modelo
+  e de som vão para o console (`report!`; o `eprintln!` não chega lá).
 
-Tudo atrás de `cfg(target_arch = "wasm32")`; no nativo o código é o mesmo de antes.
-
-| Área | Nativo | Navegador (spike) |
-|---|---|---|
-| Entrada | `main()` → `run()` (args, `gravak.ini`, event loop bloqueante) | `main()` → `web::start()`: busca `assets/manifest.txt` e os arquivos por `fetch`, monta `Assets::from_memory`, abre as telas com `EventLoop::spawn_app` (não bloqueia) |
-| Janela | janela do winit, 1024×768 | `<canvas>` anexado ao `<body>` (`with_append`), do tamanho da página; o winit segue o tamanho CSS |
-| Telas de login | `softbuffer` | o mesmo `softbuffer` (backend canvas 2D), sem mudança no desenho |
-| Renderer wgpu | `pollster::block_on(Renderer::new)` | `wasm_bindgen_futures::spawn_local`; o renderer chega em `about_to_wait` (`App::renderer_ready`). wgpu com `webgpu` + `webgl` só no alvo wasm. Compila, mas o mundo ainda não é alcançado no navegador |
-| Tempo | `std::time::Instant` | `web_time::Instant`/`SystemTime` (o do std entra em pânico no wasm). No nativo `web_time` reexporta o std |
-| Rede (`login.rs`, `network.rs`, `gravak-protocol`) | tokio + TCP | sem TCP: `GameSession`, `authenticate`, `register_account` e `connect_game` só no nativo; `LoginClient`/`NetworkHandle` respondem na hora com erro |
-| Status dos mundos (`worlds::watch`) | thread + TCP | a thread não sobe; fica "Checking…" |
-| Threads (15 lugares) | `std::thread` | `std::thread::spawn` entra em pânico no wasm. As do caminho do login (`showcase`, `login_scenes`) passaram a usar `Builder::spawn` e simplesmente não rodam: sem os heróis da criação de personagem e sem as vistas do mundo ao fundo |
-| Arquivos de config (`settings.rs`, `keybinds.rs`, `helper.rs`, `sell_all.rs`) | `std::fs` | no-op: o `std::fs` do wasm compila e devolve erro, e esses módulos já caem nos padrões |
-| Atualizador (`updater.rs`) | ureq + troca de arquivos | `start` responde `UpToDate` (o site sempre serve a última versão) |
-| Loja de CPs (`cp_shop.rs`) | ureq | responde "Buy CPs on the website for now." |
-| Discord (`discord.rs`) | named pipe / socket | sem pipe (`open` → `None`) |
-| Clipboard | arboard | `clipboard_text()` → `None` e copiar não faz nada (a API do navegador é assíncrona e pede permissão) |
-| Fontes do sistema (`fontdb`) | `load_system_fonts` | `fonts::load_system_fonts` embute a KaTeX SansSerif (SIL OFL, 19 KB) e responde por toda família |
-| Áudio | rodio | `audio_web.rs`: mesma API, em silêncio |
-
-Também foi incluído o `GRAVAK_TRACE_ASSETS=1` (nativo e web): lista cada arquivo
-lido por `Assets::read`. No navegador, todo arquivo que falta aparece no console
-como `ASSET missing <caminho>`. É assim que se monta o `client/web/assets.txt`
-de cada tela.
-
-Arquivos de jogo que a tela de login precisa: **1**, `data/main/GeneralBG.dds`
-(128 KiB). O resto (logo, painéis, botões, brasas) é desenhado pelo cliente.
+O Playwright fecha o navegador num SIGTERM mas o processo continua vivo: use
+`kill -9`.
 
 ## Medidas
 
-**Tamanho do wasm** (release, depois do `wasm-bindgen`, **sem** `wasm-opt`):
+| | |
+|---|---|
+| wasm (release, sem `wasm-opt`) | 9,3 MB, 2,9 MB com gzip |
+| primeira visita, personagem novo | 3 pedidos de arquivos, mundo ~2 s após "Enter the World" |
+| segunda visita | quase tudo do Cache Storage |
+| tela de login | ~55–60 fps, 7–9 ms de CPU por frame (pintada na CPU) |
 
-| Build | Cru | gzip -9 |
-|---|---|---|
-| Só login (o que o spike entrega) | 2,07 MB | 0,66 MB |
-| Cliente inteiro alcançável (medição à parte, forçando o caminho do jogo com `black_box`) | 8,88 MB | 2,75 MB |
+## O que falta
 
-O build do spike é pequeno porque o compilador corta o mundo como código morto.
-O número que importa para as próximas fases é o de ~9 MB (≈2,8 MB pela rede).
-`wasm-opt -Oz` e `opt-level = "z"` devem tirar mais uns 10–20%. Para
-comparação, o `.exe` nativo release tem 16,4 MB.
-
-**Frame rate** (Chromium do painel do app, tela de login em 742×598 e 1024×768):
-**~55–60 fps** estáveis, com **7–9 ms** de CPU para pintar cada frame da tela
-inteira em `RgbaImage` (`LoginUi::image`). Isso já deixa pouca folga: a tela
-pinta tudo na CPU todo frame, e em 1920×1080 seriam ~2,6× os pixels (≈20 ms,
-abaixo de 60 fps). Os primeiros segundos podem ficar em 1–2 fps enquanto a aba
-não está visível (o navegador estrangula o `requestAnimationFrame`), o que é
-normal. A carga inicial (manifest + 1 arquivo) leva 10–20 ms em localhost. O
-console mostra `Gravak login: N fps, M ms to paint a frame` a cada 2 s.
-
-O wgpu (WebGPU/WebGL2) **não foi medido**: o mundo ainda não abre no navegador.
-
-## Bloqueios restantes e custo estimado
-
-Estimativas em dias de trabalho focado de uma pessoa que conhece o código.
-
-1. **Ponte WebSocket → TCP (auth 9958, jogo 5816)** — *2–4 dias.* Um proxy
-   pequeno (Rust com tokio-tungstenite, ou `websockify`) na VPS, atrás do
-   nginx com TLS (`wss://gravak.fun/ws/auth`, `/ws/game`). Ele só repassa
-   bytes. A cifra TQ continua no cliente, que já usa os codecs
-   `TQEncoder/TQDecoder` sobre um stream genérico. No cliente: um tipo de
-   stream `AsyncRead + AsyncWrite` sobre `web_sys::WebSocket` (ou `ws_stream_wasm`)
-   no lugar de `TcpStream` em `gravak-protocol`, e `login.rs`/`network.rs`
-   rodando no `spawn_local` em vez de thread + runtime tokio (o desenho de
-   canais command/event já serve). O servidor de jogo devolve IP:porta no
-   `MsgConnectEx`; a ponte precisa mapear isso para a rota `wss` (e limitar a
-   quais destinos aceita conectar). O status dos mundos (`worlds::watch`) vira
-   uma tentativa de WebSocket ou um endpoint HTTP do site.
-2. **Dados do jogo sob demanda (~447 MB do `gravak.gpk`)** — *1–2 semanas.*
-   É o maior item. Hoje `Assets::read` é síncrono e tem ~100 chamadas. Proposta:
-   servir o pack (ou entradas soltas) por HTTP com `Range`, a partir do índice
-   do pack; um cache em IndexedDB (ou OPFS) por entrada; e
-   pré-carregar por tela/mapa (como o `assets.txt` deste spike, mas gerado por
-   `GRAVAK_TRACE_ASSETS`). Dá para manter `read` síncrono se cada cena só
-   começa depois do seu "pacote" estar na memória, e assim evitar tornar
-   assíncronas as ~100 chamadas. Os três loaders do renderer
-   (`gravak-asset-loader`, `ui-texture-loader`, `geometry-loader`) e o
-   `RemoteModelLoader` abrem um `Assets` próprio a partir de um caminho e
-   precisam passar a receber uma fonte compartilhada. Ponto de decisão: a chave
-   do pack teria de ir no wasm, onde é extraível (no `.exe` também, só que com
-   mais esforço). A alternativa é servir as entradas já decifradas atrás de
-   login.
-3. **Threads** — *3–5 dias.* Os loaders de textura/geometria/modelos e a
-   composição de cenas usam `std::thread`. Caminho simples: rodá-los em fatias
-   no próprio loop (`spawn_local` + orçamento por frame). Caminho rápido de
-   verdade: Web Workers com `wasm-bindgen-rayon`/atomics, que exigem
-   `-C target-feature=+atomics`, nightly (`build-std`) e os cabeçalhos COOP/COEP
-   no site. Sem isso, a decodificação de DDS/C3 trava o frame.
-4. **Persistência** — *0,5–1 dia.* `settings.rs`, `keybinds.rs`, `helper.rs` e
-   `sell_all.rs` gravam texto em arquivos: basta trocar a leitura/escrita por
-   `localStorage` (chave = nome do arquivo). Contas salvas: o `vault` usa DPAPI
-   no Windows, e no navegador não deve guardar senha (só a conta).
-5. **Áudio** — *1–2 dias.* O rodio/cpal tem backend Web Audio (feature
-   `wasm-bindgen` do cpal). A música MP3 pode ir direto para um elemento
-   `<audio>`. O navegador só libera som depois do primeiro clique.
-6. **Mundo com wgpu no navegador** — *2–4 dias depois de 1–3.* O caminho
-   assíncrono já está escrito (`App::renderer_ready`). Falta: usar
-   `wgpu::util::new_instance_with_webgpu_detection` para cair no WebGL2 quando não
-   há WebGPU; checar limites de textura e formatos (sem BC/DXT em boa parte do
-   WebGL, então os DDS têm de ser descomprimidos na CPU, como já são hoje
-   para `RgbaImage`); e medir fps de verdade no mapa 1002.
-7. **Detalhes de plataforma** — *1–2 dias.* Clipboard (evento `paste`), cursores
-   próprios (`CustomCursor` funciona no web, mas não foi testado), tela cheia,
-   fonte com mais glyphs (a KaTeX SansSerif não tem o caractere de máscara da
-   senha, que aparece como caixinhas, nem acentos estendidos; trocar por uma Noto
-   Sans/Liberation Sans OFL, ~300 KB), heróis e vistas do mundo na tela de login
-   (dependem de 2 e 3), botão "Exit" (no navegador não fecha nada).
-8. **Página `/play` no site Next.js (`web/`)** — *1–2 dias.* Servir
-   `gravak.js`/`gravak_bg.wasm` com `Content-Type: application/wasm` e
-   compressão, `index.html` vira um componente cliente que chama `init()`, e
-   o nginx faz o proxy `wss`.
-
-**Total grosso até jogar no navegador:** ~4–6 semanas, quase tudo nos itens
-2 e 3. Nada encontrado no spike invalida o caminho de compilar o cliente
-existente para wasm.
+1. **Outros mapas na primeira visita.** Fora do Birth Village os arquivos de
+   um mapa chegam aos poucos, e modelos e texturas aparecem com atraso na
+   primeira vez. Listas por mapa (como `bodyN.txt`) resolveriam.
+2. **Threads.** Os loaders rodam no loop da página; decodificar DDS e C3 custa
+   frames enquanto um mapa carrega. Web Workers (`wasm-bindgen-rayon`) pedem
+   `+atomics`, nightly e os cabeçalhos COOP/COEP no site.
+3. **Tela de login.** Sem os heróis da criação de personagem e sem as vistas do
+   mundo ao fundo (`showcase`, `login_scenes` usam threads). Ela pinta tudo na
+   CPU todo frame: em 1920×1080 cai abaixo de 60 fps.
+4. **Plataforma.** Clipboard (evento `paste`), cursores próprios não testados,
+   botão "Exit" (no navegador não fecha nada), fonte sem os glyphs de acentos
+   estendidos (trocar por uma Noto/Liberation Sans OFL), toque no celular.
+5. **Tamanho.** `wasm-opt -Oz` e `opt-level = "z"` devem tirar 10–20%.
+6. **Configurações do cliente do PC** continuam nos arquivos dele: ele não tem a
+   sessão do site para falar com `/api/settings`.
 
 ## Notas do ambiente
 
